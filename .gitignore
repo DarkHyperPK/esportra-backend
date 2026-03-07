@@ -1,0 +1,21 @@
+# .NET build artifacts
+bin/
+obj/
+*.user
+
+# Local secrets (never commit)
+appsettings.local.json
+appsettings.Production.json
+**/appsettings.local.json
+
+# IDE
+.vs/
+.vscode/
+*.DotSettings.user
+
+# Rider
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
