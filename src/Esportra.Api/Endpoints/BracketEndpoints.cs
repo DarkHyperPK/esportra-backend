@@ -1,25 +1,28 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Hubs;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
 /// <summary>
 /// Replaces: worker-bracket-advancement and compute-bracket-ui-cache Edge Functions.
 /// Phase 2 adds: bracket generation, BYE advance, reset, clear, standings, Swiss next-round.
+/// Phase 3 adds: SignalR broadcasts after bracket state changes.
 /// </summary>
 public static class BracketEndpoints
 {
     public static void MapBracketEndpoints(this WebApplication app)
     {
         // ── POST /api/brackets/generate ───────────────────────────────────────
-        // Generates a bracket graph in-memory and persists it to DB.
         app.MapPost("/api/brackets/generate", async (
             [FromBody] GenerateBracketRequest req,
             BracketPersistenceService         persistence,
+            IHubContext<BracketHub>           bracketHub,
             CancellationToken                 ct) =>
         {
             IBracketGenerator generator = req.Format.ToLowerInvariant() switch
@@ -46,6 +49,16 @@ public static class BracketEndpoints
 
             var version = await persistence.SaveGraphAsync(graph, ct);
 
+            // Notify tournament subscribers that a new bracket version was created
+            if (req.TournamentId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.TournamentGroup(req.TournamentId))
+                    .SendAsync(BracketHubEvents.VersionCreated,
+                        new { versionId = version.Id, tournamentId = req.TournamentId, format = req.Format },
+                        ct);
+            }
+
             return Results.Ok(new
             {
                 versionId  = version.Id,
@@ -58,9 +71,20 @@ public static class BracketEndpoints
         app.MapPost("/api/brackets/{versionId}/advance-byes", async (
             string                    versionId,
             BracketPersistenceService persistence,
+            IHubContext<BracketHub>   bracketHub,
             CancellationToken         ct) =>
         {
             int count = await persistence.AutoAdvanceByesAsync(versionId, ct);
+
+            if (count > 0)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId, byesAdvanced = count },
+                        ct);
+            }
+
             return Results.Ok(new { advanced = count });
         }).RequireAuthorization("Organizer");
 
@@ -68,9 +92,15 @@ public static class BracketEndpoints
         app.MapPost("/api/brackets/{versionId}/reset", async (
             string                    versionId,
             BracketPersistenceService persistence,
+            IHubContext<BracketHub>   bracketHub,
             CancellationToken         ct) =>
         {
             await persistence.ResetAsync(versionId, ct);
+
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(versionId))
+                .SendAsync(BracketHubEvents.BracketReset, new { versionId }, ct);
+
             return Results.Ok(new { message = "Bracket reset." });
         }).RequireAuthorization("Organizer");
 
@@ -107,12 +137,19 @@ public static class BracketEndpoints
         app.MapPost("/api/swiss/next-round", async (
             [FromBody]      SwissNextRoundRequest req,
             SwissNextRoundService                 swissSvc,
+            IHubContext<BracketHub>               bracketHub,
             CancellationToken                     ct) =>
         {
             var (ok, msg) = await swissSvc.GenerateNextRoundAsync(req.StageId, req.VersionId, req.CurrentRound, ct);
-            return ok
-                ? Results.Ok(new { message = $"Round {req.CurrentRound + 1} generated." })
-                : Results.BadRequest(new { error = msg });
+            if (!ok) return Results.BadRequest(new { error = msg });
+
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(req.VersionId))
+                .SendAsync(BracketHubEvents.MatchInserted,
+                    new { versionId = req.VersionId, round = req.CurrentRound + 1 },
+                    ct);
+
+            return Results.Ok(new { message = $"Round {req.CurrentRound + 1} generated." });
         }).RequireAuthorization("Organizer");
 
 
@@ -122,11 +159,11 @@ public static class BracketEndpoints
         app.MapPost("/api/brackets/advance", async (
             [FromBody] AdvanceBracketRequest req,
             IDbConnectionFactory             db,
+            IHubContext<BracketHub>          bracketHub,
             CancellationToken                ct) =>
         {
             using var conn = db.CreateConnection();
 
-            // Get version_id for this match
             var versionId = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT version_id FROM public.brkt_matches WHERE id = @matchId",
                 new { matchId = req.MatchId });
@@ -134,7 +171,6 @@ public static class BracketEndpoints
             if (versionId is null)
                 return Results.NotFound(new { error = $"Match {req.MatchId} not found." });
 
-            // Get all advancements for this match (winner + loser edges)
             var advancements = (await conn.QueryAsync("""
                 SELECT target_match_id, target_slot, type, winner_team_id, loser_team_id
                 FROM public.brkt_advancements
@@ -147,16 +183,21 @@ public static class BracketEndpoints
                 string? teamId = adv.type == "winner" ? adv.winner_team_id : adv.loser_team_id;
                 if (teamId is null) continue;
 
-                // Advance team to target slot (1 = team1, 2 = team2)
                 var column = adv.target_slot == 1 ? "team1_id" : "team2_id";
                 await conn.ExecuteAsync(
                     $"UPDATE public.brkt_matches SET {column} = @teamId WHERE id = @targetMatchId",
                     new { teamId, targetMatchId = adv.target_match_id });
 
                 advanced++;
+
+                // Broadcast MatchUpdated for each target match that changed
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { matchId = adv.target_match_id, versionId, slot = adv.target_slot, teamId },
+                        ct);
             }
 
-            // Mark event as processed
             if (!string.IsNullOrWhiteSpace(req.EventId))
             {
                 await conn.ExecuteAsync(
@@ -164,15 +205,12 @@ public static class BracketEndpoints
                     new { id = req.EventId });
             }
 
-            // Fire-and-forget: rebuild bracket UI cache
-            _ = Task.Run(() => RebuildUiCacheAsync(versionId, db, ct), ct);
+            _ = Task.Run(() => RebuildUiCacheAsync(versionId, db, CancellationToken.None), CancellationToken.None);
 
             return Results.Ok(new { success = true, matchId = req.MatchId, advanced });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/{versionId}/cache ──────────────────────────────
-        // Replaces: compute-bracket-ui-cache Edge Function
-        // Rebuilds cached_ui_state on brkt_versions.
         app.MapPost("/api/brackets/{versionId}/cache", async (
             string               versionId,
             IDbConnectionFactory db,
@@ -183,7 +221,6 @@ public static class BracketEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/{versionId} ─────────────────────────────────────
-        // Returns the cached UI state for a bracket version.
         app.MapGet("/api/brackets/{versionId}", async (
             string               versionId,
             IDbConnectionFactory db,
@@ -202,7 +239,7 @@ public static class BracketEndpoints
         });
     }
 
-    // ── UI cache builder (ported from compute-bracket-ui-cache) ──────────────
+    // ── UI cache builder ──────────────────────────────────────────────────────
 
     private static async Task<int> RebuildUiCacheAsync(
         string versionId, IDbConnectionFactory db, CancellationToken ct)
@@ -229,37 +266,37 @@ public static class BracketEndpoints
             WHERE version_id = @versionId
             """, new { versionId })).AsList();
 
-        var nextMatchMap  = advancements
+        var nextMatchMap = advancements
             .Where(a => (string?)a.type == "winner")
             .GroupBy(a => (string)a.source_match_id)
             .ToDictionary(g => g.Key, g => (string)g.First().target_match_id);
 
-        var loserNextMap  = advancements
+        var loserNextMap = advancements
             .Where(a => (string?)a.type == "loser")
             .GroupBy(a => (string)a.source_match_id)
             .ToDictionary(g => g.Key, g => (string)g.First().target_match_id);
 
         var uiMatches = matches.Select(m => new
         {
-            id              = $"db-{m.id}",
-            round           = m.round_index,
-            matchNumber     = m.match_number,
-            team1           = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo },
-            team2           = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo },
-            winner          = m.winner_id,
-            team1_score     = m.team1_score,
-            team2_score     = m.team2_score,
-            status          = m.status ?? "pending",
-            scheduledTime   = m.scheduled_time,
-            bestOf          = m.best_of,
-            partyCode       = m.party_code,
-            bracketType     = m.bracket_type,
-            nextMatchId     = nextMatchMap.TryGetValue((string)m.id, out var nm) ? nm : null,
-            loserNextMatchId= loserNextMap.TryGetValue((string)m.id, out var lm) ? lm : null,
-            stageId         = m.stage_id,
-            groupId         = m.group_id,
-            x               = m.x_pos,
-            y               = m.y_pos,
+            id               = $"db-{m.id}",
+            round            = m.round_index,
+            matchNumber      = m.match_number,
+            team1            = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo },
+            team2            = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo },
+            winner           = m.winner_id,
+            team1_score      = m.team1_score,
+            team2_score      = m.team2_score,
+            status           = m.status ?? "pending",
+            scheduledTime    = m.scheduled_time,
+            bestOf           = m.best_of,
+            partyCode        = m.party_code,
+            bracketType      = m.bracket_type,
+            nextMatchId      = nextMatchMap.TryGetValue((string)m.id, out var nm) ? nm : null,
+            loserNextMatchId = loserNextMap.TryGetValue((string)m.id, out var lm) ? lm : null,
+            stageId          = m.stage_id,
+            groupId          = m.group_id,
+            x                = m.x_pos,
+            y                = m.y_pos,
         }).ToList();
 
         var json = JsonSerializer.Serialize(uiMatches);

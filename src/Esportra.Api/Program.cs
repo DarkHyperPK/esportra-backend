@@ -2,6 +2,7 @@ using System.Text;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
+using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Audit;
@@ -171,7 +172,7 @@ app.MapGet("/health", () => Results.Ok(new
 {
     status    = "healthy",
     timestamp = DateTime.UtcNow,
-    version   = "1.0.0-phase2",
+    version   = "1.0.0-phase3",
 }));
 
 // ── JWT validation probe ───────────────────────────────────────────────────────
@@ -189,5 +190,13 @@ app.MapGameEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
+
+// ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
+app.MapHub<BracketHub>("/hubs/bracket");
+app.MapHub<MatchHub>("/hubs/match");
+app.MapHub<VetoHub>("/hubs/veto");
+app.MapHub<ChatHub>("/hubs/chat");
+app.MapHub<NotificationHub>("/hubs/notifications");
+app.MapHub<LiveHub>("/hubs/live");
 
 app.Run();

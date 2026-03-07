@@ -1,32 +1,28 @@
+using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Match;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
 /// <summary>
 /// Replaces: process-match-result, verify-match-result, scan-recent-matches Edge Functions.
 ///
-/// Phase 1 status:
-///   - scan-recent-matches  → STUB (Phase 2: requires Riot API + full match verification logic)
-///   - process-match-result → STUB (Phase 2: requires Riot API + team PUUID mapping)
-///   - finalize-match-result → STUB (delegates to finalize_match_locked RPC)
+/// Phase 3 additions: veto actions now broadcast to VetoHub group after each state change.
 /// </summary>
 public static class MatchEndpoints
 {
     public static void MapMatchEndpoints(this WebApplication app)
     {
         // ── POST /api/matches/scan ────────────────────────────────────────────
-        // Replaces: scan-recent-matches Edge Function
-        // TODO Phase 2: Implement Riot API scan + PUUID team mapping
         app.MapPost("/api/matches/scan", async (
             [FromBody] ScanRecentMatchesRequest req,
             IDbConnectionFactory               db,
             CancellationToken                  ct) =>
         {
-            // Phase 2 stub — still served by Supabase Edge Function during migration
             await Task.CompletedTask;
             return Results.Ok(new
             {
@@ -38,21 +34,12 @@ public static class MatchEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/process ───────────────────────────────
-        // Replaces: process-match-result Edge Function
-        // TODO Phase 2: Implement full match result processing with Riot API verification
         app.MapPost("/api/matches/{matchId}/process", async (
             string                         matchId,
             [FromBody] ProcessMatchResultRequest req,
             IDbConnectionFactory           db,
             CancellationToken              ct) =>
         {
-            // Phase 2 stub — most complex function, requires:
-            //   1. Riot API team PUUID verification
-            //   2. Score extraction + winner determination
-            //   3. MVP detection
-            //   4. brkt_match_games update
-            //   5. finalize_match_locked RPC call on series completion
-            //   6. Notifications to both captains
             await Task.CompletedTask;
             return Results.Ok(new
             {
@@ -64,25 +51,29 @@ public static class MatchEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/finalize ──────────────────────────────
-        // Replaces: finalize-match-result (called internally by process-match-result)
-        // This delegates to the finalize_match_locked Supabase RPC during migration.
         app.MapPost("/api/matches/{matchId}/finalize", async (
             string               matchId,
             IDbConnectionFactory db,
+            IHubContext<MatchHub> matchHub,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
 
-            // Call the existing finalize_match_locked RPC directly via DB
-            // This RPC handles optimistic locking and bracket advancement trigger
             var result = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<dynamic>(conn,
                 "SELECT public.finalize_match_locked(@matchId) AS result",
                 new { matchId });
 
+            // Notify match group that status changed
+            await matchHub.Clients
+                .Group(MatchHub.MatchGroup(matchId))
+                .SendAsync(MatchHubEvents.StatusChanged,
+                    new { matchId, status = "completed", result },
+                    ct);
+
             return Results.Ok(new { success = true, matchId, result });
         }).RequireAuthorization("Authenticated");
 
-        // ── Veto endpoints (Phase 2) ──────────────────────────────────────────
+        // ── Veto endpoints ────────────────────────────────────────────────────
 
         // GET /api/veto/{matchId}
         app.MapGet("/api/veto/{matchId}", async (
@@ -100,6 +91,7 @@ public static class MatchEndpoints
             [FromBody] VetoInitRequest req,
             HttpContext         ctx,
             VetoDbService       vetoSvc,
+            IHubContext<VetoHub> vetoHub,
             CancellationToken   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -110,6 +102,10 @@ public static class MatchEndpoints
                 req.Team1Id, req.Team2Id,
                 req.BestOf, req.Game, ct);
 
+            await vetoHub.Clients
+                .Group(VetoHub.VetoGroup(matchId))
+                .SendAsync(VetoHubEvents.VetoAction, veto, ct);
+
             return Results.Ok(veto);
         }).RequireAuthorization("Organizer");
 
@@ -119,6 +115,7 @@ public static class MatchEndpoints
             [FromBody] VetoBanRequest req,
             HttpContext        ctx,
             VetoDbService      vetoSvc,
+            IHubContext<VetoHub> vetoHub,
             CancellationToken  ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -136,6 +133,11 @@ public static class MatchEndpoints
             if (!result.Ok) return Results.BadRequest(new { error = result.Reason });
 
             var updated = await vetoSvc.BanMapAsync(matchId, req.MapId, userCtx.UserId, ct);
+
+            await vetoHub.Clients
+                .Group(VetoHub.VetoGroup(matchId))
+                .SendAsync(VetoHubEvents.VetoAction, updated, ct);
+
             return Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
@@ -145,6 +147,7 @@ public static class MatchEndpoints
             [FromBody] VetoPickRequest req,
             HttpContext         ctx,
             VetoDbService       vetoSvc,
+            IHubContext<VetoHub> vetoHub,
             CancellationToken   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -162,6 +165,22 @@ public static class MatchEndpoints
             if (!result.Ok) return Results.BadRequest(new { error = result.Reason });
 
             var updated = await vetoSvc.PickMapAsync(matchId, req.MapId, userCtx.UserId, ct);
+
+            // Check if veto is now complete
+            var newState = VetoEngine.DeriveState(updated);
+            if (newState == VetoState.Complete)
+            {
+                await vetoHub.Clients
+                    .Group(VetoHub.VetoGroup(matchId))
+                    .SendAsync(VetoHubEvents.VetoComplete, updated.Team1PickedMaps, ct);
+            }
+            else
+            {
+                await vetoHub.Clients
+                    .Group(VetoHub.VetoGroup(matchId))
+                    .SendAsync(VetoHubEvents.VetoAction, updated, ct);
+            }
+
             return Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
@@ -171,6 +190,7 @@ public static class MatchEndpoints
             [FromBody] VetoPickSideRequest req,
             HttpContext             ctx,
             VetoDbService           vetoSvc,
+            IHubContext<VetoHub>    vetoHub,
             CancellationToken       ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -188,21 +208,32 @@ public static class MatchEndpoints
             if (!result.Ok) return Results.BadRequest(new { error = result.Reason });
 
             var updated = await vetoSvc.PickSideAsync(matchId, req.MapId, req.Side, userCtx.UserId, ct);
+
+            await vetoHub.Clients
+                .Group(VetoHub.VetoGroup(matchId))
+                .SendAsync(VetoHubEvents.VetoAction, updated, ct);
+
             return Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
         // POST /api/veto/{matchId}/reset  (organizer only)
         app.MapPost("/api/veto/{matchId}/reset", async (
-            string         matchId,
-            HttpContext    ctx,
-            VetoDbService  vetoSvc,
-            CancellationToken ct) =>
+            string              matchId,
+            HttpContext         ctx,
+            VetoDbService       vetoSvc,
+            IHubContext<VetoHub> vetoHub,
+            CancellationToken   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null || !userCtx.Roles.Contains("organizer"))
                 return Results.Forbid();
 
             await vetoSvc.ResetAsync(matchId, ct);
+
+            await vetoHub.Clients
+                .Group(VetoHub.VetoGroup(matchId))
+                .SendAsync(VetoHubEvents.VetoReset, new { matchId }, ct);
+
             return Results.Ok(new { message = "Veto reset." });
         }).RequireAuthorization("Organizer");
     }
