@@ -1,0 +1,390 @@
+### Esportra .NET API — Phase 1 Smoke Test Plan
+### Run sequentially. Replace all {{...}} variables with real values before running.
+###
+### Prerequisites:
+###   1. dotnet run --project src/Esportra.Api  (port 5200)
+###   2. Redis running on localhost:6379
+###   3. Fill in variables below
+
+@base        = http://localhost:5200
+@jwt         = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...  # Supabase session JWT
+@adminJwt    = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...  # Admin user JWT (has admin role)
+@testEmail   = test@example.com
+@testUserId  = 00000000-0000-0000-0000-000000000001       # real user UUID in DB
+@matchId     = 00000000-0000-0000-0000-000000000002       # real brkt_match UUID
+@versionId   = 00000000-0000-0000-0000-000000000003       # real brkt_version UUID
+@sponsorId   = 00000000-0000-0000-0000-000000000004       # real sponsor profile UUID
+@reportId    = 00000000-0000-0000-0000-000000000005       # real match_result_reports UUID
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. HEALTH
+# Expected: 200 { status: "healthy", timestamp, version }
+# ─────────────────────────────────────────────────────────────────────────────
+GET {{base}}/health
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. JWT PROBE  (GET /api/me)
+# Expected: 200 { userId, email, roles[], permissions[] }
+# Fail case: 401 if JWT is expired/wrong secret
+# ─────────────────────────────────────────────────────────────────────────────
+GET {{base}}/api/me
+Authorization: Bearer {{jwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. AUTH — Send Recovery Email  (POST /api/auth/recovery)
+# Expected: 200 { message: "Recovery email sent." }
+# DB side: Supabase generates token_hash, Resend delivers the email
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/auth/recovery
+Content-Type: application/json
+
+{
+  "email": "{{testEmail}}"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. AUTH — Set Password via Token Hash  (POST /api/auth/set-password)
+# Expected: 200 { message: "Password updated." }
+# Precondition: use the token_hash returned from step 3's Supabase link
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/auth/set-password
+Content-Type: application/json
+
+{
+  "tokenHash": "PASTE_TOKEN_HASH_HERE",
+  "newPassword": "NewSecurePassword123!"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. AUTH — Set Password via Session (authenticated)  (POST /api/auth/set-password)
+# Expected: 200 { message: "Password updated." }
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/auth/set-password
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "newPassword": "AnotherSecure456!"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. ADMIN — Delete User  (POST /api/admin/users/{userId}/action)
+# Expected: 200 { message: "User deleted." }
+# Requires: users:delete permission (ops_admin or tournament_admin role)
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/admin/users/{{testUserId}}/action
+Content-Type: application/json
+Authorization: Bearer {{adminJwt}}
+
+{
+  "action": "delete-user"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. ADMIN — Update Role  (POST /api/admin/users/{userId}/action)
+# Expected: 200 { message: "Role updated." }
+# Requires: users:edit permission
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/admin/users/{{testUserId}}/action
+Content-Type: application/json
+Authorization: Bearer {{adminJwt}}
+
+{
+  "action": "update-role",
+  "role": "venue_admin"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. ADMIN — Invite Sponsor  (POST /api/sponsors/invite)
+# Expected: 200 { message: "Sponsor invited.", userId, setupLink }
+# Creates Supabase user + profile row + sends PartnerInvite email
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/sponsors/invite
+Content-Type: application/json
+Authorization: Bearer {{adminJwt}}
+
+{
+  "sponsorEmail": "sponsor@brand.com",
+  "sponsorName": "Acme Corp",
+  "sponsorId": "{{sponsorId}}"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. ADMIN — Send Email  (POST /api/emails)
+# Expected: 200 { message: "Email sent." }
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/emails
+Content-Type: application/json
+Authorization: Bearer {{adminJwt}}
+
+{
+  "to": "{{testEmail}}",
+  "type": "Welcome",
+  "data": {
+    "username": "TestUser"
+  }
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. INTEGRATIONS — Riot API Proxy  (POST /api/integrations/riot/proxy)
+# Expected: 200 — proxied Riot API JSON response
+# Tests allowlist: /riot/account/v1/accounts/by-riot-id/ is allowed
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/integrations/riot/proxy
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "region": "americas",
+  "endpoint": "/riot/account/v1/accounts/by-riot-id/TestPlayer/EUW"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. INTEGRATIONS — Faceit API Proxy  (POST /api/integrations/faceit/proxy)
+# Expected: 200 — proxied Faceit API JSON response
+# Tests allowlist: /players is allowed
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/integrations/faceit/proxy
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "endpoint": "/players?nickname=s1mple"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. INTEGRATIONS — Riot Unlink  (DELETE /api/integrations/riot)
+# Expected: 200 { message: "Riot account unlinked." }
+# Deletes row from riot_accounts for the calling user
+# ─────────────────────────────────────────────────────────────────────────────
+DELETE {{base}}/api/integrations/riot
+Authorization: Bearer {{jwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. INTEGRATIONS — Faceit Unlink  (DELETE /api/integrations/faceit)
+# Expected: 200 { message: "Faceit account unlinked." }
+# ─────────────────────────────────────────────────────────────────────────────
+DELETE {{base}}/api/integrations/faceit
+Authorization: Bearer {{jwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. GAMES — Search  (GET /api/games/search?q=)
+# Expected: 200 — RAWG results (first call hits RAWG, subsequent calls hit DB cache)
+# Check: make 2 calls — second should be slightly faster (cache hit)
+# ─────────────────────────────────────────────────────────────────────────────
+GET {{base}}/api/games/search?q=valorant
+Authorization: Bearer {{jwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. GAMES — Screenshots  (GET /api/games/{id}/screenshots)
+# Expected: 200 — RAWG screenshots array
+# Replace 58877 with a real RAWG game ID (Valorant = 58877)
+# ─────────────────────────────────────────────────────────────────────────────
+GET {{base}}/api/games/58877/screenshots
+Authorization: Bearer {{jwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16. METRICS — Record Metric  (POST /api/metrics)
+# Expected: 200 { message: "Metric recorded." }
+# Check sponsor_metrics table in Supabase for a new row with geoip + visitor_id
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/metrics
+Content-Type: application/json
+
+{
+  "sponsorId": "{{sponsorId}}",
+  "eventType": "impression",
+  "pageUrl": "https://esportra.com/tournaments/test-slug"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 17. MATCHES — Finalize Match  (POST /api/matches/{matchId}/finalize)
+# Expected: 200 { message: "Match finalized." }  or 409 if already locked
+# Calls finalize_match_locked RPC on Supabase
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/matches/{{matchId}}/finalize
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 18. MATCHES — Scan Recent Matches (STUB)  (POST /api/matches/scan)
+# Expected: 200 { message: "Scan stub — Phase 2." }
+# This is a stub until Phase 2 (Riot API PUUID verification)
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/matches/scan
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "matchId": "{{matchId}}",
+  "mapName": "Haven",
+  "gameNumber": 1
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 19. MATCHES — Process Match Result (STUB)  (POST /api/matches/{matchId}/process)
+# Expected: 200 { message: "Process stub — Phase 2." }
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/matches/{{matchId}}/process
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "reportId": "{{reportId}}"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 20. BRACKETS — Advance  (POST /api/brackets/advance)
+# Expected: 200 { message: "Bracket advanced." }
+# Requires: valid eventId in bracket_events table + matchId in brkt_matches
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/brackets/advance
+Content-Type: application/json
+Authorization: Bearer {{adminJwt}}
+
+{
+  "matchId": "{{matchId}}",
+  "eventId": "PASTE_EVENT_ID_HERE"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 21. BRACKETS — Get Cached UI State  (GET /api/brackets/{versionId})
+# Expected: 200 — cached bracket JSON blob
+# ─────────────────────────────────────────────────────────────────────────────
+GET {{base}}/api/brackets/{{versionId}}
+Authorization: Bearer {{jwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 22. BRACKETS — Rebuild Cache  (POST /api/brackets/{versionId}/cache)
+# Expected: 200 { message: "Cache rebuilt." }
+# Check: brkt_versions.cached_ui_state updated in Supabase
+# ─────────────────────────────────────────────────────────────────────────────
+POST {{base}}/api/brackets/{{versionId}}/cache
+Authorization: Bearer {{adminJwt}}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ALLOWLIST BLOCK TESTS (should return 400)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Blocked Riot endpoint (not in allowlist)
+POST {{base}}/api/integrations/riot/proxy
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "region": "americas",
+  "endpoint": "/lol/summoner/v4/summoners/me"
+}
+
+###
+
+# Blocked Faceit endpoint (not in allowlist)
+POST {{base}}/api/integrations/faceit/proxy
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "endpoint": "/hubs/123/members"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHZ BLOCK TESTS (should return 403)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Non-admin trying to delete a user
+POST {{base}}/api/admin/users/{{testUserId}}/action
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
+  "action": "delete-user"
+}
+
+###
+
+# Unauthenticated request to /api/me
+GET {{base}}/api/me
+
+###
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP-BY-STEP TEST PROCEDURE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. SETUP
+#    a. Start API:   dotnet run --project src/Esportra.Api
+#    b. Start Redis: docker run -p 6379:6379 redis:7-alpine  (or docker compose up redis)
+#    c. Fill variables at top of this file:
+#       - @jwt      → paste a valid Supabase JWT from your browser DevTools (Network tab)
+#       - @adminJwt → log in as an admin user in the app, grab that JWT
+#       - @testUserId / @matchId / @versionId / @sponsorId / @reportId → real UUIDs from DB
+#
+# 2. RUN IN ORDER
+#    Test 1  → expect 200 healthy
+#    Test 2  → expect 200 with your userId + roles list
+#    Tests 3-5  → check Resend dashboard for delivered email
+#    Tests 6-9  → need adminJwt; check Supabase Auth + profiles table for changes
+#    Tests 10-13 → check Riot/Faceit API responses + riot_accounts/faceit_accounts table
+#    Tests 14-15 → first call slow (RAWG hit), second call fast (DB cache in games_metadata)
+#    Test 16     → check sponsor_metrics table for new row with country + visitor_id
+#    Tests 17-19 → need real match UUIDs; verify brkt_matches state in Supabase
+#    Tests 20-22 → need real bracket UUIDs; verify brkt_versions.cached_ui_state
+#
+# 3. BLOCK TESTS (last section)
+#    Allowlist blocks → expect 400 "Endpoint not allowed"
+#    Authz blocks    → expect 401 or 403
+#
+# 4. PASS CRITERIA
+#    All numbered tests return 2xx
+#    All block tests return 4xx
+#    No 500 errors anywhere
+#    Resend emails delivered (check dashboard)
+#    DB tables updated as noted above
+#

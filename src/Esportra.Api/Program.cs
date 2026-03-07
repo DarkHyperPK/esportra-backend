@@ -1,8 +1,13 @@
 using System.Text;
 using Esportra.Api.Auth;
+using Esportra.Api.BackgroundJobs;
+using Esportra.Api.Endpoints;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
+using Esportra.Infrastructure.Email;
+using Esportra.Infrastructure.Integrations;
+using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -34,8 +39,7 @@ builder.Services
             ClockSkew                = TimeSpan.Zero,
         };
 
-        // Supabase passes the token as a Bearer header — standard flow.
-        // For SignalR WS connections, also accept via query string.
+        // Supabase JWT via Authorization header (standard) or query string (SignalR WS)
         opts.Events = new JwtBearerEvents
         {
             OnMessageReceived = ctx =>
@@ -47,18 +51,16 @@ builder.Services
             },
             OnAuthenticationFailed = ctx =>
             {
-                ctx.HttpContext.Response.Headers["X-Auth-Error"] =
-                    ctx.Exception.GetType().Name;
+                ctx.HttpContext.Response.Headers["X-Auth-Error"] = ctx.Exception.GetType().Name;
                 return Task.CompletedTask;
             },
         };
     });
 
-// ── Authorization — policies per permission ───────────────────────────────────
+// ── Authorization — policy per permission ─────────────────────────────────────
 builder.Services.AddSingleton<IAuthorizationHandler, PermissionHandler>();
 builder.Services.AddAuthorization(opts =>
 {
-    // Register a policy for every permission constant
     foreach (var perm in typeof(Permissions)
         .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
         .Where(f => f.IsLiteral)
@@ -68,17 +70,15 @@ builder.Services.AddAuthorization(opts =>
             policy.Requirements.Add(new PermissionRequirement(perm)));
     }
 
-    // Convenience policies for platform roles
     opts.AddPolicy("Organizer",    policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("VenueOwner",   policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
 });
 
-// ── Database — Npgsql connection factory ──────────────────────────────────────
+// ── Database ──────────────────────────────────────────────────────────────────
 var pgConnStr = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required.");
-builder.Services.AddSingleton<IDbConnectionFactory>(
-    new NpgsqlConnectionFactory(pgConnStr));
+builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(pgConnStr));
 
 // ── Redis + HybridCache ────────────────────────────────────────────────────────
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
@@ -91,7 +91,7 @@ builder.Services.AddHybridCache(opts =>
 {
     opts.DefaultEntryOptions = new HybridCacheEntryOptions
     {
-        Expiration        = TimeSpan.FromSeconds(60),
+        Expiration           = TimeSpan.FromSeconds(60),
         LocalCacheExpiration = TimeSpan.FromSeconds(30),
     };
 });
@@ -113,8 +113,31 @@ builder.Services.AddCors(opts =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials()); // required for SignalR
+              .AllowCredentials());
 });
+
+// ── Email service (Resend) ────────────────────────────────────────────────────
+builder.Services.AddHttpClient<ResendEmailService>(http =>
+{
+    http.DefaultRequestHeaders.Add("Authorization",
+        $"Bearer {builder.Configuration["Resend:ApiKey"]}");
+});
+builder.Services.AddScoped<IEmailService, ResendEmailService>();
+
+// ── Supabase Admin client ─────────────────────────────────────────────────────
+builder.Services.AddHttpClient<SupabaseAdminClient>();
+builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
+
+// ── External API clients ──────────────────────────────────────────────────────
+builder.Services.AddHttpClient<RiotApiClient>();
+builder.Services.AddHttpClient<FaceitApiClient>();
+builder.Services.AddHttpClient<RawgApiClient>();
+
+// Generic HttpClient for use in endpoints (Riot/Faceit OAuth flows)
+builder.Services.AddHttpClient();
+
+// ── Background jobs ───────────────────────────────────────────────────────────
+builder.Services.AddHostedService<AutomatedRemindersJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -130,25 +153,31 @@ app.UseHttpsRedirection();
 app.UseCors("EsportraPolicy");
 app.UseRouting();
 app.UseAuthentication();
-app.UseRoleEnrichment();   // Enrich JWT claims with DB roles + permissions
+app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseAuthorization();
 
-// ── Health check ───────────────────────────────────────────────────────────────
+// ── Health ─────────────────────────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new
 {
     status    = "healthy",
     timestamp = DateTime.UtcNow,
-    version   = "1.0.0",
+    version   = "1.0.0-phase1",
 }));
 
-// ── Phase 0 validation endpoint ───────────────────────────────────────────────
-// Returns the calling user's enriched context — used to verify JWT + role pipeline.
+// ── JWT validation probe ───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>
 {
     var userCtx = ctx.Items["UserContext"] as UserContext;
-    return userCtx is null
-        ? Results.Unauthorized()
-        : Results.Ok(userCtx);
+    return userCtx is null ? Results.Unauthorized() : Results.Ok(userCtx);
 }).RequireAuthorization("Authenticated");
+
+// ── Phase 1: Edge Function replacements ───────────────────────────────────────
+app.MapAuthEndpoints();
+app.MapAdminEndpoints();
+app.MapIntegrationEndpoints();
+app.MapGameEndpoints();
+app.MapMetricEndpoints();
+app.MapMatchEndpoints();
+app.MapBracketEndpoints();
 
 app.Run();
