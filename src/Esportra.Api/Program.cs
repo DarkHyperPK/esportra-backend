@@ -167,6 +167,17 @@ app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseAuthorization();
 
+// Map UnauthorizedAccessException (thrown by AssertCaptain/AssertOwner) → 403
+app.Use(async (ctx, next) =>
+{
+    try { await next(); }
+    catch (UnauthorizedAccessException ex)
+    {
+        ctx.Response.StatusCode = 403;
+        await ctx.Response.WriteAsJsonAsync(new { error = ex.Message });
+    }
+});
+
 // ── Health ─────────────────────────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new
 {
@@ -194,6 +205,7 @@ app.MapBracketEndpoints();
 // ── Phase 4: Domain API endpoints ─────────────────────────────────────────────
 app.MapProfileEndpoints();
 app.MapMatchSystemEndpoints();
+app.MapTeamEndpoints();
 
 // ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
