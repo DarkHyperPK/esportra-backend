@@ -72,6 +72,24 @@ public static class VenueEndpoints
             return Results.Ok(rows);
         });
 
+        // ── GET /api/venues/{id}/live-status ──────────────────────────────────
+        // Initial state fetch for useVenueLiveStatus (real-time updates via LiveHub).
+        app.MapGet("/api/venues/{id}/live-status", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT seats_total, seats_occupied, is_open, updated_at
+                FROM venue_live_status
+                WHERE venue_id = @id
+                """,
+                new { id });
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        });
+
         // ── GET /api/venues/{id}/availability ─────────────────────────────────
         app.MapGet("/api/venues/{id}/availability", async (
             string               id,

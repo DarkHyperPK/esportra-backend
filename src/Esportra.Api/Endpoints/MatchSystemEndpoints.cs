@@ -211,6 +211,73 @@ public static class MatchSystemEndpoints
             return Results.Ok(new { success = true, matchId = id, reportId = rid });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/matches/{id}/messages ───────────────────────────────────
+        app.MapGet("/api/matches/{id}/messages", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, match_id, sender_id, sender_name, team_id,
+                       content, message_type, metadata, created_at
+                FROM match_messages
+                WHERE match_id = @id
+                ORDER BY created_at ASC
+                """,
+                new { id });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/matches/{id}/messages/system ────────────────────────────
+        // System messages: inserted server-side and broadcast via ChatHub.
+        app.MapPost("/api/matches/{id}/messages/system", async (
+            string                             id,
+            [FromBody] SystemMessageRequest    req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            IHubContext<ChatHub>              chatHub,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+
+            using var conn = db.CreateConnection();
+            var msg = await conn.QuerySingleAsync<dynamic>(
+                """
+                INSERT INTO match_messages
+                    (match_id, sender_id, sender_name, content, message_type, metadata)
+                VALUES
+                    (@matchId, @senderId, 'System', @content, 'system', @metadata::jsonb)
+                RETURNING id, match_id, sender_id, sender_name, team_id,
+                          content, message_type, metadata, created_at
+                """,
+                new
+                {
+                    matchId  = id,
+                    senderId = userCtx?.UserId ?? "00000000-0000-0000-0000-000000000000",
+                    content  = req.Content,
+                    metadata = req.Metadata is not null
+                        ? System.Text.Json.JsonSerializer.Serialize(req.Metadata)
+                        : "{}",
+                });
+
+            // Broadcast to everyone in the chat room
+            await chatHub.Clients
+                .Group(ChatHub.ChatGroup(id))
+                .SendAsync("MessageReceived", new
+                {
+                    id         = (string?)msg.id,
+                    matchId    = id,
+                    userId     = (string?)msg.sender_id,
+                    username   = "System",
+                    content    = (string?)msg.content,
+                    createdAt  = (DateTime?)msg.created_at,
+                }, ct);
+
+            return Results.Ok(msg);
+        });
+
         // ── GET /api/matches/{id}/checkins ────────────────────────────────────
         app.MapGet("/api/matches/{id}/checkins", async (
             string               id,
@@ -279,3 +346,5 @@ public sealed record DisputeReportRequest(
     List<string>?  EvidenceUrls = null);
 
 public sealed record CheckinRequest(string TeamId);
+
+public sealed record SystemMessageRequest(string Content, object? Metadata = null);

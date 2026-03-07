@@ -383,6 +383,49 @@ public static class OrganizationEndpoints
             return Results.Ok(rows);
         });
 
+        // ── GET /api/organizations/staff/permissions ──────────────────────────
+        // Replaces getOrgStaffPermissionsForTournament (2 Supabase calls → 1 query).
+        app.MapGet("/api/organizations/staff/permissions", async (
+            string?              organizationId,
+            string?              tournamentId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (string.IsNullOrEmpty(organizationId)) return Results.Ok(Array.Empty<string>());
+
+            using var conn = db.CreateConnection();
+
+            var staff = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT id, role, permissions FROM organization_staff
+                WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
+                """,
+                new { orgId = organizationId, userId = userCtx.UserId });
+
+            if (staff is null) return Results.Ok(Array.Empty<string>());
+
+            // Admins get all permissions without a tournament assignment check
+            if ((string)staff.role == "admin")
+                return Results.Ok(staff.permissions ?? Array.Empty<string>());
+
+            // Non-admins need an explicit tournament assignment
+            if (string.IsNullOrEmpty(tournamentId)) return Results.Ok(Array.Empty<string>());
+
+            var assignment = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT id FROM staff_tournament_assignments
+                WHERE organization_staff_id = @staffId AND tournament_id = @tournamentId
+                """,
+                new { staffId = (string)staff.id, tournamentId });
+
+            return assignment is not null
+                ? Results.Ok(staff.permissions ?? Array.Empty<string>())
+                : Results.Ok(Array.Empty<string>());
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/organizations/{orgId}/audit-logs ─────────────────────────
         app.MapGet("/api/organizations/{orgId}/audit-logs", async (
             string               orgId,
