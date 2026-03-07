@@ -4,6 +4,9 @@ using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Audit;
+using Esportra.Core.Bracket;
+using Esportra.Core.Match;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Email;
 using Esportra.Infrastructure.Integrations;
@@ -136,6 +139,13 @@ builder.Services.AddHttpClient<RawgApiClient>();
 // Generic HttpClient for use in endpoints (Riot/Faceit OAuth flows)
 builder.Services.AddHttpClient();
 
+// ── Phase 2: Core services ────────────────────────────────────────────────────
+builder.Services.AddScoped<BracketPersistenceService>();
+builder.Services.AddScoped<StandingsService>();
+builder.Services.AddScoped<SwissNextRoundService>();
+builder.Services.AddScoped<VetoDbService>();
+builder.Services.AddScoped<AuditService>();
+
 // ── Background jobs ───────────────────────────────────────────────────────────
 builder.Services.AddHostedService<AutomatedRemindersJob>();
 
@@ -161,7 +171,7 @@ app.MapGet("/health", () => Results.Ok(new
 {
     status    = "healthy",
     timestamp = DateTime.UtcNow,
-    version   = "1.0.0-phase1",
+    version   = "1.0.0-phase2",
 }));
 
 // ── JWT validation probe ───────────────────────────────────────────────────────

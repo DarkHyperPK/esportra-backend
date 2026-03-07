@@ -1,4 +1,5 @@
 using System.Data;
+using Esportra.Contracts.Database;
 using Npgsql;
 
 namespace Esportra.Infrastructure.Database;

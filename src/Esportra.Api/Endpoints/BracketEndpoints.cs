@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Requests;
+using Esportra.Core.Bracket;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
 
@@ -8,11 +9,113 @@ namespace Esportra.Api.Endpoints;
 
 /// <summary>
 /// Replaces: worker-bracket-advancement and compute-bracket-ui-cache Edge Functions.
+/// Phase 2 adds: bracket generation, BYE advance, reset, clear, standings, Swiss next-round.
 /// </summary>
 public static class BracketEndpoints
 {
     public static void MapBracketEndpoints(this WebApplication app)
     {
+        // ── POST /api/brackets/generate ───────────────────────────────────────
+        // Generates a bracket graph in-memory and persists it to DB.
+        app.MapPost("/api/brackets/generate", async (
+            [FromBody] GenerateBracketRequest req,
+            BracketPersistenceService         persistence,
+            CancellationToken                 ct) =>
+        {
+            IBracketGenerator generator = req.Format.ToLowerInvariant() switch
+            {
+                "double_elimination" => new DoubleEliminationGenerator(),
+                "round_robin"        => new RoundRobinGenerator(),
+                "swiss"              => new SwissGenerator(),
+                _                    => new SingleEliminationGenerator(),
+            };
+
+            var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
+            var config = new BracketConfig(
+                DailyStartTime:      req.DailyStartTime,
+                TournamentStartDate: req.TournamentStartDate,
+                SwissGroups:         req.SwissGroups,
+                SwissRounds:         req.SwissRounds);
+
+            var graph  = generator.Generate(teams, req.TournamentId, req.StageId,
+                req.BestOf, req.BracketSize, req.AdvancementCount, config);
+
+            var errors = GraphValidator.Validate(graph);
+            if (errors.Count > 0)
+                return Results.BadRequest(new { errors });
+
+            var version = await persistence.SaveGraphAsync(graph, ct);
+
+            return Results.Ok(new
+            {
+                versionId  = version.Id,
+                nodeCount  = graph.Nodes.Count,
+                edgeCount  = graph.Edges.Count,
+            });
+        }).RequireAuthorization("Organizer");
+
+        // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
+        app.MapPost("/api/brackets/{versionId}/advance-byes", async (
+            string                    versionId,
+            BracketPersistenceService persistence,
+            CancellationToken         ct) =>
+        {
+            int count = await persistence.AutoAdvanceByesAsync(versionId, ct);
+            return Results.Ok(new { advanced = count });
+        }).RequireAuthorization("Organizer");
+
+        // ── POST /api/brackets/{versionId}/reset ──────────────────────────────
+        app.MapPost("/api/brackets/{versionId}/reset", async (
+            string                    versionId,
+            BracketPersistenceService persistence,
+            CancellationToken         ct) =>
+        {
+            await persistence.ResetAsync(versionId, ct);
+            return Results.Ok(new { message = "Bracket reset." });
+        }).RequireAuthorization("Organizer");
+
+        // ── DELETE /api/brackets/{versionId} ─────────────────────────────────
+        app.MapDelete("/api/brackets/{versionId}", async (
+            string                    versionId,
+            BracketPersistenceService persistence,
+            CancellationToken         ct) =>
+        {
+            await persistence.ClearAsync(versionId, ct);
+            return Results.Ok(new { message = "Bracket deleted." });
+        }).RequireAuthorization("Organizer");
+
+        // ── GET /api/brackets/{versionId}/standings ───────────────────────────
+        app.MapGet("/api/brackets/{versionId}/standings", async (
+            string           versionId,
+            string?          groupId,
+            StandingsService standingsSvc,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var stageId = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT stage_id FROM public.brkt_versions WHERE id = @versionId",
+                new { versionId });
+
+            if (stageId is null) return Results.NotFound(new { error = "Version not found." });
+
+            var standings = await standingsSvc.CalculateStandingsAsync(stageId, groupId, ct);
+            return Results.Ok(standings);
+        });
+
+        // ── POST /api/swiss/next-round ────────────────────────────────────────
+        app.MapPost("/api/swiss/next-round", async (
+            [FromBody]      SwissNextRoundRequest req,
+            SwissNextRoundService                 swissSvc,
+            CancellationToken                     ct) =>
+        {
+            var (ok, msg) = await swissSvc.GenerateNextRoundAsync(req.StageId, req.VersionId, req.CurrentRound, ct);
+            return ok
+                ? Results.Ok(new { message = $"Round {req.CurrentRound + 1} generated." })
+                : Results.BadRequest(new { error = msg });
+        }).RequireAuthorization("Organizer");
+
+
         // ── POST /api/brackets/advance ────────────────────────────────────────
         // Replaces: worker-bracket-advancement Edge Function
         // Called by a DB webhook trigger after match completion.

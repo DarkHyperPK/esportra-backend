@@ -1,0 +1,192 @@
+using Dapper;
+using Esportra.Contracts.Database;
+
+namespace Esportra.Core.Bracket;
+
+/// <summary>
+/// Persists a BracketGraph to Supabase and handles bracket lifecycle operations
+/// (advance BYEs, reset, clear).
+/// </summary>
+public sealed class BracketPersistenceService(IDbConnectionFactory db)
+{
+    // ── Persist a generated graph ─────────────────────────────────────────────
+
+    public async Task<BracketVersion> SaveGraphAsync(BracketGraph graph, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+
+        // 1. Determine version number
+        var versionNumber = await conn.ExecuteScalarAsync<int>(
+            "SELECT COALESCE(MAX(version_number), 0) + 1 FROM public.brkt_versions WHERE tournament_id = @tid",
+            new { tid = graph.Version.TournamentId }) + 1;
+
+        // 2. Insert version
+        await conn.ExecuteAsync(@"
+            INSERT INTO public.brkt_versions
+                (id, tournament_id, stage_id, version_number, status, created_at)
+            VALUES (@id, @tournament_id, @stage_id, @version_number, @status, now())",
+            new
+            {
+                id             = graph.Version.Id,
+                tournament_id  = graph.Version.TournamentId,
+                stage_id       = graph.Version.StageId,
+                version_number = graph.Version.VersionNumber,
+                status         = graph.Version.Status,
+            });
+
+        // 3. Insert nodes (brkt_matches)
+        foreach (var node in graph.Nodes)
+        {
+            await conn.ExecuteAsync(@"
+                INSERT INTO public.brkt_matches
+                    (id, version_id, round_index, match_number, bracket_type, status,
+                     best_of, team1_id, team2_id, group_id, round_number, scheduled_time, x, y)
+                VALUES
+                    (@id, @version_id, @round_index, @match_number, @bracket_type, @status,
+                     @best_of, @team1_id, @team2_id, @group_id, @round_number, @scheduled_time, @x, @y)",
+                new
+                {
+                    id             = node.Id,
+                    version_id     = node.VersionId,
+                    round_index    = node.RoundIndex,
+                    match_number   = node.MatchNumber,
+                    bracket_type   = node.BracketType,
+                    status         = node.Status,
+                    best_of        = node.BestOf,
+                    team1_id       = node.Team1Id,
+                    team2_id       = node.Team2Id,
+                    group_id       = node.GroupId,
+                    round_number   = node.RoundNumber,
+                    scheduled_time = node.ScheduledTime,
+                    x              = node.X,
+                    y              = node.Y,
+                });
+        }
+
+        // 4. Insert edges (brkt_advancements)
+        foreach (var edge in graph.Edges)
+        {
+            await conn.ExecuteAsync(@"
+                INSERT INTO public.brkt_advancements
+                    (id, version_id, source_match_id, target_match_id, type, target_slot)
+                VALUES (@id, @version_id, @source_match_id, @target_match_id, @type, @target_slot)",
+                new
+                {
+                    id             = edge.Id,
+                    version_id     = edge.VersionId,
+                    source_match_id = edge.SourceMatchId,
+                    target_match_id = edge.TargetMatchId,
+                    type           = edge.Type,
+                    target_slot    = edge.TargetSlot,
+                });
+        }
+
+        return graph.Version;
+    }
+
+    // ── Auto-advance BYE matches ──────────────────────────────────────────────
+
+    public async Task<int> AutoAdvanceByesAsync(string versionId, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+
+        var matches = (await conn.QueryAsync(
+            "SELECT id, team1_id, team2_id, best_of FROM public.brkt_matches WHERE version_id = @versionId AND status = 'pending'",
+            new { versionId })).AsList();
+
+        int count = 0;
+        foreach (var match in matches)
+        {
+            bool hasT1 = match.team1_id is not null;
+            bool hasT2 = match.team2_id is not null;
+
+            if (!(hasT1 ^ hasT2)) continue; // both or neither → skip
+
+            string winnerId = hasT1 ? (string)match.team1_id : (string)match.team2_id;
+            int    bestOf   = (int)(match.best_of ?? 1);
+            int    winScore = bestOf == 1 ? 13 : (int)Math.Ceiling(bestOf / 2.0);
+            int    t1Score  = hasT1 ? winScore : 0;
+            int    t2Score  = hasT2 ? winScore : 0;
+
+            await conn.ExecuteAsync(@"
+                UPDATE public.brkt_matches
+                   SET status = 'completed', winner_id = @winnerId, loser_id = null,
+                       team1_score = @t1, team2_score = @t2
+                 WHERE id = @id",
+                new { winnerId, t1 = t1Score, t2 = t2Score, id = (string)match.id });
+
+            // Advance winner along edges
+            await AdvanceTeamAsync(conn, (string)match.id, versionId, "winner", winnerId);
+            count++;
+        }
+
+        return count;
+    }
+
+    // ── Reset (keep structure, clear results) ────────────────────────────────
+
+    public async Task ResetAsync(string versionId, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+
+        var matches = (await conn.QueryAsync(
+            "SELECT id, round_index FROM public.brkt_matches WHERE version_id = @versionId",
+            new { versionId })).AsList();
+
+        foreach (var match in matches)
+        {
+            if ((int)match.round_index == 0)
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE public.brkt_matches SET status='pending', winner_id=null, loser_id=null WHERE id=@id",
+                    new { id = (string)match.id });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE public.brkt_matches SET status='pending', team1_id=null, team2_id=null, winner_id=null, loser_id=null WHERE id=@id",
+                    new { id = (string)match.id });
+            }
+        }
+
+        var matchIds = matches.Select(m => (string)m.id).ToArray();
+        await conn.ExecuteAsync(
+            "DELETE FROM public.brkt_match_events WHERE match_id = ANY(@ids)",
+            new { ids = matchIds });
+    }
+
+    // ── Clear (delete entire version) ────────────────────────────────────────
+
+    public async Task ClearAsync(string versionId, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+
+        await conn.ExecuteAsync(@"
+            DELETE FROM public.brkt_match_events
+             WHERE match_id IN (SELECT id FROM public.brkt_matches WHERE version_id = @v)",
+            new { v = versionId });
+
+        await conn.ExecuteAsync("DELETE FROM public.brkt_layout WHERE version_id = @v", new { v = versionId });
+        await conn.ExecuteAsync("DELETE FROM public.brkt_advancements WHERE version_id = @v", new { v = versionId });
+        await conn.ExecuteAsync("DELETE FROM public.brkt_matches WHERE version_id = @v", new { v = versionId });
+        await conn.ExecuteAsync("DELETE FROM public.brkt_versions WHERE id = @v", new { v = versionId });
+    }
+
+    // ── Internal: advance a team along edges ─────────────────────────────────
+
+    private static async Task AdvanceTeamAsync(System.Data.IDbConnection conn,
+        string sourceMatchId, string versionId, string edgeType, string teamId)
+    {
+        var edges = (await conn.QueryAsync(
+            "SELECT target_match_id, target_slot FROM public.brkt_advancements WHERE version_id=@v AND source_match_id=@s AND type=@t",
+            new { v = versionId, s = sourceMatchId, t = edgeType })).AsList();
+
+        foreach (var edge in edges)
+        {
+            string col = (int)edge.target_slot == 1 ? "team1_id" : "team2_id";
+            await conn.ExecuteAsync(
+                $"UPDATE public.brkt_matches SET {col} = @teamId WHERE id = @targetId",
+                new { teamId, targetId = (string)edge.target_match_id });
+        }
+    }
+}

@@ -44,7 +44,7 @@ public sealed class RoleEnrichmentMiddleware(
         HttpContext context, string userId, CancellationToken ct)
     {
         // Resolve DB service from the request scope
-        var db = context.RequestServices.GetRequiredService<Esportra.Infrastructure.Database.IDbConnectionFactory>();
+        var db = context.RequestServices.GetRequiredService<IDbConnectionFactory>();
 
         using var conn = db.CreateConnection();
 
