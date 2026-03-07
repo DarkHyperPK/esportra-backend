@@ -172,7 +172,7 @@ app.MapGet("/health", () => Results.Ok(new
 {
     status    = "healthy",
     timestamp = DateTime.UtcNow,
-    version   = "1.0.0-phase3",
+    version   = "1.0.0-phase4",
 }));
 
 // ── JWT validation probe ───────────────────────────────────────────────────────
@@ -190,6 +190,10 @@ app.MapGameEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
+
+// ── Phase 4: Domain API endpoints ─────────────────────────────────────────────
+app.MapProfileEndpoints();
+app.MapMatchSystemEndpoints();
 
 // ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
