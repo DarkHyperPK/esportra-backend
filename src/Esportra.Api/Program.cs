@@ -206,6 +206,7 @@ app.MapBracketEndpoints();
 app.MapProfileEndpoints();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
+app.MapTournamentEndpoints();
 
 // ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
