@@ -140,6 +140,12 @@ builder.Services.AddHttpClient<RawgApiClient>();
 // Generic HttpClient for use in endpoints (Riot/Faceit OAuth flows)
 builder.Services.AddHttpClient();
 
+// Named GeoIP client for MetricEndpoints
+builder.Services.AddHttpClient("GeoIP", http =>
+{
+    http.Timeout = TimeSpan.FromSeconds(3);
+});
+
 // ── Phase 2: Core services ────────────────────────────────────────────────────
 builder.Services.AddScoped<BracketPersistenceService>();
 builder.Services.AddScoped<StandingsService>();
@@ -165,6 +171,7 @@ app.UseCors("EsportraPolicy");
 app.UseRouting();
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
+app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
 
 // Map UnauthorizedAccessException (thrown by AssertCaptain/AssertOwner) → 403
@@ -204,17 +211,28 @@ app.MapBracketEndpoints();
 
 // ── Phase 4: Domain API endpoints ─────────────────────────────────────────────
 app.MapProfileEndpoints();
+app.MapProfileResolveEndpoint();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapVenueEndpoints();
 app.MapOrganizationEndpoints();
+app.MapNotificationEndpoints();
+app.MapStageEndpoints();
+app.MapReviewEndpoints();
+app.MapOrganizerEndpoints();
+app.MapPartnerEndpoints();
+app.MapLeaderboardEndpoints();
+app.MapMessagingEndpoints();
+app.MapVetoEndpoints();
+app.MapAnalyticsEndpoints();
 
 // ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
 app.MapHub<MatchHub>("/hubs/match");
 app.MapHub<VetoHub>("/hubs/veto");
 app.MapHub<ChatHub>("/hubs/chat");
+app.MapHub<ConversationHub>("/hubs/conversations");
 app.MapHub<NotificationHub>("/hubs/notifications");
 app.MapHub<LiveHub>("/hubs/live");
 

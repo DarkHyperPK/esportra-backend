@@ -20,6 +20,8 @@ public static class MetricEndpoints
         app.MapPost("/api/metrics", async (
             [FromBody] RecordMetricRequest req,
             IDbConnectionFactory            db,
+            IHttpClientFactory             httpFactory,
+            IConfiguration                 config,
             HttpContext                     ctx,
             CancellationToken              ct) =>
         {
@@ -34,18 +36,18 @@ public static class MetricEndpoints
 
             // Daily privacy-preserving visitor ID: SHA256(IP:YYYY-MM-DD:salt)
             var today     = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            var salt      = "esportra-visitor-v1"; // rotate annually
+            var salt      = config["Metrics:VisitorSalt"] ?? "esportra-visitor-v1";
             var rawId     = $"{ip}:{today}:{salt}";
             var visitorId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawId)));
 
-            // GeoIP via ip-api.com (free, no key needed)
+            // GeoIP lookup via configured provider (HTTPS)
             string? country = null;
             try
             {
-                using var geoHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-                var geoRes = await geoHttp.GetStringAsync($"http://ip-api.com/json/{ip}?fields=countryCode", ct);
+                var geoHttp = httpFactory.CreateClient("GeoIP");
+                var geoRes = await geoHttp.GetStringAsync($"https://ipapi.co/{ip}/json/", ct);
                 using var geoDoc = JsonDocument.Parse(geoRes);
-                country = geoDoc.RootElement.TryGetProperty("countryCode", out var cc)
+                country = geoDoc.RootElement.TryGetProperty("country_code", out var cc)
                     ? cc.GetString() : null;
             }
             catch { /* GeoIP failure is non-fatal */ }
@@ -55,9 +57,10 @@ public static class MetricEndpoints
             var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? ctx.User.FindFirstValue("sub");
 
+            using var conn = db.CreateConnection();
+
             if (!string.IsNullOrWhiteSpace(userId))
             {
-                using var conn = db.CreateConnection();
                 var dob = await conn.QuerySingleOrDefaultAsync<DateTime?>(
                     "SELECT date_of_birth FROM public.profiles WHERE id = @userId",
                     new { userId });
@@ -80,8 +83,7 @@ public static class MetricEndpoints
 
             var metadata = JsonSerializer.Serialize(new { country, age_group = ageGroup });
 
-            using var insertConn = db.CreateConnection();
-            await insertConn.ExecuteAsync("""
+            await conn.ExecuteAsync("""
                 INSERT INTO public.sponsor_impressions
                     (sponsor_id, event_type, page_url, visitor_id, metadata)
                 VALUES (@sponsorId, @eventType, @pageUrl, @visitorId, @metadata::jsonb)

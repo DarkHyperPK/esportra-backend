@@ -35,6 +35,19 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller is org owner or active staff member
+            var hasAccess = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId
+                    UNION ALL
+                    SELECT 1 FROM organization_staff WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
+                )
+                """,
+                new { orgId, userId = userCtx.UserId });
+            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var staff = await conn.QueryAsync<dynamic>(
                 """
                 SELECT
@@ -146,7 +159,7 @@ public static class OrganizationEndpoints
                 {
                     userId  = profileId,
                     message = $"{req.InviterName ?? "An organizer"} invited you to staff {req.OrgName ?? "an organization"} as {FriendlyRole(req.Role)}.",
-                    data    = $"{{\"link\":\"/staff/dashboard\",\"organization_staff_id\":\"{staffId}\",\"organization_id\":\"{orgId}\",\"role\":\"{req.Role}\"}}",
+                    data    = System.Text.Json.JsonSerializer.Serialize(new { link = "/staff/dashboard", organization_staff_id = staffId, organization_id = orgId, role = req.Role }),
                 });
 
             // Broadcast to user's SignalR session (if connected)
@@ -440,6 +453,19 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller is org owner, active staff, or platform admin
+            var hasAccess = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId
+                    UNION ALL
+                    SELECT 1 FROM organization_staff WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
+                )
+                """,
+                new { orgId, userId = userCtx.UserId });
+            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT sal.*,
@@ -460,7 +486,20 @@ public static class OrganizationEndpoints
             return Results.Ok(new { logs = rows, total });
         }).RequireAuthorization("Authenticated");
 
-        // ── GET /api/organizations/{orgId}/tournaments ────────────────────────
+        // ── GET /api/organizations/by-slug/{slug} — public org lookup ────────
+        app.MapGet("/api/organizations/by-slug/{slug}", async (
+            string               slug,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM organizations WHERE slug = @slug",
+                new { slug });
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        });
+
+        // ── GET /api/organizations/{orgId}/tournaments — full details ───────
         app.MapGet("/api/organizations/{orgId}/tournaments", async (
             string               orgId,
             IDbConnectionFactory db,
@@ -468,9 +507,192 @@ public static class OrganizationEndpoints
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                "SELECT id, name, status FROM tournaments WHERE organization_id = @orgId ORDER BY created_at DESC",
+                """
+                SELECT * FROM v_tournament_details
+                WHERE organization_id = @orgId AND deleted_at IS NULL
+                ORDER BY start_date DESC
+                """,
                 new { orgId });
             return Results.Ok(rows);
+        });
+
+        // ── GET /api/organizations/{orgId}/albums — with cover URL ──────────
+        app.MapGet("/api/organizations/{orgId}/albums", async (
+            string               orgId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT a.*,
+                       COALESCE(
+                           jsonb_agg(jsonb_build_object('url', m.url))
+                           FILTER (WHERE m.id IS NOT NULL),
+                           '[]'::jsonb
+                       ) AS media
+                FROM organization_albums a
+                LEFT JOIN organization_media m ON m.album_id = a.id
+                WHERE a.organization_id = @orgId
+                GROUP BY a.id
+                ORDER BY a.created_at DESC
+                """,
+                new { orgId });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/organizations/{orgId}/media — all media (public) ───────
+        app.MapGet("/api/organizations/{orgId}/media", async (
+            string               orgId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM organization_media WHERE organization_id = @orgId ORDER BY created_at DESC",
+                new { orgId });
+            return Results.Ok(rows);
+        });
+
+        // ── POST /api/organizations/{orgId}/media — insert media record ──────
+        app.MapPost("/api/organizations/{orgId}/media", async (
+            string                            orgId,
+            [FromBody] InsertOrgMediaRequest  req,
+            HttpContext                       ctx,
+            IDbConnectionFactory            db,
+            CancellationToken               ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO organization_media (organization_id, url, type, caption, album_id)
+                VALUES (@orgId, @url, @type, @caption, @albumId)
+                """,
+                new { orgId, url = req.Url, type = req.Type, caption = req.Caption, albumId = req.AlbumId });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── DELETE /api/organizations/{orgId}/media/{mediaId} ────────────────
+        app.MapDelete("/api/organizations/{orgId}/media/{mediaId}", async (
+            string               orgId,
+            string               mediaId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "DELETE FROM organization_media WHERE id = @mediaId AND organization_id = @orgId",
+                new { mediaId, orgId });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── DELETE /api/organizations/{orgId}/albums/{albumId} ───────────────
+        app.MapDelete("/api/organizations/{orgId}/albums/{albumId}", async (
+            string               orgId,
+            string               albumId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            // CASCADE delete handles media
+            await conn.ExecuteAsync(
+                "DELETE FROM organization_albums WHERE id = @albumId",
+                new { albumId });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── PUT /api/organizations/{orgId}/logo ──────────────────────────────
+        app.MapPut("/api/organizations/{orgId}/logo", async (
+            string                          orgId,
+            [FromBody] UpdateOrgImageRequest req,
+            HttpContext                     ctx,
+            IDbConnectionFactory           db,
+            CancellationToken              ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE organizations SET logo_url = @url WHERE id = @orgId",
+                new { orgId, url = req.Url });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── PUT /api/organizations/{orgId}/banner ────────────────────────────
+        app.MapPut("/api/organizations/{orgId}/banner", async (
+            string                          orgId,
+            [FromBody] UpdateOrgImageRequest req,
+            HttpContext                     ctx,
+            IDbConnectionFactory           db,
+            CancellationToken              ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE organizations SET banner_url = @url WHERE id = @orgId",
+                new { orgId, url = req.Url });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── DELETE /api/organizations/{orgId} — safe delete via RPC ──────────
+        app.MapDelete("/api/organizations/{orgId}", async (
+            string               orgId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var result = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM delete_organization_safely(@p_org_id)",
+                new { p_org_id = orgId });
+            return Results.Ok(result);
+        }).RequireAuthorization("Organizer");
+
+        // ── GET /api/tournaments/by-slug/{slug} — fetch with org join ────────
+        // Replaces ManageBracketPage's supabase query
+        app.MapGet("/api/tournaments/by-slug/{slug}", async (
+            string               slug,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var isUuid = Guid.TryParse(slug, out _);
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                isUuid
+                    ? """
+                      SELECT t.*, jsonb_build_object('owner_id', o.owner_id) AS organization
+                      FROM tournaments t
+                      LEFT JOIN organizations o ON o.id = t.organization_id
+                      WHERE t.slug = @slug OR t.id = @slug
+                      LIMIT 1
+                      """
+                    : """
+                      SELECT t.*, jsonb_build_object('owner_id', o.owner_id) AS organization
+                      FROM tournaments t
+                      LEFT JOIN organizations o ON o.id = t.organization_id
+                      WHERE t.slug = @slug
+                      LIMIT 1
+                      """,
+                new { slug });
+            return row is null ? Results.NotFound() : Results.Ok(row);
         });
     }
 
@@ -517,3 +739,6 @@ public sealed record UpdateStaffRequest(string Role, List<string> Permissions);
 public sealed record RespondInviteRequest(bool Accept);
 
 public sealed record AssignTournamentsRequest(List<string> TournamentIds);
+
+public sealed record InsertOrgMediaRequest(string Url, string Type, string? Caption = null, string? AlbumId = null);
+public sealed record UpdateOrgImageRequest(string Url);

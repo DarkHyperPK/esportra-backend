@@ -100,6 +100,123 @@ public static class ProfileEndpoints
             return Results.Ok(row);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/profiles/by-username/{username} ─────────────────────────
+        app.MapGet("/api/profiles/by-username/{username}", async (
+            string               username,
+            IDbConnectionFactory db) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, username, full_name, avatar_url FROM profiles WHERE username = @username",
+                new { username });
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/search ─────────────────────────────────────────
+        app.MapGet("/api/profiles/search", async (
+            [FromQuery] string   q,
+            IDbConnectionFactory db) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, username, email, avatar_url
+                FROM profiles
+                WHERE username ILIKE '%' || @q || '%' OR email ILIKE '%' || @q || '%'
+                ORDER BY username
+                LIMIT 50
+                """,
+                new { q });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/{id}/licenses ────────────────────────────────────
+        app.MapGet("/api/profiles/{id}/licenses", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, license_id, license_type, status, issued_at, expires_at,
+                       notes, created_at
+                FROM licenses
+                WHERE user_id = @id
+                ORDER BY issued_at DESC
+                """,
+                new { id });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/achievements ───────────────────────────────────────────
+        app.MapGet("/api/achievements", async (
+            IDbConnectionFactory db,
+            HybridCache          cache,
+            CancellationToken    ct) =>
+        {
+            return await cache.GetOrCreateAsync(
+                "achievements:all",
+                async (_) =>
+                {
+                    using var conn = db.CreateConnection();
+                    var rows = await conn.QueryAsync<dynamic>(
+                        "SELECT * FROM achievements WHERE is_active = TRUE ORDER BY points ASC");
+                    return Results.Ok(rows);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
+                cancellationToken: ct);
+        });
+
+        // ── POST /api/profiles/me/achievements/{achievementId} ──────────────
+        app.MapPost("/api/profiles/me/achievements/{achievementId}", async (
+            string               achievementId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            HybridCache          cache,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                INSERT INTO user_achievements (user_id, achievement_id)
+                VALUES (@userId, @achievementId)
+                ON CONFLICT (user_id, achievement_id) DO NOTHING
+                RETURNING *, (SELECT row_to_json(a) FROM achievements a WHERE a.id = achievement_id) AS achievement
+                """,
+                new { userId = userCtx.UserId, achievementId });
+
+            if (row is not null)
+                await cache.RemoveAsync($"profile-stats:{userCtx.UserId}", ct);
+
+            return row is not null
+                ? Results.Ok(row)
+                : Results.Ok(new { alreadyAwarded = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/skill-level ────────────────────────────────
+        app.MapPut("/api/profiles/me/skill-level", async (
+            [FromBody] UpdateSkillLevelRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            HybridCache                        cache,
+            CancellationToken                  ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE user_statistics SET skill_level = @skillLevel WHERE user_id = @userId",
+                new { userId = userCtx.UserId, skillLevel = req.SkillLevel });
+
+            await cache.RemoveAsync($"profile-stats:{userCtx.UserId}", ct);
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/profiles/{id}/stats ──────────────────────────────────────
         app.MapGet("/api/profiles/{id}/stats", async (
             string               id,
@@ -155,4 +272,75 @@ public static class ProfileEndpoints
 
         return profile is null ? Results.NotFound() : Results.Ok(profile);
     }
+
+    // ── POST /api/profiles/resolve-players — batch resolve by tags/ids ───────
+    // Replaces TournamentManage's 4 parallel supabase calls
+    public static void MapProfileResolveEndpoint(this WebApplication app)
+    {
+        app.MapPost("/api/profiles/resolve-players", async (
+            [FromBody] ResolvePlayersRequest req,
+            IDbConnectionFactory             db,
+            CancellationToken                ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            if (req.AreUuids)
+            {
+                // Tokens are UUIDs — resolve by id
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, riot_tag, steam_tag, username, full_name
+                    FROM profiles
+                    WHERE id = ANY(@ids::uuid[])
+                    """,
+                    new { ids = req.Tokens.ToArray() });
+                return Results.Ok(rows);
+            }
+            else
+            {
+                // Tokens are readable tags — search by riot_tag, steam_tag, username, full_name
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, riot_tag, steam_tag, username, full_name,
+                           CASE
+                             WHEN riot_tag  = ANY(@tokens) THEN 'riot_tag'
+                             WHEN steam_tag = ANY(@tokens) THEN 'steam_tag'
+                             WHEN username  = ANY(@tokens) THEN 'username'
+                             WHEN full_name = ANY(@tokens) THEN 'full_name'
+                           END AS matched_field
+                    FROM profiles
+                    WHERE riot_tag  = ANY(@tokens)
+                       OR steam_tag = ANY(@tokens)
+                       OR username  = ANY(@tokens)
+                       OR full_name = ANY(@tokens)
+                    """,
+                    new { tokens = req.Tokens.ToArray() });
+                return Results.Ok(rows);
+            }
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/rosters/{rosterId}/members — get roster members ─────────
+        // Replaces supabase.rpc('get_roster_members')
+        app.MapGet("/api/rosters/{rosterId}/members", async (
+            string               rosterId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT trm.user_id, trm.is_starter,
+                       p.username, p.full_name, p.avatar_url, p.riot_tag, p.steam_tag
+                FROM team_roster_members trm
+                LEFT JOIN profiles p ON p.id = trm.user_id
+                WHERE trm.roster_id = @rosterId
+                ORDER BY trm.is_starter DESC, p.username ASC
+                """,
+                new { rosterId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+    }
 }
+
+public sealed record UpdateSkillLevelRequest(string SkillLevel);
+public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);

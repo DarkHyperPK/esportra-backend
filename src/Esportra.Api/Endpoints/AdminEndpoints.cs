@@ -138,6 +138,249 @@ public static class AdminEndpoints
 
         }).RequireAuthorization(Permissions.SponsorsCreate);
 
+        // ── GET /api/admin/users ─────────────────────────────────────────────
+        // Paginated user list with search for admin dashboard
+        app.MapGet("/api/admin/users", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int      limit  = 20,
+            [FromQuery] int      offset = 0,
+            [FromQuery] string?  search = null,
+            [FromQuery] string?  status = null,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            if (!string.IsNullOrWhiteSpace(search))
+                conditions.Add("(p.username ILIKE @search OR p.email ILIKE @search OR p.full_name ILIKE @search)");
+            if (status == "suspended")
+                conditions.Add("p.is_suspended = TRUE");
+            else if (status == "active")
+                conditions.Add("(p.is_suspended IS NULL OR p.is_suspended = FALSE)");
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
+            var sql = $"""
+                SELECT
+                    p.id,
+                    p.username,
+                    p.email,
+                    p.full_name,
+                    p.avatar_url,
+                    p.is_suspended,
+                    p.created_at,
+                    COALESCE(
+                        (SELECT jsonb_agg(ur.role) FROM user_roles ur WHERE ur.user_id = p.id AND ur.is_active = TRUE),
+                        '[]'::jsonb
+                    ) AS roles
+                FROM profiles p
+                {where}
+                ORDER BY p.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var users = await conn.QueryAsync<dynamic>(sql,
+                new { search = $"%{search}%", limit, offset });
+
+            var total = await conn.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*) FROM profiles p {where}",
+                new { search = $"%{search}%" });
+
+            return Results.Ok(new { users, total });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/sponsors/track ────────────────────────────────────────
+        // Replaces: record-metric Edge Function (ad impression/click tracking)
+        // Accepts sponsor_id, event_type (impression|click), page_url
+        app.MapPost("/api/sponsors/track", async (
+            [FromBody] SponsorTrackRequest req,
+            HttpContext           ctx,
+            IDbConnectionFactory  db,
+            CancellationToken     ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var userId = (ctx.Items["UserContext"] as UserContext)?.UserId;
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO analytics_events (user_id, event_type, event_data)
+                VALUES (@userId, @eventType, @eventData::jsonb)
+                """,
+                new
+                {
+                    userId,
+                    eventType = $"sponsor_{req.EventType}",
+                    eventData = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        sponsor_id = req.SponsorId,
+                        page_url   = req.PageUrl,
+                    })
+                });
+
+            return Results.Ok(new { success = true });
+        });
+
+        // ── GET /api/admin/stats ──────────────────────────────────────────────
+        // Dashboard summary stats
+        app.MapGet("/api/admin/stats", async (
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM profiles) AS total_users,
+                    (SELECT COUNT(*) FROM venues) AS active_venues,
+                    (SELECT COUNT(*) FROM tournaments WHERE status IN ('upcoming', 'ongoing')) AS active_tournaments
+                """);
+            return Results.Ok(new {
+                totalUsers = (long)row.total_users,
+                activeVenues = (long)row.active_venues,
+                activeTournaments = (long)row.active_tournaments,
+                totalRevenue = 0
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/analytics ────────────────────────────────────────────
+        // Replaces 8 parallel supabase count queries
+        app.MapGet("/api/admin/analytics", async (
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var stats = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM profiles) AS total_users,
+                    (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
+                    (SELECT COUNT(*) FROM venues) AS total_venues,
+                    (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool,
+                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS new_users_this_week,
+                    (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS new_tournaments_this_week,
+                    (SELECT COUNT(*) FROM venue_bookings) AS total_bookings,
+                    (SELECT COUNT(*) FROM tournaments WHERE status = 'completed') AS completed_tournaments
+                """);
+            return Results.Ok(stats);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/system-stats ─────────────────────────────────────────
+        // Replaces supabase.rpc('get_system_stats') + fallback count queries
+        app.MapGet("/api/admin/system-stats", async (
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var stats = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM profiles) AS total_users,
+                    (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
+                    (SELECT COUNT(*) FROM venues) AS total_venues,
+                    (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool
+                """);
+            return Results.Ok(stats);
+        }).RequireAuthorization("Admin");
+
+        // ── CRUD: Sponsors ──────────────────────────────────────────────────────
+        app.MapPost("/api/sponsors", async (
+            [FromBody] object    payload,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            using var conn = db.CreateConnection();
+            var json = System.Text.Json.JsonSerializer.Serialize(payload);
+            var row = await conn.QuerySingleAsync<dynamic>(
+                """
+                INSERT INTO sponsors SELECT * FROM jsonb_populate_record(NULL::sponsors, @json::jsonb)
+                RETURNING *
+                """,
+                new { json });
+            return Results.Ok(row);
+        }).RequireAuthorization("Admin");
+
+        app.MapPut("/api/sponsors/{id}", async (
+            string               id,
+            [FromBody] object    payload,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            using var conn = db.CreateConnection();
+            // Dynamic update: serialize payload to JSON, use jsonb_each to set fields
+            var json = System.Text.Json.JsonSerializer.Serialize(payload);
+            await conn.ExecuteAsync(
+                """
+                UPDATE sponsors
+                SET name        = COALESCE(((@j)::jsonb->>'name')::text,        name),
+                    is_active   = COALESCE(((@j)::jsonb->>'is_active')::boolean, is_active),
+                    updated_at  = NOW()
+                WHERE id = @id
+                """,
+                new { id, j = json });
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM sponsors WHERE id = @id", new { id });
+            return Results.Ok(row);
+        }).RequireAuthorization("Admin");
+
+        app.MapDelete("/api/sponsors/{id}", async (
+            string               id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/users/{userId}/suspend ──────────────────────────────
+        app.MapPost("/api/admin/users/{userId}/suspend", async (
+            string               userId,
+            [FromBody] SuspendUserRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "SELECT admin_suspend_user(@p_user_id, @p_reason, @p_admin_id)",
+                new { p_user_id = userId, p_reason = req.Reason, p_admin_id = userCtx.UserId });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/users/{userId}/unsuspend ────────────────────────────
+        app.MapPost("/api/admin/users/{userId}/unsuspend", async (
+            string               userId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "SELECT admin_unsuspend_user(@p_user_id, @p_admin_id)",
+                new { p_user_id = userId, p_admin_id = userCtx.UserId });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
         // ── POST /api/emails ──────────────────────────────────────────────────
         // Replaces: send-email Edge Function (internal use only)
         // Requires authenticated admin or service call.
@@ -149,6 +392,11 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            // Only admins can send arbitrary emails
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit) &&
+                !userCtx.AdminRoles.Any())
+                return Results.Forbid();
 
             if (!Enum.TryParse<EmailType>(req.Type, ignoreCase: true, out var emailType))
                 return Results.BadRequest(new { error = $"Unknown email type: {req.Type}" });
@@ -166,7 +414,24 @@ public static class AdminEndpoints
         ISupabaseAdminClient supabase,
         CancellationToken ct)
     {
-        // Mirror manage-users edge function: delete in order to avoid FK errors
+        // Delete in dependency order to avoid FK constraint errors.
+        // Child/junction tables first, then parent tables, then auth.
+        await conn.ExecuteAsync(
+            "DELETE FROM public.match_result_reports WHERE reported_by = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.match_messages WHERE sender_id = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.notifications WHERE user_id = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.tournament_staff WHERE user_id = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.organization_staff WHERE user_id = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.sponsor_accounts WHERE user_id = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.tournament_participants WHERE user_id = @id", new { id = userId });
+        await conn.ExecuteAsync(
+            "DELETE FROM public.team_members WHERE user_id = @id", new { id = userId });
         await conn.ExecuteAsync(
             "DELETE FROM public.tournaments WHERE organizer_id = @id", new { id = userId });
         await conn.ExecuteAsync(
@@ -174,7 +439,7 @@ public static class AdminEndpoints
         await conn.ExecuteAsync(
             "DELETE FROM public.profiles WHERE id = @id", new { id = userId });
 
-        // Finally delete from Auth
+        // Finally delete from Supabase Auth
         await supabase.DeleteUserAsync(userId, ct);
         return Results.Ok(new { success = true });
     }

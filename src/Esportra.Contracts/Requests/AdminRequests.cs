@@ -12,3 +12,10 @@ public sealed record SendEmailRequest(
     string Email,
     string Type,   // EmailType enum name
     object Data);
+
+public sealed record SuspendUserRequest(string Reason);
+
+public sealed record SponsorTrackRequest(
+    string  SponsorId,
+    string  EventType,
+    string? PageUrl = null);

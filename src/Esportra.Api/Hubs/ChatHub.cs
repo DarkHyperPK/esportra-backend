@@ -24,6 +24,20 @@ public sealed class ChatHub : Hub
 
     public async Task JoinChat(string matchId)
     {
+        var userId = Context.UserIdentifier;
+        if (userId is null)
+        {
+            await Clients.Caller.SendAsync(ChatHubEvents.Error, "Not authenticated.");
+            return;
+        }
+
+        // Verify user is a participant or organizer of this match
+        if (!await IsMatchParticipantAsync(userId, matchId))
+        {
+            await Clients.Caller.SendAsync(ChatHubEvents.Error, "You are not a participant in this match.");
+            return;
+        }
+
         await Groups.AddToGroupAsync(Context.ConnectionId, ChatGroup(matchId));
         _logger.LogDebug("Client {Conn} joined chat:{MatchId}", Context.ConnectionId, matchId);
     }
@@ -49,6 +63,13 @@ public sealed class ChatHub : Hub
             return;
         }
 
+        // Verify user is a participant in this match
+        if (!await IsMatchParticipantAsync(userId, matchId))
+        {
+            await Clients.Caller.SendAsync(ChatHubEvents.Error, "You are not a participant in this match.");
+            return;
+        }
+
         using var conn = _db.CreateConnection();
 
         // Fetch username from profiles
@@ -56,17 +77,17 @@ public sealed class ChatHub : Hub
             "SELECT username FROM profiles WHERE id = @Id", new { Id = userId });
 
         const string sql = """
-            INSERT INTO match_messages (match_id, user_id, username, content, created_at)
-            VALUES (@MatchId, @UserId, @Username, @Content, NOW())
-            RETURNING id, match_id, user_id, username, content, created_at;
+            INSERT INTO match_messages (match_id, sender_id, sender_name, content, message_type, created_at)
+            VALUES (@MatchId, @SenderId, @SenderName, @Content, 'user', NOW())
+            RETURNING id, match_id, sender_id, sender_name, content, message_type, created_at;
             """;
 
         var message = await conn.QuerySingleAsync<MessageDto>(sql, new
         {
-            MatchId  = matchId,
-            UserId   = userId,
-            Username = username ?? "Unknown",
-            Content  = content.Trim(),
+            MatchId    = matchId,
+            SenderId   = userId,
+            SenderName = username ?? "Unknown",
+            Content    = content.Trim(),
         });
 
         await Clients.Group(ChatGroup(matchId))
@@ -93,6 +114,33 @@ public sealed class ChatHub : Hub
     // ── Group name helper ─────────────────────────────────────────────────────
 
     public static string ChatGroup(string matchId) => $"chat:{matchId}";
+
+    // ── Membership check ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Checks if the user is a member of one of the teams in the match,
+    /// or the tournament organizer.
+    /// </summary>
+    private async Task<bool> IsMatchParticipantAsync(string userId, string matchId)
+    {
+        using var conn = _db.CreateConnection();
+        var isParticipant = await conn.QuerySingleOrDefaultAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM brkt_matches bm
+                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId AND tm.user_id = @userId
+                UNION ALL
+                SELECT 1 FROM brkt_matches bm
+                JOIN brkt_versions bv ON bv.id = bm.version_id
+                JOIN tournament_stages ts ON ts.id = bv.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE bm.id = @matchId AND t.organizer_id = @userId
+            )
+            """,
+            new { matchId, userId });
+        return isParticipant;
+    }
 }
 
 // ── DTO ───────────────────────────────────────────────────────────────────────
@@ -100,9 +148,10 @@ public sealed class ChatHub : Hub
 public sealed record MessageDto(
     string   Id,
     string   MatchId,
-    string   UserId,
-    string   Username,
+    string   SenderId,
+    string   SenderName,
     string   Content,
+    string   MessageType,
     DateTime CreatedAt);
 
 /// <summary>Events broadcast to chat group clients.</summary>

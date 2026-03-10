@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
+using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
 using Esportra.Infrastructure.Database;
@@ -152,16 +153,56 @@ public static class BracketEndpoints
             return Results.Ok(new { message = $"Round {req.CurrentRound + 1} generated." });
         }).RequireAuthorization("Organizer");
 
+        // ── DELETE /api/swiss/{stageId}/round/{roundNumber} ─────────────────
+        app.MapDelete("/api/swiss/{stageId}/round/{roundNumber:int}", async (
+            string                   stageId,
+            int                      roundNumber,
+            IDbConnectionFactory     db,
+            IHubContext<BracketHub>  bracketHub,
+            CancellationToken        ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            // Find the version_id for this stage
+            var versionId = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT id FROM public.brkt_versions WHERE stage_id = @stageId ORDER BY created_at DESC LIMIT 1",
+                new { stageId });
+
+            if (versionId is null)
+                return Results.NotFound(new { error = "No bracket version found for this stage." });
+
+            // Delete all matches for the given version and round_number
+            var deleted = await conn.ExecuteAsync(
+                "DELETE FROM public.brkt_matches WHERE version_id = @versionId AND round_number = @roundNumber",
+                new { versionId, roundNumber });
+
+            if (deleted > 0)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId))
+                    .SendAsync(BracketHubEvents.MatchDeleted,
+                        new { versionId, stageId, roundNumber, deletedCount = deleted },
+                        ct);
+            }
+
+            return Results.Ok(new { deletedCount = deleted });
+        }).RequireAuthorization("Organizer");
+
 
         // ── POST /api/brackets/advance ────────────────────────────────────────
         // Replaces: worker-bracket-advancement Edge Function
         // Called by a DB webhook trigger after match completion.
         app.MapPost("/api/brackets/advance", async (
             [FromBody] AdvanceBracketRequest req,
+            HttpContext                      ctx,
             IDbConnectionFactory             db,
             IHubContext<BracketHub>          bracketHub,
+            ILogger<BracketHub>             logger,
             CancellationToken                ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
 
             var versionId = await conn.QuerySingleOrDefaultAsync<string>(
@@ -171,30 +212,60 @@ public static class BracketEndpoints
             if (versionId is null)
                 return Results.NotFound(new { error = $"Match {req.MatchId} not found." });
 
+            // Verify caller is the tournament organizer
+            var organizerId = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT t.organizer_id
+                FROM brkt_versions bv
+                JOIN tournament_stages ts ON ts.id = bv.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE bv.id = @versionId
+                """,
+                new { versionId });
+
+            if (organizerId != userCtx.UserId)
+                return Results.Forbid();
+
             var advancements = (await conn.QueryAsync("""
                 SELECT target_match_id, target_slot, type, winner_team_id, loser_team_id
                 FROM public.brkt_advancements
                 WHERE source_match_id = @matchId
                 """, new { matchId = req.MatchId })).ToList();
 
+            // Resolve team IDs for each advancement
+            var updates = advancements
+                .Select(adv => new
+                {
+                    TargetMatchId = (string)adv.target_match_id,
+                    TargetSlot    = (int)adv.target_slot,
+                    TeamId        = (string?)(adv.type == "winner" ? adv.winner_team_id : adv.loser_team_id),
+                })
+                .Where(u => u.TeamId is not null)
+                .ToList();
+
             int advanced = 0;
-            foreach (var adv in advancements)
+            if (updates.Count > 0)
             {
-                string? teamId = adv.type == "winner" ? adv.winner_team_id : adv.loser_team_id;
-                if (teamId is null) continue;
+                // Batch all slot updates in a single UNNEST query
+                var targetIds = updates.Select(u => u.TargetMatchId).ToArray();
+                var slots     = updates.Select(u => u.TargetSlot).ToArray();
+                var teamIds   = updates.Select(u => u.TeamId!).ToArray();
 
-                var column = adv.target_slot == 1 ? "team1_id" : "team2_id";
-                await conn.ExecuteAsync(
-                    $"UPDATE public.brkt_matches SET {column} = @teamId WHERE id = @targetMatchId",
-                    new { teamId, targetMatchId = adv.target_match_id });
+                advanced = await conn.ExecuteAsync("""
+                    UPDATE public.brkt_matches m
+                    SET team1_id = CASE WHEN u.slot = 1 THEN u.team_id ELSE m.team1_id END,
+                        team2_id = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END
+                    FROM UNNEST(@targetIds::uuid[], @slots::int[], @teamIds::uuid[])
+                         AS u(target_match_id, slot, team_id)
+                    WHERE m.id = u.target_match_id
+                    """,
+                    new { targetIds, slots, teamIds });
 
-                advanced++;
-
-                // Broadcast MatchUpdated for each target match that changed
+                // Broadcast single update for the entire version
                 await bracketHub.Clients
                     .Group(BracketHub.BracketGroup(versionId))
                     .SendAsync(BracketHubEvents.MatchUpdated,
-                        new { matchId = adv.target_match_id, versionId, slot = adv.target_slot, teamId },
+                        new { versionId, matchesAdvanced = advanced },
                         ct);
             }
 
@@ -205,7 +276,15 @@ public static class BracketEndpoints
                     new { id = req.EventId });
             }
 
-            _ = Task.Run(() => RebuildUiCacheAsync(versionId, db, CancellationToken.None), CancellationToken.None);
+            // Rebuild UI cache inline with error logging (not fire-and-forget)
+            try
+            {
+                await RebuildUiCacheAsync(versionId, db, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to rebuild UI cache for bracket {VersionId}", versionId);
+            }
 
             return Results.Ok(new { success = true, matchId = req.MatchId, advanced });
         }).RequireAuthorization("Authenticated");
@@ -234,8 +313,62 @@ public static class BracketEndpoints
             if (cached is null)
                 return Results.NotFound(new { error = "Bracket version not found." });
 
-            var doc = JsonDocument.Parse(cached ?? "[]");
+            var doc = JsonDocument.Parse(cached);
             return Results.Ok(doc.RootElement);
+        });
+
+        // ── GET /api/brackets/{versionId}/graph ──────────────────────────────
+        // Full graph structure (replaces MatchRepository.getGraphStructure)
+        app.MapGet("/api/brackets/{versionId}/graph", async (
+            string               versionId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM brkt_versions WHERE id = @versionId",
+                new { versionId });
+            if (version is null) return Results.NotFound(new { error = "Version not found." });
+
+            var nodes = await conn.QueryAsync<dynamic>(
+                """
+                SELECT m.*,
+                       l.x, l.y,
+                       t1.name AS team1_name, t1.logo_url AS team1_logo,
+                       t2.name AS team2_name, t2.logo_url AS team2_logo
+                FROM brkt_matches m
+                LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
+                LEFT JOIN teams t1 ON t1.id = m.team1_id
+                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                WHERE m.version_id = @versionId
+                """,
+                new { versionId });
+
+            var edges = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM brkt_advancements WHERE version_id = @versionId",
+                new { versionId });
+
+            return Results.Ok(new { version, nodes, edges });
+        });
+
+        // ── GET /api/brackets/{versionId}/bye-matches ────────────────────────
+        // Pending matches with exactly one team (BYE matches)
+        app.MapGet("/api/brackets/{versionId}/bye-matches", async (
+            string               versionId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT * FROM brkt_matches
+                WHERE version_id = @versionId AND status = 'pending'
+                  AND ((team1_id IS NOT NULL AND team2_id IS NULL)
+                    OR (team1_id IS NULL AND team2_id IS NOT NULL))
+                """,
+                new { versionId });
+            return Results.Ok(rows);
         });
     }
 

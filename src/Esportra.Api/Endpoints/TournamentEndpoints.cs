@@ -1,8 +1,11 @@
 using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
@@ -104,8 +107,8 @@ public static class TournamentEndpoints
 
             string tournamentId = tournament.id;
 
-            // Participants + stages in parallel
-            var participantsTask = conn.QueryAsync<dynamic>(
+            // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
+            var participants = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
                        p.username AS gamer_tag
@@ -117,11 +120,9 @@ public static class TournamentEndpoints
                 """,
                 new { tournamentId });
 
-            var stagesTask = conn.QueryAsync<dynamic>(
+            var stages = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order",
                 new { tournamentId });
-
-            await Task.WhenAll(participantsTask, stagesTask);
 
             // Permission check for organizer/staff
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -145,8 +146,8 @@ public static class TournamentEndpoints
             return Results.Ok(new
             {
                 tournament,
-                participants    = await participantsTask,
-                stages          = await stagesTask,
+                participants,
+                stages,
                 isOrganizer,
                 staffPermissions,
             });
@@ -158,7 +159,7 @@ public static class TournamentEndpoints
             [FromBody] CreateTournamentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
-            HybridCache                       cache,
+            IDistributedCache                 distCache,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -261,8 +262,9 @@ public static class TournamentEndpoints
 
                 tx.Commit();
 
-                // Invalidate tournament list cache
-                await cache.RemoveAsync("tournaments:*", ct);
+                // Invalidate tournament list cache (HybridCache doesn't support wildcards)
+                // Remove known cache key patterns explicitly
+                try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
 
                 return Results.Ok(tournament);
             }
@@ -279,7 +281,7 @@ public static class TournamentEndpoints
             [FromBody] UpdateTournamentRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
-            HybridCache                   cache,
+            IDistributedCache             distCache,
             CancellationToken             ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -340,9 +342,33 @@ public static class TournamentEndpoints
                     streamUrl            = req.StreamUrl,
                 });
 
-            await cache.RemoveAsync($"tournaments:*", ct);
+            try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Organizer");
+
+        // ── GET /api/tournaments/me/history ─────────────────────────────────
+        // Returns tournaments the current user has participated in.
+        app.MapGet("/api/tournaments/me/history", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync(
+                """
+                SELECT t.id, t.name, t.start_date, t.status, t.slug, t.game,
+                       t.banner_url, t.logo_url, t.prize_pool
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE tp.user_id = @userId
+                ORDER BY tp.created_at DESC
+                """,
+                new { userId = userCtx.UserId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/me/registration-status ────────────────────────
         // Batch: ?ids=id1,id2,id3  →  { id1: true, id2: false, ... }
@@ -404,13 +430,24 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Guard: tournament must be open
-            var tournStatus = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT status FROM tournaments WHERE id = @id", new { id });
-            if (tournStatus is null)    return Results.NotFound();
-            if (tournStatus != "open")  return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
+            // Guard: tournament must be open and not at capacity
+            var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT status, max_teams FROM tournaments WHERE id = @id", new { id });
+            if (tourn is null)    return Results.NotFound();
+            if ((string)tourn.status != "open")
+                return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
 
-            var row = await conn.QuerySingleAsync<dynamic>(
+            // Check capacity
+            int? maxTeams = (int?)tourn.max_teams;
+            if (maxTeams.HasValue)
+            {
+                var currentCount = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id", new { id });
+                if (currentCount >= maxTeams.Value)
+                    return Results.BadRequest(new { error = "Tournament has reached maximum capacity." });
+            }
+
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 INSERT INTO tournament_participants
                     (tournament_id, user_id, team_id, status, participant_type)
@@ -426,8 +463,17 @@ public static class TournamentEndpoints
                     participantType = req.TeamId is not null ? "team" : "solo",
                 });
 
+            if (row is null)
+                return Results.Conflict(new { error = "You are already registered for this tournament." });
+
             return Results.Ok(row);
         }).RequireAuthorization("Authenticated");
+
+        // ── Tournament Staff endpoints ───────────────────────────────────────
+        MapTournamentStaffEndpoints(app);
+
+        // ── Organizer dispute endpoints ─────────────────────────────────────
+        MapOrganizerDisputeEndpoints(app);
 
         // ── DELETE /api/tournaments/{id}/register — withdraw ──────────────────
         app.MapDelete("/api/tournaments/{id}/register", async (
@@ -446,6 +492,485 @@ public static class TournamentEndpoints
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/{id}/remove-unchecked — remove unchecked participants ──
+        app.MapPost("/api/tournaments/{id}/remove-unchecked", async (
+            string               id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var removed = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'cancelled'
+                WHERE tournament_id = @id
+                  AND checked_in_at IS NULL
+                  AND status IN ('pending', 'approved', 'registered')
+                """,
+                new { id });
+
+            return Results.Ok(new { removedCount = removed });
+        }).RequireAuthorization("Organizer");
+
+        // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
+        app.MapPost("/api/tournaments/{id}/ban-participant", async (
+            string                               id,
+            [FromBody] BanParticipantRequest     req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Get participant info
+            var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT user_id, team_id FROM tournament_participants WHERE id = @pid",
+                new { pid = req.ParticipantId });
+            if (participant is null)
+                return Results.NotFound(new { error = "Participant not found" });
+
+            // Determine ban target
+            string? banUserId = null, banTeamId = null;
+            if (participant.team_id is not null) banTeamId = participant.team_id;
+            else if (participant.user_id is not null) banUserId = participant.user_id;
+            else banUserId = req.UserId;
+
+            if (banUserId is null && banTeamId is null)
+                return Results.BadRequest(new { error = "Cannot determine ban target" });
+
+            // Insert ban
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO tournament_bans (tournament_id, participant_id, user_id, team_id, ban_reason, banned_by, banned_at, is_active)
+                VALUES (@tournamentId, @participantId, @userId, @teamId, @banReason, @bannedBy, NOW(), TRUE)
+                """,
+                new { tournamentId = id, participantId = req.ParticipantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserId });
+
+            // Delete registration
+            string? deleteError = null;
+            try
+            {
+                await conn.ExecuteAsync(
+                    "DELETE FROM tournament_participants WHERE id = @pid",
+                    new { pid = req.ParticipantId });
+            }
+            catch (Exception ex)
+            {
+                deleteError = ex.Message;
+            }
+
+            return Results.Ok(new { success = true, deleteError });
+        }).RequireAuthorization("Organizer");
+
+        // ── GET /api/tournaments/{id}/participants/{pid} — single participant ───
+        app.MapGet("/api/tournaments/{id}/participants/{pid}", async (
+            string               id,
+            string               pid,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM tournament_participants WHERE id = @pid AND tournament_id = @id",
+                new { pid, id });
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
+        app.MapGet("/api/tournaments/{id}/stages", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM tournament_stages WHERE tournament_id = @id ORDER BY stage_order",
+                new { id });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/tournaments/{id}/bracket-versions ───────────────────────
+        app.MapGet("/api/tournaments/{id}/bracket-versions", async (
+            string               id,
+            string?              status,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            dynamic rows;
+            if (!string.IsNullOrEmpty(status))
+            {
+                var statuses = status.Split(',');
+                rows = await conn.QueryAsync<dynamic>(
+                    "SELECT id, stage_id, status, version_number, created_at FROM brkt_versions WHERE tournament_id = @id AND status = ANY(@statuses) ORDER BY created_at DESC",
+                    new { id, statuses });
+            }
+            else
+            {
+                rows = await conn.QueryAsync<dynamic>(
+                    "SELECT id, stage_id, status, version_number, created_at FROM brkt_versions WHERE tournament_id = @id ORDER BY created_at DESC",
+                    new { id });
+            }
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/tournaments/{id}/participants ───────────────────────────
+        app.MapGet("/api/tournaments/{id}/participants", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM tournament_participants WHERE tournament_id = @id",
+                new { id });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/tournaments/{id}/match-proofs ───────────────────────────
+        app.MapGet("/api/tournaments/{id}/match-proofs", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT match_id, image_url FROM tournament_match_results WHERE tournament_id = @id AND image_url IS NOT NULL",
+                new { id });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/tournaments/{id}/match-games ────────────────────────────
+        app.MapGet("/api/tournaments/{id}/match-games", async (
+            string               id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT g.*, gm.map_name
+                FROM brkt_match_games g
+                LEFT JOIN game_maps gm ON gm.id = g.map_id
+                JOIN brkt_matches m ON m.id = g.match_id
+                JOIN brkt_versions v ON v.id = m.version_id
+                WHERE v.tournament_id = @id AND g.status = 'completed'
+                """,
+                new { id });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/teams — search teams by name ───────────────────────────────
+        app.MapGet("/api/teams", async (
+            string?              name,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            if (string.IsNullOrEmpty(name)) return Results.Ok(Array.Empty<object>());
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, name, owner_id, logo_url
+                FROM teams
+                WHERE name ILIKE @pattern
+                ORDER BY name ASC
+                LIMIT 10
+                """,
+                new { pattern = $"%{name}%" });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Tournament Staff
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private static void MapTournamentStaffEndpoints(WebApplication app)
+    {
+        // ── GET /api/tournaments/{tournamentId}/staff ────────────────────────
+        app.MapGet("/api/tournaments/{tournamentId}/staff", async (
+            string               tournamentId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Only organizer or existing staff can view staff list
+            var hasAccess = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId
+                    UNION ALL
+                    SELECT 1 FROM tournament_staff WHERE tournament_id = @tid AND user_id = @userId AND status = 'active'
+                )
+                """,
+                new { tid = tournamentId, userId = userCtx.UserId });
+            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ts.*,
+                       jsonb_build_object(
+                           'full_name', p.full_name,
+                           'username', p.username,
+                           'email', p.email,
+                           'avatar_url', p.avatar_url
+                       ) AS profiles
+                FROM tournament_staff ts
+                LEFT JOIN profiles p ON p.id = ts.user_id
+                WHERE ts.tournament_id = @tournamentId
+                ORDER BY ts.created_at ASC
+                """,
+                new { tournamentId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/{tournamentId}/staff — invite ──────────────
+        app.MapPost("/api/tournaments/{tournamentId}/staff", async (
+            string                                tournamentId,
+            [FromBody] InviteTournamentStaffRequest req,
+            HttpContext                             ctx,
+            IDbConnectionFactory                   db,
+            CancellationToken                      ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Only organizer can invite staff
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
+                new { tid = tournamentId, userId = userCtx.UserId });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
+            // Look up user by email
+            var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, email FROM profiles WHERE email ILIKE @email LIMIT 1",
+                new { email = req.UserEmail });
+            if (profile is null) return Results.BadRequest(new { error = "User not found." });
+
+            string userId = profile.id;
+
+            // Check for existing staff record
+            var existing = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT id FROM tournament_staff WHERE tournament_id = @tid AND user_id = @userId",
+                new { tid = tournamentId, userId });
+
+            var permissionsJson = JsonSerializer.Serialize(req.Permissions ?? Array.Empty<string>());
+
+            if (existing is not null)
+            {
+                // Re-invite: update existing record
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE tournament_staff
+                    SET role = @role, permissions = @permissions::jsonb,
+                        assigned_by = @assignedBy, status = 'pending',
+                        accepted_at = NULL, responded_at = NULL, updated_at = NOW()
+                    WHERE id = @id
+                    """,
+                    new { id = existing, role = req.Role, permissions = permissionsJson,
+                          assignedBy = userCtx.UserId });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO tournament_staff
+                        (tournament_id, user_id, role, permissions, assigned_by, status)
+                    VALUES
+                        (@tournamentId, @userId, @role, @permissions::jsonb, @assignedBy, 'pending')
+                    """,
+                    new { tournamentId, userId, role = req.Role, permissions = permissionsJson,
+                          assignedBy = userCtx.UserId });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── PUT /api/tournaments/staff/{staffId} — update role/permissions ───
+        app.MapPut("/api/tournaments/staff/{staffId}", async (
+            string                                  staffId,
+            [FromBody] UpdateTournamentStaffRequest  req,
+            HttpContext                              ctx,
+            IDbConnectionFactory                    db,
+            CancellationToken                       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify caller is organizer of the tournament that owns this staff record
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_staff ts
+                    JOIN tournaments t ON t.id = ts.tournament_id
+                    WHERE ts.id = @staffId AND t.organizer_id = @userId
+                )
+                """,
+                new { staffId, userId = userCtx.UserId });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
+            var permissionsJson = JsonSerializer.Serialize(req.Permissions ?? Array.Empty<string>());
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_staff
+                SET role = @role, permissions = @permissions::jsonb, updated_at = NOW()
+                WHERE id = @staffId
+                """,
+                new { staffId, role = req.Role, permissions = permissionsJson });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── DELETE /api/tournaments/staff/{staffId} — remove ────────────────
+        app.MapDelete("/api/tournaments/staff/{staffId}", async (
+            string               staffId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_staff ts
+                    JOIN tournaments t ON t.id = ts.tournament_id
+                    WHERE ts.id = @staffId AND t.organizer_id = @userId
+                )
+                """,
+                new { staffId, userId = userCtx.UserId });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
+            await conn.ExecuteAsync(
+                "DELETE FROM tournament_staff WHERE id = @staffId",
+                new { staffId });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Organizer");
+
+        // ── GET /api/tournaments/staff/my-invites ────────────────────────────
+        app.MapGet("/api/tournaments/staff/my-invites", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ts.*,
+                       jsonb_build_object(
+                           'id', t.id, 'name', t.name, 'game', t.game,
+                           'start_date', t.start_date
+                       ) AS tournament,
+                       jsonb_build_object(
+                           'full_name', p.full_name,
+                           'username', p.username,
+                           'email', p.email
+                       ) AS organizer_profile
+                FROM tournament_staff ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                LEFT JOIN profiles p ON p.id = ts.assigned_by
+                WHERE ts.user_id = @userId AND ts.status = 'pending'
+                ORDER BY ts.created_at DESC
+                """,
+                new { userId = userCtx.UserId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/tournaments/staff/my-assignments ────────────────────────
+        app.MapGet("/api/tournaments/staff/my-assignments", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ts.*,
+                       jsonb_build_object(
+                           'id', t.id, 'name', t.name, 'slug', t.slug,
+                           'game', t.game, 'start_date', t.start_date,
+                           'organizer_id', t.organizer_id
+                       ) AS tournament,
+                       jsonb_build_object(
+                           'full_name', p.full_name,
+                           'username', p.username,
+                           'email', p.email
+                       ) AS organizer_profile
+                FROM tournament_staff ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                LEFT JOIN profiles p ON p.id = ts.assigned_by
+                WHERE ts.user_id = @userId AND ts.status = 'active'
+                ORDER BY ts.updated_at DESC
+                """,
+                new { userId = userCtx.UserId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/staff/{inviteId}/respond ───────────────────
+        app.MapPost("/api/tournaments/staff/{inviteId}/respond", async (
+            string                                    inviteId,
+            [FromBody] RespondToStaffInviteRequest     req,
+            HttpContext                                ctx,
+            IDbConnectionFactory                      db,
+            CancellationToken                         ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Only the invited user can respond
+            var inviteUserId = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT user_id FROM tournament_staff WHERE id = @inviteId AND status = 'pending'",
+                new { inviteId });
+            if (inviteUserId is null) return Results.NotFound(new { error = "Invite not found or already responded." });
+            if (inviteUserId != userCtx.UserId) return Results.Forbid();
+
+            var now = DateTime.UtcNow;
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_staff
+                SET status = @status, accepted_at = @acceptedAt, responded_at = @respondedAt
+                WHERE id = @inviteId AND status = 'pending'
+                """,
+                new
+                {
+                    inviteId,
+                    status     = req.Accept ? "active" : "revoked",
+                    acceptedAt = req.Accept ? now : (DateTime?)null,
+                    respondedAt = now,
+                });
+
+            return Results.Ok(new { success = true, accepted = req.Accept });
+        }).RequireAuthorization("Authenticated");
     }
 
     // ── Slug helper ───────────────────────────────────────────────────────────
@@ -454,6 +979,204 @@ public static class TournamentEndpoints
         System.Text.RegularExpressions.Regex.Replace(
             input.ToLowerInvariant().Trim(),
             @"[^a-z0-9]+", "-").Trim('-');
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Organizer Dispute Endpoints (tournament_disputes)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private static void MapOrganizerDisputeEndpoints(WebApplication app)
+    {
+        // ── GET /api/organizer/disputes ───────────────────────────────────────
+        // Replaces 5 sequential Supabase calls: owned tournaments + staff tournaments
+        // + tournament names + disputes + filer profiles + match context
+        app.MapGet("/api/organizer/disputes", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT td.id, td.title, td.description, td.status, td.dispute_reason,
+                       td.resolution_notes, td.evidence_url, td.created_at, td.updated_at,
+                       td.tournament_id, td.match_id, td.raised_by_user_id,
+                       t.name AS tournament_name,
+                       COALESCE(p.full_name, p.username, 'Unknown') AS raised_by_name,
+                       CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
+                           'match_number', bm.match_number,
+                           'round_index', bm.round_index,
+                           'best_of', bm.best_of,
+                           'bracket_type', bm.bracket_type,
+                           'scheduled_time', bm.scheduled_time,
+                           'team1_score', bm.team1_score,
+                           'team2_score', bm.team2_score,
+                           'team1_name', t1.name,
+                           'team2_name', t2.name
+                       ) ELSE NULL END AS match
+                FROM tournament_disputes td
+                JOIN tournaments t ON t.id = td.tournament_id
+                LEFT JOIN profiles p ON p.id = td.raised_by_user_id
+                LEFT JOIN brkt_matches bm ON bm.id = td.match_id
+                LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                WHERE t.organizer_id = @userId
+                   OR EXISTS (
+                       SELECT 1 FROM tournament_staff ts
+                       WHERE ts.tournament_id = td.tournament_id
+                         AND ts.user_id = @userId AND ts.status = 'active'
+                   )
+                ORDER BY td.created_at DESC
+                """,
+                new { userId = userCtx.UserId });
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/organizer/disputes/{disputeId}/comments ─────────────────
+        app.MapGet("/api/organizer/disputes/{disputeId}/comments", async (
+            string               disputeId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT dc.id, dc.user_id, dc.comment, dc.is_internal, dc.created_at, dc.attachment_url,
+                       COALESCE(p.full_name, p.username, 'Unknown') AS user_name
+                FROM dispute_comments dc
+                LEFT JOIN profiles p ON p.id = dc.user_id
+                WHERE dc.dispute_id = @disputeId
+                ORDER BY dc.created_at ASC
+                """,
+                new { disputeId });
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/organizer/disputes/{disputeId}/comments ────────────────
+        app.MapPost("/api/organizer/disputes/{disputeId}/comments", async (
+            string                            disputeId,
+            [FromBody] AddDisputeCommentRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            IHubContext<NotificationHub>      notifHub,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Insert comment
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO dispute_comments (dispute_id, user_id, comment, is_internal, attachment_url)
+                VALUES (@disputeId, @userId, @comment, FALSE, @attachmentUrl)
+                """,
+                new { disputeId, userId = userCtx.UserId, comment = req.Comment ?? "", attachmentUrl = req.AttachmentUrl });
+
+            // Auto-promote to in_review if open
+            var currentStatus = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT status FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+
+            if (currentStatus == "open")
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_disputes SET status = 'in_review', updated_at = NOW() WHERE id = @disputeId",
+                    new { disputeId });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
+                    new { disputeId });
+            }
+
+            return Results.Ok(new { success = true, autoPromoted = currentStatus == "open" });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/organizer/disputes/{disputeId}/resolve ─────────────────
+        app.MapPost("/api/organizer/disputes/{disputeId}/resolve", async (
+            string                              disputeId,
+            [FromBody] ResolveDisputeRequest2   req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            IHubContext<NotificationHub>        notifHub,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Update dispute
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_disputes
+                SET status = @status, resolution_notes = @notes,
+                    assigned_to_user_id = @userId, updated_at = NOW()
+                WHERE id = @disputeId
+                """,
+                new { disputeId, status = req.Status, notes = req.ResolutionNotes, userId = userCtx.UserId });
+
+            // Send notification to filer
+            var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+
+            if (dispute is not null)
+            {
+                string filerId = dispute.raised_by_user_id;
+                string title = dispute.title ?? "Your dispute";
+                var notifType = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
+                var notifTitle = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
+                var notifMsg = req.Status == "resolved"
+                    ? $"Your dispute \"{title}\" has been resolved by the organizer."
+                    : $"Your dispute \"{title}\" has been rejected by the organizer.";
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                    VALUES (@userId, @type, @title, @message, '/user/my-disputes',
+                            @data::jsonb, FALSE)
+                    """,
+                    new
+                    {
+                        userId  = filerId,
+                        type    = notifType,
+                        title   = notifTitle,
+                        message = notifMsg,
+                        data    = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId }),
+                    });
+
+                await notifHub.Clients.Group($"user:{filerId}")
+                    .SendAsync("NewNotification", new { type = notifType }, ct);
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Additional Organizer Utility Endpoints
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── GET /api/tournaments/by-slug/{slug} — fetch by slug or id ────────────
+    // Replaces ManageBracketPage's supabase.from('tournaments') call
+    // Already handled by GET /api/tournaments/{id} if id-based,
+    // but ManageBracketPage needs slug support with org join.
+
+    // ── POST /api/profiles/resolve-players — batch resolve player tags ───────
+    // Replaces TournamentManage's 4 parallel profile lookups
+
+    // ── POST /api/rosters/{rosterId}/members — get roster members via RPC ────
+    // Replaces TournamentManage's supabase.rpc('get_roster_members')
 }
 
 // ── Request records ───────────────────────────────────────────────────────────
@@ -513,3 +1236,22 @@ public sealed record UpdateTournamentRequest(
     string?   StreamUrl            = null);
 
 public sealed record RegisterTournamentRequest(string? TeamId = null);
+
+// ── Organizer Dispute request records ────────────────────────────────────────
+
+public sealed record AddDisputeCommentRequest(string Comment, string? AttachmentUrl = null);
+public sealed record ResolveDisputeRequest2(string Status, string? ResolutionNotes = null);
+public sealed record BanParticipantRequest(string ParticipantId, string? UserId = null, string? BanReason = null);
+
+// ── Tournament Staff request records ─────────────────────────────────────────
+
+public sealed record InviteTournamentStaffRequest(
+    string    UserEmail,
+    string    Role,
+    string[]? Permissions = null);
+
+public sealed record UpdateTournamentStaffRequest(
+    string    Role,
+    string[]? Permissions = null);
+
+public sealed record RespondToStaffInviteRequest(bool Accept);

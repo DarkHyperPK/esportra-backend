@@ -44,7 +44,7 @@ public sealed class NotificationHub : Hub
 
         using var conn = _db.CreateConnection();
         await conn.ExecuteAsync(
-            "UPDATE notifications SET read = TRUE, read_at = NOW() WHERE id = @Id AND user_id = @UserId",
+            "UPDATE notifications SET is_read = TRUE WHERE id = @Id AND user_id = @UserId",
             new { Id = notificationId, UserId = userId });
 
         // Broadcast to all other connections of this user (multi-tab support)
@@ -60,7 +60,7 @@ public sealed class NotificationHub : Hub
 
         using var conn = _db.CreateConnection();
         await conn.ExecuteAsync(
-            "UPDATE notifications SET read = TRUE, read_at = NOW() WHERE user_id = @UserId AND read = FALSE",
+            "UPDATE notifications SET is_read = TRUE WHERE user_id = @UserId AND is_read = FALSE",
             new { UserId = userId });
 
         await Clients.OthersInGroup(UserGroup(userId))

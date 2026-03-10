@@ -65,4 +65,7 @@ public static class BracketHubEvents
 
     /// <summary>A new brkt_versions row was created.</summary>
     public const string VersionCreated = "VersionCreated";
+
+    /// <summary>One or more brkt_matches rows were deleted (e.g. Swiss round deletion).</summary>
+    public const string MatchDeleted = "MatchDeleted";
 }
