@@ -17,5 +17,5 @@ public sealed record UserContext
     /// sends the parameter as uuid type (not text), avoiding "operator does not exist: uuid = text".
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public Guid UserIdGuid => Guid.Parse(UserId);
+    public Guid UserIdGuid => Guid.TryParse(UserId, out var g) ? g : Guid.Empty;
 }

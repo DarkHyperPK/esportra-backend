@@ -49,8 +49,11 @@ public sealed class RoleEnrichmentMiddleware(
         using var conn = db.CreateConnection();
 
         // Parse userId as Guid so Dapper sends uuid type (not text) to PostgreSQL.
-        // PostgreSQL has no implicit uuid = text operator and will 500 if passed as string.
-        var userGuid = Guid.Parse(userId);
+        if (!Guid.TryParse(userId, out var userGuid))
+        {
+            logger.LogWarning("[RoleEnrichment] Invalid userId format: {UserId}", userId);
+            return new UserContext { UserId = userId, Email = string.Empty };
+        }
 
         // Query platform roles
         var roles = (await Dapper.SqlMapper.QueryAsync<string>(conn,
@@ -58,17 +61,27 @@ public sealed class RoleEnrichmentMiddleware(
             new { userId = userGuid })).ToArray();
 
         // Query admin roles assigned to this user (handles both profiles.admin_roles array
-        // and the normalized admin_user_roles join table)
-        var adminRoles = (await Dapper.SqlMapper.QueryAsync<string>(conn, """
-            SELECT DISTINCT ar.key
-            FROM public.admin_user_roles aur
-            JOIN public.admin_roles ar ON ar.id = aur.role_id
-            WHERE aur.user_id = @userId
-            UNION
-            SELECT UNNEST(p.admin_roles)
-            FROM public.profiles p
-            WHERE p.id = @userId AND p.admin_roles IS NOT NULL
-            """, new { userId = userGuid })).ToArray();
+        // and the normalized admin_user_roles join table).
+        // Uses ar.name (always exists) — ar.key is added by a later migration and may not exist yet.
+        string[] adminRoles;
+        try
+        {
+            adminRoles = (await Dapper.SqlMapper.QueryAsync<string>(conn, """
+                SELECT DISTINCT ar.name
+                FROM public.admin_user_roles aur
+                JOIN public.admin_roles ar ON ar.id = aur.role_id
+                WHERE aur.user_id = @userId
+                UNION
+                SELECT UNNEST(p.admin_roles)
+                FROM public.profiles p
+                WHERE p.id = @userId AND p.admin_roles IS NOT NULL
+                """, new { userId = userGuid })).ToArray();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[RoleEnrichment] Admin roles query failed for {UserId}, defaulting to empty", userId);
+            adminRoles = [];
+        }
 
         // Resolve permissions from admin role keys
         var permissions = adminRoles
