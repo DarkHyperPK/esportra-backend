@@ -297,18 +297,25 @@ app.MapGet("/health", () => Results.Ok(new
 }));
 
 // Temporary diagnostic endpoint — test DNS + TCP connectivity to Postgres
-app.MapGet("/health/pg-diag", async (IDbConnectionFactory db, IConfiguration config) =>
+app.MapGet("/health/pg-diag", async (IDbConnectionFactory db, IConfiguration config, HttpContext ctx) =>
 {
     var csb = new Npgsql.NpgsqlConnectionStringBuilder(
         config.GetConnectionString("Postgres") ?? "");
+
+    // Allow testing alternative hostnames via ?host=xxx
+    var testHost = ctx.Request.Query["host"].FirstOrDefault() ?? csb.Host;
+    var testPort = int.TryParse(ctx.Request.Query["port"].FirstOrDefault(), out var p) ? p : csb.Port;
+
     var results = new Dictionary<string, object?>();
-    results["host"] = csb.Host;
-    results["port"] = csb.Port;
+    results["configured_host"] = csb.Host;
+    results["configured_port"] = csb.Port;
+    results["testing_host"] = testHost;
+    results["testing_port"] = testPort;
 
     // DNS resolution
     try
     {
-        var addrs = System.Net.Dns.GetHostAddresses(csb.Host ?? "");
+        var addrs = System.Net.Dns.GetHostAddresses(testHost ?? "");
         results["dns"] = addrs.Select(a => a.ToString()).ToArray();
     }
     catch (Exception ex) { results["dns_error"] = ex.Message; }
@@ -318,21 +325,39 @@ app.MapGet("/health/pg-diag", async (IDbConnectionFactory db, IConfiguration con
     {
         using var tcp = new System.Net.Sockets.TcpClient();
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await tcp.ConnectAsync(csb.Host!, csb.Port, cts.Token);
+        await tcp.ConnectAsync(testHost!, testPort, cts.Token);
         results["tcp"] = "connected";
     }
     catch (Exception ex) { results["tcp_error"] = ex.Message; }
 
-    // Postgres query
-    try
+    // Postgres query (only with configured host, not overrides — avoids password leaks)
+    if (testHost == csb.Host && testPort == csb.Port)
     {
-        using var conn = db.CreateConnection();
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT version()";
-        results["pg_version"] = cmd.ExecuteScalar()?.ToString();
+        try
+        {
+            using var conn = db.CreateConnection();
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT version()";
+            results["pg_version"] = cmd.ExecuteScalar()?.ToString();
+        }
+        catch (Exception ex) { results["pg_error"] = $"{ex.GetType().Name}: {ex.Message}"; }
     }
-    catch (Exception ex) { results["pg_error"] = $"{ex.GetType().Name}: {ex.Message}"; }
+
+    // Also probe common Supabase Docker Compose hostnames
+    var altHosts = new[] { "db", "supabase-db", "postgres", "localhost" };
+    var altResults = new Dictionary<string, string>();
+    foreach (var alt in altHosts)
+    {
+        if (alt == testHost) continue;
+        try
+        {
+            var addrs = System.Net.Dns.GetHostAddresses(alt);
+            altResults[alt] = $"resolves → {string.Join(", ", addrs.Select(a => a.ToString()))}";
+        }
+        catch { altResults[alt] = "unresolvable"; }
+    }
+    results["alt_hostname_dns"] = altResults;
 
     return Results.Ok(results);
 }).AllowAnonymous();
