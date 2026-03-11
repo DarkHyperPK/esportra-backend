@@ -18,14 +18,11 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.IdentityModel.Tokens;
 
+Console.WriteLine("[STARTUP] Creating builder...");
 var builder = WebApplication.CreateBuilder(args);
 
-// Force Kestrel to bind explicitly — ASPNETCORE_HTTP_PORTS env var alone
-// is unreliable in some Coolify/Docker configurations.
-builder.WebHost.ConfigureKestrel(opts =>
-{
-    opts.ListenAnyIP(8080);
-});
+// Force Kestrel to bind on all interfaces, port 8080.
+builder.WebHost.UseUrls("http://0.0.0.0:8080");
 
 // ── Supabase JWT configuration ────────────────────────────────────────────────
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
@@ -94,6 +91,7 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 
 // ── Redis + HybridCache ────────────────────────────────────────────────────────
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+Console.WriteLine($"[STARTUP] Redis connection: {redisConnStr.Split(',')[0]}...");
 builder.Services.AddStackExchangeRedisCache(opts =>
 {
     opts.Configuration = redisConnStr;
@@ -168,7 +166,9 @@ builder.Services.AddHostedService<AutomatedRemindersJob>();
 builder.Services.AddOpenApi();
 
 // ═════════════════════════════════════════════════════════════════════════════
+Console.WriteLine("[STARTUP] Building app...");
 var app = builder.Build();
+Console.WriteLine("[STARTUP] App built successfully.");
 // ═════════════════════════════════════════════════════════════════════════════
 
 if (app.Environment.IsDevelopment())
@@ -255,4 +255,6 @@ app.MapHub<ConversationHub>("/hubs/conversations");
 app.MapHub<NotificationHub>("/hubs/notifications");
 app.MapHub<LiveHub>("/hubs/live");
 
+Console.WriteLine("[STARTUP] Pipeline configured. Calling app.Run()...");
 app.Run();
+Console.WriteLine("[STARTUP] app.Run() returned (should not happen).");
