@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
@@ -140,7 +140,7 @@ public static class TournamentEndpoints
                     SELECT unnest(permissions) FROM tournament_staff
                     WHERE tournament_id = @tid AND user_id = @userId AND is_active = TRUE
                     """,
-                    new { tid = tournamentId, userId = userCtx.UserId })).ToArray();
+                    new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
             }
 
             return Results.Ok(new
@@ -222,7 +222,7 @@ public static class TournamentEndpoints
                         settings             = req.Settings is not null
                             ? JsonSerializer.Serialize(req.Settings)
                             : "{}",
-                        organizerId          = userCtx.UserId,
+                        organizerId          = userCtx.UserIdGuid,
                     },
                     tx);
 
@@ -366,7 +366,7 @@ public static class TournamentEndpoints
                 WHERE tp.user_id = @userId
                 ORDER BY tp.created_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -390,7 +390,7 @@ public static class TournamentEndpoints
             // Get the user's team IDs first
             var teamIds = (await conn.QueryAsync<string>(
                 "SELECT team_id FROM team_members WHERE user_id = @userId AND is_active = TRUE",
-                new { userId = userCtx.UserId })).ToArray();
+                new { userId = userCtx.UserIdGuid })).ToArray();
 
             // Single query: registered tournament IDs via user_id OR any team
             IEnumerable<string> registeredIds;
@@ -402,13 +402,13 @@ public static class TournamentEndpoints
                     WHERE tournament_id = ANY(@ids)
                       AND (user_id = @userId OR team_id = ANY(@teamIds))
                     """,
-                    new { ids = idList, userId = userCtx.UserId, teamIds });
+                    new { ids = idList, userId = userCtx.UserIdGuid, teamIds });
             }
             else
             {
                 registeredIds = await conn.QueryAsync<string>(
                     "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId",
-                    new { ids = idList, userId = userCtx.UserId });
+                    new { ids = idList, userId = userCtx.UserIdGuid });
             }
 
             var registeredSet = registeredIds.ToHashSet();
@@ -458,7 +458,7 @@ public static class TournamentEndpoints
                 new
                 {
                     tournamentId    = id,
-                    userId          = userCtx.UserId,
+                    userId          = userCtx.UserIdGuid,
                     teamId          = req.TeamId,
                     participantType = req.TeamId is not null ? "team" : "solo",
                 });
@@ -488,7 +488,7 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId",
-                new { id, userId = userCtx.UserId });
+                new { id, userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -552,7 +552,7 @@ public static class TournamentEndpoints
                 INSERT INTO tournament_bans (tournament_id, participant_id, user_id, team_id, ban_reason, banned_by, banned_at, is_active)
                 VALUES (@tournamentId, @participantId, @userId, @teamId, @banReason, @bannedBy, NOW(), TRUE)
                 """,
-                new { tournamentId = id, participantId = req.ParticipantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserId });
+                new { tournamentId = id, participantId = req.ParticipantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserIdGuid });
 
             // Delete registration
             string? deleteError = null;
@@ -717,7 +717,7 @@ public static class TournamentEndpoints
                     SELECT 1 FROM tournament_staff WHERE tournament_id = @tid AND user_id = @userId AND status = 'active'
                 )
                 """,
-                new { tid = tournamentId, userId = userCtx.UserId });
+                new { tid = tournamentId, userId = userCtx.UserIdGuid });
             if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             var rows = await conn.QueryAsync<dynamic>(
@@ -754,7 +754,7 @@ public static class TournamentEndpoints
             // Only organizer can invite staff
             var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
-                new { tid = tournamentId, userId = userCtx.UserId });
+                new { tid = tournamentId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             // Look up user by email
@@ -784,7 +784,7 @@ public static class TournamentEndpoints
                     WHERE id = @id
                     """,
                     new { id = existing, role = req.Role, permissions = permissionsJson,
-                          assignedBy = userCtx.UserId });
+                          assignedBy = userCtx.UserIdGuid });
             }
             else
             {
@@ -796,7 +796,7 @@ public static class TournamentEndpoints
                         (@tournamentId, @userId, @role, @permissions::jsonb, @assignedBy, 'pending')
                     """,
                     new { tournamentId, userId, role = req.Role, permissions = permissionsJson,
-                          assignedBy = userCtx.UserId });
+                          assignedBy = userCtx.UserIdGuid });
             }
 
             return Results.Ok(new { success = true });
@@ -824,7 +824,7 @@ public static class TournamentEndpoints
                     WHERE ts.id = @staffId AND t.organizer_id = @userId
                 )
                 """,
-                new { staffId, userId = userCtx.UserId });
+                new { staffId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             var permissionsJson = JsonSerializer.Serialize(req.Permissions ?? Array.Empty<string>());
@@ -859,7 +859,7 @@ public static class TournamentEndpoints
                     WHERE ts.id = @staffId AND t.organizer_id = @userId
                 )
                 """,
-                new { staffId, userId = userCtx.UserId });
+                new { staffId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -897,7 +897,7 @@ public static class TournamentEndpoints
                 WHERE ts.user_id = @userId AND ts.status = 'pending'
                 ORDER BY ts.created_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -930,7 +930,7 @@ public static class TournamentEndpoints
                 WHERE ts.user_id = @userId AND ts.status = 'active'
                 ORDER BY ts.updated_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -1031,7 +1031,7 @@ public static class TournamentEndpoints
                    )
                 ORDER BY td.created_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
@@ -1078,7 +1078,7 @@ public static class TournamentEndpoints
                 INSERT INTO dispute_comments (dispute_id, user_id, comment, is_internal, attachment_url)
                 VALUES (@disputeId, @userId, @comment, FALSE, @attachmentUrl)
                 """,
-                new { disputeId, userId = userCtx.UserId, comment = req.Comment ?? "", attachmentUrl = req.AttachmentUrl });
+                new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", attachmentUrl = req.AttachmentUrl });
 
             // Auto-promote to in_review if open
             var currentStatus = await conn.QuerySingleOrDefaultAsync<string>(
@@ -1123,7 +1123,7 @@ public static class TournamentEndpoints
                     assigned_to_user_id = @userId, updated_at = NOW()
                 WHERE id = @disputeId
                 """,
-                new { disputeId, status = req.Status, notes = req.ResolutionNotes, userId = userCtx.UserId });
+                new { disputeId, status = req.Status, notes = req.ResolutionNotes, userId = userCtx.UserIdGuid });
 
             // Send notification to filer
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(

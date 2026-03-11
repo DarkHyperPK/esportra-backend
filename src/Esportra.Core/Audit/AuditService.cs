@@ -23,11 +23,11 @@ public enum AuditSeverity { Low, Medium, High, Critical }
 public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> logger)
 {
     public async Task LogAsync(
-        string     adminId,
+        Guid       adminId,
         string     adminName,
         ActionType action,
         TargetType target,
-        string     targetId,
+        Guid       targetId,
         string     targetName,
         object?    details          = null,
         AuditSeverity? severityOverride = null,

@@ -3,9 +3,9 @@ namespace Esportra.Core.Bracket;
 public interface IBracketGenerator
 {
     BracketGraph Generate(
-        IReadOnlyList<(string Id, string Name)> teams,
-        string tournamentId,
-        string? stageId      = null,
+        IReadOnlyList<(Guid Id, string Name)> teams,
+        Guid tournamentId,
+        Guid?   stageId      = null,
         int     bestOf       = 1,
         int?    bracketSize  = null,
         int?    advancementCount = null,

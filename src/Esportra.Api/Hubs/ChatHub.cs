@@ -74,7 +74,7 @@ public sealed class ChatHub : Hub
 
         // Fetch username from profiles
         var username = await conn.QuerySingleOrDefaultAsync<string>(
-            "SELECT username FROM profiles WHERE id = @Id", new { Id = userId });
+            "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
 
         const string sql = """
             INSERT INTO match_messages (match_id, sender_id, sender_name, content, message_type, created_at)
@@ -84,8 +84,8 @@ public sealed class ChatHub : Hub
 
         var message = await conn.QuerySingleAsync<MessageDto>(sql, new
         {
-            MatchId    = matchId,
-            SenderId   = userId,
+            MatchId    = Guid.Parse(matchId),
+            SenderId   = Guid.Parse(userId),
             SenderName = username ?? "Unknown",
             Content    = content.Trim(),
         });
@@ -102,7 +102,7 @@ public sealed class ChatHub : Hub
 
         using var conn = _db.CreateConnection();
         var username = await conn.QuerySingleOrDefaultAsync<string>(
-            "SELECT username FROM profiles WHERE id = @Id", new { Id = userId });
+            "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
 
         await Clients.OthersInGroup(ChatGroup(matchId))
             .SendAsync(
@@ -138,7 +138,7 @@ public sealed class ChatHub : Hub
                 WHERE bm.id = @matchId AND t.organizer_id = @userId
             )
             """,
-            new { matchId, userId });
+            new { matchId = Guid.Parse(matchId), userId = Guid.Parse(userId) });
         return isParticipant;
     }
 }

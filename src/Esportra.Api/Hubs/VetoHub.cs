@@ -28,7 +28,7 @@ public sealed class VetoHub : Hub
         _logger.LogDebug("Client {Conn} joined veto:{MatchId}", Context.ConnectionId, matchId);
 
         // Send current state immediately so late-joiner catches up
-        var current = await _veto.GetAsync(matchId);
+        var current = await _veto.GetAsync(Guid.Parse(matchId));
         if (current is not null)
             await Clients.Caller.SendAsync(VetoHubEvents.StateSync, current);
     }

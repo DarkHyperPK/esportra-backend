@@ -43,17 +43,17 @@ public static class GraphValidator
 
     private static bool HasCycle(List<BracketNode> nodes, List<BracketEdge> edges)
     {
-        var adj = new Dictionary<string, List<string>>();
+        var adj = new Dictionary<Guid, List<Guid>>();
         foreach (var e in edges)
         {
             if (!adj.ContainsKey(e.SourceMatchId)) adj[e.SourceMatchId] = [];
             adj[e.SourceMatchId].Add(e.TargetMatchId);
         }
 
-        var visited  = new HashSet<string>();
-        var recStack = new HashSet<string>();
+        var visited  = new HashSet<Guid>();
+        var recStack = new HashSet<Guid>();
 
-        bool Dfs(string nodeId)
+        bool Dfs(Guid nodeId)
         {
             if (recStack.Contains(nodeId)) return true;
             if (visited.Contains(nodeId))  return false;

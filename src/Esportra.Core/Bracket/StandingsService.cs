@@ -6,7 +6,7 @@ namespace Esportra.Core.Bracket;
 public sealed class StandingsService(IDbConnectionFactory db)
 {
     public async Task<List<TeamStanding>> CalculateStandingsAsync(
-        string stageId, string? groupId = null, CancellationToken ct = default)
+        Guid stageId, string? groupId = null, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
 
@@ -25,10 +25,10 @@ public sealed class StandingsService(IDbConnectionFactory db)
         var matches = (await conn.QueryAsync(sql, new { stageId, groupId })).AsList();
 
         // 2. Build standings map
-        var map = new Dictionary<string, (
+        var map = new Dictionary<Guid, (
             int Played, int Wins, int Losses, int Ties, int Points, int Buchholz, int ScoreDiff)>();
 
-        void Ensure(string teamId)
+        void Ensure(Guid teamId)
         {
             if (!map.ContainsKey(teamId)) map[teamId] = (0, 0, 0, 0, 0, 0, 0);
         }
@@ -40,60 +40,60 @@ public sealed class StandingsService(IDbConnectionFactory db)
             int t1Score = m.team1_score ?? 0;
             int t2Score = m.team2_score ?? 0;
 
-            if (m.team1_id is not null && m.team2_id is not null)
+            if (m.team1_id is Guid t1Id && m.team2_id is Guid t2Id)
             {
-                Ensure(m.team1_id); Ensure(m.team2_id);
-                var t1 = map[m.team1_id];
-                var t2 = map[m.team2_id];
+                Ensure(t1Id); Ensure(t2Id);
+                var t1 = map[t1Id];
+                var t2 = map[t2Id];
 
                 t1.Played++; t2.Played++;
                 t1.ScoreDiff += t1Score - t2Score;
                 t2.ScoreDiff += t2Score - t1Score;
 
-                if (m.winner_id == m.team1_id)      { t1.Wins++; t1.Points += 3; t2.Losses++; }
-                else if (m.winner_id == m.team2_id) { t2.Wins++; t2.Points += 3; t1.Losses++; }
-                else                                 { t1.Ties++; t1.Points++; t2.Ties++; t2.Points++; }
+                if ((Guid?)m.winner_id == t1Id)      { t1.Wins++; t1.Points += 3; t2.Losses++; }
+                else if ((Guid?)m.winner_id == t2Id)  { t2.Wins++; t2.Points += 3; t1.Losses++; }
+                else                                   { t1.Ties++; t1.Points++; t2.Ties++; t2.Points++; }
 
-                map[m.team1_id] = t1;
-                map[m.team2_id] = t2;
+                map[t1Id] = t1;
+                map[t2Id] = t2;
             }
-            else if (m.team1_id is not null)
+            else if (m.team1_id is Guid onlyT1)
             {
-                Ensure(m.team1_id);
-                var t1 = map[m.team1_id];
+                Ensure(onlyT1);
+                var t1 = map[onlyT1];
                 t1.Played++; t1.Wins++; t1.Points += 3; t1.ScoreDiff += t1Score;
-                map[m.team1_id] = t1;
+                map[onlyT1] = t1;
             }
-            else if (m.team2_id is not null)
+            else if (m.team2_id is Guid onlyT2)
             {
-                Ensure(m.team2_id);
-                var t2 = map[m.team2_id];
+                Ensure(onlyT2);
+                var t2 = map[onlyT2];
                 t2.Played++; t2.Wins++; t2.Points += 3; t2.ScoreDiff += t2Score;
-                map[m.team2_id] = t2;
+                map[onlyT2] = t2;
             }
         }
 
         // 3. Buchholz: sum of opponents' points (second pass)
         foreach (var m in matches)
         {
-            if (m.team1_id is null || m.team2_id is null) continue;
-            if (!map.ContainsKey(m.team1_id) || !map.ContainsKey(m.team2_id)) continue;
+            if (m.team1_id is not Guid bt1 || m.team2_id is not Guid bt2) continue;
+            if (!map.ContainsKey(bt1) || !map.ContainsKey(bt2)) continue;
 
-            var t1 = map[m.team1_id]; var t2 = map[m.team2_id];
+            var t1 = map[bt1]; var t2 = map[bt2];
             t1.Buchholz += t2.Points; t2.Buchholz += t1.Points;
-            map[m.team1_id] = t1; map[m.team2_id] = t2;
+            map[bt1] = t1; map[bt2] = t2;
         }
 
         // 4. Fetch team names
         var teamIds = map.Keys.ToList();
-        var teamNames = new Dictionary<string, string>();
+        var teamNames = new Dictionary<Guid, string>();
         if (teamIds.Count > 0)
         {
             var teams = await conn.QueryAsync(
                 "SELECT id, name FROM public.teams WHERE id = ANY(@ids)",
                 new { ids = teamIds.ToArray() });
             foreach (var t in teams)
-                teamNames[(string)t.id] = (string)t.name;
+                teamNames[(Guid)t.id] = (string)t.name;
         }
 
         // 5. Sort: Points → Buchholz → ScoreDiff → Wins

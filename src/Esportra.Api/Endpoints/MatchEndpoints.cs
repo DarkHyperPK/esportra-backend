@@ -54,7 +54,7 @@ public static class MatchEndpoints
                 JOIN team_members tm ON tm.user_id = ra.user_id
                 WHERE tm.team_id IN (@team1Id, @team2Id) AND ra.puuid IS NOT NULL
                 """,
-                new { team1Id = (string)match.team1_id, team2Id = (string)match.team2_id })).AsList();
+                new { team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id })).AsList();
 
             if (riotAccounts.Count == 0)
                 return Results.Ok(new { found = false, reason = "No linked Riot accounts for match participants" });
@@ -82,7 +82,7 @@ public static class MatchEndpoints
         // Processes an accepted match result report: validates, finalizes the match,
         // updates standings, and broadcasts the result.
         app.MapPost("/api/matches/{matchId}/process", async (
-            string                         matchId,
+            Guid                           matchId,
             [FromBody] ProcessMatchResultRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory           db,
@@ -119,8 +119,8 @@ public static class MatchEndpoints
                 return Results.NotFound(new { error = "Match not found" });
 
             // 3. Determine winner/loser
-            var winnerId = (string)report.winner_team_id;
-            var loserId  = winnerId == (string)match.team1_id ? (string)match.team2_id : (string)match.team1_id;
+            var winnerId = (Guid)report.winner_team_id;
+            var loserId  = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
             var team1Score = (int)report.team1_score;
             var team2Score = (int)report.team2_score;
 
@@ -151,7 +151,7 @@ public static class MatchEndpoints
 
             // 6. Broadcast result via MatchHub
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(matchId))
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, status = "completed", winnerId, team1Score, team2Score },
                     ct);
@@ -161,7 +161,7 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/finalize ──────────────────────────────
         app.MapPost("/api/matches/{matchId}/finalize", async (
-            string               matchId,
+            Guid                 matchId,
             IDbConnectionFactory db,
             IHubContext<MatchHub> matchHub,
             CancellationToken    ct) =>
@@ -174,7 +174,7 @@ public static class MatchEndpoints
 
             // Notify match group that status changed
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(matchId))
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, status = "completed", result },
                     ct);
@@ -186,7 +186,7 @@ public static class MatchEndpoints
 
         // GET /api/veto/{matchId}
         app.MapGet("/api/veto/{matchId}", async (
-            string         matchId,
+            Guid           matchId,
             VetoDbService  vetoSvc,
             CancellationToken ct) =>
         {
@@ -196,7 +196,7 @@ public static class MatchEndpoints
 
         // POST /api/veto/{matchId}/init  (organizer)
         app.MapPost("/api/veto/{matchId}/init", async (
-            string              matchId,
+            Guid                matchId,
             [FromBody] VetoInitRequest req,
             HttpContext         ctx,
             VetoDbService       vetoSvc,
@@ -212,7 +212,7 @@ public static class MatchEndpoints
                 req.BestOf, req.Game ?? "valorant", ct);
 
             await vetoHub.Clients
-                .Group(VetoHub.VetoGroup(matchId))
+                .Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoAction, veto, ct);
 
             return Results.Ok(veto);
@@ -220,7 +220,7 @@ public static class MatchEndpoints
 
         // POST /api/veto/{matchId}/ban
         app.MapPost("/api/veto/{matchId}/ban", async (
-            string             matchId,
+            Guid               matchId,
             [FromBody] VetoBanRequest req,
             HttpContext        ctx,
             VetoDbService      vetoSvc,
@@ -244,7 +244,7 @@ public static class MatchEndpoints
             var updated = await vetoSvc.BanMapAsync(matchId, req.MapId, userCtx.UserId, ct);
 
             await vetoHub.Clients
-                .Group(VetoHub.VetoGroup(matchId))
+                .Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoAction, updated, ct);
 
             return Results.Ok(updated);
@@ -252,7 +252,7 @@ public static class MatchEndpoints
 
         // POST /api/veto/{matchId}/pick
         app.MapPost("/api/veto/{matchId}/pick", async (
-            string              matchId,
+            Guid                matchId,
             [FromBody] VetoPickRequest req,
             HttpContext         ctx,
             VetoDbService       vetoSvc,
@@ -280,13 +280,13 @@ public static class MatchEndpoints
             if (newState == VetoState.Complete)
             {
                 await vetoHub.Clients
-                    .Group(VetoHub.VetoGroup(matchId))
+                    .Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoComplete, updated.Team1PickedMaps, ct);
             }
             else
             {
                 await vetoHub.Clients
-                    .Group(VetoHub.VetoGroup(matchId))
+                    .Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, updated, ct);
             }
 
@@ -295,7 +295,7 @@ public static class MatchEndpoints
 
         // POST /api/veto/{matchId}/pick-side
         app.MapPost("/api/veto/{matchId}/pick-side", async (
-            string                  matchId,
+            Guid                    matchId,
             [FromBody] VetoPickSideRequest req,
             HttpContext             ctx,
             VetoDbService           vetoSvc,
@@ -319,7 +319,7 @@ public static class MatchEndpoints
             var updated = await vetoSvc.PickSideAsync(matchId, req.MapId, req.Side, userCtx.UserId, ct);
 
             await vetoHub.Clients
-                .Group(VetoHub.VetoGroup(matchId))
+                .Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoAction, updated, ct);
 
             return Results.Ok(updated);
@@ -327,7 +327,7 @@ public static class MatchEndpoints
 
         // POST /api/veto/{matchId}/reset  (organizer only)
         app.MapPost("/api/veto/{matchId}/reset", async (
-            string              matchId,
+            Guid                matchId,
             HttpContext         ctx,
             VetoDbService       vetoSvc,
             IHubContext<VetoHub> vetoHub,
@@ -340,7 +340,7 @@ public static class MatchEndpoints
             await vetoSvc.ResetAsync(matchId, ct);
 
             await vetoHub.Clients
-                .Group(VetoHub.VetoGroup(matchId))
+                .Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoReset, new { matchId }, ct);
 
             return Results.Ok(new { message = "Veto reset." });
@@ -348,7 +348,7 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/award-walkover ──────────────────────
         app.MapPost("/api/matches/{matchId}/award-walkover", async (
-            string                       matchId,
+            Guid                         matchId,
             [FromBody] WalkoverRequest   req,
             HttpContext                  ctx,
             IDbConnectionFactory         db,
@@ -386,7 +386,7 @@ public static class MatchEndpoints
             if (!success) return Results.Conflict(new { error = "Match state has changed." });
 
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(matchId))
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, status = "completed" }, ct);
 
@@ -395,7 +395,7 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/swap-teams ──────────────────────────
         app.MapPost("/api/matches/{matchId}/swap-teams", async (
-            string               matchId,
+            Guid                 matchId,
             HttpContext           ctx,
             IDbConnectionFactory db,
             IHubContext<MatchHub> matchHub,
@@ -417,7 +417,7 @@ public static class MatchEndpoints
             if (rows == 0) return Results.NotFound();
 
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(matchId))
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, action = "swap" }, ct);
 
@@ -426,7 +426,7 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/reset ───────────────────────────────
         app.MapPost("/api/matches/{matchId}/reset", async (
-            string                   matchId,
+            Guid                     matchId,
             HttpContext              ctx,
             IDbConnectionFactory     db,
             IHubContext<MatchHub>    matchHub,
@@ -479,12 +479,12 @@ public static class MatchEndpoints
                 new { matchId });
 
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(matchId))
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, status = "pending", action = "reset" }, ct);
 
             await vetoHub.Clients
-                .Group(VetoHub.VetoGroup(matchId))
+                .Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoReset, new { matchId }, ct);
 
             return Results.Ok(new { success = true });
@@ -492,7 +492,7 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/go-live ─────────────────────────────
         app.MapPost("/api/matches/{matchId}/go-live", async (
-            string                    matchId,
+            Guid                      matchId,
             [FromBody] GoLiveRequest  req,
             HttpContext               ctx,
             IDbConnectionFactory      db,
@@ -510,7 +510,7 @@ public static class MatchEndpoints
             if (rows == 0) return Results.NotFound();
 
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(matchId))
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, status = "in_progress" }, ct);
 
@@ -520,7 +520,7 @@ public static class MatchEndpoints
         // ── POST /api/matches/{matchId}/save-score ──────────────────────────
         // Replaces GraphMatchService.saveScoreAndAdvance (score + advance + finals reset + stage completion)
         app.MapPost("/api/matches/{matchId}/save-score", async (
-            string                       matchId,
+            Guid                         matchId,
             [FromBody] SaveScoreRequest  req,
             HttpContext                  ctx,
             IDbConnectionFactory         db,
@@ -574,7 +574,7 @@ public static class MatchEndpoints
                 string field = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
                 await conn.ExecuteAsync(
                     $"UPDATE brkt_matches SET {field} = @teamId WHERE id = @targetId",
-                    new { teamId, targetId = (string)adv.target_match_id });
+                    new { teamId, targetId = (Guid)adv.target_match_id });
             }
 
             // 4. Grand Finals Reset (double elimination)
@@ -588,19 +588,19 @@ public static class MatchEndpoints
                 {
                     var team1Losses = await conn.QuerySingleAsync<int>(
                         "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @vid AND loser_id = @tid AND status = 'completed'",
-                        new { vid = (string)match.version_id, tid = (string?)match.team1_id });
+                        new { vid = (Guid)match.version_id, tid = (Guid?)match.team1_id });
                     var team2Losses = await conn.QuerySingleAsync<int>(
                         "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @vid AND loser_id = @tid AND status = 'completed'",
-                        new { vid = (string)match.version_id, tid = (string?)match.team2_id });
+                        new { vid = (Guid)match.version_id, tid = (Guid?)match.team2_id });
 
                     if (team1Losses == 1 && team2Losses == 1)
                     {
-                        var existingReset = await conn.QuerySingleOrDefaultAsync<string?>(
+                        var existingReset = await conn.QuerySingleOrDefaultAsync<Guid?>(
                             "SELECT id FROM brkt_matches WHERE version_id = @vid AND bracket_type = 'final' AND round_index > @ri LIMIT 1",
-                            new { vid = (string)match.version_id, ri = (int)match.round_index });
-                        var previousFinal = await conn.QuerySingleOrDefaultAsync<string?>(
+                            new { vid = (Guid)match.version_id, ri = (int)match.round_index });
+                        var previousFinal = await conn.QuerySingleOrDefaultAsync<Guid?>(
                             "SELECT id FROM brkt_matches WHERE version_id = @vid AND bracket_type = 'final' AND round_index < @ri LIMIT 1",
-                            new { vid = (string)match.version_id, ri = (int)match.round_index });
+                            new { vid = (Guid)match.version_id, ri = (int)match.round_index });
 
                         if (existingReset is null && previousFinal is null)
                         {
@@ -609,8 +609,8 @@ public static class MatchEndpoints
                                 INSERT INTO brkt_matches (id, version_id, bracket_type, round_index, match_number, status, team1_id, team2_id, best_of)
                                 VALUES (gen_random_uuid(), @vid, 'final', @ri, 1, 'pending', @t1, @t2, @bo)
                                 """,
-                                new { vid = (string)match.version_id, ri = (int)match.round_index + 1,
-                                      t1 = (string?)match.team1_id, t2 = (string?)match.team2_id, bo = (int?)match.best_of ?? 1 });
+                                new { vid = (Guid)match.version_id, ri = (int)match.round_index + 1,
+                                      t1 = (Guid?)match.team1_id, t2 = (Guid?)match.team2_id, bo = (int?)match.best_of ?? 1 });
                         }
                     }
                 }
@@ -619,14 +619,14 @@ public static class MatchEndpoints
 
             // 5. Stage completion check
             bool stageComplete = false;
-            string? stageId = null;
+            Guid? stageId = null;
             try
             {
-                var versionId = await conn.QuerySingleOrDefaultAsync<string>(
+                var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                     "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
                 if (versionId is not null)
                 {
-                    stageId = await conn.QuerySingleOrDefaultAsync<string>(
+                    stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                         "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId });
                     if (stageId is not null)
                     {
@@ -650,14 +650,14 @@ public static class MatchEndpoints
                             {
                                 await conn.ExecuteAsync(
                                     "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tid",
-                                    new { winnerId, tid = (string)stageInfo.tournament_id });
+                                    new { winnerId, tid = (Guid)stageInfo.tournament_id });
                             }
                         }
                     }
 
                     // Broadcast bracket update
                     await bracketHub.Clients
-                        .Group(BracketHub.BracketGroup(versionId))
+                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
                         .SendAsync(BracketHubEvents.MatchUpdated,
                             new { versionId, matchId }, ct);
                 }

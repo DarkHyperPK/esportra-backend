@@ -3,25 +3,25 @@ namespace Esportra.Core.Bracket;
 // ── Bracket Graph Domain Models ────────────────────────────────────────────
 
 public sealed record BracketVersion(
-    string Id,
-    string TournamentId,
-    string? StageId,
+    Guid   Id,
+    Guid   TournamentId,
+    Guid?  StageId,
     int    VersionNumber,
     string Status,           // draft | active | archived
     string CreatedAt);
 
 public sealed record BracketNode(
-    string  Id,
-    string  VersionId,
+    Guid    Id,
+    Guid    VersionId,
     int     RoundIndex,
     int     MatchNumber,
     string  BracketType,     // winners | losers | final | group | swiss_round
     string  Status,          // pending | live | completed
     int     BestOf = 1,
-    string? Team1Id = null,
-    string? Team2Id = null,
-    string? WinnerId = null,
-    string? LoserId = null,
+    Guid?   Team1Id = null,
+    Guid?   Team2Id = null,
+    Guid?   WinnerId = null,
+    Guid?   LoserId = null,
     int?    Team1Score = null,
     int?    Team2Score = null,
     string? GroupId = null,
@@ -31,10 +31,10 @@ public sealed record BracketNode(
     double? Y = null);
 
 public sealed record BracketEdge(
-    string Id,
-    string VersionId,
-    string SourceMatchId,
-    string TargetMatchId,
+    Guid   Id,
+    Guid   VersionId,
+    Guid   SourceMatchId,
+    Guid   TargetMatchId,
     string Type,            // winner | loser
     int    TargetSlot);     // 1 | 2
 
@@ -46,7 +46,7 @@ public sealed record BracketGraph(
 // ── Standings ──────────────────────────────────────────────────────────────
 
 public sealed record TeamStanding(
-    string TeamId,
+    Guid   TeamId,
     string TeamName,
     int    Played,
     int    Wins,

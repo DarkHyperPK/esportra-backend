@@ -62,7 +62,7 @@ public static class VetoEngine
         if (!context.IsCaptain && !context.IsOrganizer)
             return new(false, "FORBIDDEN");
 
-        if (!context.IsOrganizer && context.UserTeamId != context.CurrentTeamId)
+        if (!context.IsOrganizer && context.UserTeamId != context.CurrentTeamId?.ToString())
             return new(false, "NOT_YOUR_TURN");
 
         // State must match event

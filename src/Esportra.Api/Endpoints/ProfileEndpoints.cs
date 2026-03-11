@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -32,12 +32,12 @@ public static class ProfileEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            return await GetProfileResult(userCtx.UserId, db, cache, ct);
+            return await GetProfileResult(userCtx.UserIdGuid, db, cache, ct);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/{id} ────────────────────────────────────────────
         app.MapGet("/api/profiles/{id}", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             HybridCache          cache,
             CancellationToken    ct) =>
@@ -47,7 +47,7 @@ public static class ProfileEndpoints
 
         // ── PUT /api/profiles/{id} ────────────────────────────────────────────
         app.MapPut("/api/profiles/{id}", async (
-            string                     id,
+            Guid                       id,
             [FromBody] Dictionary<string, object?> updates,
             HttpContext                ctx,
             IDbConnectionFactory       db,
@@ -58,7 +58,7 @@ public static class ProfileEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             // Users can only update their own profile; admins can update any
-            if (userCtx.UserId != id && !userCtx.Roles.Contains("admin"))
+            if (userCtx.UserIdGuid != id && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
             // Filter to allowed fields only
@@ -132,7 +132,7 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/{id}/licenses ────────────────────────────────────
         app.MapGet("/api/profiles/{id}/licenses", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -187,7 +187,7 @@ public static class ProfileEndpoints
                 ON CONFLICT (user_id, achievement_id) DO NOTHING
                 RETURNING *, (SELECT row_to_json(a) FROM achievements a WHERE a.id = achievement_id) AS achievement
                 """,
-                new { userId = userCtx.UserId, achievementId });
+                new { userId = userCtx.UserIdGuid, achievementId = Guid.Parse(achievementId) });
 
             if (row is not null)
                 await cache.RemoveAsync($"profile-stats:{userCtx.UserId}", ct);
@@ -211,7 +211,7 @@ public static class ProfileEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "UPDATE user_statistics SET skill_level = @skillLevel WHERE user_id = @userId",
-                new { userId = userCtx.UserId, skillLevel = req.SkillLevel });
+                new { userId = userCtx.UserIdGuid, skillLevel = req.SkillLevel });
 
             await cache.RemoveAsync($"profile-stats:{userCtx.UserId}", ct);
             return Results.Ok(new { success = true });
@@ -219,7 +219,7 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/{id}/stats ──────────────────────────────────────
         app.MapGet("/api/profiles/{id}/stats", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             HybridCache          cache,
             CancellationToken    ct) =>
@@ -256,7 +256,7 @@ public static class ProfileEndpoints
     // ── Shared helper ─────────────────────────────────────────────────────────
 
     private static async Task<IResult> GetProfileResult(
-        string id, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
+        Guid id, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
     {
         var profile = await cache.GetOrCreateAsync(
             $"profile:{id}",
@@ -322,7 +322,7 @@ public static class ProfileEndpoints
         // ── GET /api/rosters/{rosterId}/members — get roster members ─────────
         // Replaces supabase.rpc('get_roster_members')
         app.MapGet("/api/rosters/{rosterId}/members", async (
-            string               rosterId,
+            Guid                 rosterId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {

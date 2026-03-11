@@ -136,7 +136,7 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{stageId}/completion-status ─────────────────────
         app.MapGet("/api/stages/{stageId}/completion-status", async (
-            string              stageId,
+            Guid                stageId,
             IDbConnectionFactory db,
             StandingsService    standings,
             CancellationToken   ct) =>
@@ -157,7 +157,7 @@ public static class StageEndpoints
             {
                 participantsCount = await conn.ExecuteScalarAsync<int>(
                     "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tid AND status != 'pending'",
-                    new { tid = (string)stage.tournament_id });
+                    new { tid = (Guid)stage.tournament_id });
             }
             else
             {
@@ -186,7 +186,7 @@ public static class StageEndpoints
             // 4. Get all matches
             var matches = (await conn.QueryAsync(
                 "SELECT * FROM brkt_matches WHERE version_id = @vid",
-                new { vid = (string)version.id })).AsList();
+                new { vid = (Guid)version.id })).AsList();
             if (matches.Count == 0)
                 return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "No matches found" });
 
@@ -208,7 +208,7 @@ public static class StageEndpoints
 
         // ── POST /api/stages/{stageId}/advance ──────────────────────────────
         app.MapPost("/api/stages/{stageId}/advance", async (
-            string              stageId,
+            Guid                stageId,
             IDbConnectionFactory db,
             StandingsService    standings,
             CancellationToken   ct) =>
@@ -229,7 +229,7 @@ public static class StageEndpoints
             {
                 participantsCount = await conn.ExecuteScalarAsync<int>(
                     "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tid AND status != 'pending'",
-                    new { tid = (string)stage.tournament_id });
+                    new { tid = (Guid)stage.tournament_id });
             }
             else
             {
@@ -253,7 +253,7 @@ public static class StageEndpoints
             // 4. Get all matches and check completion
             var matches = (await conn.QueryAsync(
                 "SELECT * FROM brkt_matches WHERE version_id = @vid",
-                new { vid = (string)version.id })).AsList();
+                new { vid = (Guid)version.id })).AsList();
             if (matches.Count == 0)
                 return Results.Ok(new { success = false, error = "No matches found" });
 
@@ -272,7 +272,7 @@ public static class StageEndpoints
                 return Results.Ok(new { success = false, error = $"Stage not complete: {completionResult.reason}" });
 
             var advancingTeams = (List<AdvancingTeam>)completionResult.advancingTeams;
-            string tournamentId = (string)stage.tournament_id;
+            Guid tournamentId = (Guid)stage.tournament_id;
             int stageOrder = (int)stage.stage_order;
 
             // 5. Find next stage
@@ -304,8 +304,8 @@ public static class StageEndpoints
             }
 
             // 6. Insert advancing teams into next stage (avoid duplicates)
-            string nextStageId = (string)nextStage.id;
-            var existingTeamIds = (await conn.QueryAsync<string>(
+            Guid nextStageId = (Guid)nextStage.id;
+            var existingTeamIds = (await conn.QueryAsync<Guid>(
                 "SELECT team_id FROM stage_participants WHERE stage_id = @nextStageId",
                 new { nextStageId })).ToHashSet();
 
@@ -341,7 +341,7 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{stageId}/next ──────────────────────────────────
         app.MapGet("/api/stages/{stageId}/next", async (
-            string              stageId,
+            Guid                stageId,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -353,7 +353,7 @@ public static class StageEndpoints
 
             var nextStage = await conn.QuerySingleOrDefaultAsync(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tid AND stage_order = @nextOrder",
-                new { tid = (string)currentStage.tournament_id, nextOrder = (int)currentStage.stage_order + 1 });
+                new { tid = (Guid)currentStage.tournament_id, nextOrder = (int)currentStage.stage_order + 1 });
 
             return nextStage is null ? Results.NotFound() : Results.Ok(nextStage);
         });
@@ -361,7 +361,7 @@ public static class StageEndpoints
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private record AdvancingTeam(string TeamId, string TeamName, int Seed);
+    private record AdvancingTeam(Guid TeamId, string TeamName, int Seed);
 
     private static async Task<object> CheckEliminationCompletion(
         System.Data.IDbConnection conn,
@@ -388,7 +388,7 @@ public static class StageEndpoints
         var winnerIds = finalRoundMatches
             .OrderBy(m => (int)(m.match_number ?? 0))
             .Where(m => m.winner_id is not null)
-            .Select(m => (string)m.winner_id)
+            .Select(m => (Guid)m.winner_id)
             .Take(advancementCount)
             .ToList();
 
@@ -409,7 +409,7 @@ public static class StageEndpoints
         System.Data.IDbConnection conn,
         List<dynamic>             matches,
         int                       advancementCount,
-        string                    stageId,
+        Guid                      stageId,
         dynamic                   stage,
         StandingsService          standings,
         CancellationToken         ct)
@@ -517,7 +517,7 @@ public static class StageEndpoints
     }
 
     private static async Task<List<AdvancingTeam>> GetTeamInfo(
-        System.Data.IDbConnection conn, List<string> teamIds)
+        System.Data.IDbConnection conn, List<Guid> teamIds)
     {
         if (teamIds.Count == 0) return [];
 
@@ -527,7 +527,7 @@ public static class StageEndpoints
 
         return teamIds.Select((id, idx) =>
         {
-            var t = teams.FirstOrDefault(x => (string)x.id == id);
+            var t = teams.FirstOrDefault(x => (Guid)x.id == id);
             return new AdvancingTeam(id, t?.name ?? "Unknown", idx + 1);
         }).ToList();
     }

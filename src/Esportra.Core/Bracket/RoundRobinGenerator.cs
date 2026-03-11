@@ -6,15 +6,15 @@ namespace Esportra.Core.Bracket;
 public sealed class RoundRobinGenerator : IBracketGenerator
 {
     public BracketGraph Generate(
-        IReadOnlyList<(string Id, string Name)> teams,
-        string tournamentId,
-        string? stageId          = null,
+        IReadOnlyList<(Guid Id, string Name)> teams,
+        Guid tournamentId,
+        Guid?   stageId          = null,
         int     bestOf           = 1,
         int?    bracketSize      = null,   // interpreted as number of groups
         int?    advancementCount = null,
         BracketConfig? config    = null)
     {
-        var versionId = Guid.NewGuid().ToString();
+        var versionId = Guid.NewGuid();
         var nodes     = new List<BracketNode>();
         var edges     = new List<BracketEdge>();
 
@@ -22,7 +22,7 @@ public sealed class RoundRobinGenerator : IBracketGenerator
         DateTime? startDate   = config?.TournamentStartDate is { } s ? DateTime.Parse(s) : null;
 
         int numGroups = bracketSize ?? 1;
-        var groups    = new List<List<(string Id, string Name)>>(numGroups);
+        var groups    = new List<List<(Guid Id, string Name)>>(numGroups);
         for (int i = 0; i < numGroups; i++) groups.Add([]);
 
         // Snake seeding distribution
@@ -59,7 +59,7 @@ public sealed class RoundRobinGenerator : IBracketGenerator
                 {
                     var (t1, t2) = round[mi];
                     nodes.Add(new BracketNode(
-                        Id:            Guid.NewGuid().ToString(),
+                        Id:            Guid.NewGuid(),
                         VersionId:     versionId,
                         RoundIndex:    ri,
                         MatchNumber:   matchCounter++,
@@ -84,39 +84,39 @@ public sealed class RoundRobinGenerator : IBracketGenerator
     }
 
     /// <summary>Circle algorithm: N teams → N-1 rounds, each team plays once per round.</summary>
-    private static List<List<((string Id, string Name) Team1, (string Id, string Name) Team2)>>
-        GenerateCircleSchedule(List<(string Id, string Name)> teams)
+    private static List<List<((Guid Id, string Name) Team1, (Guid Id, string Name) Team2)>>
+        GenerateCircleSchedule(List<(Guid Id, string Name)> teams)
     {
-        var rounds = new List<List<((string, string), (string, string))>>();
+        var rounds = new List<List<((Guid, string), (Guid, string))>>();
         if (teams.Count < 2) return rounds;
 
-        var participants = new List<(string Id, string Name)>(teams);
+        var participants = new List<(Guid Id, string Name)>(teams);
 
         bool hasBye = participants.Count % 2 != 0;
         if (hasBye)
-            participants.Add(("__bye__", "BYE"));
+            participants.Add((Guid.Empty, "BYE"));
 
         int n         = participants.Count;
         int numRounds = n - 1;
-        var circle    = new List<(string, string)>(participants);
+        var circle    = new List<(Guid, string)>(participants);
 
         for (int round = 0; round < numRounds; round++)
         {
-            var roundMatches = new List<((string, string), (string, string))>();
+            var roundMatches = new List<((Guid, string), (Guid, string))>();
 
             for (int i = 0; i < n / 2; i++)
             {
                 var t1 = circle[i];
                 var t2 = circle[n - 1 - i];
 
-                if (t1.Item1 == "__bye__" || t2.Item1 == "__bye__") continue;
+                if (t1.Item1 == Guid.Empty || t2.Item1 == Guid.Empty) continue;
                 roundMatches.Add((t1, t2));
             }
 
             rounds.Add(roundMatches);
 
             // Rotate: fix position 0, shift rest
-            var newCircle = new List<(string, string)>(n) { circle[0] };
+            var newCircle = new List<(Guid, string)>(n) { circle[0] };
             newCircle.Add(circle[n - 1]);
             for (int i = 1; i < n - 1; i++)
                 newCircle.Add(circle[i]);

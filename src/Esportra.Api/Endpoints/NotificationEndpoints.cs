@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
@@ -44,7 +44,7 @@ public static class NotificationEndpoints
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { userId = userCtx.UserId, limit, offset });
+                new { userId = userCtx.UserIdGuid, limit, offset });
 
             // Fetch pending team invites (synthetic notifications)
             var invites = await conn.QueryAsync<dynamic>(
@@ -54,7 +54,7 @@ public static class NotificationEndpoints
                 WHERE invited_user_id = @userId AND status = 'pending'
                 ORDER BY created_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { notifications, invites });
         }).RequireAuthorization("Authenticated");
@@ -68,11 +68,12 @@ public static class NotificationEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            var idGuid = Guid.Parse(id);
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "UPDATE notifications SET is_read = TRUE WHERE id = @id AND user_id = @userId",
-                new { id, userId = userCtx.UserId });
+                new { id = idGuid, userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -89,7 +90,7 @@ public static class NotificationEndpoints
             using var conn = db.CreateConnection();
             var count = await conn.ExecuteAsync(
                 "UPDATE notifications SET is_read = TRUE WHERE user_id = @userId AND is_read = FALSE",
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true, updated = count });
         }).RequireAuthorization("Authenticated");
@@ -112,13 +113,13 @@ public static class NotificationEndpoints
                 var inviteId = id["invite-".Length..];
                 await conn.ExecuteAsync(
                     "DELETE FROM team_invitations WHERE id = @inviteId AND invited_user_id = @userId",
-                    new { inviteId, userId = userCtx.UserId });
+                    new { inviteId = Guid.Parse(inviteId), userId = userCtx.UserIdGuid });
             }
             else
             {
                 await conn.ExecuteAsync(
                     "DELETE FROM notifications WHERE id = @id AND user_id = @userId",
-                    new { id, userId = userCtx.UserId });
+                    new { id = Guid.Parse(id), userId = userCtx.UserIdGuid });
             }
 
             return Results.Ok(new { success = true });
@@ -136,21 +137,21 @@ public static class NotificationEndpoints
 
             using var conn = db.CreateConnection();
 
-            var syntheticIds = req.Ids.Where(id => id.StartsWith("invite-")).Select(id => id["invite-".Length..]).ToArray();
-            var regularIds   = req.Ids.Where(id => !id.StartsWith("invite-")).ToArray();
+            var syntheticIds = req.Ids.Where(id => id.StartsWith("invite-")).Select(id => Guid.Parse(id["invite-".Length..])).ToArray();
+            var regularIds   = req.Ids.Where(id => !id.StartsWith("invite-")).Select(id => Guid.Parse(id)).ToArray();
 
             if (syntheticIds.Length > 0)
             {
                 await conn.ExecuteAsync(
                     "DELETE FROM team_invitations WHERE id = ANY(@ids) AND invited_user_id = @userId",
-                    new { ids = syntheticIds, userId = userCtx.UserId });
+                    new { ids = syntheticIds, userId = userCtx.UserIdGuid });
             }
 
             if (regularIds.Length > 0)
             {
                 await conn.ExecuteAsync(
                     "DELETE FROM notifications WHERE id = ANY(@ids) AND user_id = @userId",
-                    new { ids = regularIds, userId = userCtx.UserId });
+                    new { ids = regularIds, userId = userCtx.UserIdGuid });
             }
 
             return Results.Ok(new { success = true, deleted = req.Ids.Count });
@@ -172,8 +173,10 @@ public static class NotificationEndpoints
             // Check admin status
             var isAdmin = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT COALESCE(is_admin, FALSE) FROM profiles WHERE id = @userId",
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
             if (isAdmin) return Results.BadRequest(new { error = "Admins cannot join teams." });
+
+            var teamIdGuid = Guid.Parse(req.TeamId);
 
             // Find the pending invite
             var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -185,7 +188,7 @@ public static class NotificationEndpoints
                   AND status = 'pending'
                 LIMIT 1
                 """,
-                new { userId = userCtx.UserId, teamId = req.TeamId });
+                new { userId = userCtx.UserIdGuid, teamId = teamIdGuid });
 
             if (invite is null)
                 return Results.NotFound(new { error = "Invite not found or expired." });
@@ -197,19 +200,19 @@ public static class NotificationEndpoints
                 VALUES (@teamId, @userId, 'member', TRUE, NOW())
                 ON CONFLICT (team_id, user_id) DO UPDATE SET is_active = TRUE, joined_at = NOW()
                 """,
-                new { teamId = req.TeamId, userId = userCtx.UserId });
+                new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
 
             // Accept invite
             await conn.ExecuteAsync(
                 "UPDATE team_invitations SET status = 'accepted', responded_at = NOW() WHERE id = @id",
-                new { id = (string)invite.id });
+                new { id = invite.id });
 
             // Mark notification as read if provided
             if (req.NotificationId is not null && !req.NotificationId.StartsWith("invite-"))
             {
                 await conn.ExecuteAsync(
                     "UPDATE notifications SET is_read = TRUE WHERE id = @id AND user_id = @userId",
-                    new { id = req.NotificationId, userId = userCtx.UserId });
+                    new { id = Guid.Parse(req.NotificationId!), userId = userCtx.UserIdGuid });
             }
 
             // Notify inviter
@@ -221,7 +224,7 @@ public static class NotificationEndpoints
                         'An invited player accepted your team invite.',
                         @teamId, @data::jsonb, FALSE)
                 """,
-                new { userId = (string)invite.invited_by_user_id, teamId = req.TeamId, data = notifData });
+                new { userId = invite.invited_by_user_id, teamId = teamIdGuid, data = notifData });
 
             // Push via SignalR
             await notifHub.Clients
@@ -243,6 +246,8 @@ public static class NotificationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var teamIdGuid = Guid.Parse(req.TeamId);
+
             using var conn = db.CreateConnection();
 
             var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -252,20 +257,20 @@ public static class NotificationEndpoints
                 WHERE invited_user_id = @userId AND team_id = @teamId AND status = 'pending'
                 LIMIT 1
                 """,
-                new { userId = userCtx.UserId, teamId = req.TeamId });
+                new { userId = userCtx.UserIdGuid, teamId = teamIdGuid });
 
             if (invite is null)
                 return Results.NotFound(new { error = "Invite not found." });
 
             await conn.ExecuteAsync(
                 "UPDATE team_invitations SET status = 'rejected', responded_at = NOW() WHERE id = @id",
-                new { id = (string)invite.id });
+                new { id = invite.id });
 
             if (req.NotificationId is not null && !req.NotificationId.StartsWith("invite-"))
             {
                 await conn.ExecuteAsync(
                     "UPDATE notifications SET is_read = TRUE WHERE id = @id AND user_id = @userId",
-                    new { id = req.NotificationId, userId = userCtx.UserId });
+                    new { id = Guid.Parse(req.NotificationId!), userId = userCtx.UserIdGuid });
             }
 
             // Notify inviter
@@ -277,7 +282,7 @@ public static class NotificationEndpoints
                         'An invited player rejected your team invite.',
                         @teamId, @data::jsonb, FALSE)
                 """,
-                new { userId = (string)invite.invited_by_user_id, teamId = req.TeamId, data = notifData });
+                new { userId = invite.invited_by_user_id, teamId = teamIdGuid, data = notifData });
 
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup((string)invite.invited_by_user_id))

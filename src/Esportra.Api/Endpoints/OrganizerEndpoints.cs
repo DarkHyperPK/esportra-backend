@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 
@@ -33,7 +33,7 @@ public static class OrganizerEndpoints
                 FROM tournaments
                 WHERE organizer_id = @organizerId
                 """,
-                new { organizerId = userCtx.UserId });
+                new { organizerId = userCtx.UserIdGuid });
 
             var totalParticipants = await conn.ExecuteScalarAsync<int>(
                 """
@@ -42,7 +42,7 @@ public static class OrganizerEndpoints
                 INNER JOIN tournaments t ON t.id = tp.tournament_id
                 WHERE t.organizer_id = @organizerId
                 """,
-                new { organizerId = userCtx.UserId });
+                new { organizerId = userCtx.UserIdGuid });
 
             var gameDistribution = await conn.QueryAsync<dynamic>(
                 """
@@ -52,7 +52,7 @@ public static class OrganizerEndpoints
                 GROUP BY game
                 ORDER BY count DESC
                 """,
-                new { organizerId = userCtx.UserId });
+                new { organizerId = userCtx.UserIdGuid });
 
             var monthlyParticipation = await conn.QueryAsync<dynamic>(
                 """
@@ -66,7 +66,7 @@ public static class OrganizerEndpoints
                 GROUP BY DATE_TRUNC('month', tp.created_at)
                 ORDER BY month
                 """,
-                new { organizerId = userCtx.UserId });
+                new { organizerId = userCtx.UserIdGuid });
 
             return Results.Ok(new
             {

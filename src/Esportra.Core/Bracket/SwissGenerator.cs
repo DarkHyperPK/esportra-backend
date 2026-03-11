@@ -10,15 +10,15 @@ namespace Esportra.Core.Bracket;
 public sealed class SwissGenerator : IBracketGenerator
 {
     public BracketGraph Generate(
-        IReadOnlyList<(string Id, string Name)> teams,
-        string tournamentId,
-        string? stageId          = null,
+        IReadOnlyList<(Guid Id, string Name)> teams,
+        Guid tournamentId,
+        Guid?   stageId          = null,
         int     bestOf           = 1,
         int?    bracketSize      = null,   // interpreted as total rounds
         int?    advancementCount = null,
         BracketConfig? config    = null)
     {
-        var versionId   = Guid.NewGuid().ToString();
+        var versionId   = Guid.NewGuid();
         var nodes       = new List<BracketNode>();
         var edges       = new List<BracketEdge>();
 
@@ -29,7 +29,7 @@ public sealed class SwissGenerator : IBracketGenerator
         var sorted = teams.ToList();
 
         // Split into groups
-        var groups = new List<List<(string Id, string Name)>>(swissGroups);
+        var groups = new List<List<(Guid Id, string Name)>>(swissGroups);
         for (int i = 0; i < swissGroups; i++) groups.Add([]);
 
         foreach (var (team, idx) in sorted.Select((t, i) => (t, i)))
@@ -48,10 +48,10 @@ public sealed class SwissGenerator : IBracketGenerator
             for (int i = 0; i < topHalf.Count; i++)
             {
                 var t1 = topHalf[i];
-                var t2 = i < bottomHalf.Count ? bottomHalf[i] : ((string Id, string Name)?)null;
+                var t2 = i < bottomHalf.Count ? bottomHalf[i] : ((Guid Id, string Name)?)null;
 
                 nodes.Add(new BracketNode(
-                    Id:          Guid.NewGuid().ToString(),
+                    Id:          Guid.NewGuid(),
                     VersionId:   versionId,
                     RoundIndex:  0,
                     MatchNumber: matchCounter++,
@@ -78,7 +78,7 @@ public sealed class SwissNextRoundService(
     StandingsService     standings)
 {
     public async Task<(bool Success, string? Message)> GenerateNextRoundAsync(
-        string stageId, string versionId, int currentRound, CancellationToken ct = default)
+        Guid stageId, Guid versionId, int currentRound, CancellationToken ct = default)
     {
         var standingsList = await standings.CalculateStandingsAsync(stageId, ct: ct);
         if (standingsList.Count < 2)
@@ -99,16 +99,16 @@ public sealed class SwissNextRoundService(
             return (false, "No match history found. Cannot generate pairings.");
 
         var playedMap   = new HashSet<string>();
-        var groupMap    = new Dictionary<string, HashSet<string>>();
-        var teamGroupMap = new Dictionary<string, string>();
+        var groupMap    = new Dictionary<string, HashSet<Guid>>();
+        var teamGroupMap = new Dictionary<Guid, string>();
 
         foreach (var m in history)
         {
             string gid = (string?)m.group_id ?? "default";
             if (!groupMap.ContainsKey(gid)) groupMap[gid] = [];
 
-            if (m.team1_id is string t1) { groupMap[gid].Add(t1); teamGroupMap[t1] = gid; }
-            if (m.team2_id is string t2) { groupMap[gid].Add(t2); teamGroupMap[t2] = gid; }
+            if (m.team1_id is Guid t1) { groupMap[gid].Add(t1); teamGroupMap[t1] = gid; }
+            if (m.team2_id is Guid t2) { groupMap[gid].Add(t2); teamGroupMap[t2] = gid; }
 
             if (m.team1_id is not null && m.team2_id is not null)
             {
@@ -188,7 +188,7 @@ public sealed class SwissNextRoundService(
             {
                 newMatches.Add(new
                 {
-                    id           = Guid.NewGuid().ToString(),
+                    id           = Guid.NewGuid(),
                     version_id   = versionId,
                     round_index  = nextRound - 1,
                     match_number = matchCounter++,
@@ -197,7 +197,7 @@ public sealed class SwissNextRoundService(
                     status       = "pending",
                     team1_id     = t1.TeamId,
                     team2_id     = t2?.TeamId,
-                    winner_id    = (string?)null,
+                    winner_id    = (Guid?)null,
                     best_of      = 1,
                     group_id     = groupId == "default" ? null : groupId
                 });

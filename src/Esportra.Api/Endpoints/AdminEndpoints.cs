@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
@@ -112,7 +112,7 @@ public static class AdminEndpoints
                     INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
                     VALUES (@userId, @sponsorId, 'owner', '{}')
                     ON CONFLICT (user_id, sponsor_id) DO NOTHING
-                    """, new { userId = sponsorUserId, sponsorId = req.SponsorId });
+                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId = req.SponsorId });
 
                 // Send portal access email
                 await email.SendAsync(req.Email, EmailType.PartnerWelcome, new
@@ -134,7 +134,7 @@ public static class AdminEndpoints
                     INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
                     VALUES (@userId, @sponsorId, 'owner', '{}')
                     ON CONFLICT DO NOTHING
-                    """, new { userId = sponsorUserId, sponsorId = req.SponsorId });
+                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId = req.SponsorId });
 
                 // Generate recovery link for password setup
                 var link    = await supabase.GenerateRecoveryLinkAsync(req.Email, ct);
@@ -371,7 +371,7 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/users/{userId}/suspend ──────────────────────────────
         app.MapPost("/api/admin/users/{userId}/suspend", async (
-            string               userId,
+            Guid                 userId,
             [FromBody] SuspendUserRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
@@ -382,13 +382,13 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "SELECT admin_suspend_user(@p_user_id, @p_reason, @p_admin_id)",
-                new { p_user_id = userId, p_reason = req.Reason, p_admin_id = userCtx.UserId });
+                new { p_user_id = userId, p_reason = req.Reason, p_admin_id = userCtx.UserIdGuid });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/users/{userId}/unsuspend ────────────────────────────
         app.MapPost("/api/admin/users/{userId}/unsuspend", async (
-            string               userId,
+            Guid                 userId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -398,7 +398,7 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "SELECT admin_unsuspend_user(@p_user_id, @p_admin_id)",
-                new { p_user_id = userId, p_admin_id = userCtx.UserId });
+                new { p_user_id = userId, p_admin_id = userCtx.UserIdGuid });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 

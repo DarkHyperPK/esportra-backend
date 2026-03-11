@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
@@ -34,6 +34,7 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
             using var conn = db.CreateConnection();
 
             // Verify caller is org owner or active staff member
@@ -45,7 +46,7 @@ public static class OrganizationEndpoints
                     SELECT 1 FROM organization_staff WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
                 )
                 """,
-                new { orgId, userId = userCtx.UserId });
+                new { orgId = orgIdGuid, userId = userCtx.UserIdGuid });
             if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             var staff = await conn.QueryAsync<dynamic>(
@@ -74,7 +75,7 @@ public static class OrganizationEndpoints
                 GROUP BY os.id, p.id
                 ORDER BY os.created_at ASC
                 """,
-                new { orgId });
+                new { orgId = orgIdGuid });
 
             return Results.Ok(staff);
         }).RequireAuthorization("Authenticated");
@@ -93,6 +94,7 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
             using var conn = db.CreateConnection();
 
             // 1. Resolve user by email
@@ -102,17 +104,17 @@ public static class OrganizationEndpoints
             if (profile is null)
                 return Results.BadRequest(new { error = "User not found. They must have an Esportra account first." });
 
-            string profileId = profile.id;
+            Guid profileIdGuid = (Guid)profile.id;
 
             // 2. Upsert staff record
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM organization_staff WHERE organization_id = @orgId AND user_id = @profileId",
-                new { orgId, profileId });
+                new { orgId = orgIdGuid, profileId = profileIdGuid });
 
-            string staffId;
+            Guid staffIdGuid;
             if (existing is not null)
             {
-                staffId = existing.id;
+                staffIdGuid = (Guid)existing.id;
                 await conn.ExecuteAsync(
                     """
                     UPDATE organization_staff
@@ -120,7 +122,7 @@ public static class OrganizationEndpoints
                         status = 'pending', accepted_at = NULL, responded_at = NULL, updated_at = NOW()
                     WHERE id = @staffId
                     """,
-                    new { staffId, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserId });
+                    new { staffId = staffIdGuid, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserIdGuid });
             }
             else
             {
@@ -131,8 +133,8 @@ public static class OrganizationEndpoints
                     VALUES (@orgId, @profileId, @role, @permissions::text[], @assignedBy, 'pending')
                     RETURNING id
                     """,
-                    new { orgId, profileId, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserId });
-                staffId = inserted.id;
+                    new { orgId = orgIdGuid, profileId = profileIdGuid, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserIdGuid });
+                staffIdGuid = (Guid)inserted.id;
             }
 
             // 3. Assign tournaments (bulk upsert)
@@ -144,7 +146,7 @@ public static class OrganizationEndpoints
                     VALUES (@staffId, @tournamentId, @assignedBy)
                     ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
                     """,
-                    req.TournamentIds.Select(tid => new { staffId, tournamentId = tid, assignedBy = userCtx.UserId }));
+                    req.TournamentIds.Select(tid => new { staffId = staffIdGuid, tournamentId = Guid.Parse(tid), assignedBy = userCtx.UserIdGuid }));
             }
 
             // 4. Insert in-app notification
@@ -157,17 +159,17 @@ public static class OrganizationEndpoints
                 """,
                 new
                 {
-                    userId  = profileId,
+                    userId  = profileIdGuid,
                     message = $"{req.InviterName ?? "An organizer"} invited you to staff {req.OrgName ?? "an organization"} as {FriendlyRole(req.Role)}.",
-                    data    = System.Text.Json.JsonSerializer.Serialize(new { link = "/staff/dashboard", organization_staff_id = staffId, organization_id = orgId, role = req.Role }),
+                    data    = System.Text.Json.JsonSerializer.Serialize(new { link = "/staff/dashboard", organization_staff_id = staffIdGuid, organization_id = orgId, role = req.Role }),
                 });
 
             // Broadcast to user's SignalR session (if connected)
-            await notifHub.Clients.Group($"user:{profileId}")
+            await notifHub.Clients.Group($"user:{profileIdGuid}")
                 .SendAsync("NewNotification", new { type = "staff_invite" }, ct);
 
             // 5. Audit log
-            await LogAudit(conn, orgId, userCtx.UserId, "staff.invite", "staff", staffId,
+            await LogAudit(conn, orgIdGuid, userCtx.UserIdGuid, "staff.invite", "staff", staffIdGuid,
                 new { invitedEmail = req.UserEmail, req.Role, req.Permissions });
 
             // 6. Send email (best-effort)
@@ -188,7 +190,7 @@ public static class OrganizationEndpoints
             }
             catch { /* Email failure must not block the API response */ }
 
-            return Results.Ok(new { staffId });
+            return Results.Ok(new { staffId = staffIdGuid });
         }).RequireAuthorization("Organizer");
 
         // ── PUT /api/organizations/{orgId}/staff/{staffId} ────────────────────
@@ -203,6 +205,8 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
+            var staffIdGuid = Guid.Parse(staffId);
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 """
@@ -210,9 +214,9 @@ public static class OrganizationEndpoints
                 SET role = @role, permissions = @permissions::text[], updated_at = NOW()
                 WHERE id = @staffId AND organization_id = @orgId
                 """,
-                new { staffId, orgId, role = req.Role, permissions = req.Permissions });
+                new { staffId = staffIdGuid, orgId = orgIdGuid, role = req.Role, permissions = req.Permissions });
 
-            await LogAudit(conn, orgId, userCtx.UserId, "staff.update_permissions", "staff", staffId,
+            await LogAudit(conn, orgIdGuid, userCtx.UserIdGuid, "staff.update_permissions", "staff", staffIdGuid,
                 new { req.Role, req.Permissions });
 
             return Results.Ok(new { success = true });
@@ -229,12 +233,14 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
+            var staffIdGuid = Guid.Parse(staffId);
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "DELETE FROM organization_staff WHERE id = @staffId AND organization_id = @orgId",
-                new { staffId, orgId });
+                new { staffId = staffIdGuid, orgId = orgIdGuid });
 
-            await LogAudit(conn, orgId, userCtx.UserId, "staff.remove", "staff", staffId, new { });
+            await LogAudit(conn, orgIdGuid, userCtx.UserIdGuid, "staff.remove", "staff", staffIdGuid, new { });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -259,7 +265,7 @@ public static class OrganizationEndpoints
                 WHERE os.user_id = @userId AND os.status = 'pending'
                 ORDER BY os.created_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -284,7 +290,7 @@ public static class OrganizationEndpoints
                 WHERE os.user_id = @userId AND os.status = 'active'
                 ORDER BY os.updated_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -299,11 +305,12 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var inviteIdGuid = Guid.Parse(inviteId);
             using var conn = db.CreateConnection();
 
             var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT organization_id FROM organization_staff WHERE id = @inviteId AND user_id = @userId AND status = 'pending'",
-                new { inviteId, userId = userCtx.UserId });
+                new { inviteId = inviteIdGuid, userId = userCtx.UserIdGuid });
             if (invite is null) return Results.NotFound();
 
             var now = DateTime.UtcNow;
@@ -315,15 +322,15 @@ public static class OrganizationEndpoints
                 """,
                 new
                 {
-                    inviteId,
+                    inviteId = inviteIdGuid,
                     status     = req.Accept ? "active" : "declined",
                     acceptedAt = req.Accept ? now : (DateTime?)null,
                     now,
                 });
 
-            string orgId = invite.organization_id;
-            await LogAudit(conn, orgId, userCtx.UserId,
-                req.Accept ? "staff.accept" : "staff.decline", "staff", inviteId, new { });
+            Guid orgIdGuid = (Guid)invite.organization_id;
+            await LogAudit(conn, orgIdGuid, userCtx.UserIdGuid,
+                req.Accept ? "staff.accept" : "staff.decline", "staff", inviteIdGuid, new { });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -340,6 +347,8 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
+            var staffIdGuid = Guid.Parse(staffId);
             using var conn = db.CreateConnection();
             if (req.TournamentIds.Count > 0)
             {
@@ -349,10 +358,10 @@ public static class OrganizationEndpoints
                     VALUES (@staffId, @tournamentId, @assignedBy)
                     ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
                     """,
-                    req.TournamentIds.Select(tid => new { staffId, tournamentId = tid, assignedBy = userCtx.UserId }));
+                    req.TournamentIds.Select(tid => new { staffId = staffIdGuid, tournamentId = Guid.Parse(tid), assignedBy = userCtx.UserIdGuid }));
             }
 
-            await LogAudit(conn, orgId, userCtx.UserId, "staff.assign_tournament", "staff", staffId,
+            await LogAudit(conn, orgIdGuid, userCtx.UserIdGuid, "staff.assign_tournament", "staff", staffIdGuid,
                 new { tournamentIds = req.TournamentIds });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
@@ -368,12 +377,14 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
+            var assignmentIdGuid = Guid.Parse(assignmentId);
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "DELETE FROM staff_tournament_assignments WHERE id = @assignmentId",
-                new { assignmentId });
+                new { assignmentId = assignmentIdGuid });
 
-            await LogAudit(conn, orgId, userCtx.UserId, "staff.unassign_tournament", "assignment", assignmentId, new { });
+            await LogAudit(conn, orgIdGuid, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentIdGuid, new { });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -392,7 +403,7 @@ public static class OrganizationEndpoints
                 LEFT JOIN organization_staff os ON os.id = sta.organization_staff_id
                 WHERE sta.tournament_id = @tournamentId
                 """,
-                new { tournamentId });
+                new { tournamentId = Guid.Parse(tournamentId) });
             return Results.Ok(rows);
         });
 
@@ -416,7 +427,7 @@ public static class OrganizationEndpoints
                 SELECT id, role, permissions FROM organization_staff
                 WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
                 """,
-                new { orgId = organizationId, userId = userCtx.UserId });
+                new { orgId = Guid.Parse(organizationId), userId = userCtx.UserIdGuid });
 
             if (staff is null) return Results.Ok(Array.Empty<string>());
 
@@ -432,7 +443,7 @@ public static class OrganizationEndpoints
                 SELECT id FROM staff_tournament_assignments
                 WHERE organization_staff_id = @staffId AND tournament_id = @tournamentId
                 """,
-                new { staffId = (string)staff.id, tournamentId });
+                new { staffId = (Guid)staff.id, tournamentId = Guid.Parse(tournamentId) });
 
             return assignment is not null
                 ? Results.Ok(staff.permissions ?? Array.Empty<string>())
@@ -452,6 +463,7 @@ public static class OrganizationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var orgIdGuid = Guid.Parse(orgId);
             using var conn = db.CreateConnection();
 
             // Verify caller is org owner, active staff, or platform admin
@@ -463,7 +475,7 @@ public static class OrganizationEndpoints
                     SELECT 1 FROM organization_staff WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
                 )
                 """,
-                new { orgId, userId = userCtx.UserId });
+                new { orgId = orgIdGuid, userId = userCtx.UserIdGuid });
             if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             var rows = await conn.QueryAsync<dynamic>(
@@ -477,11 +489,11 @@ public static class OrganizationEndpoints
                 ORDER BY sal.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { orgId, action, limit, offset });
+                new { orgId = orgIdGuid, action, limit, offset });
 
             var total = await conn.QuerySingleAsync<int>(
                 "SELECT COUNT(*) FROM staff_audit_log WHERE organization_id = @orgId",
-                new { orgId });
+                new { orgId = orgIdGuid });
 
             return Results.Ok(new { logs = rows, total });
         }).RequireAuthorization("Authenticated");
@@ -512,7 +524,7 @@ public static class OrganizationEndpoints
                 WHERE organization_id = @orgId AND deleted_at IS NULL
                 ORDER BY start_date DESC
                 """,
-                new { orgId });
+                new { orgId = Guid.Parse(orgId) });
             return Results.Ok(rows);
         });
 
@@ -537,7 +549,7 @@ public static class OrganizationEndpoints
                 GROUP BY a.id
                 ORDER BY a.created_at DESC
                 """,
-                new { orgId });
+                new { orgId = Guid.Parse(orgId) });
             return Results.Ok(rows);
         });
 
@@ -550,7 +562,7 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM organization_media WHERE organization_id = @orgId ORDER BY created_at DESC",
-                new { orgId });
+                new { orgId = Guid.Parse(orgId) });
             return Results.Ok(rows);
         });
 
@@ -571,7 +583,7 @@ public static class OrganizationEndpoints
                 INSERT INTO organization_media (organization_id, url, type, caption, album_id)
                 VALUES (@orgId, @url, @type, @caption, @albumId)
                 """,
-                new { orgId, url = req.Url, type = req.Type, caption = req.Caption, albumId = req.AlbumId });
+                new { orgId = Guid.Parse(orgId), url = req.Url, type = req.Type, caption = req.Caption, albumId = req.AlbumId is not null ? Guid.Parse(req.AlbumId) : (Guid?)null });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
@@ -590,7 +602,7 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "DELETE FROM organization_media WHERE id = @mediaId AND organization_id = @orgId",
-                new { mediaId, orgId });
+                new { mediaId = Guid.Parse(mediaId), orgId = Guid.Parse(orgId) });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -609,7 +621,7 @@ public static class OrganizationEndpoints
             // CASCADE delete handles media
             await conn.ExecuteAsync(
                 "DELETE FROM organization_albums WHERE id = @albumId",
-                new { albumId });
+                new { albumId = Guid.Parse(albumId) });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -627,7 +639,7 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "UPDATE organizations SET logo_url = @url WHERE id = @orgId",
-                new { orgId, url = req.Url });
+                new { orgId = Guid.Parse(orgId), url = req.Url });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -645,7 +657,7 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "UPDATE organizations SET banner_url = @url WHERE id = @orgId",
-                new { orgId, url = req.Url });
+                new { orgId = Guid.Parse(orgId), url = req.Url });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -662,7 +674,7 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             var result = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT * FROM delete_organization_safely(@p_org_id)",
-                new { p_org_id = orgId });
+                new { p_org_id = Guid.Parse(orgId) });
             return Results.Ok(result);
         }).RequireAuthorization("Organizer");
 
@@ -674,14 +686,14 @@ public static class OrganizationEndpoints
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
-            var isUuid = Guid.TryParse(slug, out _);
+            var isUuid = Guid.TryParse(slug, out var slugGuid);
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 isUuid
                     ? """
                       SELECT t.*, jsonb_build_object('owner_id', o.owner_id) AS organization
                       FROM tournaments t
                       LEFT JOIN organizations o ON o.id = t.organization_id
-                      WHERE t.slug = @slug OR t.id = @slug
+                      WHERE t.slug = @slug OR t.id = @slugId
                       LIMIT 1
                       """
                     : """
@@ -691,7 +703,7 @@ public static class OrganizationEndpoints
                       WHERE t.slug = @slug
                       LIMIT 1
                       """,
-                new { slug });
+                new { slug, slugId = isUuid ? slugGuid : (Guid?)null });
             return row is null ? Results.NotFound() : Results.Ok(row);
         });
     }
@@ -705,8 +717,8 @@ public static class OrganizationEndpoints
         _       => "a Co-Host",
     };
 
-    private static Task LogAudit(IDbConnection conn, string orgId, string actorId,
-        string action, string? targetType, string? targetId, object details) =>
+    private static Task LogAudit(IDbConnection conn, Guid orgId, Guid actorId,
+        string action, string? targetType, Guid? targetId, object details) =>
         conn.ExecuteAsync(
             """
             INSERT INTO staff_audit_log (organization_id, actor_id, action, target_type, target_id, details)

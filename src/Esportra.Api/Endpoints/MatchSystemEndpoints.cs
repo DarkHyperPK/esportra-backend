@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
@@ -20,7 +20,7 @@ public static class MatchSystemEndpoints
         MapDisputeEndpoints(app);
         // ── GET /api/matches/{id}/reports ─────────────────────────────────────
         app.MapGet("/api/matches/{id}/reports", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -37,7 +37,7 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/reports ────────────────────────────────────
         app.MapPost("/api/matches/{id}/reports", async (
-            string                        id,
+            Guid                          id,
             [FromBody] SubmitReportRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
@@ -52,7 +52,7 @@ public static class MatchSystemEndpoints
             // Verify caller is a captain of the reporting team
             var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND role = 'captain' AND is_active = TRUE)",
-                new { teamId = req.ReportedByTeamId, userId = userCtx.UserId });
+                new { teamId = req.ReportedByTeamId, userId = userCtx.UserIdGuid });
             if (!isCaptain) return Results.Forbid();
 
             var report = await conn.QuerySingleAsync<dynamic>(
@@ -71,7 +71,7 @@ public static class MatchSystemEndpoints
                 {
                     matchId           = id,
                     gameNumber        = req.GameNumber,
-                    reportedBy        = userCtx.UserId,
+                    reportedBy        = userCtx.UserIdGuid,
                     reportedByTeamId  = req.ReportedByTeamId,
                     riotMatchId       = req.RiotMatchId,
                     mapId             = req.MapId,
@@ -123,7 +123,7 @@ public static class MatchSystemEndpoints
 
                         // Push via NotificationHub
                         await matchHub.Clients
-                            .Group(MatchHub.MatchGroup(id))
+                            .Group(MatchHub.MatchGroup(id.ToString()))
                             .SendAsync(MatchHubEvents.ReportSubmitted,
                                 new { matchId = id, reportId = (string?)report.id }, ct);
                     }
@@ -135,8 +135,8 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/reports/{rid}/accept ───────────────────────
         app.MapPost("/api/matches/{id}/reports/{rid}/accept", async (
-            string                         id,
-            string                         rid,
+            Guid                           id,
+            Guid                           rid,
             [FromBody] AcceptReportRequest  req,
             HttpContext                     ctx,
             IDbConnectionFactory           db,
@@ -156,7 +156,7 @@ public static class MatchSystemEndpoints
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
                 """,
-                new { matchId = id, userId = userCtx.UserId });
+                new { matchId = id, userId = userCtx.UserIdGuid });
             if (captainTeam is null) return Results.Forbid();
 
             // Mark report accepted
@@ -166,12 +166,12 @@ public static class MatchSystemEndpoints
                 SET status = 'accepted', responded_by = @userId, responded_at = NOW()
                 WHERE id = @rid AND match_id = @matchId AND status = 'pending'
                 """,
-                new { rid, matchId = id, userId = userCtx.UserId });
+                new { rid, matchId = id, userId = userCtx.UserIdGuid });
 
             // Delegate result processing to the .NET process endpoint (Riot API + score sync)
             // This is a fire-and-forget; the caller gets the acknowledgement immediately
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(id))
+                .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.ReportAccepted,
                     new { matchId = id, reportId = rid, riotMatchId = req.RiotMatchId }, ct);
 
@@ -186,8 +186,8 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/reports/{rid}/dispute ──────────────────────
         app.MapPost("/api/matches/{id}/reports/{rid}/dispute", async (
-            string                           id,
-            string                           rid,
+            Guid                             id,
+            Guid                             rid,
             [FromBody] DisputeReportRequest   req,
             HttpContext                       ctx,
             IDbConnectionFactory             db,
@@ -220,7 +220,7 @@ public static class MatchSystemEndpoints
 
             // Broadcast dispute event
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(id))
+                .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.ReportDisputed,
                     new { matchId = id, reportId = rid, reason = req.Reason }, ct);
 
@@ -229,7 +229,7 @@ public static class MatchSystemEndpoints
 
         // ── GET /api/matches/{id}/messages ───────────────────────────────────
         app.MapGet("/api/matches/{id}/messages", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -249,7 +249,7 @@ public static class MatchSystemEndpoints
         // ── POST /api/matches/{id}/messages/system ────────────────────────────
         // System messages: inserted server-side and broadcast via ChatHub.
         app.MapPost("/api/matches/{id}/messages/system", async (
-            string                             id,
+            Guid                               id,
             [FromBody] SystemMessageRequest    req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
@@ -280,7 +280,7 @@ public static class MatchSystemEndpoints
 
             // Broadcast to everyone in the chat room
             await chatHub.Clients
-                .Group(ChatHub.ChatGroup(id))
+                .Group(ChatHub.ChatGroup(id.ToString()))
                 .SendAsync("MessageReceived", new
                 {
                     id         = (string?)msg.id,
@@ -296,7 +296,7 @@ public static class MatchSystemEndpoints
 
         // ── GET /api/matches/{id}/checkins ────────────────────────────────────
         app.MapGet("/api/matches/{id}/checkins", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -308,7 +308,7 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/checkin ────────────────────────────────────
         app.MapPost("/api/matches/{id}/checkin", async (
-            string                      id,
+            Guid                        id,
             [FromBody] CheckinRequest   req,
             HttpContext                 ctx,
             IDbConnectionFactory       db,
@@ -323,7 +323,7 @@ public static class MatchSystemEndpoints
             // Verify caller belongs to the team
             var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
-                new { teamId = req.TeamId, userId = userCtx.UserId });
+                new { teamId = req.TeamId, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -332,10 +332,10 @@ public static class MatchSystemEndpoints
                 VALUES (@matchId, @teamId, @userId, NOW())
                 ON CONFLICT (match_id, team_id) DO NOTHING
                 """,
-                new { matchId = id, teamId = req.TeamId, userId = userCtx.UserId });
+                new { matchId = id, teamId = req.TeamId, userId = userCtx.UserIdGuid });
 
             await matchHub.Clients
-                .Group(MatchHub.MatchGroup(id))
+                .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.CheckInUpdated,
                     new { matchId = id, teamId = req.TeamId }, ct);
 
@@ -351,7 +351,7 @@ public static class MatchSystemEndpoints
     {
         // ── GET /api/stages/{stageId}/scheduling-config ─────────────────────
         app.MapGet("/api/stages/{stageId}/scheduling-config", async (
-            string               stageId,
+            Guid                 stageId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -365,7 +365,7 @@ public static class MatchSystemEndpoints
 
         // ── PUT /api/stages/{stageId}/scheduling-config ─────────────────────
         app.MapPut("/api/stages/{stageId}/scheduling-config", async (
-            string                              stageId,
+            Guid                                stageId,
             [FromBody] SchedulingConfigRequest   req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
@@ -385,7 +385,7 @@ public static class MatchSystemEndpoints
                     WHERE ts.id = @stageId AND t.organizer_id = @userId
                 )
                 """,
-                new { stageId, userId = userCtx.UserId });
+                new { stageId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             var json = JsonSerializer.Serialize(req);
@@ -398,7 +398,7 @@ public static class MatchSystemEndpoints
 
         // ── GET /api/stages/{stageId}/matches ───────────────────────────────
         app.MapGet("/api/stages/{stageId}/matches", async (
-            string               stageId,
+            Guid                 stageId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -421,7 +421,7 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/stages/{stageId}/schedule-bulk ────────────────────────
         app.MapPost("/api/stages/{stageId}/schedule-bulk", async (
-            string                             stageId,
+            Guid                               stageId,
             [FromBody] BulkScheduleRequest     req,
             HttpContext                         ctx,
             IDbConnectionFactory               db,
@@ -440,7 +440,7 @@ public static class MatchSystemEndpoints
                     WHERE ts.id = @stageId AND t.organizer_id = @userId
                 )
                 """,
-                new { stageId, userId = userCtx.UserId });
+                new { stageId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             if (req.Updates.Count == 0)
@@ -464,7 +464,7 @@ public static class MatchSystemEndpoints
 
         // ── PUT /api/matches/{matchId}/scheduled-time ───────────────────────
         app.MapPut("/api/matches/{matchId}/scheduled-time", async (
-            string                                matchId,
+            Guid                                  matchId,
             [FromBody] UpdateMatchTimeRequest      req,
             HttpContext                             ctx,
             IDbConnectionFactory                   db,
@@ -485,7 +485,7 @@ public static class MatchSystemEndpoints
                     WHERE bm.id = @matchId AND t.organizer_id = @userId
                 )
                 """,
-                new { matchId, userId = userCtx.UserId });
+                new { matchId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -504,7 +504,7 @@ public static class MatchSystemEndpoints
     {
         // ── GET /api/matches/{matchId}/time-proposals ───────────────────────
         app.MapGet("/api/matches/{matchId}/time-proposals", async (
-            string               matchId,
+            Guid                 matchId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -523,7 +523,7 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/time-proposals ──────────────────────
         app.MapPost("/api/matches/{matchId}/time-proposals", async (
-            string                             matchId,
+            Guid                               matchId,
             [FromBody] ProposeTimeRequest       req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
@@ -542,7 +542,7 @@ public static class MatchSystemEndpoints
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
                 """,
-                new { matchId, userId = userCtx.UserId });
+                new { matchId, userId = userCtx.UserIdGuid });
             if (captainTeam is null) return Results.Forbid();
 
             var proposal = await conn.QuerySingleAsync<dynamic>(
@@ -551,15 +551,15 @@ public static class MatchSystemEndpoints
                 VALUES (@matchId, @proposedBy, @proposedTime, 'pending')
                 RETURNING *
                 """,
-                new { matchId, proposedBy = userCtx.UserId, proposedTime = req.ProposedTime });
+                new { matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
 
             return Results.Ok(proposal);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/accept ──
         app.MapPost("/api/matches/{matchId}/time-proposals/{proposalId}/accept", async (
-            string               matchId,
-            string               proposalId,
+            Guid                 matchId,
+            Guid                 proposalId,
             HttpContext           ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -576,7 +576,7 @@ public static class MatchSystemEndpoints
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
                 """,
-                new { matchId, userId = userCtx.UserId });
+                new { matchId, userId = userCtx.UserIdGuid });
             if (captainTeam is null) return Results.Forbid();
 
             // Atomic: accept proposal + update match scheduled_time in a CTE
@@ -600,8 +600,8 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/reject ──
         app.MapPost("/api/matches/{matchId}/time-proposals/{proposalId}/reject", async (
-            string               matchId,
-            string               proposalId,
+            Guid                 matchId,
+            Guid                 proposalId,
             HttpContext           ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -618,7 +618,7 @@ public static class MatchSystemEndpoints
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
                 """,
-                new { matchId, userId = userCtx.UserId });
+                new { matchId, userId = userCtx.UserIdGuid });
             if (captainTeam is null) return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -634,8 +634,8 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/counter ─
         app.MapPost("/api/matches/{matchId}/time-proposals/{proposalId}/counter", async (
-            string                               matchId,
-            string                               proposalId,
+            Guid                                 matchId,
+            Guid                                 proposalId,
             [FromBody] ProposeTimeRequest         req,
             HttpContext                            ctx,
             IDbConnectionFactory                  db,
@@ -653,7 +653,7 @@ public static class MatchSystemEndpoints
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
                 """,
-                new { matchId, userId = userCtx.UserId });
+                new { matchId, userId = userCtx.UserIdGuid });
             if (captainTeam is null) return Results.Forbid();
 
             // Atomic: mark old as countered + insert new in a CTE
@@ -668,7 +668,7 @@ public static class MatchSystemEndpoints
                 VALUES (@matchId, @proposedBy, @proposedTime, 'pending')
                 RETURNING *
                 """,
-                new { proposalId, matchId, proposedBy = userCtx.UserId, proposedTime = req.ProposedTime });
+                new { proposalId, matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
 
             return Results.Ok(newProposal);
         }).RequireAuthorization("Authenticated");
@@ -682,7 +682,7 @@ public static class MatchSystemEndpoints
     {
         // ── GET /api/matches/{matchId}/dispute ──────────────────────────────
         app.MapGet("/api/matches/{matchId}/dispute", async (
-            string               matchId,
+            Guid                 matchId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -703,7 +703,7 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/disputes ────────────────────────────
         app.MapPost("/api/matches/{matchId}/disputes", async (
-            string                          matchId,
+            Guid                            matchId,
             [FromBody] FileDisputeRequest    req,
             HttpContext                       ctx,
             IDbConnectionFactory             db,
@@ -717,7 +717,7 @@ public static class MatchSystemEndpoints
             // Verify caller is a member of the disputing team
             var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
-                new { teamId = req.TeamId, userId = userCtx.UserId });
+                new { teamId = req.TeamId, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
             var evidenceJson = JsonSerializer.Serialize(req.EvidenceUrls ?? []);
@@ -734,7 +734,7 @@ public static class MatchSystemEndpoints
                 {
                     matchId,
                     teamId       = req.TeamId,
-                    userId       = userCtx.UserId,
+                    userId       = userCtx.UserIdGuid,
                     reason       = req.Reason,
                     evidenceUrls = evidenceJson,
                 });
@@ -744,8 +744,8 @@ public static class MatchSystemEndpoints
 
         // ── PUT /api/matches/{matchId}/disputes/{disputeId}/resolve ─────────
         app.MapPut("/api/matches/{matchId}/disputes/{disputeId}/resolve", async (
-            string                              matchId,
-            string                              disputeId,
+            Guid                                matchId,
+            Guid                                disputeId,
             [FromBody] ResolveDisputeRequest     req,
             HttpContext                           ctx,
             IDbConnectionFactory                 db,
@@ -767,7 +767,7 @@ public static class MatchSystemEndpoints
                     WHERE md.id = @disputeId AND t.organizer_id = @userId
                 )
                 """,
-                new { disputeId, userId = userCtx.UserId });
+                new { disputeId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             // Update dispute
@@ -784,7 +784,7 @@ public static class MatchSystemEndpoints
                     matchId,
                     status     = req.Status,
                     resolution = req.Resolution,
-                    resolvedBy = userCtx.UserId,
+                    resolvedBy = userCtx.UserIdGuid,
                 });
 
             // Notify both parties

@@ -89,7 +89,7 @@ public sealed class AutomatedRemindersJob(
                   AND p.status = 'registered'
                   AND p.checked_in = false
                   AND pr.email IS NOT NULL
-                """, new { tournamentId })).AsList();
+                """, new { tournamentId = Guid.Parse(tournamentId) })).AsList();
 
             foreach (var participant in participants)
             {
@@ -116,7 +116,7 @@ public sealed class AutomatedRemindersJob(
             // Mark as sent
             await conn.ExecuteAsync(
                 "UPDATE public.tournaments SET check_in_reminder_sent = true WHERE id = @id",
-                new { id = tournamentId });
+                new { id = Guid.Parse(tournamentId) });
 
             logger.LogInformation("[Reminders] Sent {Count} reminders for {Tournament}",
                 participants.Count, tournamentName);

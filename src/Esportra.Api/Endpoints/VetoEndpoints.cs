@@ -17,7 +17,7 @@ public static class VetoEndpoints
     {
         // ── GET /api/veto/{matchId} ──────────────────────────────────────────
         app.MapGet("/api/veto/{matchId}", async (
-            string          matchId,
+            Guid            matchId,
             VetoDbService   veto,
             CancellationToken ct) =>
         {
@@ -27,7 +27,7 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/init ────────────────────────────────────
         app.MapPost("/api/veto/{matchId}/init", async (
-            string                    matchId,
+            Guid                      matchId,
             [FromBody] VetoInitRequest req,
             HttpContext                ctx,
             VetoDbService              veto,
@@ -42,7 +42,7 @@ public static class VetoEndpoints
                 req.Team1Id, req.Team2Id,
                 req.BestOf, req.Game ?? "valorant", ct);
 
-            await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+            await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.StateSync, result, ct);
 
             return Results.Ok(result);
@@ -50,7 +50,7 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/ban ─────────────────────────────────────
         app.MapPost("/api/veto/{matchId}/ban", async (
-            string                    matchId,
+            Guid                      matchId,
             [FromBody] VetoActionRequest req,
             HttpContext                ctx,
             VetoDbService              veto,
@@ -63,7 +63,7 @@ public static class VetoEndpoints
             try
             {
                 var result = await veto.BanMapAsync(matchId, req.MapId, userCtx.UserId, ct);
-                await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
                 return Results.Ok(result);
             }
@@ -75,7 +75,7 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/pick ────────────────────────────────────
         app.MapPost("/api/veto/{matchId}/pick", async (
-            string                    matchId,
+            Guid                      matchId,
             [FromBody] VetoActionRequest req,
             HttpContext                ctx,
             VetoDbService              veto,
@@ -88,11 +88,11 @@ public static class VetoEndpoints
             try
             {
                 var result = await veto.PickMapAsync(matchId, req.MapId, userCtx.UserId, ct);
-                await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
 
                 if (result.Status == "completed")
-                    await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+                    await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                         .SendAsync(VetoHubEvents.VetoComplete, result, ct);
 
                 return Results.Ok(result);
@@ -105,7 +105,7 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/pick-side ───────────────────────────────
         app.MapPost("/api/veto/{matchId}/pick-side", async (
-            string                       matchId,
+            Guid                         matchId,
             [FromBody] VetoPickSideRequest req,
             HttpContext                   ctx,
             VetoDbService                 veto,
@@ -118,11 +118,11 @@ public static class VetoEndpoints
             try
             {
                 var result = await veto.PickSideAsync(matchId, req.MapId, req.Side, userCtx.UserId, ct);
-                await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
 
                 if (result.Status == "completed")
-                    await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+                    await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                         .SendAsync(VetoHubEvents.VetoComplete, result, ct);
 
                 return Results.Ok(result);
@@ -135,7 +135,7 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/reset ───────────────────────────────────
         app.MapPost("/api/veto/{matchId}/reset", async (
-            string               matchId,
+            Guid                 matchId,
             HttpContext           ctx,
             VetoDbService         veto,
             IHubContext<VetoHub>  hub,
@@ -146,7 +146,7 @@ public static class VetoEndpoints
 
             await veto.ResetAsync(matchId, ct);
 
-            await hub.Clients.Group(VetoHub.VetoGroup(matchId))
+            await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoReset, matchId, ct);
 
             return Results.Ok(new { success = true });
@@ -155,9 +155,9 @@ public static class VetoEndpoints
 }
 
 public sealed record VetoInitRequest(
-    string  TournamentId,
-    string? Team1Id,
-    string? Team2Id,
+    Guid    TournamentId,
+    Guid?   Team1Id,
+    Guid?   Team2Id,
     int     BestOf,
     string? Game = "valorant");
 

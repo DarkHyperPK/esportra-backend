@@ -3,15 +3,15 @@ namespace Esportra.Core.Bracket;
 public sealed class SingleEliminationGenerator : IBracketGenerator
 {
     public BracketGraph Generate(
-        IReadOnlyList<(string Id, string Name)> teams,
-        string tournamentId,
-        string? stageId          = null,
+        IReadOnlyList<(Guid Id, string Name)> teams,
+        Guid tournamentId,
+        Guid?   stageId          = null,
         int     bestOf           = 1,
         int?    bracketSize      = null,
         int?    advancementCount = null,
         BracketConfig? config    = null)
     {
-        var versionId = Guid.NewGuid().ToString();
+        var versionId = Guid.NewGuid();
         var nodes     = new List<BracketNode>();
         var edges     = new List<BracketEdge>();
 
@@ -33,7 +33,7 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
             int matchesInRound = P / (int)Math.Pow(2, r + 1);
             for (int i = 0; i < matchesInRound; i++)
             {
-                string? team1Id = null, team2Id = null;
+                Guid? team1Id = null, team2Id = null;
                 if (r == 0)
                 {
                     team1Id = seeded.ElementAtOrDefault(i * 2)?.Id;
@@ -41,7 +41,7 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
                 }
 
                 var match = new BracketNode(
-                    Id:          Guid.NewGuid().ToString(),
+                    Id:          Guid.NewGuid(),
                     VersionId:   versionId,
                     RoundIndex:  r,
                     MatchNumber: i + 1,
@@ -66,7 +66,7 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
                 if (!matchMap.TryGetValue($"{r + 1}-{(int)Math.Ceiling((i + 1) / 2.0)}", out var next))    continue;
 
                 edges.Add(new BracketEdge(
-                    Id:            Guid.NewGuid().ToString(),
+                    Id:            Guid.NewGuid(),
                     VersionId:     versionId,
                     SourceMatchId: current.Id,
                     TargetMatchId: next.Id,
@@ -87,9 +87,9 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
     }
 
     // Standard bracket seeding: 1 vs N, 2 vs N-1, etc.
-    private static (string Id, string Name)?[] SeedTeams(IReadOnlyList<(string Id, string Name)> teams, int bracketSize)
+    private static (Guid Id, string Name)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
     {
-        var seeded    = new (string Id, string Name)?[bracketSize];
+        var seeded    = new (Guid Id, string Name)?[bracketSize];
         var positions = GetStandardBracketSlots(bracketSize);
 
         for (int i = 0; i < teams.Count; i++)

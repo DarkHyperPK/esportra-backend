@@ -1,10 +1,10 @@
 namespace Esportra.Contracts.Requests;
 
-public sealed record TeamSeedDto(string Id, string Name);
+public sealed record TeamSeedDto(Guid Id, string Name);
 
 public sealed record GenerateBracketRequest(
-    string                TournamentId,
-    string?               StageId,
+    Guid                  TournamentId,
+    Guid?                 StageId,
     string                Format,          // single_elimination | double_elimination | round_robin | swiss
     IReadOnlyList<TeamSeedDto> Teams,
     int                   BestOf           = 1,
@@ -16,14 +16,14 @@ public sealed record GenerateBracketRequest(
     int?                  SwissRounds      = null);
 
 public sealed record SwissNextRoundRequest(
-    string StageId,
-    string VersionId,
+    Guid StageId,
+    Guid VersionId,
     int    CurrentRound);
 
 public sealed record VetoInitRequest(
-    string TournamentId,
-    string? Team1Id,
-    string? Team2Id,
+    Guid TournamentId,
+    Guid? Team1Id,
+    Guid? Team2Id,
     int     BestOf,
     string  Game = "valorant");
 

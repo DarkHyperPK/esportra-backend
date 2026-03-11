@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
@@ -27,7 +27,7 @@ public static class ReviewEndpoints
         // ── GET /api/reviews/{entityType}/{entityId} ─────────────────────────
         app.MapGet("/api/reviews/{entityType}/{entityId}", async (
             string               entityType,
-            string               entityId,
+            Guid                 entityId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -56,7 +56,7 @@ public static class ReviewEndpoints
         // ── GET /api/reviews/stats/{entityType}/{entityId} ───────────────────
         app.MapGet("/api/reviews/stats/{entityType}/{entityId}", async (
             string               entityType,
-            string               entityId,
+            Guid                 entityId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -131,7 +131,7 @@ public static class ReviewEndpoints
                 WHERE r.reviewer_id = @userId
                 ORDER BY r.created_at DESC
                 """,
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(reviews);
         }).RequireAuthorization("Authenticated");
@@ -159,17 +159,17 @@ public static class ReviewEndpoints
                 "tournament" => "tournament_id = @entityId",
                 _            => "FALSE"
             };
-            var entityId = req.ReviewType switch
+            Guid? entityId = req.ReviewType switch
             {
-                "venue"      => req.VenueId,
-                "user"       => req.RevieweeId,
-                "tournament" => req.TournamentId,
-                _            => null
+                "venue" when req.VenueId is not null           => Guid.Parse(req.VenueId),
+                "user" when req.RevieweeId is not null         => Guid.Parse(req.RevieweeId),
+                "tournament" when req.TournamentId is not null => Guid.Parse(req.TournamentId),
+                _                                              => null
             };
 
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 $"SELECT id FROM reviews WHERE reviewer_id = @userId AND review_type = @reviewType AND {colFilter}",
-                new { userId = userCtx.UserId, reviewType = req.ReviewType, entityId });
+                new { userId = userCtx.UserIdGuid, reviewType = req.ReviewType, entityId });
 
             if (existing is not null)
                 return Results.Conflict(new { error = "You have already reviewed this entity." });
@@ -182,10 +182,10 @@ public static class ReviewEndpoints
                 """,
                 new
                 {
-                    reviewerId    = userCtx.UserId,
-                    revieweeId    = req.RevieweeId,
-                    venueId       = req.VenueId,
-                    tournamentId  = req.TournamentId,
+                    reviewerId    = userCtx.UserIdGuid,
+                    revieweeId    = req.RevieweeId is not null ? Guid.Parse(req.RevieweeId) : (Guid?)null,
+                    venueId       = req.VenueId is not null ? Guid.Parse(req.VenueId) : (Guid?)null,
+                    tournamentId  = req.TournamentId is not null ? Guid.Parse(req.TournamentId) : (Guid?)null,
                     rating        = req.Rating,
                     title         = req.Title,
                     comment       = req.Comment,
@@ -197,7 +197,7 @@ public static class ReviewEndpoints
 
         // ── PUT /api/reviews/{id} ────────────────────────────────────────────
         app.MapPut("/api/reviews/{id}", async (
-            string                id,
+            Guid                  id,
             [FromBody] UpdateReviewRequest req,
             HttpContext           ctx,
             IDbConnectionFactory  db,
@@ -211,7 +211,7 @@ public static class ReviewEndpoints
             var review = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT reviewer_id FROM reviews WHERE id = @id", new { id });
             if (review is null) return Results.NotFound();
-            if ((string)review.reviewer_id != userCtx.UserId) return Results.Forbid();
+            if ((Guid)review.reviewer_id != userCtx.UserIdGuid) return Results.Forbid();
 
             var updated = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -230,7 +230,7 @@ public static class ReviewEndpoints
 
         // ── DELETE /api/reviews/{id} ─────────────────────────────────────────
         app.MapDelete("/api/reviews/{id}", async (
-            string               id,
+            Guid                 id,
             HttpContext           ctx,
             IDbConnectionFactory  db,
             CancellationToken     ct) =>
@@ -243,7 +243,7 @@ public static class ReviewEndpoints
             var review = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT reviewer_id FROM reviews WHERE id = @id", new { id });
             if (review is null) return Results.NotFound();
-            if ((string)review.reviewer_id != userCtx.UserId) return Results.Forbid();
+            if ((Guid)review.reviewer_id != userCtx.UserIdGuid) return Results.Forbid();
 
             await conn.ExecuteAsync("DELETE FROM reviews WHERE id = @id", new { id });
             return Results.Ok(new { success = true });

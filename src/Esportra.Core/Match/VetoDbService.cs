@@ -9,7 +9,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
 {
     // ── Fetch ────────────────────────────────────────────────────────────────
 
-    public async Task<MatchMapVeto?> GetAsync(string matchId, CancellationToken ct = default)
+    public async Task<MatchMapVeto?> GetAsync(Guid matchId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
 
@@ -32,19 +32,19 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     // ── Initialize veto ──────────────────────────────────────────────────────
 
     public async Task<MatchMapVeto> InitAsync(
-        string matchId, string tournamentId,
-        string? team1Id, string? team2Id,
+        Guid matchId, Guid tournamentId,
+        Guid? team1Id, Guid? team2Id,
         int bestOf, string game = "valorant",
         CancellationToken ct = default)
     {
         var firstStep = VetoSequences.GetStep(bestOf, 1)
             ?? throw new InvalidOperationException("No veto sequence for bestOf=" + bestOf);
 
-        string? firstTeamId = firstStep.Team == "T1" ? team1Id : team2Id;
+        Guid? firstTeamId = firstStep.Team == "T1" ? team1Id : team2Id;
 
         using var conn = db.CreateConnection();
 
-        var id = Guid.NewGuid().ToString();
+        var id = Guid.NewGuid();
         await conn.ExecuteAsync(@"
             INSERT INTO public.match_map_veto
                 (id, match_id, tournament_id, team1_id, team2_id, best_of, status,
@@ -85,7 +85,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     // ── Ban ──────────────────────────────────────────────────────────────────
 
     public async Task<MatchMapVeto> BanMapAsync(
-        string matchId, string mapId, string userId, CancellationToken ct = default)
+        Guid matchId, string mapId, string userId, CancellationToken ct = default)
     {
         var veto = await GetAsync(matchId, ct)
             ?? throw new InvalidOperationException("Veto not found");
@@ -102,7 +102,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     // ── Pick ─────────────────────────────────────────────────────────────────
 
     public async Task<MatchMapVeto> PickMapAsync(
-        string matchId, string mapId, string userId, CancellationToken ct = default)
+        Guid matchId, string mapId, string userId, CancellationToken ct = default)
     {
         var veto = await GetAsync(matchId, ct)
             ?? throw new InvalidOperationException("Veto not found");
@@ -119,7 +119,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     // ── Pick side ────────────────────────────────────────────────────────────
 
     public async Task<MatchMapVeto> PickSideAsync(
-        string matchId, string mapId, string side, string userId, CancellationToken ct = default)
+        Guid matchId, string mapId, string side, string userId, CancellationToken ct = default)
     {
         var veto = await GetAsync(matchId, ct)
             ?? throw new InvalidOperationException("Veto not found");
@@ -151,7 +151,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
 
     // ── Reset ────────────────────────────────────────────────────────────────
 
-    public async Task ResetAsync(string matchId, CancellationToken ct = default)
+    public async Task ResetAsync(Guid matchId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
         await conn.ExecuteAsync(@"
@@ -174,7 +174,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     private async Task AdvanceOrCompleteAsync(
-        string matchId, MatchMapVeto veto,
+        Guid matchId, MatchMapVeto veto,
         (string? Action, string? TeamSide)? next,
         string arrayCol, string mapId, string? side,
         bool isPick = false)
@@ -208,7 +208,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     }
 
     private async Task SetNextActionAsync(
-        string matchId, MatchMapVeto veto,
+        Guid matchId, MatchMapVeto veto,
         (string? Action, string? TeamSide)? next)
     {
         using var conn = db.CreateConnection();
@@ -227,7 +227,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
         }
         else
         {
-            string? nextTeamId = next.Value.TeamSide == "T1" ? veto.Team1Id : veto.Team2Id;
+            Guid? nextTeamId = next.Value.TeamSide == "T1" ? veto.Team1Id : veto.Team2Id;
             int nextActionNumber = veto.CurrentActionNumber + 1;
 
             await conn.ExecuteAsync(@"
@@ -266,14 +266,14 @@ public sealed class VetoDbService(IDbConnectionFactory db)
 
         return new MatchMapVeto
         {
-            Id                  = row.id,
-            MatchId             = row.match_id,
-            TournamentId        = row.tournament_id,
-            Team1Id             = row.team1_id,
-            Team2Id             = row.team2_id,
+            Id                  = (Guid)row.id,
+            MatchId             = (Guid)row.match_id,
+            TournamentId        = (Guid)row.tournament_id,
+            Team1Id             = (Guid?)row.team1_id,
+            Team2Id             = (Guid?)row.team2_id,
             BestOf              = row.best_of ?? 1,
             Status              = row.status ?? "pending",
-            CurrentTeamId       = row.current_team_id,
+            CurrentTeamId       = (Guid?)row.current_team_id,
             CurrentAction       = row.current_action,
             CurrentActionNumber = row.current_action_number ?? 0,
             Team1BannedMaps     = ParseArray(row.team1_banned_maps),

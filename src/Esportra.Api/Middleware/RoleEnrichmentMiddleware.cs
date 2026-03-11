@@ -48,10 +48,14 @@ public sealed class RoleEnrichmentMiddleware(
 
         using var conn = db.CreateConnection();
 
+        // Parse userId as Guid so Dapper sends uuid type (not text) to PostgreSQL.
+        // PostgreSQL has no implicit uuid = text operator and will 500 if passed as string.
+        var userGuid = Guid.Parse(userId);
+
         // Query platform roles
         var roles = (await Dapper.SqlMapper.QueryAsync<string>(conn,
             "SELECT role FROM public.user_roles WHERE user_id = @userId",
-            new { userId })).ToArray();
+            new { userId = userGuid })).ToArray();
 
         // Query admin roles assigned to this user (handles both profiles.admin_roles array
         // and the normalized admin_user_roles join table)
@@ -64,7 +68,7 @@ public sealed class RoleEnrichmentMiddleware(
             SELECT UNNEST(p.admin_roles)
             FROM public.profiles p
             WHERE p.id = @userId AND p.admin_roles IS NOT NULL
-            """, new { userId })).ToArray();
+            """, new { userId = userGuid })).ToArray();
 
         // Resolve permissions from admin role keys
         var permissions = adminRoles

@@ -9,7 +9,7 @@ public enum VetoEvent { SetBo, BanMap, PickMap, PickSide, Reset }
 public sealed record VetoTransitionResult(bool Ok, string? Reason = null);
 
 public sealed record TurnContext(
-    string? CurrentTeamId,
+    Guid?   CurrentTeamId,
     bool    IsOrganizer,
     string? UserTeamId,
     bool    IsCaptain);
@@ -18,14 +18,14 @@ public sealed record TurnContext(
 
 public sealed record MatchMapVeto
 {
-    public string  Id                  { get; init; } = "";
-    public string  MatchId             { get; init; } = "";
-    public string  TournamentId        { get; init; } = "";
-    public string? Team1Id             { get; init; }
-    public string? Team2Id             { get; init; }
+    public Guid    Id                  { get; init; }
+    public Guid    MatchId             { get; init; }
+    public Guid    TournamentId        { get; init; }
+    public Guid?   Team1Id             { get; init; }
+    public Guid?   Team2Id             { get; init; }
     public int     BestOf              { get; init; } = 1;
     public string  Status              { get; init; } = "pending"; // pending | in_progress | completed | cancelled
-    public string? CurrentTeamId       { get; init; }
+    public Guid?   CurrentTeamId       { get; init; }
     public string? CurrentAction       { get; init; }              // ban | pick | pick_side
     public int     CurrentActionNumber { get; init; }
     public string[]  Team1BannedMaps   { get; init; } = [];

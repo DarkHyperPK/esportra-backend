@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
@@ -75,7 +75,7 @@ public static class VenueEndpoints
         // ── GET /api/venues/{id}/live-status ──────────────────────────────────
         // Initial state fetch for useVenueLiveStatus (real-time updates via LiveHub).
         app.MapGet("/api/venues/{id}/live-status", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -92,7 +92,7 @@ public static class VenueEndpoints
 
         // ── GET /api/venues/{id}/availability ─────────────────────────────────
         app.MapGet("/api/venues/{id}/availability", async (
-            string               id,
+            Guid                 id,
             string?              date,
             string?              time,
             IDbConnectionFactory db,
@@ -113,7 +113,7 @@ public static class VenueEndpoints
 
         // ── POST /api/venues/{id}/bookings — atomic check + insert + decrement
         app.MapPost("/api/venues/{id}/bookings", async (
-            string                         id,
+            Guid                           id,
             [FromBody] CreateBookingRequest req,
             HttpContext                     ctx,
             IDbConnectionFactory           db,
@@ -170,7 +170,7 @@ public static class VenueEndpoints
                     new
                     {
                         venueId        = id,
-                        userId         = userCtx.UserId,
+                        userId         = userCtx.UserIdGuid,
                         date           = req.Date,
                         startTime      = req.StartTime,
                         endTime        = endStr,
@@ -206,7 +206,7 @@ public static class VenueEndpoints
 
         // ── DELETE /api/venues/bookings/{bookingId} — cancel ──────────────────
         app.MapDelete("/api/venues/bookings/{bookingId}", async (
-            string               bookingId,
+            Guid                 bookingId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -217,14 +217,14 @@ public static class VenueEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.ExecuteAsync(
                 "UPDATE venue_bookings SET status = 'cancelled' WHERE id = @bookingId AND user_id = @userId",
-                new { bookingId, userId = userCtx.UserId });
+                new { bookingId, userId = userCtx.UserIdGuid });
 
             return rows == 0 ? Results.NotFound() : Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/venues/{id}/impressions — fire-and-forget ───────────────
         app.MapPost("/api/venues/{id}/impressions", async (
-            string                            id,
+            Guid                              id,
             [FromBody] TrackImpressionRequest req,
             HttpContext                       ctx,
             IDbConnectionFactory              db,
@@ -234,14 +234,14 @@ public static class VenueEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "INSERT INTO venue_impressions (venue_id, event_type, user_id) VALUES (@id, @eventType, @userId)",
-                new { id, eventType = req.EventType, userId = userCtx?.UserId });
+                new { id, eventType = req.EventType, userId = userCtx?.UserIdGuid });
             return Results.Ok();
         });
 
         // ── GET /api/venues/{id}/impressions — daily aggregated ───────────────
         // Server-side GROUP BY: eliminates client-side loop over raw rows.
         app.MapGet("/api/venues/{id}/impressions", async (
-            string               id,
+            Guid                 id,
             int                  days  = 30,
             IDbConnectionFactory db    = null!,
             CancellationToken    ct    = default) =>
@@ -265,7 +265,7 @@ public static class VenueEndpoints
 
         // ── GET /api/venues/{id}/impressions/totals ───────────────────────────
         app.MapGet("/api/venues/{id}/impressions/totals", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {

@@ -71,7 +71,7 @@ public sealed class ConversationHub : Hub
 
         using var conn = _db.CreateConnection();
         var username = await conn.QuerySingleOrDefaultAsync<string>(
-            "SELECT username FROM profiles WHERE id = @Id", new { Id = userId });
+            "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
 
         await Clients.OthersInGroup(ConversationGroup(conversationId))
             .SendAsync(
@@ -97,7 +97,7 @@ public sealed class ConversationHub : Hub
                   AND is_active = TRUE
             )
             """,
-            new { conversationId, userId });
+            new { conversationId = Guid.Parse(conversationId), userId = Guid.Parse(userId) });
         return isParticipant;
     }
 }

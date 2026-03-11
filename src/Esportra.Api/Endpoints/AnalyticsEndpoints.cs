@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
@@ -32,7 +32,7 @@ public static class AnalyticsEndpoints
                 """,
                 new
                 {
-                    userId    = userCtx?.UserId,
+                    userId    = userCtx?.UserIdGuid,
                     eventType = req.EventType,
                     eventData = req.EventData ?? "{}",
                     sessionId = req.SessionId,
@@ -72,7 +72,7 @@ public static class AnalyticsEndpoints
 
         // ── GET /api/analytics/user/{userId} (admin) ─────────────────────────
         app.MapGet("/api/analytics/user/{userId}", async (
-            string userId,
+            Guid userId,
             IDbConnectionFactory db,
             [FromQuery] string startDate,
             [FromQuery] string endDate,
@@ -122,11 +122,11 @@ public static class AnalyticsEndpoints
 
             var userRoles = await conn.QueryAsync<dynamic>(
                 "SELECT role, is_active, assigned_at FROM user_roles WHERE user_id = @userId AND is_active = TRUE ORDER BY assigned_at DESC",
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
 
             var verifiedRoles = await conn.QueryAsync<dynamic>(
                 "SELECT role, status, is_active FROM verified_roles WHERE user_id = @userId",
-                new { userId = userCtx.UserId });
+                new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { userRoles, verifiedRoles });
         }).RequireAuthorization("Authenticated");

@@ -11,4 +11,11 @@ public sealed record UserContext
     public string[] Roles      { get; init; } = [];   // e.g. ["casual","organizer"]
     public string[] AdminRoles { get; init; } = [];   // e.g. ["ops_admin","moderator"]
     public string[] Permissions { get; init; } = [];  // e.g. ["users:ban","disputes:resolve"]
+
+    /// <summary>
+    /// UserId parsed as Guid — use this when passing to Dapper so Npgsql
+    /// sends the parameter as uuid type (not text), avoiding "operator does not exist: uuid = text".
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid UserIdGuid => Guid.Parse(UserId);
 }

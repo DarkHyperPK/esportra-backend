@@ -51,10 +51,10 @@ public static class BracketEndpoints
             var version = await persistence.SaveGraphAsync(graph, ct);
 
             // Notify tournament subscribers that a new bracket version was created
-            if (req.TournamentId is not null)
+            if (req.TournamentId != Guid.Empty)
             {
                 await bracketHub.Clients
-                    .Group(BracketHub.TournamentGroup(req.TournamentId))
+                    .Group(BracketHub.TournamentGroup(req.TournamentId.ToString()))
                     .SendAsync(BracketHubEvents.VersionCreated,
                         new { versionId = version.Id, tournamentId = req.TournamentId, format = req.Format },
                         ct);
@@ -70,7 +70,7 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
         app.MapPost("/api/brackets/{versionId}/advance-byes", async (
-            string                    versionId,
+            Guid                      versionId,
             BracketPersistenceService persistence,
             IHubContext<BracketHub>   bracketHub,
             CancellationToken         ct) =>
@@ -80,7 +80,7 @@ public static class BracketEndpoints
             if (count > 0)
             {
                 await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(versionId))
+                    .Group(BracketHub.BracketGroup(versionId.ToString()))
                     .SendAsync(BracketHubEvents.MatchUpdated,
                         new { versionId, byesAdvanced = count },
                         ct);
@@ -91,7 +91,7 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/reset ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/reset", async (
-            string                    versionId,
+            Guid                      versionId,
             BracketPersistenceService persistence,
             IHubContext<BracketHub>   bracketHub,
             CancellationToken         ct) =>
@@ -99,7 +99,7 @@ public static class BracketEndpoints
             await persistence.ResetAsync(versionId, ct);
 
             await bracketHub.Clients
-                .Group(BracketHub.BracketGroup(versionId))
+                .Group(BracketHub.BracketGroup(versionId.ToString()))
                 .SendAsync(BracketHubEvents.BracketReset, new { versionId }, ct);
 
             return Results.Ok(new { message = "Bracket reset." });
@@ -107,7 +107,7 @@ public static class BracketEndpoints
 
         // ── DELETE /api/brackets/{versionId} ─────────────────────────────────
         app.MapDelete("/api/brackets/{versionId}", async (
-            string                    versionId,
+            Guid                      versionId,
             BracketPersistenceService persistence,
             CancellationToken         ct) =>
         {
@@ -117,20 +117,20 @@ public static class BracketEndpoints
 
         // ── GET /api/brackets/{versionId}/standings ───────────────────────────
         app.MapGet("/api/brackets/{versionId}/standings", async (
-            string           versionId,
+            Guid             versionId,
             string?          groupId,
             StandingsService standingsSvc,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
-            var stageId = await conn.QuerySingleOrDefaultAsync<string>(
+            var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT stage_id FROM public.brkt_versions WHERE id = @versionId",
                 new { versionId });
 
             if (stageId is null) return Results.NotFound(new { error = "Version not found." });
 
-            var standings = await standingsSvc.CalculateStandingsAsync(stageId, groupId, ct);
+            var standings = await standingsSvc.CalculateStandingsAsync(stageId.Value, groupId, ct);
             return Results.Ok(standings);
         });
 
@@ -145,7 +145,7 @@ public static class BracketEndpoints
             if (!ok) return Results.BadRequest(new { error = msg });
 
             await bracketHub.Clients
-                .Group(BracketHub.BracketGroup(req.VersionId))
+                .Group(BracketHub.BracketGroup(req.VersionId.ToString()))
                 .SendAsync(BracketHubEvents.MatchInserted,
                     new { versionId = req.VersionId, round = req.CurrentRound + 1 },
                     ct);
@@ -155,7 +155,7 @@ public static class BracketEndpoints
 
         // ── DELETE /api/swiss/{stageId}/round/{roundNumber} ─────────────────
         app.MapDelete("/api/swiss/{stageId}/round/{roundNumber:int}", async (
-            string                   stageId,
+            Guid                     stageId,
             int                      roundNumber,
             IDbConnectionFactory     db,
             IHubContext<BracketHub>  bracketHub,
@@ -164,7 +164,7 @@ public static class BracketEndpoints
             using var conn = db.CreateConnection();
 
             // Find the version_id for this stage
-            var versionId = await conn.QuerySingleOrDefaultAsync<string>(
+            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT id FROM public.brkt_versions WHERE stage_id = @stageId ORDER BY created_at DESC LIMIT 1",
                 new { stageId });
 
@@ -179,7 +179,7 @@ public static class BracketEndpoints
             if (deleted > 0)
             {
                 await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(versionId))
+                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
                     .SendAsync(BracketHubEvents.MatchDeleted,
                         new { versionId, stageId, roundNumber, deletedCount = deleted },
                         ct);
@@ -205,7 +205,7 @@ public static class BracketEndpoints
 
             using var conn = db.CreateConnection();
 
-            var versionId = await conn.QuerySingleOrDefaultAsync<string>(
+            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT version_id FROM public.brkt_matches WHERE id = @matchId",
                 new { matchId = req.MatchId });
 
@@ -213,7 +213,7 @@ public static class BracketEndpoints
                 return Results.NotFound(new { error = $"Match {req.MatchId} not found." });
 
             // Verify caller is the tournament organizer
-            var organizerId = await conn.QuerySingleOrDefaultAsync<string>(
+            var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
                 SELECT t.organizer_id
                 FROM brkt_versions bv
@@ -223,7 +223,7 @@ public static class BracketEndpoints
                 """,
                 new { versionId });
 
-            if (organizerId != userCtx.UserId)
+            if (organizerId != userCtx.UserIdGuid)
                 return Results.Forbid();
 
             var advancements = (await conn.QueryAsync("""
@@ -236,9 +236,9 @@ public static class BracketEndpoints
             var updates = advancements
                 .Select(adv => new
                 {
-                    TargetMatchId = (string)adv.target_match_id,
+                    TargetMatchId = (Guid)adv.target_match_id,
                     TargetSlot    = (int)adv.target_slot,
-                    TeamId        = (string?)(adv.type == "winner" ? adv.winner_team_id : adv.loser_team_id),
+                    TeamId        = (Guid?)((string)adv.type == "winner" ? adv.winner_team_id : adv.loser_team_id),
                 })
                 .Where(u => u.TeamId is not null)
                 .ToList();
@@ -249,7 +249,7 @@ public static class BracketEndpoints
                 // Batch all slot updates in a single UNNEST query
                 var targetIds = updates.Select(u => u.TargetMatchId).ToArray();
                 var slots     = updates.Select(u => u.TargetSlot).ToArray();
-                var teamIds   = updates.Select(u => u.TeamId!).ToArray();
+                var teamIds   = updates.Select(u => u.TeamId!.Value).ToArray();
 
                 advanced = await conn.ExecuteAsync("""
                     UPDATE public.brkt_matches m
@@ -263,13 +263,13 @@ public static class BracketEndpoints
 
                 // Broadcast single update for the entire version
                 await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(versionId))
+                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
                     .SendAsync(BracketHubEvents.MatchUpdated,
                         new { versionId, matchesAdvanced = advanced },
                         ct);
             }
 
-            if (!string.IsNullOrWhiteSpace(req.EventId))
+            if (req.EventId.HasValue)
             {
                 await conn.ExecuteAsync(
                     "UPDATE public.match_completed_events SET status = 'processed', processed_at = NOW() WHERE id = @id",
@@ -279,7 +279,7 @@ public static class BracketEndpoints
             // Rebuild UI cache inline with error logging (not fire-and-forget)
             try
             {
-                await RebuildUiCacheAsync(versionId, db, ct);
+                await RebuildUiCacheAsync(versionId.Value, db, ct);
             }
             catch (Exception ex)
             {
@@ -291,7 +291,7 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/cache ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/cache", async (
-            string               versionId,
+            Guid                 versionId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -301,7 +301,7 @@ public static class BracketEndpoints
 
         // ── GET /api/brackets/{versionId} ─────────────────────────────────────
         app.MapGet("/api/brackets/{versionId}", async (
-            string               versionId,
+            Guid                 versionId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -320,7 +320,7 @@ public static class BracketEndpoints
         // ── GET /api/brackets/{versionId}/graph ──────────────────────────────
         // Full graph structure (replaces MatchRepository.getGraphStructure)
         app.MapGet("/api/brackets/{versionId}/graph", async (
-            string               versionId,
+            Guid                 versionId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -355,7 +355,7 @@ public static class BracketEndpoints
         // ── GET /api/brackets/{versionId}/bye-matches ────────────────────────
         // Pending matches with exactly one team (BYE matches)
         app.MapGet("/api/brackets/{versionId}/bye-matches", async (
-            string               versionId,
+            Guid                 versionId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -375,7 +375,7 @@ public static class BracketEndpoints
     // ── UI cache builder ──────────────────────────────────────────────────────
 
     private static async Task<int> RebuildUiCacheAsync(
-        string versionId, IDbConnectionFactory db, CancellationToken ct)
+        Guid versionId, IDbConnectionFactory db, CancellationToken ct)
     {
         using var conn = db.CreateConnection();
 
@@ -401,13 +401,13 @@ public static class BracketEndpoints
 
         var nextMatchMap = advancements
             .Where(a => (string?)a.type == "winner")
-            .GroupBy(a => (string)a.source_match_id)
-            .ToDictionary(g => g.Key, g => (string)g.First().target_match_id);
+            .GroupBy(a => ((Guid)a.source_match_id).ToString())
+            .ToDictionary(g => g.Key, g => ((Guid)g.First().target_match_id).ToString());
 
         var loserNextMap = advancements
             .Where(a => (string?)a.type == "loser")
-            .GroupBy(a => (string)a.source_match_id)
-            .ToDictionary(g => g.Key, g => (string)g.First().target_match_id);
+            .GroupBy(a => ((Guid)a.source_match_id).ToString())
+            .ToDictionary(g => g.Key, g => ((Guid)g.First().target_match_id).ToString());
 
         var uiMatches = matches.Select(m => new
         {
@@ -424,8 +424,8 @@ public static class BracketEndpoints
             bestOf           = m.best_of,
             partyCode        = m.party_code,
             bracketType      = m.bracket_type,
-            nextMatchId      = nextMatchMap.TryGetValue((string)m.id, out var nm) ? nm : null,
-            loserNextMatchId = loserNextMap.TryGetValue((string)m.id, out var lm) ? lm : null,
+            nextMatchId      = nextMatchMap.TryGetValue(((Guid)m.id).ToString(), out string? nm) ? nm : null,
+            loserNextMatchId = loserNextMap.TryGetValue(((Guid)m.id).ToString(), out string? lm) ? lm : null,
             stageId          = m.stage_id,
             groupId          = m.group_id,
             x                = m.x_pos,
