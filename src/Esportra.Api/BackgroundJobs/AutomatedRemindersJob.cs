@@ -16,7 +16,12 @@ public sealed class AutomatedRemindersJob(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("[Reminders] Background job started");
+        logger.LogInformation("[Reminders] Background job started — first run in 30s");
+
+        // Wait for the container's DNS resolver and Postgres to be fully reachable
+        // before the first run. Avoids a spurious DNS error in startup logs.
+        try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken); }
+        catch (OperationCanceledException) { return; }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -30,7 +35,7 @@ public sealed class AutomatedRemindersJob(
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "[Reminders] Job iteration failed");
+                logger.LogError(ex, "[Reminders] Job iteration failed — will retry in 5 minutes");
             }
 
             try
