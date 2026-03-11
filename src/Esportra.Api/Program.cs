@@ -97,17 +97,29 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 Console.WriteLine($"[STARTUP] Redis connection: {redisConnStr.Split(',')[0]}...");
 
-// Parse Redis options explicitly so AbortOnConnectFail is guaranteed false.
-var redisConfigOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
-redisConfigOptions.AbortOnConnectFail = false;
-redisConfigOptions.ConnectTimeout = 5000;   // 5s max for connection attempt
-redisConfigOptions.SyncTimeout = 5000;
-
-builder.Services.AddStackExchangeRedisCache(opts =>
+// DIAGNOSTIC: Temporarily use in-memory cache to isolate if Redis blocks startup.
+// If Kestrel binds with this, Redis is the problem. Remove after diagnosis.
+var useRedis = Environment.GetEnvironmentVariable("USE_REDIS") != "false";
+if (useRedis)
 {
-    opts.ConfigurationOptions = redisConfigOptions;
-    opts.InstanceName  = "esportra:";
-});
+    var redisConfigOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
+    redisConfigOptions.AbortOnConnectFail = false;
+    redisConfigOptions.ConnectTimeout = 5000;
+    redisConfigOptions.SyncTimeout = 5000;
+
+    builder.Services.AddStackExchangeRedisCache(opts =>
+    {
+        opts.ConfigurationOptions = redisConfigOptions;
+        opts.InstanceName  = "esportra:";
+    });
+    Console.WriteLine("[STARTUP] Using Redis distributed cache");
+}
+else
+{
+    builder.Services.AddDistributedMemoryCache();
+    Console.WriteLine("[STARTUP] Using IN-MEMORY distributed cache (diagnostic mode)");
+}
+
 builder.Services.AddHybridCache(opts =>
 {
     opts.DefaultEntryOptions = new HybridCacheEntryOptions
@@ -298,7 +310,25 @@ using var heartbeat = new Timer(_ =>
 
 try
 {
-    Console.WriteLine("[STARTUP] Calling app.StartAsync()...");
+    // Probe DI resolution of key services — any hang here points to the culprit
+Console.WriteLine("[STARTUP] Probing DI resolution...");
+Console.Out.Flush();
+try
+{
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var dc = app.Services.GetService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
+    Console.WriteLine($"[STARTUP]   IDistributedCache -> {dc?.GetType().Name} ({sw.ElapsedMilliseconds}ms)");
+    var hc = app.Services.GetService<Microsoft.Extensions.Caching.Hybrid.HybridCache>();
+    Console.WriteLine($"[STARTUP]   HybridCache -> {hc?.GetType().Name} ({sw.ElapsedMilliseconds}ms)");
+    Console.Out.Flush();
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[STARTUP]   DI probe FAILED: {ex.Message}");
+    Console.Out.Flush();
+}
+
+Console.WriteLine("[STARTUP] Calling app.StartAsync()...");
     Console.Out.Flush();
     await app.StartAsync();
     Console.WriteLine($"[STARTUP] ✅ StartAsync completed in {startWatch.Elapsed.TotalSeconds:F1}s");
