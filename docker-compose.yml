@@ -1,27 +1,64 @@
 version: "3.9"
 
+# Production / staging compose — used by Coolify.
+# All secrets are injected via Coolify environment variables.
+# For local development, docker-compose.override.yml is applied automatically.
+
 services:
   api:
     build:
       context: .
       dockerfile: src/Esportra.Api/Dockerfile
-    ports:
-      - "5200:8080"
+    expose:
+      - "8080"
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__Redis=redis:6379
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Staging}
+      # Injected by Coolify — set these in the application's environment variables:
+      - ConnectionStrings__Postgres=${ConnectionStrings__Postgres}
+      # Redis runs as the 'redis' service in this compose; password via REDIS_PASSWORD
+      - ConnectionStrings__Redis=redis:6379,password=${REDIS_PASSWORD}
+      - Supabase__JwtSecret=${Supabase__JwtSecret}
+      - Supabase__JwtAudience=${Supabase__JwtAudience:-authenticated}
+      - Supabase__JwtIssuer=${Supabase__JwtIssuer}
+      - Supabase__Url=${Supabase__Url}
+      - Supabase__ServiceKey=${Supabase__ServiceKey}
+      - Resend__ApiKey=${Resend__ApiKey}
+      - Riot__ApiKey=${Riot__ApiKey}
+      - Riot__OAuthClientId=${Riot__OAuthClientId}
+      - Riot__OAuthClientSecret=${Riot__OAuthClientSecret}
+      - Faceit__ApiKey=${Faceit__ApiKey}
+      - Faceit__ClientId=${Faceit__ClientId}
+      - Faceit__ClientSecret=${Faceit__ClientSecret}
+      - Rawg__ApiKey=${Rawg__ApiKey}
+      - FrontendUrl=${FrontendUrl:-https://esportra.com}
+      - PartnerUrl=${PartnerUrl:-https://partner.esportra.com}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    command: redis-server --save 60 1 --loglevel warning --requirepass ${REDIS_PASSWORD:-changeme_in_production}
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 volumes:
   redis_data:

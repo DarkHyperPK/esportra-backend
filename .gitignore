@@ -7,6 +7,8 @@ obj/
 appsettings.local.json
 appsettings.Production.json
 **/appsettings.local.json
+.env
+.env.local
 
 # IDE
 .vs/
