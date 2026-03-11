@@ -95,6 +95,15 @@ builder.Services.AddAuthorization(opts =>
 // ── Database ──────────────────────────────────────────────────────────────────
 var pgConnStr = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required.");
+
+// Log connection target (redacted) for debugging DNS/network issues
+try
+{
+    var pgHost = new Npgsql.NpgsqlConnectionStringBuilder(pgConnStr).Host;
+    Console.WriteLine($"[STARTUP] Postgres target host: {pgHost}");
+}
+catch { Console.WriteLine("[STARTUP] Postgres connection string configured (could not parse host)."); }
+
 builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(pgConnStr));
 
 // ── Redis + HybridCache ────────────────────────────────────────────────────────
@@ -363,6 +372,22 @@ Console.Out.Flush();
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     Console.WriteLine("[STARTUP] ✅ APPLICATION STARTED — Kestrel is listening!");
+
+    // Probe Postgres connectivity on startup so issues show in deploy logs
+    try
+    {
+        using var conn = app.Services.GetRequiredService<IDbConnectionFactory>().CreateConnection();
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        cmd.ExecuteScalar();
+        Console.WriteLine("[STARTUP] ✅ Postgres: connected and responding.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] ❌ Postgres: {ex.GetType().Name} — {ex.Message}");
+    }
+
     Console.Out.Flush();
 });
 
