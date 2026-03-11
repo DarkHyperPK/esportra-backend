@@ -97,49 +97,10 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 Console.WriteLine($"[STARTUP] Redis connection string: {redisConnStr.Split(',')[0]}...");
 
-// Parse and configure Redis with strict timeouts and non-blocking connect.
-var redisConfig = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
-redisConfig.AbortOnConnectFail = false;
-redisConfig.ConnectTimeout = 5000;
-redisConfig.SyncTimeout = 3000;
-redisConfig.AsyncTimeout = 5000;
-// If SSL is requested, don't validate the certificate (self-signed in Docker)
-if (redisConfig.Ssl)
-    redisConfig.CertificateValidation += (_, _, _, _) => true;
-
-Console.WriteLine($"[STARTUP] Redis config: ssl={redisConfig.Ssl}, endpoints={string.Join(",", redisConfig.EndPoints)}");
-Console.Out.Flush();
-
-// Create multiplexer eagerly but with AbortOnConnectFail=false — returns immediately
-// even if Redis is unreachable. Operations will fail gracefully until connected.
-StackExchange.Redis.IConnectionMultiplexer? redisMux = null;
-try
-{
-    redisMux = StackExchange.Redis.ConnectionMultiplexer.Connect(redisConfig);
-    Console.WriteLine($"[STARTUP] Redis multiplexer created (connected={redisMux.IsConnected})");
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"[STARTUP] Redis connect failed (will use in-memory fallback): {ex.Message}");
-}
-Console.Out.Flush();
-
-if (redisMux != null)
-{
-    builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(redisMux);
-    builder.Services.AddStackExchangeRedisCache(opts =>
-    {
-        opts.ConnectionMultiplexerFactory = () => Task.FromResult(redisMux);
-        opts.InstanceName = "esportra:";
-    });
-    Console.WriteLine("[STARTUP] Using Redis distributed cache");
-}
-else
-{
-    builder.Services.AddDistributedMemoryCache();
-    Console.WriteLine("[STARTUP] Using in-memory distributed cache (Redis unavailable)");
-}
-Console.Out.Flush();
+// Register in-memory cache for startup. A background service will connect
+// to Redis after Kestrel is running and swap the cache implementation.
+// This ensures Redis connectivity issues never block Kestrel from binding.
+builder.Services.AddDistributedMemoryCache();
 
 builder.Services.AddHybridCache(opts =>
 {
@@ -149,6 +110,9 @@ builder.Services.AddHybridCache(opts =>
         LocalCacheExpiration = TimeSpan.FromSeconds(30),
     };
 });
+
+// Store Redis connection string for the background connector service.
+builder.Services.AddSingleton(new RedisConnectionString(redisConnStr));
 
 // ── SignalR ────────────────────────────────────────────────────────────────────
 builder.Services.AddSignalR(opts =>
@@ -205,6 +169,7 @@ builder.Services.AddScoped<AuditService>();
 
 // ── Background jobs ───────────────────────────────────────────────────────────
 builder.Services.AddHostedService<AutomatedRemindersJob>();
+builder.Services.AddHostedService<RedisBackgroundConnector>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -307,36 +272,10 @@ app.Lifetime.ApplicationStarted.Register(() =>
     Console.WriteLine("[STARTUP] ✅ APPLICATION STARTED — Kestrel is listening!");
     Console.Out.Flush();
 });
-app.Lifetime.ApplicationStopping.Register(() =>
-{
-    Console.WriteLine("[STARTUP] ⚠️ APPLICATION STOPPING!");
-    Console.Out.Flush();
-});
-
-// Heartbeat: confirm process stays alive during GenericWebHostService.StartAsync()
-var _sw = System.Diagnostics.Stopwatch.StartNew();
-using var _hb = new Timer(_ =>
-{
-    Console.WriteLine($"[HEARTBEAT] alive {_sw.Elapsed.TotalSeconds:F0}s, waiting for Kestrel...");
-    Console.Out.Flush();
-}, null, 5000, 10000);
 
 try
 {
-    using var _cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-    Console.WriteLine("[STARTUP] Calling StartAsync (30s timeout)...");
-    Console.Out.Flush();
-    await app.StartAsync(_cts.Token);
-    Console.WriteLine($"[STARTUP] ✅ StartAsync done in {_sw.Elapsed.TotalSeconds:F1}s");
-    Console.Out.Flush();
-    _hb.Dispose();
-    await app.WaitForShutdownAsync();
-}
-catch (OperationCanceledException)
-{
-    Console.WriteLine($"[STARTUP] ❌ StartAsync TIMED OUT after {_sw.Elapsed.TotalSeconds:F0}s!");
-    Console.Out.Flush();
-    await Task.Delay(Timeout.Infinite); // keep alive so we can inspect
+    await app.RunAsync();
 }
 catch (Exception ex)
 {
