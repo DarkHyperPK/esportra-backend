@@ -14,6 +14,7 @@ using Esportra.Infrastructure.Integrations;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.IdentityModel.Tokens;
 
@@ -166,7 +167,26 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
-app.UseHttpsRedirection();
+// ── Proxy / forwarded-header support ──────────────────────────────────────────
+// Coolify (and any nginx reverse proxy) terminates TLS and forwards HTTP to
+// the container. Trust the X-Forwarded-For / X-Forwarded-Proto headers so
+// that OAuth redirects and HTTPS detection work correctly.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    // Trust all proxies inside Docker network (Coolify sets up a Docker network).
+    KnownNetworks  = { },
+    KnownProxies   = { },
+});
+
+// ── Health — mapped first so it always responds, even if other middleware fails
+app.MapGet("/health", () => Results.Ok(new
+{
+    status    = "healthy",
+    timestamp = DateTime.UtcNow,
+    version   = "1.0.0-phase4",
+}));
+
 app.UseCors("EsportraPolicy");
 app.UseRouting();
 app.UseAuthentication();
@@ -184,14 +204,6 @@ app.Use(async (ctx, next) =>
         await ctx.Response.WriteAsJsonAsync(new { error = ex.Message });
     }
 });
-
-// ── Health ─────────────────────────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new
-{
-    status    = "healthy",
-    timestamp = DateTime.UtcNow,
-    version   = "1.0.0-phase4",
-}));
 
 // ── JWT validation probe ───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>
