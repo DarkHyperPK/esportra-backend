@@ -1,101 +1,233 @@
+using System.Collections.Concurrent;
 using System.Security.Claims;
-using Microsoft.Extensions.Caching.Distributed;
+using StackExchange.Redis;
 
 namespace Esportra.Api.Middleware;
 
-/// <summary>
-/// Sliding-window rate limiter backed by Redis (IDistributedCache).
-/// Applies per-IP for anonymous requests and per-user for authenticated ones.
-/// Returns 429 Too Many Requests when the limit is exceeded.
-///
-/// Defaults: 100 requests per 60-second window (configurable via appsettings).
-/// </summary>
-public sealed class RateLimitMiddleware(
-    RequestDelegate next,
-    IDistributedCache cache,
-    IConfiguration config,
-    ILogger<RateLimitMiddleware> logger)
-{
-    private readonly int _maxRequests = config.GetValue("RateLimit:MaxRequests", 100);
-    private readonly int _windowSeconds = config.GetValue("RateLimit:WindowSeconds", 60);
+// ── Configuration models ────────────────────────────────────────────────────
 
-    // Paths that are exempt from rate limiting
-    private static readonly HashSet<string> ExemptPaths = new(StringComparer.OrdinalIgnoreCase)
+public sealed record RateLimitPolicyConfig
+{
+    public int MaxRequests { get; init; } = 200;
+    public int WindowSeconds { get; init; } = 60;
+}
+
+public sealed record RateLimitOptions
+{
+    public bool Enabled { get; init; } = true;
+
+    public Dictionary<string, RateLimitPolicyConfig> Policies { get; init; } = new()
     {
-        "/health",
-        "/api/analytics/events", // fire-and-forget telemetry
+        ["default"]  = new() { MaxRequests = 200,  WindowSeconds = 60 },
+        ["relaxed"]  = new() { MaxRequests = 500,  WindowSeconds = 60 },
+        ["strict"]   = new() { MaxRequests = 30,   WindowSeconds = 60 },
+        ["auth"]     = new() { MaxRequests = 10,   WindowSeconds = 60 },
+        ["admin"]    = new() { MaxRequests = 1000, WindowSeconds = 60 },
     };
+
+    public HashSet<string> ExemptPaths { get; init; } = ["/health", "/api/analytics/events"];
+    public List<string> ExemptPrefixes { get; init; } = ["/hubs/"];
+
+    /// <summary>
+    /// Path prefix → policy name. First match wins.
+    /// More specific prefixes should come before broader ones.
+    /// </summary>
+    public Dictionary<string, string> PathPolicies { get; init; } = new()
+    {
+        ["/api/admin/"]   = "admin",
+        ["/api/auth/"]    = "auth",
+    };
+}
+
+/// <summary>
+/// Marker applied via <c>.WithMetadata(new RateLimitPolicyMetadata("strict"))</c>
+/// on endpoint groups to select a named rate-limit policy.
+/// </summary>
+public sealed record RateLimitPolicyMetadata(string PolicyName);
+
+// ── Middleware ───────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Fixed-window rate limiter with tiered policies.
+///
+/// Primary: Atomic Redis Lua script (INCR + conditional EXPIRE).
+/// Fallback: In-memory ConcurrentDictionary when Redis is unavailable.
+///
+/// Policies are resolved from endpoint metadata → HTTP method heuristic → "default".
+/// </summary>
+public sealed class RateLimitMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly IConnectionMultiplexer _redis;
+    private readonly RateLimitOptions _options;
+    private readonly ILogger<RateLimitMiddleware> _logger;
+
+    // Lua script: atomic increment + conditional expire. Returns current count.
+    private static readonly LuaScript _luaScript = LuaScript.Prepare(
+        """
+        local count = redis.call('INCR', @key)
+        if count == 1 then
+            redis.call('EXPIRE', @key, @ttl)
+        end
+        return count
+        """);
+
+    // In-memory fallback when Redis is down
+    private static readonly ConcurrentDictionary<string, (int Count, long Bucket)> _memoryCounters = new();
+    private static readonly Timer _cleanupTimer = new(_ =>
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        foreach (var kvp in _memoryCounters)
+        {
+            // Remove entries from old buckets (> 2 windows stale)
+            if (now - kvp.Value.Bucket > 180)
+                _memoryCounters.TryRemove(kvp.Key, out var _unused);
+        }
+    }, null, TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(2));
+
+    public RateLimitMiddleware(
+        RequestDelegate next,
+        IConnectionMultiplexer redis,
+        IConfiguration config,
+        ILogger<RateLimitMiddleware> logger)
+    {
+        _next   = next;
+        _redis  = redis;
+        _logger = logger;
+
+        _options = new RateLimitOptions();
+        config.GetSection("RateLimit").Bind(_options);
+    }
 
     public async Task InvokeAsync(HttpContext context)
     {
-        var path = context.Request.Path.Value ?? "";
-
-        // Skip rate limiting for exempt paths and SignalR negotiation
-        if (ExemptPaths.Contains(path) || path.StartsWith("/hubs/", StringComparison.OrdinalIgnoreCase))
+        if (!_options.Enabled)
         {
-            await next(context);
+            await _next(context);
             return;
         }
 
-        var clientKey = GetClientKey(context);
-        var cacheKey = $"ratelimit:{clientKey}";
+        var path = context.Request.Path.Value ?? "";
 
+        if (IsExempt(path))
+        {
+            await _next(context);
+            return;
+        }
+
+        var policy   = ResolvePolicy(context);
+        var config   = _options.Policies.GetValueOrDefault(policy)
+                       ?? _options.Policies.GetValueOrDefault("default")
+                       ?? new RateLimitPolicyConfig();
+        var clientKey = GetClientKey(context);
+
+        var now    = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var bucket = now / config.WindowSeconds;
+        var cacheKey = $"rl:{policy}:{clientKey}:{bucket}";
+
+        // Seconds remaining until current window resets
+        var windowEnd    = (bucket + 1) * config.WindowSeconds;
+        var retryAfter   = (int)Math.Max(1, windowEnd - now);
+
+        int count;
         try
         {
-            var counterBytes = await cache.GetAsync(cacheKey, context.RequestAborted);
-            var count = counterBytes is not null ? BitConverter.ToInt32(counterBytes, 0) : 0;
-
-            if (count >= _maxRequests)
-            {
-                logger.LogWarning("Rate limit exceeded for {ClientKey} ({Count}/{Max})", clientKey, count, _maxRequests);
-
-                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-                context.Response.Headers["Retry-After"] = _windowSeconds.ToString();
-                context.Response.Headers["X-RateLimit-Limit"] = _maxRequests.ToString();
-                context.Response.Headers["X-RateLimit-Remaining"] = "0";
-                await context.Response.WriteAsJsonAsync(new
-                {
-                    error = "Too many requests. Please try again later.",
-                    retryAfterSeconds = _windowSeconds,
-                });
-                return;
-            }
-
-            // Increment counter
-            var newCount = count + 1;
-            var newBytes = BitConverter.GetBytes(newCount);
-            await cache.SetAsync(cacheKey, newBytes, new DistributedCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(_windowSeconds),
-            }, context.RequestAborted);
-
-            // Add rate limit headers
-            context.Response.Headers["X-RateLimit-Limit"] = _maxRequests.ToString();
-            context.Response.Headers["X-RateLimit-Remaining"] = Math.Max(0, _maxRequests - newCount).ToString();
+            var db     = _redis.GetDatabase();
+            var result = await db.ScriptEvaluateAsync(_luaScript, new { key = (RedisKey)cacheKey, ttl = config.WindowSeconds });
+            count = (int)result;
         }
         catch (Exception ex)
         {
-            // If Redis is down, allow the request through (fail-open)
-            logger.LogError(ex, "Rate limiter Redis error for {ClientKey}", clientKey);
+            // Redis unavailable — use in-memory fallback (not fail-open)
+            _logger.LogWarning(ex, "Redis unavailable for rate limiting, using in-memory fallback");
+            count = IncrementMemory(cacheKey, bucket);
         }
 
-        await next(context);
+        // Always set rate limit headers
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers["X-RateLimit-Limit"]     = config.MaxRequests.ToString();
+            context.Response.Headers["X-RateLimit-Remaining"]  = Math.Max(0, config.MaxRequests - count).ToString();
+            context.Response.Headers["X-RateLimit-Reset"]      = windowEnd.ToString();
+            context.Response.Headers["X-RateLimit-Policy"]     = policy;
+            return Task.CompletedTask;
+        });
+
+        if (count > config.MaxRequests)
+        {
+            _logger.LogWarning("Rate limit exceeded for {ClientKey} policy={Policy} ({Count}/{Max})",
+                clientKey, policy, count, config.MaxRequests);
+
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            context.Response.Headers["Retry-After"] = retryAfter.ToString();
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = "Too many requests. Please try again later.",
+                retryAfterSeconds = retryAfter,
+                policy,
+            });
+            return;
+        }
+
+        await _next(context);
+    }
+
+    private bool IsExempt(string path)
+    {
+        if (_options.ExemptPaths.Contains(path)) return true;
+        foreach (var prefix in _options.ExemptPrefixes)
+            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Resolve the rate-limit policy name for this request.
+    /// Priority: endpoint metadata → path prefix match → HTTP method heuristic → "default".
+    /// </summary>
+    private string ResolvePolicy(HttpContext context)
+    {
+        // 1. Explicit endpoint metadata tag
+        var endpoint = context.GetEndpoint();
+        var meta = endpoint?.Metadata.GetMetadata<RateLimitPolicyMetadata>();
+        if (meta is not null) return meta.PolicyName;
+
+        // 2. Path prefix match (configured in appsettings)
+        var path = context.Request.Path.Value ?? "";
+        foreach (var (prefix, policy) in _options.PathPolicies)
+            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return policy;
+
+        // 3. HTTP method heuristic
+        return context.Request.Method.ToUpperInvariant() switch
+        {
+            "GET" or "HEAD" or "OPTIONS" => "relaxed",
+            _                            => "default",
+        };
     }
 
     private static string GetClientKey(HttpContext context)
     {
-        // Authenticated: rate limit per user
         if (context.User.Identity?.IsAuthenticated == true)
         {
             var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? context.User.FindFirstValue("sub");
             if (!string.IsNullOrEmpty(userId))
-                return $"user:{userId}";
+                return $"u:{userId}";
         }
 
-        // Anonymous: rate limit per IP
         var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         return $"ip:{ip}";
+    }
+
+    private static int IncrementMemory(string key, long bucket)
+    {
+        var updated = _memoryCounters.AddOrUpdate(
+            key,
+            _ => (1, bucket),
+            (_, existing) => existing.Bucket == bucket
+                ? (existing.Count + 1, bucket)
+                : (1, bucket));
+        return updated.Count;
     }
 }
 
