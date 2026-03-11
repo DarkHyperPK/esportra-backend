@@ -24,12 +24,23 @@ public sealed class AutomatedRemindersJob(
             {
                 await RunAsync(stoppingToken);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break; // Graceful shutdown
+            }
             catch (Exception ex)
             {
                 logger.LogError(ex, "[Reminders] Job iteration failed");
             }
 
-            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break; // Graceful shutdown
+            }
         }
     }
 
