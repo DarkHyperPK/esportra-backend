@@ -49,7 +49,28 @@ public static class AdminEndpoints
             };
         }).RequireAuthorization("Authenticated");
 
-        // ── POST /api/sponsors/invite ─────────────────────────────────────────
+        // ── POST /api/admin/users/cleanup ─────────────────────────────────────
+        // Deletes profiles with no matching auth.users entry (orphaned rows).
+        app.MapPost("/api/admin/users/cleanup", async (
+            IDbConnectionFactory     db,
+            HttpContext              ctx,
+            CancellationToken        ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersDelete))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var orphanIds = (await conn.QueryAsync<string>("""
+                DELETE FROM public.profiles
+                WHERE id NOT IN (SELECT id FROM auth.users)
+                RETURNING id
+                """)).ToList();
+
+            return Results.Ok(new { deleted = orphanIds.Count, orphanIds });
+        }).RequireAuthorization("Admin");
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,
