@@ -1,0 +1,44 @@
+name: Build & Deploy — Staging
+
+on:
+  push:
+    branches: [staging]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --no-restore -c Release
+
+  deploy:
+    name: Deploy to Coolify (Staging)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify staging deployment
+        # If COOLIFY_STAGING_WEBHOOK is not yet configured, Coolify's native
+        # auto-deploy handles the deployment — this step exits cleanly.
+        # To enable CI-gated deploys:
+        #   1. Coolify → staging app → Deployments tab → copy Webhook URL
+        #   2. GitHub → Settings → Secrets → Actions → add COOLIFY_STAGING_WEBHOOK
+        #   3. Coolify → staging app → disable "Auto Deploy on push"
+        env:
+          WEBHOOK: ${{ secrets.COOLIFY_STAGING_WEBHOOK }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "ℹ️ COOLIFY_STAGING_WEBHOOK not configured — Coolify auto-deploy handles deployment."
+            exit 0
+          fi
+          curl --fail --silent --show-error -X GET "$WEBHOOK"

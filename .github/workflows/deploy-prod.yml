@@ -1,0 +1,43 @@
+name: Build & Deploy — Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --no-restore -c Release
+
+  deploy:
+    name: Deploy to Coolify (Production)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify production deployment
+        # Production Coolify app is not yet created.
+        # When ready:
+        #   1. Coolify → prod app → Deployments tab → copy Webhook URL
+        #   2. GitHub → Settings → Secrets → Actions → add COOLIFY_PROD_WEBHOOK
+        #   3. Coolify → prod app → disable "Auto Deploy on push"
+        env:
+          WEBHOOK: ${{ secrets.COOLIFY_PROD_WEBHOOK }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "ℹ️ COOLIFY_PROD_WEBHOOK not configured — skipping production deployment."
+            exit 0
+          fi
+          curl --fail --silent --show-error -X GET "$WEBHOOK"
