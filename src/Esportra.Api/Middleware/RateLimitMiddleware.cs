@@ -16,14 +16,6 @@ public sealed class RateLimitMiddleware(
     IConfiguration config,
     ILogger<RateLimitMiddleware> logger)
 {
-    // Diagnostic: log when this singleton middleware is constructed during pipeline build
-    private readonly bool _loggedConstruction = LogConstruction();
-    private static bool LogConstruction()
-    {
-        Console.WriteLine("[MIDDLEWARE] RateLimitMiddleware constructed");
-        Console.Out.Flush();
-        return true;
-    }
     private readonly int _maxRequests = config.GetValue("RateLimit:MaxRequests", 100);
     private readonly int _windowSeconds = config.GetValue("RateLimit:WindowSeconds", 60);
 

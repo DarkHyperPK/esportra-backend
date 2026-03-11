@@ -97,28 +97,24 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 Console.WriteLine($"[STARTUP] Redis connection: {redisConnStr.Split(',')[0]}...");
 
-// DIAGNOSTIC: Temporarily use in-memory cache to isolate if Redis blocks startup.
-// If Kestrel binds with this, Redis is the problem. Remove after diagnosis.
-var useRedis = Environment.GetEnvironmentVariable("USE_REDIS") != "false";
-if (useRedis)
+// Use ConnectionMultiplexerFactory for truly lazy, non-blocking Redis init.
+// Without this, RedisCache singleton resolution blocks during DI activation,
+// which prevents Kestrel from ever binding.
+builder.Services.AddStackExchangeRedisCache(opts =>
 {
-    var redisConfigOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
-    redisConfigOptions.AbortOnConnectFail = false;
-    redisConfigOptions.ConnectTimeout = 5000;
-    redisConfigOptions.SyncTimeout = 5000;
-
-    builder.Services.AddStackExchangeRedisCache(opts =>
+    opts.ConnectionMultiplexerFactory = async () =>
     {
-        opts.ConfigurationOptions = redisConfigOptions;
-        opts.InstanceName  = "esportra:";
-    });
-    Console.WriteLine("[STARTUP] Using Redis distributed cache");
-}
-else
-{
-    builder.Services.AddDistributedMemoryCache();
-    Console.WriteLine("[STARTUP] Using IN-MEMORY distributed cache (diagnostic mode)");
-}
+        var config = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
+        config.AbortOnConnectFail = false;
+        config.ConnectTimeout = 5000;
+        config.SyncTimeout = 5000;
+        Console.WriteLine("[REDIS] Connecting via factory (lazy, non-blocking)...");
+        var mux = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(config);
+        Console.WriteLine($"[REDIS] Multiplexer created (connected={mux.IsConnected})");
+        return mux;
+    };
+    opts.InstanceName = "esportra:";
+});
 
 builder.Services.AddHybridCache(opts =>
 {
@@ -281,65 +277,19 @@ app.MapHub<LiveHub>("/hubs/live");
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();
 
-// Diagnostics: know definitively if host completes startup
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     Console.WriteLine("[STARTUP] ✅ APPLICATION STARTED — Kestrel is listening!");
     Console.Out.Flush();
 });
-app.Lifetime.ApplicationStopping.Register(() =>
-{
-    Console.WriteLine("[STARTUP] ⚠️ APPLICATION STOPPING!");
-    Console.Out.Flush();
-});
-
-// List hosted services for diagnostics
-var hostedServices = app.Services.GetServices<IHostedService>().ToList();
-Console.WriteLine($"[STARTUP] {hostedServices.Count} hosted services registered:");
-foreach (var svc in hostedServices)
-    Console.WriteLine($"  - {svc.GetType().FullName}");
-Console.Out.Flush();
-
-// Heartbeat timer — proves the process is alive while waiting for startup
-var startWatch = System.Diagnostics.Stopwatch.StartNew();
-using var heartbeat = new Timer(_ =>
-{
-    Console.WriteLine($"[HEARTBEAT] Process alive at {startWatch.Elapsed.TotalSeconds:F0}s — startup NOT complete");
-    Console.Out.Flush();
-}, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15));
 
 try
 {
-    // Probe DI resolution of key services — any hang here points to the culprit
-Console.WriteLine("[STARTUP] Probing DI resolution...");
-Console.Out.Flush();
-try
-{
-    var sw = System.Diagnostics.Stopwatch.StartNew();
-    var dc = app.Services.GetService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
-    Console.WriteLine($"[STARTUP]   IDistributedCache -> {dc?.GetType().Name} ({sw.ElapsedMilliseconds}ms)");
-    var hc = app.Services.GetService<Microsoft.Extensions.Caching.Hybrid.HybridCache>();
-    Console.WriteLine($"[STARTUP]   HybridCache -> {hc?.GetType().Name} ({sw.ElapsedMilliseconds}ms)");
-    Console.Out.Flush();
+    await app.RunAsync();
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[STARTUP]   DI probe FAILED: {ex.Message}");
-    Console.Out.Flush();
-}
-
-Console.WriteLine("[STARTUP] Calling app.StartAsync()...");
-    Console.Out.Flush();
-    await app.StartAsync();
-    Console.WriteLine($"[STARTUP] ✅ StartAsync completed in {startWatch.Elapsed.TotalSeconds:F1}s");
-    Console.Out.Flush();
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"[STARTUP] ❌ StartAsync THREW at {startWatch.Elapsed.TotalSeconds:F1}s: {ex}");
+    Console.WriteLine($"[STARTUP] ❌ FATAL: {ex}");
     Console.Out.Flush();
     throw;
 }
-
-heartbeat.Dispose();
-await app.WaitForShutdownAsync();

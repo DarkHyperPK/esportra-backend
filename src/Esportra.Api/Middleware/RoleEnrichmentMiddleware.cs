@@ -19,14 +19,6 @@ public sealed class RoleEnrichmentMiddleware(
     HybridCache cache,
     ILogger<RoleEnrichmentMiddleware> logger)
 {
-    // Diagnostic: log when this singleton middleware is constructed during pipeline build
-    private readonly bool _loggedConstruction = LogConstruction();
-    private static bool LogConstruction()
-    {
-        Console.WriteLine("[MIDDLEWARE] RoleEnrichmentMiddleware constructed");
-        Console.Out.Flush();
-        return true;
-    }
     public async Task InvokeAsync(HttpContext context)
     {
         if (context.User.Identity?.IsAuthenticated == true)
