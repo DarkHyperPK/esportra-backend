@@ -1,7 +1,11 @@
 version: "3.9"
 
-# Production / staging compose — used by Coolify.
-# All secrets are injected via Coolify environment variables.
+# Coolify deployment compose.
+# Switch the Coolify app type to "Docker Compose" and set:
+#   Docker Compose File: docker-compose.yml
+# Then add these environment variables in Coolify:
+#   REDIS_PASSWORD, ConnectionStrings__Postgres, Supabase__JwtSecret, etc.
+#
 # For local development, docker-compose.override.yml is applied automatically.
 
 services:
@@ -13,10 +17,10 @@ services:
       - "8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Staging}
-      # Injected by Coolify — set these in the application's environment variables:
+      # Redis service is named 'esportra-redis-staging' below — same hostname
+      # already configured in Coolify's ConnectionStrings__Redis env var.
+      - ConnectionStrings__Redis=esportra-redis-staging:6379,password=${REDIS_PASSWORD}
       - ConnectionStrings__Postgres=${ConnectionStrings__Postgres}
-      # Redis runs as the 'redis' service in this compose; password via REDIS_PASSWORD
-      - ConnectionStrings__Redis=redis:6379,password=${REDIS_PASSWORD}
       - Supabase__JwtSecret=${Supabase__JwtSecret}
       - Supabase__JwtAudience=${Supabase__JwtAudience:-authenticated}
       - Supabase__JwtIssuer=${Supabase__JwtIssuer}
@@ -33,7 +37,7 @@ services:
       - FrontendUrl=${FrontendUrl:-https://esportra.com}
       - PartnerUrl=${PartnerUrl:-https://partner.esportra.com}
     depends_on:
-      redis:
+      esportra-redis-staging:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -43,7 +47,7 @@ services:
       retries: 3
       start_period: 30s
 
-  redis:
+  esportra-redis-staging:
     image: redis:7-alpine
     command: >
       redis-server

@@ -10,6 +10,6 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
 
-  redis:
+  esportra-redis-staging:
     ports:
       - "6379:6379"
