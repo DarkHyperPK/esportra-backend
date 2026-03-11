@@ -95,26 +95,51 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 
 // ── Redis + HybridCache ────────────────────────────────────────────────────────
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
-Console.WriteLine($"[STARTUP] Redis connection: {redisConnStr.Split(',')[0]}...");
+Console.WriteLine($"[STARTUP] Redis connection string: {redisConnStr.Split(',')[0]}...");
 
-// Use ConnectionMultiplexerFactory for truly lazy, non-blocking Redis init.
-// Without this, RedisCache singleton resolution blocks during DI activation,
-// which prevents Kestrel from ever binding.
-builder.Services.AddStackExchangeRedisCache(opts =>
+// Parse and configure Redis with strict timeouts and non-blocking connect.
+var redisConfig = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
+redisConfig.AbortOnConnectFail = false;
+redisConfig.ConnectTimeout = 5000;
+redisConfig.SyncTimeout = 3000;
+redisConfig.AsyncTimeout = 5000;
+// If SSL is requested, don't validate the certificate (self-signed in Docker)
+if (redisConfig.Ssl)
+    redisConfig.CertificateValidation += (_, _, _, _) => true;
+
+Console.WriteLine($"[STARTUP] Redis config: ssl={redisConfig.Ssl}, endpoints={string.Join(",", redisConfig.EndPoints)}");
+Console.Out.Flush();
+
+// Create multiplexer eagerly but with AbortOnConnectFail=false — returns immediately
+// even if Redis is unreachable. Operations will fail gracefully until connected.
+StackExchange.Redis.IConnectionMultiplexer? redisMux = null;
+try
 {
-    opts.ConnectionMultiplexerFactory = async () =>
+    redisMux = StackExchange.Redis.ConnectionMultiplexer.Connect(redisConfig);
+    Console.WriteLine($"[STARTUP] Redis multiplexer created (connected={redisMux.IsConnected})");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[STARTUP] Redis connect failed (will use in-memory fallback): {ex.Message}");
+}
+Console.Out.Flush();
+
+if (redisMux != null)
+{
+    builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(redisMux);
+    builder.Services.AddStackExchangeRedisCache(opts =>
     {
-        var config = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
-        config.AbortOnConnectFail = false;
-        config.ConnectTimeout = 5000;
-        config.SyncTimeout = 5000;
-        Console.WriteLine("[REDIS] Connecting via factory (lazy, non-blocking)...");
-        var mux = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(config);
-        Console.WriteLine($"[REDIS] Multiplexer created (connected={mux.IsConnected})");
-        return mux;
-    };
-    opts.InstanceName = "esportra:";
-});
+        opts.ConnectionMultiplexerFactory = () => Task.FromResult(redisMux);
+        opts.InstanceName = "esportra:";
+    });
+    Console.WriteLine("[STARTUP] Using Redis distributed cache");
+}
+else
+{
+    builder.Services.AddDistributedMemoryCache();
+    Console.WriteLine("[STARTUP] Using in-memory distributed cache (Redis unavailable)");
+}
+Console.Out.Flush();
 
 builder.Services.AddHybridCache(opts =>
 {
