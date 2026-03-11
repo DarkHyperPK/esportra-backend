@@ -77,8 +77,9 @@ In the API application settings → **Environment Variables**, add ALL of these:
 ```
 ASPNETCORE_ENVIRONMENT=Staging
 
-# Redis — use the hostname from Step 2 + the password you set
-ConnectionStrings__Redis=esportra-redis-staging:6379,password=YOUR_REDIS_PASSWORD
+# Redis — hostname is the Coolify service name, username is always "default"
+# Coolify uses Redis 6 ACL; "default" is the built-in Redis username.
+ConnectionStrings__Redis=esportra-redis-staging:6379,user=default,password=YOUR_REDIS_PASSWORD
 
 # Postgres (Supabase connection string)
 ConnectionStrings__Postgres=Host=...;Database=postgres;Username=postgres;Password=...
