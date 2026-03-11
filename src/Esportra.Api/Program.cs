@@ -255,6 +255,15 @@ app.MapHub<ConversationHub>("/hubs/conversations");
 app.MapHub<NotificationHub>("/hubs/notifications");
 app.MapHub<LiveHub>("/hubs/live");
 
-Console.WriteLine("[STARTUP] Pipeline configured. Calling app.Run()...");
-app.Run();
-Console.WriteLine("[STARTUP] app.Run() returned (should not happen).");
+Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
+try
+{
+    app.Start();
+    Console.WriteLine("[STARTUP] ✅ App started! Listening on http://0.0.0.0:8080");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[STARTUP] ❌ STARTUP FAILED: {ex}");
+    throw;
+}
+app.WaitForShutdown();
