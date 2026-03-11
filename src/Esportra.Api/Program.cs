@@ -20,6 +20,13 @@ using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Force Kestrel to bind explicitly — ASPNETCORE_HTTP_PORTS env var alone
+// is unreliable in some Coolify/Docker configurations.
+builder.WebHost.ConfigureKestrel(opts =>
+{
+    opts.ListenAnyIP(8080);
+});
+
 // ── Supabase JWT configuration ────────────────────────────────────────────────
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
     ?? throw new InvalidOperationException("Supabase:JwtSecret is required.");
