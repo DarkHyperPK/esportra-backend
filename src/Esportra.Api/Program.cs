@@ -256,14 +256,32 @@ app.MapHub<NotificationHub>("/hubs/notifications");
 app.MapHub<LiveHub>("/hubs/live");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
+
+// List all hosted services to identify which one might block
+var hostedServices = app.Services.GetServices<IHostedService>().ToList();
+Console.WriteLine($"[STARTUP] {hostedServices.Count} hosted services registered:");
+foreach (var svc in hostedServices)
+    Console.WriteLine($"  - {svc.GetType().FullName}");
+Console.Out.Flush();
+
 try
 {
-    app.Start();
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    await app.StartAsync(cts.Token);
     Console.WriteLine("[STARTUP] ✅ App started! Listening on http://0.0.0.0:8080");
+    Console.Out.Flush();
+    await app.WaitForShutdownAsync();
+}
+catch (OperationCanceledException)
+{
+    Console.WriteLine("[STARTUP] ❌ Startup TIMED OUT after 15s — a hosted service is blocking!");
+    Console.Out.Flush();
+    // Still keep the process alive so we can inspect
+    await Task.Delay(Timeout.Infinite);
 }
 catch (Exception ex)
 {
     Console.WriteLine($"[STARTUP] ❌ STARTUP FAILED: {ex}");
+    Console.Out.Flush();
     throw;
 }
-app.WaitForShutdown();
