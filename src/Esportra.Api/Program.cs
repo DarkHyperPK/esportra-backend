@@ -21,8 +21,12 @@ using Microsoft.IdentityModel.Tokens;
 Console.WriteLine("[STARTUP] Creating builder...");
 var builder = WebApplication.CreateBuilder(args);
 
-// Force Kestrel to bind on all interfaces, port 8080.
-builder.WebHost.UseUrls("http://0.0.0.0:8080");
+// Explicitly configure Kestrel to bind on all interfaces, port 8080.
+// Using ConfigureKestrel instead of UseUrls to bypass URL override logic.
+builder.WebHost.ConfigureKestrel(serverOptions =>
+{
+    serverOptions.ListenAnyIP(8080);
+});
 
 // ── Supabase JWT configuration ────────────────────────────────────────────────
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
@@ -91,15 +95,17 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 
 // ── Redis + HybridCache ────────────────────────────────────────────────────────
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
-// Ensure abortConnect=false so Redis connects in the background.
-// Without this, ConnectionMultiplexer.Connect() blocks during middleware
-// pipeline build, which hangs Kestrel startup entirely.
-if (!redisConnStr.Contains("abortConnect", StringComparison.OrdinalIgnoreCase))
-    redisConnStr += ",abortConnect=false";
 Console.WriteLine($"[STARTUP] Redis connection: {redisConnStr.Split(',')[0]}...");
+
+// Parse Redis options explicitly so AbortOnConnectFail is guaranteed false.
+var redisConfigOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnStr);
+redisConfigOptions.AbortOnConnectFail = false;
+redisConfigOptions.ConnectTimeout = 5000;   // 5s max for connection attempt
+redisConfigOptions.SyncTimeout = 5000;
+
 builder.Services.AddStackExchangeRedisCache(opts =>
 {
-    opts.Configuration = redisConnStr;
+    opts.ConfigurationOptions = redisConfigOptions;
     opts.InstanceName  = "esportra:";
 });
 builder.Services.AddHybridCache(opts =>
@@ -263,6 +269,18 @@ app.MapHub<LiveHub>("/hubs/live");
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();
 
+// Diagnostics: know definitively if host completes startup
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    Console.WriteLine("[STARTUP] ✅ APPLICATION STARTED — Kestrel is listening!");
+    Console.Out.Flush();
+});
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    Console.WriteLine("[STARTUP] ⚠️ APPLICATION STOPPING!");
+    Console.Out.Flush();
+});
+
 // List hosted services for diagnostics
 var hostedServices = app.Services.GetServices<IHostedService>().ToList();
 Console.WriteLine($"[STARTUP] {hostedServices.Count} hosted services registered:");
@@ -270,4 +288,13 @@ foreach (var svc in hostedServices)
     Console.WriteLine($"  - {svc.GetType().FullName}");
 Console.Out.Flush();
 
-app.Run();
+try
+{
+    await app.RunAsync();
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[STARTUP] ❌ app.RunAsync() THREW: {ex}");
+    Console.Out.Flush();
+    throw;
+}
