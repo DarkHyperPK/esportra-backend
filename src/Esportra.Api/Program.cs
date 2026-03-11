@@ -288,13 +288,28 @@ foreach (var svc in hostedServices)
     Console.WriteLine($"  - {svc.GetType().FullName}");
 Console.Out.Flush();
 
+// Heartbeat timer — proves the process is alive while waiting for startup
+var startWatch = System.Diagnostics.Stopwatch.StartNew();
+using var heartbeat = new Timer(_ =>
+{
+    Console.WriteLine($"[HEARTBEAT] Process alive at {startWatch.Elapsed.TotalSeconds:F0}s — startup NOT complete");
+    Console.Out.Flush();
+}, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15));
+
 try
 {
-    await app.RunAsync();
+    Console.WriteLine("[STARTUP] Calling app.StartAsync()...");
+    Console.Out.Flush();
+    await app.StartAsync();
+    Console.WriteLine($"[STARTUP] ✅ StartAsync completed in {startWatch.Elapsed.TotalSeconds:F1}s");
+    Console.Out.Flush();
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[STARTUP] ❌ app.RunAsync() THREW: {ex}");
+    Console.WriteLine($"[STARTUP] ❌ StartAsync THREW at {startWatch.Elapsed.TotalSeconds:F1}s: {ex}");
     Console.Out.Flush();
     throw;
 }
+
+heartbeat.Dispose();
+await app.WaitForShutdownAsync();
