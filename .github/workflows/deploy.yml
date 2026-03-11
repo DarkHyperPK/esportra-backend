@@ -1,0 +1,36 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --no-restore -c Release
+
+  deploy:
+    name: Deploy to Coolify
+    needs: build          # only runs if build succeeds
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger Coolify deployment
+        # Set COOLIFY_DEPLOY_WEBHOOK in GitHub repo → Settings → Secrets → Actions.
+        # Get the URL from: Coolify dashboard → your API app → Deployments → Webhook URL.
+        run: |
+          curl --fail --silent --show-error \
+            -X GET "${{ secrets.COOLIFY_DEPLOY_WEBHOOK }}"

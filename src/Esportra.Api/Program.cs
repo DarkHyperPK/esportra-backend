@@ -2,6 +2,7 @@ using System.Text;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
+using Esportra.Api.HealthChecks;
 using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
@@ -14,9 +15,12 @@ using Esportra.Infrastructure.Integrations;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
+using StackExchange.Redis;
 
 Console.WriteLine("[STARTUP] Creating builder...");
 var builder = WebApplication.CreateBuilder(args);
@@ -97,10 +101,24 @@ builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(
 var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 Console.WriteLine($"[STARTUP] Redis connection string: {redisConnStr.Split(',')[0]}...");
 
-// Register in-memory cache for startup. A background service will connect
-// to Redis after Kestrel is running and swap the cache implementation.
-// This ensures Redis connectivity issues never block Kestrel from binding.
-builder.Services.AddDistributedMemoryCache();
+// Register a single IConnectionMultiplexer singleton.
+// AbortOnConnectFail=false means startup never blocks; SE.Redis reconnects automatically
+// whenever Redis becomes available after a transient outage.
+var redisConfig = ConfigurationOptions.Parse(redisConnStr);
+redisConfig.AbortOnConnectFail   = false;
+redisConfig.ReconnectRetryPolicy = new LinearRetry(5_000);
+redisConfig.ConnectTimeout       = 5_000;
+redisConfig.SyncTimeout          = 3_000;
+builder.Services.AddSingleton<IConnectionMultiplexer>(
+    ConnectionMultiplexer.Connect(redisConfig));
+
+// Register a swappable proxy as IDistributedCache.
+// It starts with an in-memory fallback; RedisBackgroundConnector calls
+// SwappableDistributedCache.Swap() once a PING to Redis succeeds, so all
+// consumers (RateLimitMiddleware, HybridCache L2) transparently switch to Redis.
+var swappableCache = new SwappableDistributedCache();
+builder.Services.AddSingleton(swappableCache);
+builder.Services.AddSingleton<Microsoft.Extensions.Caching.Distributed.IDistributedCache>(swappableCache);
 
 builder.Services.AddHybridCache(opts =>
 {
@@ -111,8 +129,10 @@ builder.Services.AddHybridCache(opts =>
     };
 });
 
-// Store Redis connection string for the background connector service.
-builder.Services.AddSingleton(new RedisConnectionString(redisConnStr));
+// ── Health checks ─────────────────────────────────────────────────────────────
+builder.Services.AddHealthChecks()
+    .AddCheck<RedisHealthCheck>("redis",    tags: ["ready"])
+    .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
 
 // ── SignalR ────────────────────────────────────────────────────────────────────
 builder.Services.AddSignalR(opts =>
@@ -195,7 +215,22 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     KnownProxies   = { },
 });
 
-// ── Health — mapped first so it always responds, even if other middleware fails
+// ── Health probes — mapped before middleware so they always respond ────────────
+// /health/live  — liveness: is the process up? (Coolify/k8s restart probe)
+// /health/ready — readiness: are Postgres + Redis reachable? (Coolify startup probe)
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate      = _ => false,     // no checks — pure liveness ping
+    ResponseWriter = HealthResponseWriter.WriteJson,
+}).AllowAnonymous();
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate      = c => c.Tags.Contains("ready"),
+    ResponseWriter = HealthResponseWriter.WriteJson,
+}).AllowAnonymous();
+
+// Legacy /health kept for backwards-compat with existing Coolify health check config
 app.MapGet("/health", () => Results.Ok(new
 {
     status    = "healthy",

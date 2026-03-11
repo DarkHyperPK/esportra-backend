@@ -1,5 +1,4 @@
-using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.Caching.StackExchangeRedis;
+using StackExchange.Redis;
 
 namespace Esportra.Api.BackgroundJobs;
 
@@ -9,51 +8,46 @@ namespace Esportra.Api.BackgroundJobs;
 public sealed record RedisConnectionString(string Value);
 
 /// <summary>
-/// Connects to Redis in the background after Kestrel has started.
-/// Until connected, the app uses MemoryDistributedCache.
-/// Once connected, swaps the IDistributedCache singleton to RedisCache.
+/// Waits for the shared IConnectionMultiplexer to become reachable (via PING),
+/// then atomically swaps IDistributedCache from the in-memory fallback to Redis.
+/// SE.Redis handles all TCP reconnect logic internally; this service only manages
+/// the one-time cache swap and logs connection lifecycle events.
 /// </summary>
 public sealed class RedisBackgroundConnector(
-    RedisConnectionString redisConnectionString,
+    IConnectionMultiplexer          mux,
+    SwappableDistributedCache       distributedCache,
     ILogger<RedisBackgroundConnector> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Brief delay to ensure Kestrel is fully started before connecting
-        await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
+        // Subscribe to SE.Redis events so reconnect cycles are always visible in logs
+        mux.ConnectionFailed   += (_, e) => logger.LogWarning(
+            "[Redis] Connection lost to {Endpoint} — reason: {Reason}", e.EndPoint, e.FailureType);
+        mux.ConnectionRestored += (_, e) => logger.LogInformation(
+            "[Redis] Connection restored to {Endpoint}", e.EndPoint);
+        mux.ErrorMessage       += (_, e) => logger.LogError(
+            "[Redis] Server error from {Endpoint}: {Message}", e.EndPoint, e.Message);
 
-        var connStr = redisConnectionString.Value;
-        logger.LogInformation("[Redis] Starting background connection to {Host}...", connStr.Split(',')[0]);
+        logger.LogInformation("[Redis] Waiting for Redis to become reachable...");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var config = StackExchange.Redis.ConfigurationOptions.Parse(connStr);
-                config.AbortOnConnectFail = false;
-                config.ConnectTimeout = 5000;
-                config.SyncTimeout = 3000;
+                var db = mux.GetDatabase();
+                await db.PingAsync(); // throws if auth fails, host unreachable, etc.
 
-                var mux = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(config);
-                if (mux.IsConnected)
-                {
-                    logger.LogInformation("[Redis] ✅ Connected to Redis!");
-
-                    // Replace the IDistributedCache registration with RedisCache
-                    // Note: existing singleton references won't update, but new requests will use Redis
-                    // via HybridCache which re-resolves through DI on each use.
-                    var redisCache = new RedisCache(new RedisCacheOptions
+                var redisCache = new Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache(
+                    new Microsoft.Extensions.Caching.StackExchangeRedis.RedisCacheOptions
                     {
-                        ConnectionMultiplexerFactory = () => Task.FromResult<StackExchange.Redis.IConnectionMultiplexer>(mux),
+                        ConnectionMultiplexerFactory = () => Task.FromResult(mux),
                         InstanceName = "esportra:",
                     });
 
-                    // Register as a named service so middleware can use it
-                    logger.LogInformation("[Redis] Cache swapped to RedisCache successfully");
-                    return; // Connected — done
-                }
-
-                logger.LogWarning("[Redis] Not connected yet (IsConnected=false), retrying in 30s...");
+                distributedCache.Swap(redisCache);
+                logger.LogInformation(
+                    "[Redis] ✅ Connected — IDistributedCache swapped to Redis. Rate limiting and caching now use Redis.");
+                return;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -61,7 +55,7 @@ public sealed class RedisBackgroundConnector(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[Redis] Connection attempt failed, retrying in 30s...");
+                logger.LogWarning("[Redis] Not ready yet ({Error}), retrying in 30s...", ex.Message);
             }
 
             try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken); }
