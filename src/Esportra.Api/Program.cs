@@ -98,13 +98,50 @@ var pgConnStr = builder.Configuration.GetConnectionString("Postgres")
 builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(pgConnStr));
 
 // ── Redis + HybridCache ────────────────────────────────────────────────────────
-var redisConnStr = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
-Console.WriteLine($"[STARTUP] Redis connection string: {redisConnStr.Split(',')[0]}...");
+// Supports two env var formats:
+//   REDIS_URL=redis://user:password@host:port/db  (standard URL — preferred for Coolify)
+//   ConnectionStrings__Redis=host:port,user=...,password=...  (SE.Redis format — fallback)
+var redisConfig = BuildRedisConfig(builder.Configuration);
+Console.WriteLine($"[STARTUP] Redis connection string: {redisConfig.EndPoints[0]}...");
 
-// Register a single IConnectionMultiplexer singleton.
+static ConfigurationOptions BuildRedisConfig(IConfiguration config)
+{
+    var redisUrl = config["REDIS_URL"];
+    if (!string.IsNullOrWhiteSpace(redisUrl))
+    {
+        // Parse redis://user:password@host:port/db
+        var uri = new Uri(redisUrl);
+        var opts = new ConfigurationOptions();
+        opts.EndPoints.Add(uri.Host, uri.Port > 0 ? uri.Port : 6379);
+
+        if (!string.IsNullOrWhiteSpace(uri.UserInfo))
+        {
+            var parts = uri.UserInfo.Split(':', 2);
+            if (parts.Length == 2)
+            {
+                opts.User     = Uri.UnescapeDataString(parts[0]);
+                opts.Password = Uri.UnescapeDataString(parts[1]);
+            }
+            else
+            {
+                opts.Password = Uri.UnescapeDataString(parts[0]);
+            }
+        }
+
+        // /0 → database 0, /1 → database 1, etc.
+        if (uri.AbsolutePath.TrimStart('/') is { Length: > 0 } db && int.TryParse(db, out var dbIndex))
+            opts.DefaultDatabase = dbIndex;
+
+        return opts;
+    }
+
+    // Fallback to SE.Redis connection string format
+    var connStr = config.GetConnectionString("Redis") ?? "localhost:6379";
+    return ConfigurationOptions.Parse(connStr);
+}
+
 // AbortOnConnectFail=false means startup never blocks; SE.Redis reconnects automatically
 // whenever Redis becomes available after a transient outage.
-var redisConfig = ConfigurationOptions.Parse(redisConnStr);
 redisConfig.AbortOnConnectFail   = false;
 redisConfig.ReconnectRetryPolicy = new LinearRetry(5_000);
 redisConfig.ConnectTimeout       = 5_000;
