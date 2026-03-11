@@ -96,13 +96,25 @@ builder.Services.AddAuthorization(opts =>
 var pgConnStr = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required.");
 
-// Log connection target (redacted) for debugging DNS/network issues
+// Log connection target and attempt DNS resolution for debugging
 try
 {
-    var pgHost = new Npgsql.NpgsqlConnectionStringBuilder(pgConnStr).Host;
-    Console.WriteLine($"[STARTUP] Postgres target host: {pgHost}");
+    var csb = new Npgsql.NpgsqlConnectionStringBuilder(pgConnStr);
+    var pgHost = csb.Host;
+    var pgPort = csb.Port;
+    Console.WriteLine($"[STARTUP] Postgres target: {pgHost}:{pgPort}");
+
+    try
+    {
+        var addresses = System.Net.Dns.GetHostAddresses(pgHost);
+        Console.WriteLine($"[STARTUP] Postgres DNS resolved: {string.Join(", ", addresses.Select(a => a.ToString()))}");
+    }
+    catch (Exception dnsEx)
+    {
+        Console.WriteLine($"[STARTUP] ⚠️ Postgres DNS FAILED for '{pgHost}': {dnsEx.Message}");
+    }
 }
-catch { Console.WriteLine("[STARTUP] Postgres connection string configured (could not parse host)."); }
+catch { Console.WriteLine("[STARTUP] Postgres connection string configured (could not parse)."); }
 
 builder.Services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(pgConnStr));
 
@@ -283,6 +295,47 @@ app.MapGet("/health", () => Results.Ok(new
     timestamp = DateTime.UtcNow,
     version   = "1.0.0-phase4",
 }));
+
+// Temporary diagnostic endpoint — test DNS + TCP connectivity to Postgres
+app.MapGet("/health/pg-diag", async (IDbConnectionFactory db, IConfiguration config) =>
+{
+    var csb = new Npgsql.NpgsqlConnectionStringBuilder(
+        config.GetConnectionString("Postgres") ?? "");
+    var results = new Dictionary<string, object?>();
+    results["host"] = csb.Host;
+    results["port"] = csb.Port;
+
+    // DNS resolution
+    try
+    {
+        var addrs = System.Net.Dns.GetHostAddresses(csb.Host ?? "");
+        results["dns"] = addrs.Select(a => a.ToString()).ToArray();
+    }
+    catch (Exception ex) { results["dns_error"] = ex.Message; }
+
+    // TCP connectivity
+    try
+    {
+        using var tcp = new System.Net.Sockets.TcpClient();
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await tcp.ConnectAsync(csb.Host!, csb.Port, cts.Token);
+        results["tcp"] = "connected";
+    }
+    catch (Exception ex) { results["tcp_error"] = ex.Message; }
+
+    // Postgres query
+    try
+    {
+        using var conn = db.CreateConnection();
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT version()";
+        results["pg_version"] = cmd.ExecuteScalar()?.ToString();
+    }
+    catch (Exception ex) { results["pg_error"] = $"{ex.GetType().Name}: {ex.Message}"; }
+
+    return Results.Ok(results);
+}).AllowAnonymous();
 
 app.UseCors("EsportraPolicy");
 
