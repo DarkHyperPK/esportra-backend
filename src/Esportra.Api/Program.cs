@@ -307,10 +307,36 @@ app.Lifetime.ApplicationStarted.Register(() =>
     Console.WriteLine("[STARTUP] ✅ APPLICATION STARTED — Kestrel is listening!");
     Console.Out.Flush();
 });
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    Console.WriteLine("[STARTUP] ⚠️ APPLICATION STOPPING!");
+    Console.Out.Flush();
+});
+
+// Heartbeat: confirm process stays alive during GenericWebHostService.StartAsync()
+var _sw = System.Diagnostics.Stopwatch.StartNew();
+using var _hb = new Timer(_ =>
+{
+    Console.WriteLine($"[HEARTBEAT] alive {_sw.Elapsed.TotalSeconds:F0}s, waiting for Kestrel...");
+    Console.Out.Flush();
+}, null, 5000, 10000);
 
 try
 {
-    await app.RunAsync();
+    using var _cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    Console.WriteLine("[STARTUP] Calling StartAsync (30s timeout)...");
+    Console.Out.Flush();
+    await app.StartAsync(_cts.Token);
+    Console.WriteLine($"[STARTUP] ✅ StartAsync done in {_sw.Elapsed.TotalSeconds:F1}s");
+    Console.Out.Flush();
+    _hb.Dispose();
+    await app.WaitForShutdownAsync();
+}
+catch (OperationCanceledException)
+{
+    Console.WriteLine($"[STARTUP] ❌ StartAsync TIMED OUT after {_sw.Elapsed.TotalSeconds:F0}s!");
+    Console.Out.Flush();
+    await Task.Delay(Timeout.Infinite); // keep alive so we can inspect
 }
 catch (Exception ex)
 {
