@@ -71,6 +71,31 @@ public static class AdminEndpoints
 
             return Results.Ok(new { deleted = orphanIds.Count, orphanIds });
         }).RequireAuthorization("Admin");
+
+        // ── GET /api/sponsors ─────────────────────────────────────────────────
+        // Returns active sponsors (optionally filtered by placement).
+        app.MapGet("/api/sponsors", async (
+            bool?                active,
+            string?              placement,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var sponsors = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, name, tagline, description, website_url, logo_url,
+                       banner_image_url, accent_color, tier, placement, cta_text,
+                       discount_text, is_active, priority, start_date, end_date,
+                       created_at, gallery_images, tier_features
+                FROM sponsors
+                WHERE (@active IS NULL OR is_active = @active)
+                  AND (@placement IS NULL OR @placement = ANY(placement))
+                ORDER BY priority DESC, created_at DESC
+                """,
+                new { active, placement });
+            return Results.Ok(sponsors);
+        });
+
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,

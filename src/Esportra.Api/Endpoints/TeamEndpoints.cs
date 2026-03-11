@@ -367,17 +367,33 @@ public static class TeamEndpoints
             if (alreadyMember)
                 return Results.Conflict(new { error = "User is already a team member." });
 
-            // Upsert invite (replace declined with fresh pending)
-            var invite = await conn.QuerySingleAsync<dynamic>(
-                """
-                INSERT INTO team_invitations (team_id, user_id, invited_by, status, message)
-                VALUES (@teamId, @userId, @invitedBy, 'pending', @message)
-                ON CONFLICT (team_id, user_id)
-                    DO UPDATE SET status = 'pending', message = EXCLUDED.message,
-                                  created_at = NOW(), responded_at = NULL
-                RETURNING *
-                """,
-                new { teamId = idGuid, userId = reqUserIdGuid, invitedBy = userCtx.UserIdGuid, message = req.Message });
+            // Check for existing invite (any status) and upsert
+            var existingInviteId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM team_invitations WHERE team_id = @teamId AND invited_user_id = @userId",
+                new { teamId = idGuid, userId = reqUserIdGuid });
+
+            dynamic invite;
+            if (existingInviteId is not null)
+            {
+                invite = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    UPDATE team_invitations
+                    SET status = 'pending', message = @message, created_at = NOW(), responded_at = NULL
+                    WHERE id = @id
+                    RETURNING *
+                    """,
+                    new { id = existingInviteId.Value, message = req.Message });
+            }
+            else
+            {
+                invite = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    INSERT INTO team_invitations (team_id, invited_user_id, invited_by_user_id, invited_by, status, message)
+                    VALUES (@teamId, @userId, @invitedBy, @invitedBy, 'pending', @message)
+                    RETURNING *
+                    """,
+                    new { teamId = idGuid, userId = reqUserIdGuid, invitedBy = userCtx.UserIdGuid, message = req.Message });
+            }
 
             // Notification to invitee
             await conn.ExecuteAsync(
@@ -386,7 +402,7 @@ public static class TeamEndpoints
                 VALUES (@userId, 'team_invite', 'Team Invitation',
                         'You have been invited to join a team.', '/teams', @data::jsonb, FALSE)
                 """,
-                new { userId = reqUserIdGuid, data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = (string?)invite.id }) });
+                new { userId = reqUserIdGuid, data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = ((Guid)invite.id).ToString() }) });
 
             return Results.Ok(invite);
         }).RequireAuthorization("Authenticated");
@@ -408,8 +424,8 @@ public static class TeamEndpoints
                        jsonb_build_object('username', p.username, 'avatar_url', p.avatar_url)      AS inviter
                 FROM team_invitations ti
                 JOIN teams    t ON t.id = ti.team_id
-                JOIN profiles p ON p.id = ti.invited_by
-                WHERE ti.user_id = @userId AND ti.status = 'pending'
+                JOIN profiles p ON p.id = ti.invited_by_user_id
+                WHERE ti.invited_user_id = @userId AND ti.status = 'pending'
                 ORDER BY ti.created_at DESC
                 """,
                 new { userId = userCtx.UserIdGuid });
@@ -434,7 +450,7 @@ public static class TeamEndpoints
             {
                 var inviteIdGuid = Guid.Parse(inviteId);
                 var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT * FROM team_invitations WHERE id = @id AND user_id = @userId AND status = 'pending'",
+                    "SELECT * FROM team_invitations WHERE id = @id AND invited_user_id = @userId AND status = 'pending'",
                     new { id = inviteIdGuid, userId = userCtx.UserIdGuid }, tx);
 
                 if (invite is null)
@@ -476,7 +492,7 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             var inviteIdGuid = Guid.Parse(inviteId);
             await conn.ExecuteAsync(
-                "UPDATE team_invitations SET status = 'declined', responded_at = NOW() WHERE id = @id AND user_id = @userId",
+                "UPDATE team_invitations SET status = 'declined', responded_at = NOW() WHERE id = @id AND invited_user_id = @userId",
                 new { id = inviteIdGuid, userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });

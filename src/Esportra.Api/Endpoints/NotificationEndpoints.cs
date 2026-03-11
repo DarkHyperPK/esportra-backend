@@ -37,7 +37,7 @@ public static class NotificationEndpoints
             // Fetch notifications
             var notifications = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, user_id, type, title, message, link, team_id,
+                SELECT id, user_id, type, title, message, link,
                        is_read, data, created_at
                 FROM notifications
                 WHERE user_id = @userId
@@ -219,12 +219,12 @@ public static class NotificationEndpoints
             var notifData = JsonSerializer.Serialize(new { team_id = req.TeamId });
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, team_id, data, is_read)
+                INSERT INTO notifications (user_id, type, title, message, data, is_read)
                 VALUES (@userId, 'team_invite_response', 'Team Invite Accepted',
                         'An invited player accepted your team invite.',
-                        @teamId, @data::jsonb, FALSE)
+                        @data::jsonb, FALSE)
                 """,
-                new { userId = invite.invited_by_user_id, teamId = teamIdGuid, data = notifData });
+                new { userId = invite.invited_by_user_id, data = notifData });
 
             // Push via SignalR
             await notifHub.Clients
@@ -277,12 +277,12 @@ public static class NotificationEndpoints
             var notifData = JsonSerializer.Serialize(new { team_id = req.TeamId });
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, team_id, data, is_read)
+                INSERT INTO notifications (user_id, type, title, message, data, is_read)
                 VALUES (@userId, 'team_invite_response', 'Team Invite Rejected',
                         'An invited player rejected your team invite.',
-                        @teamId, @data::jsonb, FALSE)
+                        @data::jsonb, FALSE)
                 """,
-                new { userId = invite.invited_by_user_id, teamId = teamIdGuid, data = notifData });
+                new { userId = invite.invited_by_user_id, data = notifData });
 
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup(invite.invited_by_user_id.ToString()))
