@@ -276,22 +276,43 @@ app.MapGet("/health", () => Results.Ok(new
 }));
 
 app.UseCors("EsportraPolicy");
+
+// Global exception handler — placed right after CORS so error responses keep
+// Access-Control-Allow-Origin headers instead of being swallowed as "CORS blocked".
+app.Use(async (ctx, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = 403;
+            await ctx.Response.WriteAsJsonAsync(new { error = ex.Message });
+        }
+    }
+    catch (Exception ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = 500;
+            var showDetails = !app.Environment.IsProduction();
+            await ctx.Response.WriteAsJsonAsync(new
+            {
+                error = showDetails ? ex.Message : "An internal error occurred.",
+                type  = showDetails ? ex.GetType().Name : (string?)null,
+            });
+        }
+    }
+});
+
 app.UseRouting();
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
-
-// Map UnauthorizedAccessException (thrown by AssertCaptain/AssertOwner) → 403
-app.Use(async (ctx, next) =>
-{
-    try { await next(); }
-    catch (UnauthorizedAccessException ex)
-    {
-        ctx.Response.StatusCode = 403;
-        await ctx.Response.WriteAsJsonAsync(new { error = ex.Message });
-    }
-});
 
 // ── JWT validation probe ───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>
