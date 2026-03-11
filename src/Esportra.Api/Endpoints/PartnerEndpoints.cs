@@ -59,7 +59,7 @@ public static class PartnerEndpoints
                     howHeard         = req.HowHeard,
                 });
 
-            return Results.Created($"/api/partners/applications/{row.id}", new { success = true, id = (string)row.id });
+            return Results.Created($"/api/partners/applications/{row.id}", new { success = true, id = row.id.ToString() });
         });
 
         // ── GET /api/partners/public ─────────────────────────────────────────

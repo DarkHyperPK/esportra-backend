@@ -438,7 +438,7 @@ public static class OrganizationEndpoints
             // Non-admins need an explicit tournament assignment
             if (string.IsNullOrEmpty(tournamentId)) return Results.Ok(Array.Empty<string>());
 
-            var assignment = await conn.QuerySingleOrDefaultAsync<string>(
+            var assignment = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
                 SELECT id FROM staff_tournament_assignments
                 WHERE organization_staff_id = @staffId AND tournament_id = @tournamentId

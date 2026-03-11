@@ -228,7 +228,7 @@ public static class NotificationEndpoints
 
             // Push via SignalR
             await notifHub.Clients
-                .Group(NotificationHub.UserGroup((string)invite.invited_by_user_id))
+                .Group(NotificationHub.UserGroup(invite.invited_by_user_id.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "team_invite_response", title = "Team Invite Accepted" }, ct);
 
@@ -285,7 +285,7 @@ public static class NotificationEndpoints
                 new { userId = invite.invited_by_user_id, teamId = teamIdGuid, data = notifData });
 
             await notifHub.Clients
-                .Group(NotificationHub.UserGroup((string)invite.invited_by_user_id))
+                .Group(NotificationHub.UserGroup(invite.invited_by_user_id.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "team_invite_response", title = "Team Invite Rejected" }, ct);
 

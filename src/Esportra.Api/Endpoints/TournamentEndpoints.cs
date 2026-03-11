@@ -290,10 +290,10 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
 
             // Only organizer or admin can update
-            var organizerId = await conn.QuerySingleOrDefaultAsync<string>(
+            var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT organizer_id FROM tournaments WHERE id = @id", new { id });
             if (organizerId is null) return Results.NotFound();
-            if (organizerId != userCtx.UserId && !userCtx.Roles.Contains("admin"))
+            if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -388,15 +388,15 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
 
             // Get the user's team IDs first
-            var teamIds = (await conn.QueryAsync<string>(
+            var teamIds = (await conn.QueryAsync<Guid>(
                 "SELECT team_id FROM team_members WHERE user_id = @userId AND is_active = TRUE",
                 new { userId = userCtx.UserIdGuid })).ToArray();
 
             // Single query: registered tournament IDs via user_id OR any team
-            IEnumerable<string> registeredIds;
+            IEnumerable<Guid> registeredIdGuids;
             if (teamIds.Length > 0)
             {
-                registeredIds = await conn.QueryAsync<string>(
+                registeredIdGuids = await conn.QueryAsync<Guid>(
                     """
                     SELECT DISTINCT tournament_id FROM tournament_participants
                     WHERE tournament_id = ANY(@ids)
@@ -406,12 +406,12 @@ public static class TournamentEndpoints
             }
             else
             {
-                registeredIds = await conn.QueryAsync<string>(
+                registeredIdGuids = await conn.QueryAsync<Guid>(
                     "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId",
                     new { ids = idList, userId = userCtx.UserIdGuid });
             }
 
-            var registeredSet = registeredIds.ToHashSet();
+            var registeredSet = registeredIdGuids.Select(g => g.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var statusMap     = idList.ToDictionary(id => id, id => registeredSet.Contains(id));
 
             return Results.Ok(statusMap);

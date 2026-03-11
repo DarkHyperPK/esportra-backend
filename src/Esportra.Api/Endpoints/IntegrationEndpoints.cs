@@ -98,7 +98,7 @@ public static class IntegrationEndpoints
             using var conn = db.CreateConnection();
 
             // Guard: check if PUUID already linked to another account
-            var existingUserId = await conn.QuerySingleOrDefaultAsync<string>(
+            var existingUserId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT user_id FROM public.riot_accounts WHERE puuid = @puuid AND user_id != @userId",
                 new { puuid, userId });
             if (existingUserId is not null)
@@ -168,7 +168,7 @@ public static class IntegrationEndpoints
             using var conn = db.CreateConnection();
 
             // Guard duplicates
-            var existingUserId = await conn.QuerySingleOrDefaultAsync<string>(
+            var existingUserId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT user_id FROM public.faceit_accounts WHERE faceit_id = @faceitId AND user_id != @userId",
                 new { faceitId, userId });
             if (existingUserId is not null)

@@ -63,7 +63,7 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            var orphanIds = (await conn.QueryAsync<string>("""
+            var orphanIds = (await conn.QueryAsync<Guid>("""
                 DELETE FROM public.profiles
                 WHERE id NOT IN (SELECT id FROM auth.users)
                 RETURNING id

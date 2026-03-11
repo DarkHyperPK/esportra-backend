@@ -132,7 +132,7 @@ public static class TeamEndpoints
                     },
                     tx);
 
-                Guid teamId = Guid.Parse((string)team.id);
+                Guid teamId = (Guid)team.id;
 
                 // Insert creator as captain
                 await conn.ExecuteAsync(
@@ -835,7 +835,7 @@ public static class TeamEndpoints
             await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
 
             // Check for duplicate pending invite
-            var existing = await conn.QuerySingleOrDefaultAsync<string>(
+            var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
                 SELECT id FROM team_invitations
                 WHERE team_id = @teamId AND roster_id = @rosterId AND invited_user_id = @userId AND status = 'pending'
@@ -901,7 +901,7 @@ public static class TeamEndpoints
 
             var teamName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM teams WHERE id = @id", new { id = idGuid });
-            var memberIds = (await conn.QueryAsync<string>(
+            var memberIds = (await conn.QueryAsync<Guid>(
                 "SELECT user_id FROM team_members WHERE team_id = @id AND is_active = true",
                 new { id = idGuid })).ToList();
 
@@ -919,7 +919,7 @@ public static class TeamEndpoints
 
             // Push real-time
             foreach (var uid in memberIds)
-                await hub.Clients.Group(NotificationHub.UserGroup(uid))
+                await hub.Clients.Group(NotificationHub.UserGroup(uid.ToString()))
                     .SendAsync(NotificationHubEvents.NewNotification, new { type = "team_announcement" });
 
             return Results.Ok(new { sent = memberIds.Count });
@@ -1006,7 +1006,7 @@ public static class TeamEndpoints
             {
                 var inviteeUserIdGuid = Guid.Parse(invitee.UserId);
                 // Check duplicate pending invite
-                var existing = await conn.QuerySingleOrDefaultAsync<string>(
+                var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
                     """
                     SELECT id FROM team_invitations
                     WHERE team_id = @teamId AND roster_id = @rosterId AND invited_user_id = @userId AND status = 'pending'

@@ -34,9 +34,9 @@ public static class StageEndpoints
             if (tournament is null) return Results.NotFound();
 
             // Get existing stage IDs
-            var existingIds = (await conn.QueryAsync<string>(
+            var existingIds = (await conn.QueryAsync<Guid>(
                 "SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId",
-                new { tournamentId })).ToHashSet();
+                new { tournamentId })).Select(g => g.ToString()).ToHashSet();
 
             var incomingIds = req.Stages
                 .Where(s => s.Id is not null)

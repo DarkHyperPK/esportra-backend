@@ -807,11 +807,11 @@ public static class MatchSystemEndpoints
                     INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                     VALUES (@userId, @type, @title, @message, '/tournaments/captain', @data::jsonb, FALSE)
                     """,
-                    new { userId = (string)dispute.disputed_by_user_id, type = notifType,
+                    new { userId = (Guid)dispute.disputed_by_user_id, type = notifType,
                           title = notifTitle, message = notifMessage, data = notifData });
 
                 // Notify the original reporter (opposing party)
-                var reporter = await conn.QuerySingleOrDefaultAsync<string?>(
+                var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
                     """
                     SELECT reported_by FROM match_result_reports
                     WHERE match_id = @matchId
@@ -819,7 +819,7 @@ public static class MatchSystemEndpoints
                     """,
                     new { matchId });
 
-                if (reporter is not null && reporter != (string)dispute.disputed_by_user_id)
+                if (reporter is not null && reporter != (Guid)dispute.disputed_by_user_id)
                 {
                     await conn.ExecuteAsync(
                         """
