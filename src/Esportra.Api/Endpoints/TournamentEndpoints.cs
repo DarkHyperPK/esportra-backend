@@ -1,5 +1,6 @@
 ﻿using System.Data;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
@@ -20,6 +21,66 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class TournamentEndpoints
 {
+    /// Typed DTO for tournament list rows — required so HybridCache (System.Text.Json) can
+    /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
+    /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
+    private sealed record TournamentListRow(
+        Guid      Id,
+        string    Name,
+        string?   Slug,
+        string    Game,
+        string    Status,
+        string?   Format,
+        DateTime? StartDate,
+        DateTime? EndDate,
+        DateTime? RegistrationDeadline,
+        int?      MaxTeams,
+        int?      MinTeams,
+        int?      TeamSize,
+        decimal?  EntryFee,
+        decimal?  PrizePool,
+        string?   BannerUrl,
+        string?   LogoUrl,
+        bool      IsPublic,
+        Guid      OrganizerId,
+        Guid?     VenueId,
+        string?   Description,
+        DateTime  CreatedAt,
+        DateTime? UpdatedAt,
+        long      CurrentParticipants,
+        string?   OrganizerName,
+        string?   OrganizationSlug,
+        string?   OrganizerUsername,
+        string?   OrganizerFullName
+    );
+
+    private const string TournamentListSql = """
+        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
+               t.start_date, t.end_date, t.registration_deadline,
+               t.max_teams, t.min_teams, t.team_size,
+               t.entry_fee, t.prize_pool,
+               t.banner_url, t.logo_url, t.is_public,
+               t.organizer_id, t.venue_id, t.description,
+               t.created_at, t.updated_at,
+               (SELECT COUNT(*) FROM tournament_participants tp
+                WHERE tp.tournament_id = t.id) AS current_participants,
+               o.name   AS organizer_name,
+               o.slug   AS organization_slug,
+               p.username      AS organizer_username,
+               p.full_name     AS organizer_full_name
+        FROM tournaments t
+        LEFT JOIN organizations o ON o.id = t.organization_id
+        LEFT JOIN profiles      p ON p.id = t.organizer_id
+        WHERE t.is_public = TRUE
+          AND t.deleted_at IS NULL
+          AND (@status IS NULL OR t.status::text = @status)
+          AND (@game   IS NULL OR t.game   ILIKE '%' || @game || '%')
+          AND (@q      IS NULL OR t.name   ILIKE '%' || @q   || '%')
+          AND (@organizerGuid IS NULL OR t.organizer_id = @organizerGuid)
+        ORDER BY t.start_date ASC
+        LIMIT @limit OFFSET @offset
+        """;
+
     public static void MapTournamentEndpoints(this WebApplication app)
     {
         // ── GET /api/tournaments ───────────────────────────────────────────────
@@ -36,39 +97,14 @@ public static class TournamentEndpoints
             CancellationToken    ct     = default) =>
         {
             var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{limit}:{offset}";
-            var rows = await cache.GetOrCreateAsync(
+            Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
+            var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
                 cacheKey,
                 async (_) =>
                 {
                     using var conn = db.CreateConnection();
-                    Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
-                    return (await conn.QueryAsync<dynamic>(
-                        """
-                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
-                               t.start_date, t.end_date, t.registration_deadline,
-                               t.max_teams, t.min_teams, t.team_size,
-                               t.entry_fee, t.prize_pool,
-                               t.banner_url, t.logo_url, t.is_public,
-                               t.organizer_id, t.venue_id, t.description,
-                               t.created_at, t.updated_at,
-                               (SELECT COUNT(*) FROM tournament_participants tp
-                                WHERE tp.tournament_id = t.id) AS current_participants,
-                               o.name   AS organizer_name,
-                               o.slug   AS organization_slug,
-                               p.username      AS organizer_username,
-                               p.full_name     AS organizer_full_name
-                        FROM tournaments t
-                        LEFT JOIN organizations o ON o.id = t.organization_id
-                        LEFT JOIN profiles      p ON p.id = t.organizer_id
-                        WHERE t.is_public = TRUE
-                          AND t.deleted_at IS NULL
-                          AND (@status IS NULL OR t.status::text = @status)
-                          AND (@game   IS NULL OR t.game   ILIKE '%' || @game || '%')
-                          AND (@q      IS NULL OR t.name   ILIKE '%' || @q   || '%')
-                          AND (@organizerGuid IS NULL OR t.organizer_id = @organizerGuid)
-                        ORDER BY t.start_date ASC
-                        LIMIT @limit OFFSET @offset
-                        """,
+                    return (await conn.QueryAsync<TournamentListRow>(
+                        TournamentListSql,
                         new { status, game, q, organizerGuid, limit, offset })).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
@@ -83,12 +119,12 @@ public static class TournamentEndpoints
             HybridCache          cache,
             CancellationToken    ct) =>
         {
-            var rows = await cache.GetOrCreateAsync(
+            var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
                 "tournaments:upcoming",
                 async (_) =>
                 {
                     using var conn = db.CreateConnection();
-                    return (await conn.QueryAsync<dynamic>(
+                    return (await conn.QueryAsync<TournamentListRow>(
                         """
                         SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
                                t.start_date, t.end_date, t.registration_deadline,
@@ -108,7 +144,7 @@ public static class TournamentEndpoints
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
-                          AND t.status IN ('open', 'check_in')
+                          AND t.status::text IN ('open', 'check_in')
                         ORDER BY t.start_date ASC
                         LIMIT 100
                         """)).AsList();
