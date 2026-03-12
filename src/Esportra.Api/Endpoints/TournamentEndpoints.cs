@@ -371,19 +371,16 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/me/registration-status ────────────────────────
-        // Batch: ?ids=id1,id2,id3  →  { id1: true, id2: false, ... }
-        // Replaces useTournamentRegistrationStatus N+1 effect.
+        // With ?ids=id1,id2,id3 → { id1: true, id2: false, ... } (batch check)
+        // Without ids           → [{ tournament_id: "...", id: "..." }, ...] (all registrations)
         app.MapGet("/api/tournaments/me/registration-status", async (
-            string               ids,
+            string?              ids,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-
-            var idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (idList.Length == 0) return Results.Ok(new { });
 
             using var conn = db.CreateConnection();
 
@@ -392,7 +389,39 @@ public static class TournamentEndpoints
                 "SELECT team_id FROM team_members WHERE user_id = @userId AND is_active = TRUE",
                 new { userId = userCtx.UserIdGuid })).ToArray();
 
-            // Single query: registered tournament IDs via user_id OR any team
+            // No specific IDs → return all user registrations as array
+            if (string.IsNullOrWhiteSpace(ids))
+            {
+                IEnumerable<dynamic> rows;
+                if (teamIds.Length > 0)
+                {
+                    rows = await conn.QueryAsync(
+                        """
+                        SELECT DISTINCT tp.id, tp.tournament_id
+                        FROM tournament_participants tp
+                        WHERE tp.user_id = @userId OR tp.team_id = ANY(@teamIds)
+                        """,
+                        new { userId = userCtx.UserIdGuid, teamIds });
+                }
+                else
+                {
+                    rows = await conn.QueryAsync(
+                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId",
+                        new { userId = userCtx.UserIdGuid });
+                }
+
+                var result = rows.Select(r => new Dictionary<string, string>
+                {
+                    ["id"] = ((Guid)r.id).ToString(),
+                    ["tournament_id"] = ((Guid)r.tournament_id).ToString()
+                });
+                return Results.Ok(result);
+            }
+
+            // Specific IDs → return status map
+            var idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (idList.Length == 0) return Results.Ok(new { });
+
             IEnumerable<Guid> registeredIdGuids;
             if (teamIds.Length > 0)
             {

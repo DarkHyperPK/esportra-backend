@@ -1,13 +1,15 @@
 ﻿using System.Data;
+using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
 /// <summary>
-/// Domain 8: Venues &amp; Bookings
+/// Domain 8: Venues & Bookings
 ///
 /// Key perf fix:
 ///   useVenueBooking had 3 separate round-trips (availability check → insert booking → decrement stations).
@@ -20,44 +22,49 @@ public static class VenueEndpoints
 {
     public static void MapVenueEndpoints(this WebApplication app)
     {
-        // ── GET /api/venues — text/city search ────────────────────────────────
+        // ── GET /api/venues — list / search —————————————————————————————————
+        // Supports: ?q=, ?city=, ?owner_id=, ?owned=true, ?limit=, ?offset=
         app.MapGet("/api/venues", async (
             string?              q,
             string?              city,
-            bool?                includeOwned,
+            Guid?                owner_id,
+            bool?                owned,
             int                  limit  = 20,
             int                  offset = 0,
             IDbConnectionFactory db     = null!,
-            HybridCache          cache  = null!,
             HttpContext          ctx    = null!,
             CancellationToken    ct     = default) =>
         {
-            var cacheKey = $"venues:{q}:{city}:{includeOwned}:{limit}:{offset}";
-            return await cache.GetOrCreateAsync(cacheKey, async (_) =>
+            // If owned=true, resolve owner from JWT
+            Guid? effectiveOwnerId = owner_id;
+            if (owned == true && effectiveOwnerId is null)
             {
-                using var conn = db.CreateConnection();
-                var rows = await conn.QueryAsync<dynamic>(
-                    """
-                    SELECT id, name, description, address, city, country,
-                           status, price_per_hour, price_range, games,
-                           image_url, logo_url, latitude, longitude,
-                           total_stations, open_now, created_at
-                    FROM venues
-                    WHERE (@includeOwned = TRUE OR status = 'published')
-                      AND (@q IS NULL OR name ILIKE '%' || @q || '%' OR description ILIKE '%' || @q || '%')
-                      AND (@city IS NULL OR city ILIKE '%' || @city || '%')
-                    ORDER BY name ASC
-                    LIMIT @limit OFFSET @offset
-                    """,
-                    new { q, city, includeOwned = includeOwned ?? false, limit, offset });
-                return Results.Ok(rows);
-            },
-            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
-            cancellationToken: ct);
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                effectiveOwnerId = userCtx?.UserIdGuid;
+            }
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, name, description, address, city, state, country, postal_code,
+                       slug, venue_id, status, stations, hours, games,
+                       price_per_hour, images, card_image, amenities, pc_specs,
+                       owner_id, latitude, longitude, subscription_tier,
+                       rejection_reason, submitted_at, published_at, created_at
+                FROM venues
+                WHERE deleted_at IS NULL
+                  AND (@ownerId IS NULL OR owner_id = @ownerId)
+                  AND (@ownerId IS NOT NULL OR status = 'published')
+                  AND (@q IS NULL OR name ILIKE '%' || @q || '%' OR description ILIKE '%' || @q || '%')
+                  AND (@city IS NULL OR city ILIKE '%' || @city || '%')
+                ORDER BY created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { ownerId = effectiveOwnerId, q, city, limit, offset });
+            return Results.Ok(rows);
         });
 
-        // ── GET /api/venues/nearby — Haversine RPC ────────────────────────────
-        // Delegates to existing find_nearby_venues DB function.
+        // ── GET /api/venues/nearby — Haversine RPC ————————————————————————
         app.MapGet("/api/venues/nearby", async (
             double               lat,
             double               lng,
@@ -72,8 +79,218 @@ public static class VenueEndpoints
             return Results.Ok(rows);
         });
 
-        // ── GET /api/venues/{id}/live-status ──────────────────────────────────
-        // Initial state fetch for useVenueLiveStatus (real-time updates via LiveHub).
+        // ── GET /api/venues/{slugOrId} — single venue by slug or UUID ——————
+        app.MapGet("/api/venues/{slugOrId}", async (
+            string               slugOrId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            dynamic? row;
+            if (Guid.TryParse(slugOrId, out var guidId))
+            {
+                row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT * FROM venues WHERE id = @id AND deleted_at IS NULL",
+                    new { id = guidId });
+            }
+            else
+            {
+                row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT * FROM venues WHERE slug = @slug AND deleted_at IS NULL",
+                    new { slug = slugOrId });
+            }
+
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        });
+
+        // ── POST /api/venues — create ——————————————————————————————————————
+        app.MapPost("/api/venues", async (
+            [FromBody] CreateVenueRequest req,
+            HttpContext                   ctx,
+            IDbConnectionFactory          db,
+            CancellationToken             ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Generate a unique venue_id (VN-XXXXX format)
+            var venueIdStr = $"VN-{Guid.NewGuid().ToString("N")[..6].ToUpper()}";
+
+            var row = await conn.QuerySingleAsync<dynamic>(
+                """
+                INSERT INTO venues
+                    (name, description, address, city, state, country, postal_code,
+                     stations, hours, games, amenities, images, card_image, pc_specs,
+                     slug, venue_id, owner_id, contact_email, contact_phone,
+                     price_per_hour, status, submitted_at)
+                VALUES
+                    (@name, @description, @address, @city, @state, @country, @postalCode,
+                     @stations, @hours, @games, @amenities, @images, @cardImage, @pcSpecs::jsonb,
+                     @slug, @venueId, @ownerId, @contactEmail, @contactPhone,
+                     @pricePerHour, @status, @submittedAt::timestamptz)
+                RETURNING *
+                """,
+                new
+                {
+                    name         = req.Name,
+                    description  = req.Description,
+                    address      = req.Address,
+                    city         = req.City,
+                    state        = req.State,
+                    country      = req.Country,
+                    postalCode   = req.PostalCode,
+                    stations     = req.Stations,
+                    hours        = req.Hours,
+                    games        = req.Games,
+                    amenities    = req.Amenities ?? Array.Empty<string>(),
+                    images       = req.Images ?? Array.Empty<string>(),
+                    cardImage    = req.CardImage,
+                    pcSpecs      = req.PcSpecs is not null
+                                       ? JsonSerializer.Serialize(req.PcSpecs)
+                                       : "{}",
+                    slug         = req.Slug,
+                    venueId      = venueIdStr,
+                    ownerId      = userCtx.UserIdGuid,
+                    contactEmail = req.ContactEmail,
+                    contactPhone = req.ContactPhone,
+                    pricePerHour = req.PricePerHour,
+                    status       = req.Status ?? "draft",
+                    submittedAt  = req.SubmittedAt,
+                });
+
+            return Results.Created($"/api/venues/{row.slug}", row);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/venues/{id} — owner update ————————————————————————————
+        app.MapPut("/api/venues/{id}", async (
+            Guid                          id,
+            [FromBody] UpdateVenueRequest req,
+            HttpContext                   ctx,
+            IDbConnectionFactory          db,
+            CancellationToken             ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify ownership
+            var ownerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT owner_id FROM venues WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+
+            if (ownerId is null)
+                return Results.NotFound();
+            if (ownerId != userCtx.UserIdGuid)
+                return Results.Forbid();
+
+            // Build dynamic SET clauses
+            var setClauses = new List<string>();
+            var parameters = new DynamicParameters();
+            parameters.Add("id", id);
+
+            if (req.Name is not null)         { setClauses.Add("name = @name");                   parameters.Add("name", req.Name); }
+            if (req.Description is not null)  { setClauses.Add("description = @description");     parameters.Add("description", req.Description); }
+            if (req.Address is not null)      { setClauses.Add("address = @address");             parameters.Add("address", req.Address); }
+            if (req.City is not null)         { setClauses.Add("city = @city");                   parameters.Add("city", req.City); }
+            if (req.State is not null)        { setClauses.Add("state = @state");                 parameters.Add("state", req.State); }
+            if (req.Country is not null)      { setClauses.Add("country = @country");             parameters.Add("country", req.Country); }
+            if (req.Stations.HasValue)        { setClauses.Add("stations = @stations");           parameters.Add("stations", req.Stations.Value); }
+            if (req.Hours is not null)        { setClauses.Add("hours = @hours");                 parameters.Add("hours", req.Hours); }
+            if (req.Games is not null)        { setClauses.Add("games = @games");                 parameters.Add("games", req.Games); }
+            if (req.ContactEmail is not null) { setClauses.Add("contact_email = @contactEmail");  parameters.Add("contactEmail", req.ContactEmail); }
+            if (req.ContactPhone is not null) { setClauses.Add("contact_phone = @contactPhone");  parameters.Add("contactPhone", req.ContactPhone); }
+            if (req.Images is not null)       { setClauses.Add("images = @images");               parameters.Add("images", req.Images); }
+            if (req.CardImage is not null)    { setClauses.Add("card_image = @cardImage");        parameters.Add("cardImage", req.CardImage); }
+            if (req.PricePerHour.HasValue)    { setClauses.Add("price_per_hour = @pricePerHour"); parameters.Add("pricePerHour", req.PricePerHour.Value); }
+            if (req.Amenities is not null)    { setClauses.Add("amenities = @amenities");         parameters.Add("amenities", req.Amenities); }
+            if (req.PcSpecs is not null)      { setClauses.Add("pc_specs = @pcSpecs::jsonb");     parameters.Add("pcSpecs", JsonSerializer.Serialize(req.PcSpecs)); }
+
+            if (req.Status is not null)
+            {
+                // Owner can only set draft → pending_review or pending_review → draft
+                if (req.Status == "pending_review" || req.Status == "draft")
+                {
+                    setClauses.Add("status = @status");
+                    parameters.Add("status", req.Status);
+                    if (req.Status == "pending_review")
+                    {
+                        setClauses.Add("submitted_at = NOW()");
+                    }
+                }
+            }
+
+            if (setClauses.Count == 0)
+                return Results.BadRequest(new { error = "No fields to update." });
+
+            setClauses.Add("updated_at = NOW()");
+
+            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING *";
+            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
+
+            return updated is null ? Results.NotFound() : Results.Ok(updated);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/admin/venues/{id} — admin update (no ownership check) —
+        app.MapPut("/api/admin/venues/{id}", async (
+            Guid                          id,
+            [FromBody] UpdateVenueRequest req,
+            IDbConnectionFactory          db,
+            CancellationToken             ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var setClauses = new List<string>();
+            var parameters = new DynamicParameters();
+            parameters.Add("id", id);
+
+            if (req.Name is not null)         { setClauses.Add("name = @name");                   parameters.Add("name", req.Name); }
+            if (req.Description is not null)  { setClauses.Add("description = @description");     parameters.Add("description", req.Description); }
+            if (req.Address is not null)      { setClauses.Add("address = @address");             parameters.Add("address", req.Address); }
+            if (req.City is not null)         { setClauses.Add("city = @city");                   parameters.Add("city", req.City); }
+            if (req.Stations.HasValue)        { setClauses.Add("stations = @stations");           parameters.Add("stations", req.Stations.Value); }
+            if (req.Hours is not null)        { setClauses.Add("hours = @hours");                 parameters.Add("hours", req.Hours); }
+            if (req.Games is not null)        { setClauses.Add("games = @games");                 parameters.Add("games", req.Games); }
+            if (req.ContactEmail is not null) { setClauses.Add("contact_email = @contactEmail");  parameters.Add("contactEmail", req.ContactEmail); }
+            if (req.ContactPhone is not null) { setClauses.Add("contact_phone = @contactPhone");  parameters.Add("contactPhone", req.ContactPhone); }
+            if (req.Images is not null)       { setClauses.Add("images = @images");               parameters.Add("images", req.Images); }
+            if (req.PricePerHour.HasValue)    { setClauses.Add("price_per_hour = @pricePerHour"); parameters.Add("pricePerHour", req.PricePerHour.Value); }
+            if (req.Status is not null)       { setClauses.Add("status = @status");               parameters.Add("status", req.Status); }
+            if (req.RejectionReason is not null) { setClauses.Add("rejection_reason = @rejectionReason"); parameters.Add("rejectionReason", req.RejectionReason); }
+
+            if (setClauses.Count == 0)
+                return Results.BadRequest(new { error = "No fields to update." });
+
+            setClauses.Add("updated_at = NOW()");
+
+            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id AND deleted_at IS NULL RETURNING *";
+            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
+
+            return updated is null ? Results.NotFound() : Results.Ok(updated);
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/venues/{id} — soft delete (owner only) —————————————
+        app.MapDelete("/api/venues/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.ExecuteAsync(
+                "UPDATE venues SET deleted_at = NOW(), status = 'archived' WHERE id = @id AND owner_id = @ownerId AND deleted_at IS NULL",
+                new { id, ownerId = userCtx.UserIdGuid });
+
+            return rows == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/venues/{id}/live-status ————————————————————————————————
         app.MapGet("/api/venues/{id}/live-status", async (
             Guid                 id,
             IDbConnectionFactory db,
@@ -90,7 +307,7 @@ public static class VenueEndpoints
             return row is null ? Results.NotFound() : Results.Ok(row);
         });
 
-        // ── GET /api/venues/{id}/availability ─────────────────────────────────
+        // ── GET /api/venues/{id}/availability ——————————————————————————————
         app.MapGet("/api/venues/{id}/availability", async (
             Guid                 id,
             string?              date,
@@ -204,7 +421,7 @@ public static class VenueEndpoints
             }
         }).RequireAuthorization("Authenticated");
 
-        // ── DELETE /api/venues/bookings/{bookingId} — cancel ──────────────────
+        // ── DELETE /api/venues/bookings/{bookingId} — cancel —————————————————
         app.MapDelete("/api/venues/bookings/{bookingId}", async (
             Guid                 bookingId,
             HttpContext          ctx,
@@ -222,7 +439,7 @@ public static class VenueEndpoints
             return rows == 0 ? Results.NotFound() : Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
-        // ── POST /api/venues/{id}/impressions — fire-and-forget ───────────────
+        // ── POST /api/venues/{id}/impressions — fire-and-forget ————————————
         app.MapPost("/api/venues/{id}/impressions", async (
             Guid                              id,
             [FromBody] TrackImpressionRequest req,
@@ -238,8 +455,7 @@ public static class VenueEndpoints
             return Results.Ok();
         });
 
-        // ── GET /api/venues/{id}/impressions — daily aggregated ───────────────
-        // Server-side GROUP BY: eliminates client-side loop over raw rows.
+        // ── GET /api/venues/{id}/impressions — daily aggregated ————————————
         app.MapGet("/api/venues/{id}/impressions", async (
             Guid                 id,
             int                  days  = 30,
@@ -263,7 +479,7 @@ public static class VenueEndpoints
             return Results.Ok(rows);
         });
 
-        // ── GET /api/venues/{id}/impressions/totals ───────────────────────────
+        // ── GET /api/venues/{id}/impressions/totals ————————————————————————
         app.MapGet("/api/venues/{id}/impressions/totals", async (
             Guid                 id,
             IDbConnectionFactory db,
@@ -286,7 +502,50 @@ public static class VenueEndpoints
     }
 }
 
-// ── Request records ────────────────────────────────────────────────────────────
+// ── Request records ————————————————————————————————————————————————————————————
+
+public sealed record CreateVenueRequest(
+    string    Name,
+    string    Address,
+    string    City,
+    string    Country,
+    string?   Description     = null,
+    string?   State           = null,
+    string?   PostalCode      = null,
+    int       Stations        = 0,
+    string?   Hours           = null,
+    string?   Games           = null,
+    string[]? Amenities       = null,
+    string[]? Images          = null,
+    string?   CardImage       = null,
+    object?   PcSpecs         = null,
+    string?   Slug            = null,
+    string?   ContactEmail    = null,
+    string?   ContactPhone    = null,
+    decimal   PricePerHour    = 0,
+    string?   Status          = null,
+    string?   SubmittedAt     = null);
+
+public sealed record UpdateVenueRequest(
+    string?   Name            = null,
+    string?   Description     = null,
+    string?   Address         = null,
+    string?   City            = null,
+    string?   State           = null,
+    string?   Country         = null,
+    int?      Stations        = null,
+    string?   Hours           = null,
+    string?   Games           = null,
+    string?   ContactEmail    = null,
+    string?   ContactPhone    = null,
+    string[]? Images          = null,
+    string?   CardImage       = null,
+    decimal?  PricePerHour    = null,
+    string[]? Amenities       = null,
+    object?   PcSpecs         = null,
+    string?   Status          = null,
+    string?   RejectionReason = null,
+    string?   PriceRange      = null);
 
 public sealed record CreateBookingRequest(
     string   Date,
