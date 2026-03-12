@@ -231,7 +231,7 @@ public static class TournamentEndpoints
                     },
                     tx);
 
-                string tournamentId = tournament.id;
+                var tournamentId = (Guid)tournament.id;
 
                 // Stages
                 if (req.Stages is { Count: > 0 })
@@ -282,7 +282,7 @@ public static class TournamentEndpoints
 
         // ── PUT /api/tournaments/{id} ──────────────────────────────────────────
         app.MapPut("/api/tournaments/{id}", async (
-            string                        id,
+            Guid                          id,
             [FromBody] UpdateTournamentRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
@@ -689,7 +689,7 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/remove-unchecked — remove unchecked participants ──
         app.MapPost("/api/tournaments/{id}/remove-unchecked", async (
-            string               id,
+            Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -713,7 +713,7 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
         app.MapPost("/api/tournaments/{id}/ban-participant", async (
-            string                               id,
+            Guid                                 id,
             [FromBody] BanParticipantRequest     req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
@@ -766,8 +766,8 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/participants/{pid} — single participant ───
         app.MapGet("/api/tournaments/{id}/participants/{pid}", async (
-            string               id,
-            string               pid,
+            Guid                 id,
+            Guid                 pid,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -780,7 +780,7 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
         app.MapGet("/api/tournaments/{id}/stages", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -793,7 +793,7 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/bracket-versions ───────────────────────
         app.MapGet("/api/tournaments/{id}/bracket-versions", async (
-            string               id,
+            Guid                 id,
             string?              status,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -818,7 +818,7 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/participants ───────────────────────────
         app.MapGet("/api/tournaments/{id}/participants", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -831,7 +831,7 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/match-proofs ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-proofs", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -844,7 +844,7 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/match-games ────────────────────────────
         app.MapGet("/api/tournaments/{id}/match-games", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -892,7 +892,7 @@ public static class TournamentEndpoints
     {
         // ── GET /api/tournaments/{tournamentId}/staff ────────────────────────
         app.MapGet("/api/tournaments/{tournamentId}/staff", async (
-            string               tournamentId,
+            Guid                 tournamentId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -934,7 +934,7 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{tournamentId}/staff — invite ──────────────
         app.MapPost("/api/tournaments/{tournamentId}/staff", async (
-            string                                tournamentId,
+            Guid                                  tournamentId,
             [FromBody] InviteTournamentStaffRequest req,
             HttpContext                             ctx,
             IDbConnectionFactory                   db,
@@ -998,7 +998,7 @@ public static class TournamentEndpoints
 
         // ── PUT /api/tournaments/staff/{staffId} — update role/permissions ───
         app.MapPut("/api/tournaments/staff/{staffId}", async (
-            string                                  staffId,
+            Guid                                    staffId,
             [FromBody] UpdateTournamentStaffRequest  req,
             HttpContext                              ctx,
             IDbConnectionFactory                    db,
@@ -1035,7 +1035,7 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/staff/{staffId} — remove ────────────────
         app.MapDelete("/api/tournaments/staff/{staffId}", async (
-            string               staffId,
+            Guid                 staffId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -1130,7 +1130,7 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/staff/{inviteId}/respond ───────────────────
         app.MapPost("/api/tournaments/staff/{inviteId}/respond", async (
-            string                                    inviteId,
+            Guid                                      inviteId,
             [FromBody] RespondToStaffInviteRequest     req,
             HttpContext                                ctx,
             IDbConnectionFactory                      db,
@@ -1232,7 +1232,7 @@ public static class TournamentEndpoints
 
         // ── GET /api/organizer/disputes/{disputeId}/comments ─────────────────
         app.MapGet("/api/organizer/disputes/{disputeId}/comments", async (
-            string               disputeId,
+            Guid                 disputeId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -1254,7 +1254,7 @@ public static class TournamentEndpoints
 
         // ── POST /api/organizer/disputes/{disputeId}/comments ────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/comments", async (
-            string                            disputeId,
+            Guid                              disputeId,
             [FromBody] AddDisputeCommentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
@@ -1297,7 +1297,7 @@ public static class TournamentEndpoints
 
         // ── POST /api/organizer/disputes/{disputeId}/resolve ─────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/resolve", async (
-            string                              disputeId,
+            Guid                                disputeId,
             [FromBody] ResolveDisputeRequest2   req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,

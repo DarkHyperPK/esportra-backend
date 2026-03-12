@@ -16,7 +16,7 @@ public static class StageEndpoints
         // Batch sync: accepts full stage array, diffs against DB, upserts/deletes.
         // Replaces useTournamentWizard's 3 sequential Supabase calls.
         app.MapPut("/api/tournaments/{tournamentId}/stages", async (
-            string                            tournamentId,
+            Guid                              tournamentId,
             [FromBody] SyncStagesRequest      req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
@@ -106,7 +106,7 @@ public static class StageEndpoints
         // ── PUT /api/tournaments/{tournamentId}/map-pools ────────────────────
         // Replace all map pool entries for a tournament.
         app.MapPut("/api/tournaments/{tournamentId}/map-pools", async (
-            string                            tournamentId,
+            Guid                              tournamentId,
             [FromBody] SyncMapPoolsRequest    req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,

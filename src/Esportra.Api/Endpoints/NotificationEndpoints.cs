@@ -61,19 +61,18 @@ public static class NotificationEndpoints
 
         // ── PUT /api/notifications/{id}/read ────────────────────────────────
         app.MapPut("/api/notifications/{id}/read", async (
-            string               id,
+            Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            var idGuid = Guid.Parse(id);
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "UPDATE notifications SET is_read = TRUE WHERE id = @id AND user_id = @userId",
-                new { id = idGuid, userId = userCtx.UserIdGuid });
+                new { id, userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

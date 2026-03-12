@@ -345,7 +345,7 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/invite ───────────────────────────────────────
         app.MapPost("/api/teams/{id}/invite", async (
-            string                      id,
+            Guid                        id,
             [FromBody] TeamInviteRequest req,
             HttpContext                  ctx,
             IDbConnectionFactory        db,
@@ -354,23 +354,22 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
             var reqUserIdGuid = Guid.Parse(req.UserId);
 
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             // Check not already a member
             var alreadyMember = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @userId AND is_active = TRUE)",
-                new { id = idGuid, userId = reqUserIdGuid });
+                new { id, userId = reqUserIdGuid });
             if (alreadyMember)
                 return Results.Conflict(new { error = "User is already a team member." });
 
             // Check for existing invite (any status) and upsert
             var existingInviteId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT id FROM team_invitations WHERE team_id = @teamId AND invited_user_id = @userId",
-                new { teamId = idGuid, userId = reqUserIdGuid });
+                new { teamId = id, userId = reqUserIdGuid });
 
             dynamic invite;
             if (existingInviteId is not null)
@@ -392,7 +391,7 @@ public static class TeamEndpoints
                     VALUES (@teamId, @userId, @invitedBy, @invitedBy, 'pending', @message)
                     RETURNING *
                     """,
-                    new { teamId = idGuid, userId = reqUserIdGuid, invitedBy = userCtx.UserIdGuid, message = req.Message });
+                    new { teamId = id, userId = reqUserIdGuid, invitedBy = userCtx.UserIdGuid, message = req.Message });
             }
 
             // Notification to invitee
@@ -435,7 +434,7 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/invites/{inviteId}/accept ─────────────────────────
         app.MapPost("/api/teams/invites/{inviteId}/accept", async (
-            string               inviteId,
+            Guid                 inviteId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -448,17 +447,16 @@ public static class TeamEndpoints
 
             try
             {
-                var inviteIdGuid = Guid.Parse(inviteId);
                 var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     "SELECT * FROM team_invitations WHERE id = @id AND invited_user_id = @userId AND status = 'pending'",
-                    new { id = inviteIdGuid, userId = userCtx.UserIdGuid }, tx);
+                    new { id = inviteId, userId = userCtx.UserIdGuid }, tx);
 
                 if (invite is null)
                     return Results.NotFound(new { error = "Invite not found or already responded to." });
 
                 await conn.ExecuteAsync(
                     "UPDATE team_invitations SET status = 'accepted', responded_at = NOW() WHERE id = @id",
-                    new { id = inviteIdGuid }, tx);
+                    new { id = inviteId }, tx);
 
                 await conn.ExecuteAsync(
                     """
@@ -481,7 +479,7 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/invites/{inviteId}/decline ────────────────────────
         app.MapPost("/api/teams/invites/{inviteId}/decline", async (
-            string               inviteId,
+            Guid                 inviteId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -490,17 +488,16 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var inviteIdGuid = Guid.Parse(inviteId);
             await conn.ExecuteAsync(
                 "UPDATE team_invitations SET status = 'declined', responded_at = NOW() WHERE id = @id AND invited_user_id = @userId",
-                new { id = inviteIdGuid, userId = userCtx.UserIdGuid });
+                new { id = inviteId, userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/teams/invites/{inviteId} — revoke (captain only) ─────
         app.MapDelete("/api/teams/invites/{inviteId}", async (
-            string               inviteId,
+            Guid                 inviteId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -509,16 +506,14 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var inviteIdGuid = Guid.Parse(inviteId);
-
             // Verify the caller invited this person (is captain of that team)
             var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT team_id FROM team_invitations WHERE id = @id AND invited_by = @userId",
-                new { id = inviteIdGuid, userId = userCtx.UserIdGuid });
+                new { id = inviteId, userId = userCtx.UserIdGuid });
 
             if (invite is null) return Results.Forbid();
 
-            await conn.ExecuteAsync("DELETE FROM team_invitations WHERE id = @id", new { id = inviteIdGuid });
+            await conn.ExecuteAsync("DELETE FROM team_invitations WHERE id = @id", new { id = inviteId });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
@@ -568,20 +563,19 @@ public static class TeamEndpoints
     {
         // ── GET /api/teams/{id}/stats ─────────────────────────────────────────
         app.MapGet("/api/teams/{id}/stats", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db) =>
         {
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
             var matches = await conn.QuerySingleOrDefaultAsync<int>(
                 "SELECT COUNT(*) FROM brkt_matches WHERE (team1_id = @id OR team2_id = @id) AND status = 'completed'",
-                new { id = idGuid });
+                new { id });
             var wins = await conn.QuerySingleOrDefaultAsync<int>(
                 "SELECT COUNT(*) FROM brkt_matches WHERE winner_id = @id AND status = 'completed'",
-                new { id = idGuid });
+                new { id });
             var tournamentWins = await conn.QuerySingleOrDefaultAsync<int>(
                 "SELECT COUNT(*) FROM tournaments WHERE winner_id = @id",
-                new { id = idGuid });
+                new { id });
 
             return Results.Ok(new
             {
@@ -594,10 +588,9 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/members/detailed ─────────────────────────────
         app.MapGet("/api/teams/{id}/members/detailed", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db) =>
         {
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
             var members = await conn.QueryAsync<dynamic>(
                 """
@@ -612,22 +605,21 @@ public static class TeamEndpoints
                 LEFT JOIN valorant_player_stats vs ON vs.user_id = tm.user_id
                 WHERE tm.team_id = @id AND tm.is_active = true
                 """,
-                new { id = idGuid });
+                new { id });
             return Results.Ok(members);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/teams/{id}/invites ───────────────────────────────────────
         app.MapGet("/api/teams/{id}/invites", async (
-            string               id,
+            Guid                 id,
             HttpContext           ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             var invites = await conn.QueryAsync<dynamic>(
                 """
@@ -638,7 +630,7 @@ public static class TeamEndpoints
                 WHERE ti.team_id = @id AND ti.status = 'pending'
                 ORDER BY ti.created_at DESC
                 """,
-                new { id = idGuid });
+                new { id });
             return Results.Ok(invites);
         }).RequireAuthorization("Authenticated");
 
@@ -667,10 +659,9 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/rosters ───────────────────────────────────────
         app.MapGet("/api/teams/{id}/rosters", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db) =>
         {
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
             var rosters = await conn.QueryAsync<dynamic>(
                 """
@@ -691,13 +682,13 @@ public static class TeamEndpoints
                 GROUP BY r.id, r.name, r.game, r.format, r.team_size
                 ORDER BY r.created_at DESC
                 """,
-                new { id = idGuid });
+                new { id });
             return Results.Ok(rosters);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/rosters ──────────────────────────────────────
         app.MapPost("/api/teams/{id}/rosters", async (
-            string                    id,
+            Guid                      id,
             [FromBody] CreateRosterRequest req,
             HttpContext               ctx,
             IDbConnectionFactory      db) =>
@@ -705,9 +696,8 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             var roster = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -715,15 +705,15 @@ public static class TeamEndpoints
                 VALUES (@teamId, @name, @game, @format, @teamSize)
                 RETURNING id, name, game, format, team_size
                 """,
-                new { teamId = idGuid, name = req.Name, game = req.Game, format = req.Format, teamSize = req.TeamSize });
+                new { teamId = id, name = req.Name, game = req.Game, format = req.Format, teamSize = req.TeamSize });
 
             return Results.Created($"/api/teams/{id}/rosters/{roster!.id}", roster);
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/teams/{id}/rosters/{rosterId} ────────────────────────────
         app.MapPut("/api/teams/{id}/rosters/{rosterId}", async (
-            string                    id,
-            string                    rosterId,
+            Guid                      id,
+            Guid                      rosterId,
             [FromBody] UpdateRosterRequest req,
             HttpContext               ctx,
             IDbConnectionFactory      db) =>
@@ -731,42 +721,38 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "UPDATE team_rosters SET name = @name WHERE id = @rosterId AND team_id = @teamId",
-                new { name = req.Name, rosterId = rosterIdGuid, teamId = idGuid });
+                new { name = req.Name, rosterId, teamId = id });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/teams/{id}/rosters/{rosterId} ─────────────────────────
         app.MapDelete("/api/teams/{id}/rosters/{rosterId}", async (
-            string               id,
-            string               rosterId,
+            Guid                 id,
+            Guid                 rosterId,
             HttpContext           ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "DELETE FROM team_rosters WHERE id = @rosterId AND team_id = @teamId",
-                new { rosterId = rosterIdGuid, teamId = idGuid });
+                new { rosterId, teamId = id });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/members ───────────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/members", async (
-            string                          id,
-            string                          rosterId,
+            Guid                            id,
+            Guid                            rosterId,
             [FromBody] RosterMemberRequest  req,
             HttpContext                     ctx,
             IDbConnectionFactory            db) =>
@@ -774,45 +760,40 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "INSERT INTO team_roster_members (roster_id, user_id) VALUES (@rosterId, @userId) ON CONFLICT DO NOTHING",
-                new { rosterId = rosterIdGuid, userId = Guid.Parse(req.UserId) });
+                new { rosterId, userId = Guid.Parse(req.UserId) });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/teams/{id}/rosters/{rosterId}/members/{userId} ────────
         app.MapDelete("/api/teams/{id}/rosters/{rosterId}/members/{userId}", async (
-            string               id,
-            string               rosterId,
-            string               userId,
+            Guid                 id,
+            Guid                 rosterId,
+            Guid                 userId,
             HttpContext           ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
-            var userIdGuid = Guid.Parse(userId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "DELETE FROM team_roster_members WHERE roster_id = @rosterId AND user_id = @userId",
-                new { rosterId = rosterIdGuid, userId = userIdGuid });
+                new { rosterId, userId });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/teams/{id}/rosters/{rosterId}/members/{userId}/starter ───
         app.MapPut("/api/teams/{id}/rosters/{rosterId}/members/{userId}/starter", async (
-            string                         id,
-            string                         rosterId,
-            string                         userId,
+            Guid                           id,
+            Guid                           rosterId,
+            Guid                           userId,
             [FromBody] ToggleStarterRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory           db) =>
@@ -820,22 +801,19 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
-            var userIdGuid = Guid.Parse(userId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             await conn.ExecuteAsync(
                 "UPDATE team_roster_members SET is_starter = @isStarter WHERE roster_id = @rosterId AND user_id = @userId",
-                new { isStarter = req.IsStarter, rosterId = rosterIdGuid, userId = userIdGuid });
+                new { isStarter = req.IsStarter, rosterId, userId });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/invite ────────────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/invite", async (
-            string                       id,
-            string                       rosterId,
+            Guid                         id,
+            Guid                         rosterId,
             [FromBody] RosterInviteRequest req,
             HttpContext                  ctx,
             IDbConnectionFactory         db,
@@ -844,11 +822,9 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
             var reqUserIdGuid = Guid.Parse(req.UserId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             // Check for duplicate pending invite
             var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -856,7 +832,7 @@ public static class TeamEndpoints
                 SELECT id FROM team_invitations
                 WHERE team_id = @teamId AND roster_id = @rosterId AND invited_user_id = @userId AND status = 'pending'
                 """,
-                new { teamId = idGuid, rosterId = rosterIdGuid, userId = reqUserIdGuid });
+                new { teamId = id, rosterId, userId = reqUserIdGuid });
             if (existing is not null)
                 return Results.Conflict(new { error = "Invite already pending" });
 
@@ -873,13 +849,13 @@ public static class TeamEndpoints
                 VALUES (@teamId, @rosterId, @userId, @email, @invitedBy, @invitedBy, 'pending')
                 RETURNING id, invited_email, invited_user_id, created_at
                 """,
-                new { teamId = idGuid, rosterId = rosterIdGuid, userId = reqUserIdGuid, email = req.Email, invitedBy = userCtx.UserIdGuid });
+                new { teamId = id, rosterId, userId = reqUserIdGuid, email = req.Email, invitedBy = userCtx.UserIdGuid });
 
             // Notification
             var teamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @id", new { id = idGuid });
+                "SELECT name FROM teams WHERE id = @id", new { id });
             var rosterName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM team_rosters WHERE id = @rosterId", new { rosterId = rosterIdGuid });
+                "SELECT name FROM team_rosters WHERE id = @rosterId", new { rosterId });
 
             await conn.ExecuteAsync(
                 """
@@ -902,7 +878,7 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/announce ──────────────────────────────────────
         app.MapPost("/api/teams/{id}/announce", async (
-            string                      id,
+            Guid                        id,
             [FromBody] AnnounceRequest  req,
             HttpContext                 ctx,
             IDbConnectionFactory        db,
@@ -911,15 +887,14 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             var teamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @id", new { id = idGuid });
+                "SELECT name FROM teams WHERE id = @id", new { id });
             var memberIds = (await conn.QueryAsync<Guid>(
                 "SELECT user_id FROM team_members WHERE team_id = @id AND is_active = true",
-                new { id = idGuid })).ToList();
+                new { id })).ToList();
 
             if (memberIds.Count == 0) return Results.Ok(new { sent = 0 });
 
@@ -931,7 +906,7 @@ public static class TeamEndpoints
                        jsonb_build_object('team_id', @teamId, 'team_name', @teamName), false
                 FROM UNNEST(@userIds::uuid[]) AS uid
                 """,
-                new { message = req.Message, teamId = idGuid, teamName, userIds = memberIds.ToArray() });
+                new { message = req.Message, teamId = id, teamName, userIds = memberIds.ToArray() });
 
             // Push real-time
             foreach (var uid in memberIds)
@@ -943,10 +918,9 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/registrations ─────────────────────────────────
         app.MapGet("/api/teams/{id}/registrations", async (
-            string               id,
+            Guid                 id,
             IDbConnectionFactory db) =>
         {
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
             var registrations = await conn.QueryAsync<dynamic>(
                 """
@@ -960,7 +934,7 @@ public static class TeamEndpoints
                 JOIN tournaments t ON t.id = tp.tournament_id
                 WHERE tp.team_id = @id
                 """,
-                new { id = idGuid });
+                new { id });
             return Results.Ok(registrations);
         }).RequireAuthorization("Authenticated");
 
@@ -981,7 +955,7 @@ public static class TeamEndpoints
 
         // ── PUT /api/profiles/{id}/card-image ─────────────────────────────────
         app.MapPut("/api/profiles/{id}/card-image", async (
-            string                      id,
+            Guid                        id,
             [FromBody] CardImageRequest req,
             HttpContext                 ctx,
             IDbConnectionFactory        db) =>
@@ -990,20 +964,20 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             // Only allow updating own profile or admin
-            if (userCtx.UserId != id && !userCtx.Roles.Contains("admin"))
+            if (userCtx.UserIdGuid != id && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "UPDATE profiles SET card_image_url = @url WHERE id = @id",
-                new { url = req.Url, id = Guid.Parse(id) });
+                new { url = req.Url, id });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/invite-batch ──────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/invite-batch", async (
-            string                             id,
-            string                             rosterId,
+            Guid                               id,
+            Guid                               rosterId,
             [FromBody] BatchRosterInviteRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory               db,
@@ -1012,10 +986,8 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
-            var rosterIdGuid = Guid.Parse(rosterId);
             using var conn = db.CreateConnection();
-            await AssertCaptain(conn, idGuid, userCtx.UserIdGuid);
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             int sent = 0;
             foreach (var invitee in req.Invitees)
@@ -1027,7 +999,7 @@ public static class TeamEndpoints
                     SELECT id FROM team_invitations
                     WHERE team_id = @teamId AND roster_id = @rosterId AND invited_user_id = @userId AND status = 'pending'
                     """,
-                    new { teamId = idGuid, rosterId = rosterIdGuid, userId = inviteeUserIdGuid });
+                    new { teamId = id, rosterId, userId = inviteeUserIdGuid });
                 if (existing is not null) continue;
 
                 // Check already on a team
@@ -1041,7 +1013,7 @@ public static class TeamEndpoints
                     INSERT INTO team_invitations (team_id, roster_id, invited_user_id, invited_email, invited_by_user_id, invited_by, status)
                     VALUES (@teamId, @rosterId, @userId, @email, @invitedBy, @invitedBy, 'pending')
                     """,
-                    new { teamId = idGuid, rosterId = rosterIdGuid, userId = inviteeUserIdGuid, email = invitee.Email, invitedBy = userCtx.UserIdGuid });
+                    new { teamId = id, rosterId, userId = inviteeUserIdGuid, email = invitee.Email, invitedBy = userCtx.UserIdGuid });
                 sent++;
             }
 

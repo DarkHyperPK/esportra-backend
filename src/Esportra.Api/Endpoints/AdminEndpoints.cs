@@ -21,7 +21,7 @@ public static class AdminEndpoints
         // Replaces: manage-users Edge Function
         // Actions: "delete-user", "update-role"
         app.MapPost("/api/admin/users/{userId}/action", async (
-            string                   userId,
+            Guid                     userId,
             [FromBody] ManageUserRequest req,
             IDbConnectionFactory     db,
             ISupabaseAdminClient     supabase,
@@ -359,7 +359,7 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         app.MapPut("/api/sponsors/{id}", async (
-            string               id,
+            Guid                 id,
             [FromBody] object    payload,
             HttpContext          ctx,
             IDbConnectionFactory db,
@@ -385,7 +385,7 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         app.MapDelete("/api/sponsors/{id}", async (
-            string               id,
+            Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -458,7 +458,7 @@ public static class AdminEndpoints
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static async Task<IResult> DeleteUserAsync(
-        string userId,
+        Guid userId,
         System.Data.IDbConnection conn,
         ISupabaseAdminClient supabase,
         CancellationToken ct)
@@ -489,12 +489,12 @@ public static class AdminEndpoints
             "DELETE FROM public.profiles WHERE id = @id", new { id = userId });
 
         // Finally delete from Supabase Auth
-        await supabase.DeleteUserAsync(userId, ct);
+        await supabase.DeleteUserAsync(userId.ToString(), ct);
         return Results.Ok(new { success = true });
     }
 
     private static async Task<IResult> UpdateUserRoleAsync(
-        string userId,
+        Guid userId,
         string? role,
         System.Data.IDbConnection conn,
         CancellationToken ct)

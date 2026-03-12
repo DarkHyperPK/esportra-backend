@@ -96,7 +96,7 @@ public static class MessagingEndpoints
 
         // ── GET /api/conversations/{id}/messages ─────────────────────────────
         app.MapGet("/api/conversations/{id}/messages", async (
-            string                id,
+            Guid                  id,
             HttpContext            ctx,
             IDbConnectionFactory   db,
             [FromQuery] int       limit  = 100,
@@ -106,7 +106,6 @@ public static class MessagingEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
 
             var messages = await conn.QueryAsync<dynamic>(
@@ -121,7 +120,7 @@ public static class MessagingEndpoints
                 ORDER BY m.created_at ASC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { id = idGuid, limit, offset });
+                new { id, limit, offset });
 
             return Results.Ok(messages);
         }).RequireAuthorization("Authenticated");
@@ -181,7 +180,7 @@ public static class MessagingEndpoints
 
         // ── POST /api/conversations/{id}/messages ────────────────────────────
         app.MapPost("/api/conversations/{id}/messages", async (
-            string                  id,
+            Guid                    id,
             [FromBody] SendMessageRequest req,
             HttpContext              ctx,
             IDbConnectionFactory     db,
@@ -191,7 +190,6 @@ public static class MessagingEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var idGuid = Guid.Parse(id);
             using var conn = db.CreateConnection();
             var sender = await conn.QuerySingleOrDefaultAsync<ConversationSenderDto>(
                 """
@@ -208,7 +206,7 @@ public static class MessagingEndpoints
                 """,
                 new
                 {
-                    convId      = idGuid,
+                    convId      = id,
                     senderId    = userCtx.UserIdGuid,
                     content     = req.Content,
                     messageType = req.MessageType ?? "text",
@@ -217,7 +215,7 @@ public static class MessagingEndpoints
 
             // Touch conversation updated_at
             await conn.ExecuteAsync(
-                "UPDATE conversations SET updated_at = NOW() WHERE id = @id", new { id = idGuid });
+                "UPDATE conversations SET updated_at = NOW() WHERE id = @id", new { id });
 
             // Broadcast to SignalR group
             var messageDto = new ConversationMessageDto(
@@ -232,7 +230,7 @@ public static class MessagingEndpoints
                 Sender:         sender);
 
             await conversationHub.Clients
-                .Group(ConversationHub.ConversationGroup(id))
+                .Group(ConversationHub.ConversationGroup(id.ToString()))
                 .SendAsync(ConversationHubEvents.MessageReceived, messageDto, ct);
 
             return Results.Created($"/api/conversations/{id}/messages/{message.id}", message);

@@ -170,7 +170,7 @@ public static class ProfileEndpoints
 
         // ── POST /api/profiles/me/achievements/{achievementId} ──────────────
         app.MapPost("/api/profiles/me/achievements/{achievementId}", async (
-            string               achievementId,
+            Guid                 achievementId,
             HttpContext          ctx,
             IDbConnectionFactory db,
             HybridCache          cache,
@@ -187,7 +187,7 @@ public static class ProfileEndpoints
                 ON CONFLICT (user_id, achievement_id) DO NOTHING
                 RETURNING *, (SELECT row_to_json(a) FROM achievements a WHERE a.id = achievement_id) AS achievement
                 """,
-                new { userId = userCtx.UserIdGuid, achievementId = Guid.Parse(achievementId) });
+                new { userId = userCtx.UserIdGuid, achievementId });
 
             if (row is not null)
                 await cache.RemoveAsync($"profile-stats:{userCtx.UserId}", ct);
