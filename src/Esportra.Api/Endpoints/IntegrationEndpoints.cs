@@ -15,6 +15,70 @@ public static class IntegrationEndpoints
 {
     public static void MapIntegrationEndpoints(this WebApplication app)
     {
+        // ── GET /api/integrations/riot ────────────────────────────────────────
+        // Returns the current user's linked Riot account (if any).
+        app.MapGet("/api/integrations/riot", async (
+            IDbConnectionFactory db, HttpContext ctx, CancellationToken ct) =>
+        {
+            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                      ?? ctx.User.FindFirstValue("sub");
+            if (userId is null) return Results.Unauthorized();
+            if (!Guid.TryParse(userId, out var userGuid)) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ra.puuid, ra.game_name, ra.tag_line, ra.region, ra.created_at,
+                       p.riot_tag
+                FROM public.riot_accounts ra
+                JOIN public.profiles p ON p.id = ra.user_id
+                WHERE ra.user_id = @userId
+                """, new { userId = userGuid });
+
+            if (account is null) return Results.Ok(new { linked = false });
+            return Results.Ok(new
+            {
+                linked   = true,
+                puuid    = (string?)account.puuid,
+                gameName = (string?)account.game_name,
+                tagLine  = (string?)account.tag_line,
+                region   = (string?)account.region,
+                riotTag  = (string?)account.riot_tag
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/integrations/faceit ──────────────────────────────────────
+        // Returns the current user's linked FACEIT account (if any).
+        app.MapGet("/api/integrations/faceit", async (
+            IDbConnectionFactory db, HttpContext ctx, CancellationToken ct) =>
+        {
+            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                      ?? ctx.User.FindFirstValue("sub");
+            if (userId is null) return Results.Unauthorized();
+            if (!Guid.TryParse(userId, out var userGuid)) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT fa.faceit_id, fa.nickname, fa.elo, fa.level, fa.created_at,
+                       p.faceit_nickname
+                FROM public.faceit_accounts fa
+                JOIN public.profiles p ON p.id = fa.user_id
+                WHERE fa.user_id = @userId
+                """, new { userId = userGuid });
+
+            if (account is null) return Results.Ok(new { linked = false });
+            return Results.Ok(new
+            {
+                linked        = true,
+                faceitId      = (string?)account.faceit_id,
+                nickname      = (string?)account.nickname,
+                elo           = (int?)account.elo,
+                level         = (int?)account.level,
+                faceitNickname = (string?)account.faceit_nickname
+            });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/integrations/riot/proxy ─────────────────────────────────
         // Replaces: riot-match-proxy Edge Function
         app.MapPost("/api/integrations/riot/proxy", async (

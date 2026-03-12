@@ -310,7 +310,7 @@ public static class OrganizationEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE organization_staff
-                SET status = @status, accepted_at = @acceptedAt, responded_at = @now
+                SET status = @status::text, accepted_at = @acceptedAt, responded_at = @now
                 WHERE id = @inviteId
                 """,
                 new

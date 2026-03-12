@@ -307,7 +307,7 @@ public static class TournamentEndpoints
                     name                 = COALESCE(@name, name),
                     description          = COALESCE(@description, description),
                     game                 = COALESCE(@game, game),
-                    status               = COALESCE(@status, status),
+                    status               = COALESCE(@status::tournament_status, status),
                     max_teams            = COALESCE(@maxTeams, max_teams),
                     entry_fee            = COALESCE(@entryFee, entry_fee),
                     prize_pool           = COALESCE(@prizePool, prize_pool),
@@ -1152,7 +1152,7 @@ public static class TournamentEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE tournament_staff
-                SET status = @status, accepted_at = @acceptedAt, responded_at = @respondedAt
+                SET status = @status::text, accepted_at = @acceptedAt, responded_at = @respondedAt
                 WHERE id = @inviteId AND status = 'pending'
                 """,
                 new
@@ -1313,7 +1313,7 @@ public static class TournamentEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE tournament_disputes
-                SET status = @status, resolution_notes = @notes,
+                SET status = @status::text, resolution_notes = @notes,
                     assigned_to_user_id = @userId, updated_at = NOW()
                 WHERE id = @disputeId
                 """,
@@ -1326,8 +1326,8 @@ public static class TournamentEndpoints
 
             if (dispute is not null)
             {
-                string filerId = dispute.raised_by_user_id;
-                string title = dispute.title ?? "Your dispute";
+                Guid filerId = (Guid)dispute.raised_by_user_id;
+                string title = (string)(dispute.title ?? "Your dispute");
                 var notifType = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
                 var notifTitle = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
                 var notifMsg = req.Status == "resolved"

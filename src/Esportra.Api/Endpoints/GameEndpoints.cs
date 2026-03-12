@@ -66,7 +66,7 @@ public static class GameEndpoints
             }
 
             return Results.Ok(new { isCached = false, data = doc.RootElement });
-        }).RequireAuthorization("Authenticated");
+        }); // Public — game search doesn't require auth
 
         // ── GET /api/games/{id}/screenshots ───────────────────────────────────
         app.MapGet("/api/games/{id:int}/screenshots", async (
@@ -77,6 +77,6 @@ public static class GameEndpoints
             var json = await rawg.GetScreenshotsAsync(id, ct);
             var doc  = JsonDocument.Parse(json);
             return Results.Ok(doc.RootElement);
-        }).RequireAuthorization("Authenticated");
+        }); // Public
     }
 }

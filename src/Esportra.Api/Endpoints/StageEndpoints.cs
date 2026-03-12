@@ -33,18 +33,20 @@ public static class StageEndpoints
                 new { tournamentId });
             if (tournament is null) return Results.NotFound();
 
-            // Get existing stage IDs
-            var existingIds = (await conn.QueryAsync<Guid>(
+            // Get existing stage IDs as Guid for proper uuid comparison
+            var existingGuids = (await conn.QueryAsync<Guid>(
                 "SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId",
-                new { tournamentId })).Select(g => g.ToString()).ToHashSet();
+                new { tournamentId })).ToHashSet();
 
-            var incomingIds = req.Stages
-                .Where(s => s.Id is not null)
-                .Select(s => s.Id!)
+            var stages = req.Stages ?? Array.Empty<StageDto>();
+
+            var incomingGuids = stages
+                .Where(s => s.Id is not null && Guid.TryParse(s.Id, out _))
+                .Select(s => Guid.Parse(s.Id!))
                 .ToHashSet();
 
-            // Delete removed stages
-            var toDelete = existingIds.Except(incomingIds).ToArray();
+            // Delete removed stages (pass Guid[] so Npgsql sends uuid[])
+            var toDelete = existingGuids.Except(incomingGuids).ToArray();
             if (toDelete.Length > 0)
             {
                 await conn.ExecuteAsync(
@@ -53,9 +55,11 @@ public static class StageEndpoints
             }
 
             // Upsert all stages
-            foreach (var s in req.Stages)
+            foreach (var s in stages)
             {
-                if (s.Id is not null && existingIds.Contains(s.Id))
+                var stageGuid = s.Id is not null && Guid.TryParse(s.Id, out var parsed) ? parsed : (Guid?)null;
+
+                if (stageGuid.HasValue && existingGuids.Contains(stageGuid.Value))
                 {
                     await conn.ExecuteAsync(
                         """
@@ -67,7 +71,7 @@ public static class StageEndpoints
                         """,
                         new
                         {
-                            id               = s.Id,
+                            id               = stageGuid.Value,
                             name             = s.Name,
                             format           = s.Format,
                             stageOrder       = s.StageOrder,

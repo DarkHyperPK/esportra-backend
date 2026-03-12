@@ -774,7 +774,7 @@ public static class MatchSystemEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE match_disputes
-                SET status = @status, resolution = @resolution,
+                SET status = @status::text, resolution = @resolution,
                     resolved_at = NOW(), resolved_by = @resolvedBy
                 WHERE id = @disputeId AND match_id = @matchId
                 """,
