@@ -115,9 +115,9 @@ public static class TeamEndpoints
                 var team = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                      owner_id, is_active, tournament_wins, total_matches)
+                                      owner_id, is_active)
                     VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                            @ownerId, TRUE, 0, 0)
+                            @ownerId, TRUE)
                     RETURNING *
                     """,
                     new
