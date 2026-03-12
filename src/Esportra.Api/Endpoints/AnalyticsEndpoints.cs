@@ -128,7 +128,11 @@ public static class AnalyticsEndpoints
                 "SELECT role, status, is_active FROM verified_roles WHERE user_id = @userId",
                 new { userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { userRoles, verifiedRoles });
+            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { userRoles, verifiedRoles, organization_id = (object?)org?.id });
         }).RequireAuthorization("Authenticated");
     }
 }
