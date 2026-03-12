@@ -250,24 +250,27 @@ public static class AdminEndpoints
             IDbConnectionFactory  db,
             CancellationToken     ct) =>
         {
+            if (req.EventType is not ("impression" or "click"))
+                return Results.BadRequest(new { error = "EventType must be 'impression' or 'click'" });
+
+            if (!Guid.TryParse(req.SponsorId, out var sponsorId))
+                return Results.BadRequest(new { error = "Invalid SponsorId" });
+
             using var conn = db.CreateConnection();
 
-            var userId = (ctx.Items["UserContext"] as UserContext)?.UserId;
+            var visitorId = (ctx.Items["UserContext"] as UserContext)?.UserId;
 
             await conn.ExecuteAsync(
                 """
-                INSERT INTO analytics_events (user_id, event_type, event_data)
-                VALUES (@userId, @eventType, @eventData::jsonb)
+                INSERT INTO sponsor_impressions (sponsor_id, event_type, page_url, visitor_id)
+                VALUES (@sponsorId, @eventType, @pageUrl, @visitorId)
                 """,
                 new
                 {
-                    userId,
-                    eventType = $"sponsor_{req.EventType}",
-                    eventData = System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        sponsor_id = req.SponsorId,
-                        page_url   = req.PageUrl,
-                    })
+                    sponsorId,
+                    eventType = req.EventType,
+                    pageUrl   = req.PageUrl,
+                    visitorId
                 });
 
             return Results.Ok(new { success = true });
