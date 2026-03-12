@@ -90,11 +90,15 @@ public static class TournamentEndpoints
                 """
                 SELECT t.*,
                        (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id) AS current_participants,
-                       o.name  AS organizer_name, o.slug AS organization_slug,
-                       p.username AS organizer_username
+                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status = 'checked_in') AS checked_in_count,
+                       o.name       AS organization_name, o.slug AS organization_slug,
+                       o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
+                       p.username   AS organizer_username,  p.avatar_url AS organizer_avatar,
+                       v.name       AS venue_name
                 FROM tournaments t
                 LEFT JOIN organizations o ON o.id = t.organization_id
                 LEFT JOIN profiles      p ON p.id = t.organizer_id
+                LEFT JOIN venues        v ON v.id = t.venue_id
                 WHERE t.deleted_at IS NULL
                   AND (t.slug = @slugOrId
                     OR t.id::text = @slugOrId
@@ -647,6 +651,40 @@ public static class TournamentEndpoints
                 new { id, url = req.Url });
 
             return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/tournaments/{id}/registrations — organizer: all registrations ───
+        app.MapGet("/api/tournaments/{id}/registrations", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify organizer
+            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOrganizer) return Results.Forbid();
+
+            var regs = await conn.QueryAsync<dynamic>(
+                """
+                SELECT tp.*,
+                       t.name AS team_name, t.logo_url AS team_logo,
+                       p.username, p.full_name, p.avatar_url, p.riot_tag, p.faceit_nickname
+                FROM tournament_participants tp
+                LEFT JOIN teams    t ON t.id = tp.team_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE tp.tournament_id = @id
+                ORDER BY tp.created_at ASC
+                """,
+                new { id });
+
+            return Results.Ok(regs);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/remove-unchecked — remove unchecked participants ──
