@@ -234,6 +234,29 @@ public static class VenueEndpoints
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/admin/venues — admin list with status filter ————————
+        app.MapGet("/api/admin/venues", async (
+            string?              status,
+            int                  limit  = 50,
+            int                  offset = 0,
+            IDbConnectionFactory db     = null!,
+            CancellationToken    ct     = default) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT v.*, p.full_name AS owner_name, p.email AS owner_email
+                FROM venues v
+                LEFT JOIN profiles p ON p.id = v.owner_id
+                WHERE v.deleted_at IS NULL
+                  AND (@status IS NULL OR v.status = @status)
+                ORDER BY v.submitted_at DESC NULLS LAST, v.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { status, limit, offset });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
         // ── PUT /api/admin/venues/{id} — admin update (no ownership check) —
         app.MapPut("/api/admin/venues/{id}", async (
             Guid                          id,
@@ -258,8 +281,11 @@ public static class VenueEndpoints
             if (req.ContactPhone is not null) { setClauses.Add("contact_phone = @contactPhone");  parameters.Add("contactPhone", req.ContactPhone); }
             if (req.Images is not null)       { setClauses.Add("images = @images");               parameters.Add("images", req.Images); }
             if (req.PricePerHour.HasValue)    { setClauses.Add("price_per_hour = @pricePerHour"); parameters.Add("pricePerHour", req.PricePerHour.Value); }
-            if (req.Status is not null)       { setClauses.Add("status = @status");               parameters.Add("status", req.Status); }
-            if (req.RejectionReason is not null) { setClauses.Add("rejection_reason = @rejectionReason"); parameters.Add("rejectionReason", req.RejectionReason); }
+            if (req.Status is not null)          { setClauses.Add("status = @status");                     parameters.Add("status", req.Status); }
+            if (req.RejectionReason is not null)  { setClauses.Add("rejection_reason = @rejectionReason");   parameters.Add("rejectionReason", req.RejectionReason); }
+            if (req.ReviewedBy is not null)       { setClauses.Add("reviewed_by = @reviewedBy");            parameters.Add("reviewedBy", Guid.Parse(req.ReviewedBy)); }
+            if (req.ReviewedAt is not null)       { setClauses.Add("reviewed_at = @reviewedAt::timestamptz"); parameters.Add("reviewedAt", req.ReviewedAt); }
+            if (req.PublishedAt is not null)      { setClauses.Add("published_at = @publishedAt::timestamptz"); parameters.Add("publishedAt", req.PublishedAt); }
 
             if (setClauses.Count == 0)
                 return Results.BadRequest(new { error = "No fields to update." });
@@ -545,7 +571,10 @@ public sealed record UpdateVenueRequest(
     object?   PcSpecs         = null,
     string?   Status          = null,
     string?   RejectionReason = null,
-    string?   PriceRange      = null);
+    string?   PriceRange      = null,
+    string?   ReviewedBy      = null,
+    string?   ReviewedAt      = null,
+    string?   PublishedAt     = null);
 
 public sealed record CreateBookingRequest(
     string   Date,

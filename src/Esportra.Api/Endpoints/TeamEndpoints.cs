@@ -43,7 +43,7 @@ public static class TeamEndpoints
                                'avatar_url', p.avatar_url,
                                'role',       tm.role,
                                'verified',   p.is_verified,
-                               'joined_at',  tm.created_at,
+                               'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
                            ) ORDER BY tm.role, p.username
                        ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
@@ -81,7 +81,7 @@ public static class TeamEndpoints
                                'avatar_url', p.avatar_url,
                                'role',       tm.role,
                                'verified',   p.is_verified,
-                               'joined_at',  tm.created_at,
+                               'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
                            ) ORDER BY tm.role, p.username
                        ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members

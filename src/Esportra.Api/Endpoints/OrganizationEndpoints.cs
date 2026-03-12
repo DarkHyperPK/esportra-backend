@@ -706,6 +706,172 @@ public static class OrganizationEndpoints
                 new { slug, slugId = isUuid ? slugGuid : (Guid?)null });
             return row is null ? Results.NotFound() : Results.Ok(row);
         });
+
+        // ── GET /api/organizations/me ──────────────────────────────────────────
+        // Returns the organization owned by the current user.
+        // Also aliased as /api/organizations/mine for compat.
+        app.MapGet("/api/organizations/me", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId = userCtx.UserIdGuid });
+
+            return org is null ? Results.NotFound() : Results.Ok(org);
+        }).RequireAuthorization("Authenticated");
+
+        app.MapGet("/api/organizations/mine", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId = userCtx.UserIdGuid });
+
+            return org is null ? Results.NotFound() : Results.Ok(org);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/organizations/my-staff ────────────────────────────────────
+        // Returns the organization where current user is a staff member (not owner).
+        app.MapGet("/api/organizations/my-staff", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT o.*
+                FROM organizations o
+                JOIN organization_staff os ON os.organization_id = o.id
+                WHERE os.user_id = @userId AND os.status = 'active'
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/organizations ────────────────────────────────────────────
+        // Create a new organization.
+        app.MapPost("/api/organizations", async (
+            [FromBody] CreateOrganizationRequest req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId = userCtx.UserIdGuid });
+            if (existing is not null)
+                return Results.Conflict(new { error = "You already own an organization" });
+
+            var slug = req.Name.ToLowerInvariant()
+                .Replace(" ", "-")
+                .Replace("'", "")
+                .Replace("\"", "");
+            slug = System.Text.RegularExpressions.Regex.Replace(slug, "[^a-z0-9-]", "");
+
+            var org = await conn.QuerySingleAsync<dynamic>(
+                """
+                INSERT INTO organizations (owner_id, name, slug, description, logo_url, banner_url, social_links)
+                VALUES (@ownerId, @name, @slug, @description, @logoUrl, @bannerUrl, @socialLinks::jsonb)
+                RETURNING *
+                """,
+                new
+                {
+                    ownerId     = userCtx.UserIdGuid,
+                    name        = req.Name,
+                    slug,
+                    description = req.Description,
+                    logoUrl     = req.LogoUrl,
+                    bannerUrl   = req.BannerUrl,
+                    socialLinks = System.Text.Json.JsonSerializer.Serialize(req.SocialLinks ?? new Dictionary<string, string>())
+                });
+
+            return Results.Created($"/api/organizations/{((Guid)org.id)}", org);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/organizations/{orgId} ─────────────────────────────────────
+        // Update organization details (owner only).
+        app.MapPut("/api/organizations/{orgId}", async (
+            Guid                                orgId,
+            [FromBody] UpdateOrganizationRequest req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+                new { orgId, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
+            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                UPDATE organizations
+                SET name         = COALESCE(@name, name),
+                    description  = COALESCE(@description, description),
+                    social_links = CASE WHEN @socialLinks IS NOT NULL THEN @socialLinks::jsonb ELSE social_links END,
+                    updated_at   = NOW()
+                WHERE id = @orgId
+                RETURNING *
+                """,
+                new
+                {
+                    orgId,
+                    name        = req.Name,
+                    description = req.Description,
+                    socialLinks = req.SocialLinks is not null
+                        ? System.Text.Json.JsonSerializer.Serialize(req.SocialLinks)
+                        : null
+                });
+
+            return updated is null ? Results.NotFound() : Results.Ok(updated);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/organizations/{orgId}/stats ───────────────────────────────
+        app.MapGet("/api/organizations/{orgId}/stats", async (
+            Guid                 orgId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM tournaments WHERE organization_id = @orgId AND deleted_at IS NULL) AS total_tournaments,
+                    (SELECT COUNT(*) FROM tournaments WHERE organization_id = @orgId AND status = 'active' AND deleted_at IS NULL) AS active_tournaments,
+                    (SELECT COUNT(*) FROM organization_staff WHERE organization_id = @orgId AND status = 'active') AS staff_count,
+                    (SELECT COUNT(*) FROM tournament_participants tp
+                     JOIN tournaments t ON t.id = tp.tournament_id
+                     WHERE t.organization_id = @orgId AND t.deleted_at IS NULL) AS total_participants
+                """,
+                new { orgId });
+            return Results.Ok(stats);
+        }).RequireAuthorization("Authenticated");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -754,3 +920,15 @@ public sealed record AssignTournamentsRequest(List<string> TournamentIds);
 
 public sealed record InsertOrgMediaRequest(string Url, string Type, string? Caption = null, string? AlbumId = null);
 public sealed record UpdateOrgImageRequest(string Url);
+
+public sealed record CreateOrganizationRequest(
+    string                      Name,
+    string?                     Description = null,
+    string?                     LogoUrl     = null,
+    string?                     BannerUrl   = null,
+    Dictionary<string, string>? SocialLinks = null);
+
+public sealed record UpdateOrganizationRequest(
+    string?                     Name        = null,
+    string?                     Description = null,
+    Dictionary<string, string>? SocialLinks = null);

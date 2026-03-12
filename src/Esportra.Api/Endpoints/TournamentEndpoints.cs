@@ -57,8 +57,8 @@ public static class TournamentEndpoints
                                p.username      AS organizer_username,
                                p.full_name     AS organizer_full_name
                         FROM tournaments t
-                        LEFT JOIN organizations o ON o.owner_id = t.organizer_id
-                        LEFT JOIN profiles      p ON p.id       = t.organizer_id
+                        LEFT JOIN organizations o ON o.id = t.organization_id
+                        LEFT JOIN profiles      p ON p.id = t.organizer_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND (@status IS NULL OR t.status = @status)
