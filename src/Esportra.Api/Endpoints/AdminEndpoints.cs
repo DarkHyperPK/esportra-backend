@@ -308,7 +308,7 @@ public static class AdminEndpoints
                 SELECT
                     (SELECT COUNT(*) FROM profiles) AS total_users,
                     (SELECT COUNT(*) FROM venues) AS active_venues,
-                    (SELECT COUNT(*) FROM tournaments WHERE status IN ('upcoming', 'ongoing')) AS active_tournaments
+                    (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments
                 """);
             return Results.Ok(new {
                 totalUsers = (long)row.total_users,
@@ -394,8 +394,7 @@ public static class AdminEndpoints
                 """
                 UPDATE sponsors
                 SET name        = COALESCE(((@j)::jsonb->>'name')::text,        name),
-                    is_active   = COALESCE(((@j)::jsonb->>'is_active')::boolean, is_active),
-                    updated_at  = NOW()
+                    is_active   = COALESCE(((@j)::jsonb->>'is_active')::boolean, is_active)
                 WHERE id = @id
                 """,
                 new { id, j = json });
@@ -727,11 +726,11 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.granted_at,
+                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.verified_at,
                        p.username, p.email, p.avatar_url
                 FROM verified_roles vr
                 JOIN profiles p ON p.id = vr.user_id
-                ORDER BY vr.granted_at DESC
+                ORDER BY vr.verified_at DESC
                 """);
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
@@ -748,7 +747,7 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                "SELECT role, status, is_active, granted_at FROM verified_roles WHERE user_id = @userId",
+                "SELECT role, status, is_active, verified_at FROM verified_roles WHERE user_id = @userId",
                 new { userId });
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
@@ -961,12 +960,12 @@ public static class AdminEndpoints
             // Use verified_roles as the source for pending/approved verification requests
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.granted_at,
+                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.verified_at,
                        p.username, p.email, p.avatar_url, p.full_name
                 FROM verified_roles vr
                 JOIN profiles p ON p.id = vr.user_id
                 WHERE (@status IS NULL OR vr.status = @status)
-                ORDER BY vr.granted_at DESC NULLS LAST
+                ORDER BY vr.verified_at DESC NULLS LAST
                 """,
                 new { status });
             return Results.Ok(rows);
@@ -990,7 +989,7 @@ public static class AdminEndpoints
                 UPDATE verified_roles
                 SET status     = @status,
                     is_active  = @isActive,
-                    granted_at = CASE WHEN @status = 'approved' THEN NOW() ELSE granted_at END
+                    verified_at = CASE WHEN @status = 'approved' THEN NOW() ELSE verified_at END
                 WHERE user_id = @userId AND role = @role
                 """,
                 new { userId, status = req.Status, isActive = req.Status == "approved", role = req.Role });
@@ -1110,7 +1109,7 @@ public static class AdminEndpoints
                 """
                 UPDATE partner_applications
                 SET status     = COALESCE(@status, status),
-                    notes      = COALESCE(@notes, notes),
+                    admin_notes      = COALESCE(@notes, admin_notes),
                     updated_at = NOW()
                 WHERE id = @id
                 """,

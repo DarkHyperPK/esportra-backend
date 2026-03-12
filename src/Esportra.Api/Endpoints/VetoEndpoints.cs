@@ -170,7 +170,7 @@ public static class VetoEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 """
-                UPDATE match_map_veto SET
+                UPDATE match_map_vetos SET
                     status                = COALESCE(@Status, status),
                     best_of               = COALESCE(@BestOf, best_of),
                     current_team_id       = @CurrentTeamId,
@@ -229,7 +229,7 @@ public static class VetoEndpoints
                        team1.name   AS t1_name,
                        team2.id     AS t2_id,
                        team2.name   AS t2_name
-                FROM match_map_veto mmv
+                FROM match_map_vetos mmv
                 JOIN brkt_matches m  ON m.id  = mmv.match_id
                 JOIN tournaments  t  ON t.id  = mmv.tournament_id
                 LEFT JOIN teams team1 ON team1.id = mmv.team1_id

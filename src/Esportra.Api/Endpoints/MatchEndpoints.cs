@@ -37,9 +37,11 @@ public static class MatchEndpoints
             // Get the match and participating players' Riot PUUIDs
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT bm.id, bm.team1_id, bm.team2_id, bm.tournament_id, t.game
+                SELECT bm.id, bm.team1_id, bm.team2_id, t.id AS tournament_id, t.game
                 FROM brkt_matches bm
-                JOIN tournaments t ON t.id = bm.tournament_id
+                JOIN brkt_versions bv ON bv.id = bm.version_id
+                JOIN tournament_stages ts ON ts.id = bv.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
                 WHERE bm.id = @matchId
                 """,
                 new { matchId = req.MatchId });
@@ -97,7 +99,7 @@ public static class MatchEndpoints
             // 1. Fetch the accepted report
             var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, match_id, submitted_by_team_id, winner_team_id,
+                SELECT id, match_id, reported_by_team_id, winner_team_id,
                        team1_score, team2_score, status, riot_match_id, match_data
                 FROM match_result_reports
                 WHERE id = @reportId AND match_id = @matchId

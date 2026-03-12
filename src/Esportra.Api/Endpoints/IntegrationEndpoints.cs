@@ -28,7 +28,7 @@ public static class IntegrationEndpoints
             using var conn = db.CreateConnection();
             var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT ra.puuid, ra.game_name, ra.tag_line, ra.region, ra.created_at,
+                SELECT ra.puuid, ra.game_name, ra.tag_line, ra.region, ra.linked_at,
                        p.riot_tag
                 FROM public.riot_accounts ra
                 JOIN public.profiles p ON p.id = ra.user_id
@@ -60,7 +60,7 @@ public static class IntegrationEndpoints
             using var conn = db.CreateConnection();
             var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT fa.faceit_id, fa.nickname, fa.elo, fa.level, fa.created_at,
+                SELECT fa.faceit_id, fa.nickname, fa.avatar_url, fa.linked_at,
                        p.faceit_nickname
                 FROM public.faceit_accounts fa
                 JOIN public.profiles p ON p.id = fa.user_id
@@ -73,8 +73,7 @@ public static class IntegrationEndpoints
                 linked        = true,
                 faceitId      = (string?)account.faceit_id,
                 nickname      = (string?)account.nickname,
-                elo           = (int?)account.elo,
-                level         = (int?)account.level,
+                avatarUrl     = (string?)account.avatar_url,
                 faceitNickname = (string?)account.faceit_nickname
             });
         }).RequireAuthorization("Authenticated");

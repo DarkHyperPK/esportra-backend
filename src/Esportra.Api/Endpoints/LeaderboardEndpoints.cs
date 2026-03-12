@@ -120,10 +120,10 @@ public static class LeaderboardEndpoints
                     GROUP BY p.id, p.username, p.avatar_url, p.country_code, t.id, t.name, t.game
                 ),
                 mvp_counts AS (
-                    SELECT mvp_user_id AS player_id, COUNT(*) AS mvp_awards
+                    SELECT mvp_id AS player_id, COUNT(*) AS mvp_awards
                     FROM brkt_match_games
-                    WHERE mvp_user_id IS NOT NULL
-                    GROUP BY mvp_user_id
+                    WHERE mvp_id IS NOT NULL
+                    GROUP BY mvp_id
                 )
                 SELECT
                     pts.player_id AS id,

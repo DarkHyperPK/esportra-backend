@@ -20,7 +20,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
                    team1_banned_maps, team2_banned_maps,
                    team1_picked_maps, team2_picked_maps,
                    selected_map_id, started_at, completed_at, game
-            FROM public.match_map_veto
+            FROM public.match_map_vetos
             WHERE match_id = @matchId",
             new { matchId });
 
@@ -46,7 +46,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
 
         var id = Guid.NewGuid();
         await conn.ExecuteAsync(@"
-            INSERT INTO public.match_map_veto
+            INSERT INTO public.match_map_vetos
                 (id, match_id, tournament_id, team1_id, team2_id, best_of, status,
                  current_team_id, current_action, current_action_number,
                  team1_banned_maps, team2_banned_maps,
@@ -129,7 +129,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
 
         // Find which team picked the map and update side in their picked_maps JSONB
         await conn.ExecuteAsync(@"
-            UPDATE public.match_map_veto
+            UPDATE public.match_map_vetos
                SET team1_picked_maps = (
                      SELECT jsonb_agg(
                        CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
@@ -155,7 +155,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
     {
         using var conn = db.CreateConnection();
         await conn.ExecuteAsync(@"
-            UPDATE public.match_map_veto
+            UPDATE public.match_map_vetos
                SET status = 'pending',
                    current_team_id = null,
                    current_action = null,
@@ -185,7 +185,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
         {
             // Append to JSONB picked maps array
             await conn.ExecuteAsync($@"
-                UPDATE public.match_map_veto
+                UPDATE public.match_map_vetos
                    SET {arrayCol} = {arrayCol} || @entry::jsonb
                  WHERE match_id = @matchId",
                 new
@@ -198,7 +198,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
         {
             // Add to text array (banned maps)
             await conn.ExecuteAsync($@"
-                UPDATE public.match_map_veto
+                UPDATE public.match_map_vetos
                    SET {arrayCol} = array_append({arrayCol}, @mapId)
                  WHERE match_id = @matchId",
                 new { matchId, mapId });
@@ -217,7 +217,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
         {
             // Veto complete
             await conn.ExecuteAsync(@"
-                UPDATE public.match_map_veto
+                UPDATE public.match_map_vetos
                    SET status = 'completed',
                        current_team_id = null,
                        current_action = null,
@@ -231,7 +231,7 @@ public sealed class VetoDbService(IDbConnectionFactory db)
             int nextActionNumber = veto.CurrentActionNumber + 1;
 
             await conn.ExecuteAsync(@"
-                UPDATE public.match_map_veto
+                UPDATE public.match_map_vetos
                    SET current_team_id = @nextTeamId,
                        current_action = @action,
                        current_action_number = @actionNumber,

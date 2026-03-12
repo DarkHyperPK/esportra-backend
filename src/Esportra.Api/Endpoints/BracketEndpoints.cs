@@ -279,9 +279,11 @@ public static class BracketEndpoints
                 return Results.Forbid();
 
             var advancements = (await conn.QueryAsync("""
-                SELECT target_match_id, target_slot, type, winner_team_id, loser_team_id
-                FROM public.brkt_advancements
-                WHERE source_match_id = @matchId
+                SELECT ba.target_match_id, ba.target_slot, ba.type,
+                       bm.winner_id, bm.loser_id
+                FROM public.brkt_advancements ba
+                JOIN public.brkt_matches bm ON bm.id = ba.source_match_id
+                WHERE ba.source_match_id = @matchId
                 """, new { matchId = req.MatchId })).ToList();
 
             // Resolve team IDs for each advancement
@@ -290,7 +292,7 @@ public static class BracketEndpoints
                 {
                     TargetMatchId = (Guid)adv.target_match_id,
                     TargetSlot    = (int)adv.target_slot,
-                    TeamId        = (Guid?)((string)adv.type == "winner" ? adv.winner_team_id : adv.loser_team_id),
+                    TeamId        = (Guid?)((string)adv.type == "winner" ? adv.winner_id : adv.loser_id),
                 })
                 .Where(u => u.TeamId is not null)
                 .ToList();
