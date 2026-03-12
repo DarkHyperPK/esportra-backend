@@ -75,6 +75,48 @@ public static class TournamentEndpoints
                 cancellationToken: ct);
         });
 
+        // ── GET /api/tournaments/upcoming ─────────────────────────────────────
+        // Returns public, non-deleted tournaments with status open or check_in.
+        app.MapGet("/api/tournaments/upcoming", async (
+            IDbConnectionFactory db,
+            HybridCache          cache,
+            CancellationToken    ct) =>
+        {
+            return await cache.GetOrCreateAsync(
+                "tournaments:upcoming",
+                async (_) =>
+                {
+                    using var conn = db.CreateConnection();
+                    var rows = await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT t.id, t.name, t.slug, t.game, t.status, t.format,
+                               t.start_date, t.end_date, t.registration_deadline,
+                               t.max_teams, t.min_teams, t.team_size,
+                               t.entry_fee, t.prize_pool,
+                               t.banner_url, t.logo_url, t.is_public,
+                               t.organizer_id, t.venue_id, t.description,
+                               t.created_at, t.updated_at,
+                               (SELECT COUNT(*) FROM tournament_participants tp
+                                WHERE tp.tournament_id = t.id) AS current_participants,
+                               o.name AS organizer_name,
+                               o.slug AS organization_slug,
+                               p.username   AS organizer_username,
+                               p.full_name  AS organizer_full_name
+                        FROM tournaments t
+                        LEFT JOIN organizations o ON o.id = t.organization_id
+                        LEFT JOIN profiles      p ON p.id = t.organizer_id
+                        WHERE t.is_public = TRUE
+                          AND t.deleted_at IS NULL
+                          AND t.status IN ('open', 'check_in')
+                        ORDER BY t.start_date ASC
+                        LIMIT 100
+                        """);
+                    return Results.Ok(rows);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct);
+        }); // Public
+
         // ── GET /api/tournaments/{slugOrId} ────────────────────────────────────
         // Replaces useTournamentDashboard — consolidated tournament + participants + stages.
         app.MapGet("/api/tournaments/{slugOrId}", async (

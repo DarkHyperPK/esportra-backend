@@ -26,12 +26,17 @@ public static class GameEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Check 7-day cache in games_metadata table
-            var cached = await conn.QuerySingleOrDefaultAsync<string>("""
-                SELECT rawg_data FROM public.games_metadata
-                WHERE LOWER(game_name) = LOWER(@name)
-                  AND last_updated > NOW() - INTERVAL '7 days'
-                """, new { name = q });
+            // Check 7-day cache in games_metadata table (table may not exist in all environments)
+            string? cached = null;
+            try
+            {
+                cached = await conn.QuerySingleOrDefaultAsync<string>("""
+                    SELECT rawg_data FROM public.games_metadata
+                    WHERE LOWER(game_name) = LOWER(@name)
+                      AND last_updated > NOW() - INTERVAL '7 days'
+                    """, new { name = q });
+            }
+            catch { /* games_metadata table not yet migrated — skip cache */ }
 
             if (cached is not null)
             {
@@ -53,15 +58,19 @@ public static class GameEndpoints
 
                 if (rawgId.HasValue)
                 {
-                    await conn.ExecuteAsync("""
-                        INSERT INTO public.games_metadata (game_name, rawg_id, background_image, last_updated, rawg_data)
-                        VALUES (@name, @rawgId, @bg, NOW(), @data::jsonb)
-                        ON CONFLICT (game_name) DO UPDATE SET
-                            rawg_id = EXCLUDED.rawg_id,
-                            background_image = EXCLUDED.background_image,
-                            last_updated = EXCLUDED.last_updated,
-                            rawg_data = EXCLUDED.rawg_data
-                        """, new { name = q, rawgId, bg, data = rawJson });
+                    try
+                    {
+                        await conn.ExecuteAsync("""
+                            INSERT INTO public.games_metadata (game_name, rawg_id, background_image, last_updated, rawg_data)
+                            VALUES (@name, @rawgId, @bg, NOW(), @data::jsonb)
+                            ON CONFLICT (game_name) DO UPDATE SET
+                                rawg_id = EXCLUDED.rawg_id,
+                                background_image = EXCLUDED.background_image,
+                                last_updated = EXCLUDED.last_updated,
+                                rawg_data = EXCLUDED.rawg_data
+                            """, new { name = q, rawgId, bg, data = rawJson });
+                    }
+                    catch { /* games_metadata table not yet migrated — skip cache write */ }
                 }
             }
 
