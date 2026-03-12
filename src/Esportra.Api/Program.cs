@@ -25,6 +25,9 @@ using StackExchange.Redis;
 Console.WriteLine("[STARTUP] Creating builder...");
 var builder = WebApplication.CreateBuilder(args);
 
+// Enable Dapper snake_case → PascalCase mapping for typed record DTOs
+Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
+
 // Explicitly configure Kestrel to bind on all interfaces, port 8080.
 // Using ConfigureKestrel instead of UseUrls to bypass URL override logic.
 builder.WebHost.ConfigureKestrel(serverOptions =>

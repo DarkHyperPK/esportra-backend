@@ -938,28 +938,6 @@ public static class TeamEndpoints
             return Results.Ok(registrations);
         }).RequireAuthorization("Authenticated");
 
-        // ── GET /api/tournaments/upcoming ─────────────────────────────────────
-        app.MapGet("/api/tournaments/upcoming", async (
-            IDbConnectionFactory db) =>
-        {
-            using var conn = db.CreateConnection();
-            var tournaments = await conn.QueryAsync<dynamic>(
-                """
-                SELECT t.*,
-                       o.owner_id   AS organizer_id,
-                       o.name       AS organizer_name,
-                       o.slug       AS organization_slug,
-                       (SELECT COUNT(*) FROM tournament_participants tp
-                        WHERE tp.tournament_id = t.id) AS current_participants
-                FROM tournaments t
-                LEFT JOIN organizations o ON o.id = t.organization_id
-                WHERE t.start_date >= NOW()
-                ORDER BY t.start_date ASC
-                LIMIT 20
-                """);
-            return Results.Ok(tournaments);
-        });
-
         // ── PUT /api/profiles/{id}/card-image ─────────────────────────────────
         app.MapPut("/api/profiles/{id}/card-image", async (
             Guid                        id,
