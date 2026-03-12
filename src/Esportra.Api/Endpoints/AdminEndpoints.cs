@@ -796,7 +796,7 @@ public static class AdminEndpoints
             var affected = await conn.ExecuteAsync(
                 """
                 UPDATE tournaments SET
-                    status      = COALESCE(@Status::tournament_status, status),
+                    status      = CASE WHEN @Status IS NOT NULL THEN @Status::tournament_status ELSE status END,
                     is_featured = COALESCE(@IsFeatured, is_featured),
                     updated_at  = now()
                 WHERE id = @id

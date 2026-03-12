@@ -851,7 +851,7 @@ public static class OrganizationEndpoints
                 """
                 SELECT
                     (SELECT COUNT(*) FROM tournaments WHERE organization_id = @orgId AND deleted_at IS NULL) AS total_tournaments,
-                    (SELECT COUNT(*) FROM tournaments WHERE organization_id = @orgId AND status = 'active' AND deleted_at IS NULL) AS active_tournaments,
+                    (SELECT COUNT(*) FROM tournaments WHERE organization_id = @orgId AND status::text IN ('open', 'check_in', 'ongoing') AND deleted_at IS NULL) AS active_tournaments,
                     (SELECT COUNT(*) FROM organization_staff WHERE organization_id = @orgId AND status = 'active') AS staff_count,
                     (SELECT COUNT(*) FROM tournament_participants tp
                      JOIN tournaments t ON t.id = tp.tournament_id

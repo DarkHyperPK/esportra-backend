@@ -386,7 +386,7 @@ public static class TournamentEndpoints
                     name                 = COALESCE(@name, name),
                     description          = COALESCE(@description, description),
                     game                 = COALESCE(@game, game),
-                    status               = COALESCE(@status::tournament_status, status),
+                    status               = CASE WHEN @status IS NOT NULL THEN @status::tournament_status ELSE status END,
                     max_teams            = COALESCE(@maxTeams, max_teams),
                     entry_fee            = COALESCE(@entryFee, entry_fee),
                     prize_pool           = COALESCE(@prizePool, prize_pool),
@@ -907,7 +907,7 @@ public static class TournamentEndpoints
             var flat = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
-                       tp.status, tp.seed, tp.created_at,
+                       tp.status::text AS status, tp.created_at,
                        t.name AS team_name, t.logo_url AS team_logo_url,
                        tm.user_id AS member_user_id,
                        p.username AS member_username
@@ -916,7 +916,7 @@ public static class TournamentEndpoints
                 LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = true
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 WHERE tp.tournament_id = @id
-                ORDER BY tp.seed ASC NULLS LAST, tp.created_at ASC
+                ORDER BY tp.created_at ASC
                 """, new { id });
 
             // Group by participant to nest members
@@ -938,7 +938,6 @@ public static class TournamentEndpoints
                         user_id = first.user_id as Guid?,
                         team_id = first.team_id as Guid?,
                         status = (string)first.status,
-                        seed = first.seed as int?,
                         created_at = first.created_at,
                         team_name = first.team_name as string,
                         team_logo_url = first.team_logo_url as string,

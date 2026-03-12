@@ -150,22 +150,19 @@ public static class ProfileEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/achievements ───────────────────────────────────────────
+        // Achievements table not yet migrated — return empty array gracefully
         app.MapGet("/api/achievements", async (
             IDbConnectionFactory db,
-            HybridCache          cache,
             CancellationToken    ct) =>
         {
-            return await cache.GetOrCreateAsync(
-                "achievements:all",
-                async (_) =>
-                {
-                    using var conn = db.CreateConnection();
-                    var rows = await conn.QueryAsync<dynamic>(
-                        "SELECT * FROM achievements WHERE is_active = TRUE ORDER BY points ASC");
-                    return Results.Ok(rows);
-                },
-                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
-                cancellationToken: ct);
+            using var conn = db.CreateConnection();
+            try
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    "SELECT * FROM achievements WHERE is_active = TRUE ORDER BY points ASC");
+                return Results.Ok(rows);
+            }
+            catch { return Results.Ok(Array.Empty<object>()); }
         });
 
         // ── POST /api/profiles/me/achievements/{achievementId} ──────────────
@@ -352,38 +349,33 @@ public static class ProfileEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/{id}/stats ──────────────────────────────────────
+        // user_statistics and achievements tables not yet created — graceful fallback
         app.MapGet("/api/profiles/{id}/stats", async (
             Guid                 id,
             IDbConnectionFactory db,
-            HybridCache          cache,
             CancellationToken    ct) =>
         {
-            return await cache.GetOrCreateAsync(
-                $"profile-stats:{id}",
-                async (c) =>
-                {
-                    using var conn = db.CreateConnection();
+            using var conn = db.CreateConnection();
 
-                    var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        "SELECT * FROM user_statistics WHERE user_id = @id",
-                        new { id });
+            dynamic? stats = null;
+            try { stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM user_statistics WHERE user_id = @id", new { id }); }
+            catch { /* table not yet migrated */ }
 
-                    var achievements = await conn.QueryAsync<dynamic>(
-                        """
-                        SELECT ua.id, ua.earned_at, ua.progress,
-                               a.id AS achievement_id, a.name, a.description,
-                               a.category, a.icon_url, a.points, a.requirements
-                        FROM user_achievements ua
-                        JOIN achievements a ON a.id = ua.achievement_id
-                        WHERE ua.user_id = @id AND a.is_active = TRUE
-                        ORDER BY ua.earned_at DESC
-                        """,
-                        new { id });
+            IEnumerable<dynamic> achievements = Array.Empty<dynamic>();
+            try { achievements = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ua.id, ua.earned_at, ua.progress,
+                       a.id AS achievement_id, a.name, a.description,
+                       a.category, a.icon_url, a.points, a.requirements
+                FROM user_achievements ua
+                JOIN achievements a ON a.id = ua.achievement_id
+                WHERE ua.user_id = @id AND a.is_active = TRUE
+                ORDER BY ua.earned_at DESC
+                """, new { id }); }
+            catch { /* tables not yet migrated */ }
 
-                    return Results.Ok(new { statistics = stats, achievements });
-                },
-                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
-                cancellationToken: ct);
+            return Results.Ok(new { statistics = stats, achievements });
         });
     }
 
@@ -392,17 +384,10 @@ public static class ProfileEndpoints
     private static async Task<IResult> GetProfileResult(
         Guid id, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
     {
-        var profile = await cache.GetOrCreateAsync(
-            $"profile:{id}",
-            async (_) =>
-            {
-                using var conn = db.CreateConnection();
-                return await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT * FROM profiles WHERE id = @id",
-                    new { id });
-            },
-            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
-            cancellationToken: ct);
+        using var conn = db.CreateConnection();
+        var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT * FROM profiles WHERE id = @id",
+            new { id });
 
         return profile is null ? Results.NotFound() : Results.Ok(profile);
     }
