@@ -666,6 +666,19 @@ public static class MatchEndpoints
 
             return Results.Ok(new { success = true, winnerId, loserId, stageId, stageComplete });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/matches/{matchId}/games ──────────────────────────────────
+        app.MapGet("/api/matches/{matchId}/games", async (
+            Guid                 matchId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM brkt_match_games WHERE match_id = @matchId ORDER BY game_number ASC",
+                new { matchId });
+            return Results.Ok(rows);
+        });
     }
 }
 

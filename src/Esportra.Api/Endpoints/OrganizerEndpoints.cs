@@ -79,5 +79,37 @@ public static class OrganizerEndpoints
                 monthlyParticipation,
             });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/organizer/schedule ───────────────────────────────────────
+        // Returns upcoming matches for organizer's tournaments
+        app.MapGet("/api/organizer/schedule", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var matches = await conn.QueryAsync<dynamic>(
+                """
+                SELECT m.id, m.scheduled_time, m.status,
+                       t1.name AS team1_name, t2.name AS team2_name,
+                       t.name AS tournament_name, t.slug AS tournament_slug,
+                       ts.name AS stage_name
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournament_stages ts ON ts.id = v.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                LEFT JOIN teams t1 ON t1.id = m.team1_id
+                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                WHERE t.organizer_id = @organizerId
+                  AND m.status IN ('pending', 'in_progress')
+                  AND (m.scheduled_time IS NULL OR m.scheduled_time >= NOW() - INTERVAL '1 day')
+                ORDER BY m.scheduled_time ASC NULLS LAST
+                LIMIT 50
+                """, new { organizerId = userCtx.UserIdGuid });
+            return Results.Ok(matches);
+        }).RequireAuthorization("Authenticated");
     }
 }

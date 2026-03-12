@@ -248,5 +248,55 @@ public static class ReviewEndpoints
             await conn.ExecuteAsync("DELETE FROM reviews WHERE id = @id", new { id });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/reviews/can-review ───────────────────────────────────────
+        // Checks if the current user can review a given entity
+        app.MapGet("/api/reviews/can-review", async (
+            string               entityType,
+            Guid                 entityId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Check if already reviewed
+            var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT id FROM reviews
+                WHERE reviewer_id = @userId
+                  AND review_type = @entityType
+                  AND (venue_id = @entityId OR reviewee_id = @entityId OR tournament_id = @entityId)
+                LIMIT 1
+                """, new { userId = userCtx.UserIdGuid, entityType, entityId });
+
+            bool hasInteracted = false;
+            if (entityType == "venue")
+            {
+                hasInteracted = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM venue_bookings WHERE venue_id = @entityId AND user_id = @userId AND status = 'confirmed')",
+                    new { entityId, userId = userCtx.UserIdGuid });
+            }
+            else if (entityType == "tournament")
+            {
+                hasInteracted = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM tournament_participants WHERE tournament_id = @entityId AND user_id = @userId)",
+                    new { entityId, userId = userCtx.UserIdGuid });
+            }
+            else
+            {
+                hasInteracted = true;
+            }
+
+            return Results.Ok(new
+            {
+                canReview   = existing is null && hasInteracted,
+                alreadyReviewed = existing is not null,
+                hasInteracted,
+            });
+        }).RequireAuthorization("Authenticated");
     }
 }

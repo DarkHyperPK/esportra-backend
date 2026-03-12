@@ -361,6 +361,44 @@ public static class StageEndpoints
 
             return nextStage is null ? Results.NotFound() : Results.Ok(nextStage);
         });
+
+        // ── GET /api/stages/{id} ──────────────────────────────────────────────
+        app.MapGet("/api/stages/{id}", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ts.*,
+                       t.name AS tournament_name, t.slug AS tournament_slug
+                FROM tournament_stages ts
+                LEFT JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE ts.id = @id
+                """, new { id });
+            return stage is null ? Results.NotFound() : Results.Ok(stage);
+        });
+
+        // ── GET /api/stages/{id}/participants ─────────────────────────────────
+        app.MapGet("/api/stages/{id}/participants", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var participants = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sp.stage_id, sp.team_id, sp.seed,
+                       t.name AS team_name, t.logo_url AS team_logo,
+                       t.tag  AS team_tag
+                FROM stage_participants sp
+                JOIN teams t ON t.id = sp.team_id
+                WHERE sp.stage_id = @id
+                ORDER BY sp.seed ASC NULLS LAST, t.name ASC
+                """, new { id });
+            return Results.Ok(participants);
+        });
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

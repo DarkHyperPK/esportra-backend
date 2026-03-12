@@ -525,6 +525,30 @@ public static class VenueEndpoints
                 new { id });
             return Results.Ok(row);
         });
+
+        // ── GET /api/bookings/{id} ────────────────────────────────────────────
+        app.MapGet("/api/bookings/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var booking = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT vb.*, v.name AS venue_name, v.address AS venue_address,
+                       p.username AS booker_name
+                FROM venue_bookings vb
+                LEFT JOIN venues v ON v.id = vb.venue_id
+                LEFT JOIN profiles p ON p.id = vb.user_id
+                WHERE vb.id = @id
+                  AND (vb.user_id = @userId OR v.owner_id = @userId)
+                """, new { id, userId = userCtx.UserIdGuid });
+            return booking is null ? Results.NotFound() : Results.Ok(booking);
+        }).RequireAuthorization("Authenticated");
     }
 }
 

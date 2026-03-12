@@ -68,6 +68,48 @@ public static class GameEndpoints
             return Results.Ok(new { isCached = false, data = doc.RootElement });
         }); // Public — game search doesn't require auth
 
+        // ── GET /api/games/maps?game={game} ──────────────────────────────────
+        // Used by StepFormatRules.tsx
+        app.MapGet("/api/games/maps", async (
+            string               game,
+            IDbConnectionFactory db) =>
+        {
+            if (string.IsNullOrWhiteSpace(game))
+                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+
+            using var conn = db.CreateConnection();
+            var maps = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, game, map_name, map_image_url, is_active
+                FROM public.game_maps
+                WHERE game ILIKE @game AND is_active = true
+                ORDER BY map_name ASC
+                """, new { game });
+
+            return Results.Ok(maps);
+        }); // Public
+
+        // ── GET /api/game-maps?game={game}&is_active=true ────────────────────
+        // Used by MapPoolManager.tsx
+        app.MapGet("/api/game-maps", async (
+            string               game,
+            bool?                is_active,
+            string?              map_name,
+            IDbConnectionFactory db) =>
+        {
+            if (string.IsNullOrWhiteSpace(game))
+                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+
+            using var conn = db.CreateConnection();
+            var sql = "SELECT id, game, map_name, map_image_url, is_active FROM public.game_maps WHERE game ILIKE @game";
+            if (is_active.HasValue) sql += " AND is_active = @is_active";
+            if (!string.IsNullOrWhiteSpace(map_name)) sql += " AND map_name ILIKE @map_name";
+            sql += " ORDER BY map_name ASC";
+
+            var maps = await conn.QueryAsync<dynamic>(sql, new { game, is_active, map_name });
+            return Results.Ok(maps);
+        }); // Public
+
         // ── GET /api/games/{id}/screenshots ───────────────────────────────────
         app.MapGet("/api/games/{id:int}/screenshots", async (
             int              id,

@@ -945,10 +945,17 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             var tournaments = await conn.QueryAsync<dynamic>(
                 """
-                SELECT * FROM tournaments
-                WHERE start_date >= NOW()
-                ORDER BY start_date ASC
-                LIMIT 5
+                SELECT t.*,
+                       o.owner_id   AS organizer_id,
+                       o.name       AS organizer_name,
+                       o.slug       AS organization_slug,
+                       (SELECT COUNT(*) FROM tournament_participants tp
+                        WHERE tp.tournament_id = t.id) AS current_participants
+                FROM tournaments t
+                LEFT JOIN organizations o ON o.id = t.organization_id
+                WHERE t.start_date >= NOW()
+                ORDER BY t.start_date ASC
+                LIMIT 20
                 """);
             return Results.Ok(tournaments);
         });
@@ -1019,6 +1026,109 @@ public static class TeamEndpoints
 
             return Results.Ok(new { sent });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/teams/my-captain-teams ──────────────────────────────────
+        // Returns teams where the current user is captain
+        app.MapGet("/api/teams/my-captain-teams", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var teams = await conn.QueryAsync<dynamic>(
+                """
+                SELECT t.*
+                FROM teams t
+                JOIN team_members tm ON tm.team_id = t.id
+                WHERE tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                ORDER BY t.name ASC
+                """, new { userId = userCtx.UserIdGuid });
+            return Results.Ok(teams);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/teams/captains ───────────────────────────────────────────
+        // Returns teams with their captain's profile info
+        app.MapGet("/api/teams/captains", async (
+            string?              game,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT t.id, t.name, t.tag, t.game, t.logo_url,
+                       p.id AS captain_id, p.username AS captain_username, p.avatar_url AS captain_avatar
+                FROM teams t
+                JOIN team_members tm ON tm.team_id = t.id AND tm.role = 'captain' AND tm.is_active = TRUE
+                JOIN profiles p ON p.id = tm.user_id
+                WHERE (@game IS NULL OR t.game = @game)
+                ORDER BY t.name ASC
+                LIMIT 100
+                """, new { game });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/teams/members ────────────────────────────────────────────
+        // Returns team members for a given user_id or team_id
+        app.MapGet("/api/teams/members", async (
+            Guid?                userId,
+            Guid?                teamId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            if (teamId.HasValue)
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT tm.*, p.username, p.avatar_url, p.riot_tag, p.steam_tag
+                    FROM team_members tm
+                    JOIN profiles p ON p.id = tm.user_id
+                    WHERE tm.team_id = @teamId AND tm.is_active = TRUE
+                    ORDER BY tm.role DESC, p.username ASC
+                    """, new { teamId });
+                return Results.Ok(rows);
+            }
+
+            if (userId.HasValue)
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT tm.*, t.name AS team_name, t.logo_url AS team_logo, t.game
+                    FROM team_members tm
+                    JOIN teams t ON t.id = tm.team_id
+                    WHERE tm.user_id = @userId AND tm.is_active = TRUE
+                    ORDER BY tm.joined_at DESC
+                    """, new { userId });
+                return Results.Ok(rows);
+            }
+
+            return Results.BadRequest(new { error = "user_id or team_id required" });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/teams/{id}/captain ───────────────────────────────────────
+        // Returns the current captain of a team
+        app.MapGet("/api/teams/{id}/captain", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var captain = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT tm.user_id, tm.role, tm.joined_at,
+                       p.username, p.avatar_url, p.riot_tag
+                FROM team_members tm
+                JOIN profiles p ON p.id = tm.user_id
+                WHERE tm.team_id = @id AND tm.role = 'captain' AND tm.is_active = TRUE
+                LIMIT 1
+                """, new { id });
+            return captain is null ? Results.NotFound() : Results.Ok(captain);
+        });
     }
 
     // ── Authorization helpers ─────────────────────────────────────────────────

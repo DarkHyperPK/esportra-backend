@@ -96,6 +96,26 @@ public static class AdminEndpoints
             return Results.Ok(sponsors);
         });
 
+        // ── GET /api/sponsors/{id}/stats ──────────────────────────────────────
+        app.MapGet("/api/sponsors/{id}/stats", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE event_type = 'view')         AS views,
+                    COUNT(*) FILTER (WHERE event_type = 'click')        AS clicks,
+                    COUNT(*) FILTER (WHERE event_type = 'impression')   AS impressions,
+                    COUNT(DISTINCT visitor_id)                          AS unique_visitors
+                FROM sponsor_impressions
+                WHERE sponsor_id = @id
+                """, new { id });
+            return Results.Ok(stats ?? new { views = 0, clicks = 0, impressions = 0, unique_visitors = 0 });
+        });
+
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,
@@ -453,6 +473,650 @@ public static class AdminEndpoints
             await email.SendAsync(req.Email, emailType, req.Data, ct);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/admin/user-roles ──────────────────────────────────────────
+        // Returns all user→role assignments
+        app.MapGet("/api/admin/user-roles", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ur.user_id, ur.role, ur.is_active,
+                       p.username, p.email, p.avatar_url
+                FROM user_roles ur
+                JOIN profiles p ON p.id = ur.user_id
+                ORDER BY p.username ASC
+                """);
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/user-roles ─────────────────────────────────────────
+        app.MapPost("/api/admin/user-roles", async (
+            [FromBody] AssignRoleRequest req,
+            HttpContext                  ctx,
+            IDbConnectionFactory         db,
+            CancellationToken            ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_roles (user_id, role, is_active)
+                VALUES (@userId, @role, TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                """,
+                new { userId = req.UserId, role = req.Role });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/user-roles ───────────────────────────────────────
+        app.MapDelete("/api/admin/user-roles", async (
+            Guid                 userId,
+            string               role,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "DELETE FROM user_roles WHERE user_id = @userId AND role = @role",
+                new { userId, role });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/admin-user-roles ─────────────────────────────────────
+        // Supports optional ?user_id= filter; joins admin_roles for name/key
+        app.MapGet("/api/admin/admin-user-roles", async (
+            Guid?                userId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = userId.HasValue
+                ? await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT aur.user_id, aur.role_id, ar.name AS role_name, ar.key AS role_key,
+                           p.username, p.email, p.avatar_url
+                    FROM admin_user_roles aur
+                    JOIN profiles p ON p.id = aur.user_id
+                    JOIN admin_roles ar ON ar.id = aur.role_id
+                    WHERE aur.user_id = @userId
+                    ORDER BY ar.name ASC
+                    """,
+                    new { userId })
+                : await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT aur.user_id, aur.role_id, ar.name AS role_name, ar.key AS role_key,
+                           p.username, p.email, p.avatar_url
+                    FROM admin_user_roles aur
+                    JOIN profiles p ON p.id = aur.user_id
+                    JOIN admin_roles ar ON ar.id = aur.role_id
+                    ORDER BY p.username ASC
+                    """);
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/admin-user-roles ─────────────────────────────────────
+        app.MapPost("/api/admin/admin-user-roles", async (
+            [FromBody] AdminUserRoleAssignRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO admin_user_roles (user_id, role_id)
+                VALUES (@UserId, @RoleId)
+                ON CONFLICT DO NOTHING
+                """,
+                req);
+            return Results.Created($"/api/admin/admin-user-roles?user_id={req.UserId}", new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/admin-user-roles ───────────────────────────────────
+        app.MapDelete("/api/admin/admin-user-roles", async (
+            Guid                 userId,
+            Guid                 roleId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "DELETE FROM admin_user_roles WHERE user_id = @userId AND role_id = @roleId",
+                new { userId, roleId });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/roles ──────────────────────────────────────────────
+        // Returns the admin_roles catalog. Supports optional ?q= filter.
+        app.MapGet("/api/admin/roles", async (
+            string?              q,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, name, key FROM admin_roles
+                WHERE (@q IS NULL OR name ILIKE '%' || @q || '%' OR key ILIKE '%' || @q || '%')
+                ORDER BY name ASC
+                """,
+                new { q });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/users/{userId}/roles ────────────────────────────────
+        app.MapGet("/api/admin/users/{userId}/roles", async (
+            Guid                 userId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var roles = await conn.QueryAsync<dynamic>(
+                "SELECT role, is_active FROM user_roles WHERE user_id = @userId",
+                new { userId });
+            var verifiedRoles = await conn.QueryAsync<dynamic>(
+                "SELECT role, status, is_active FROM verified_roles WHERE user_id = @userId",
+                new { userId });
+            return Results.Ok(new { userRoles = roles, verifiedRoles });
+        }).RequireAuthorization("Admin");
+
+        // ── PATCH /api/admin/users/{userId}/roles ──────────────────────────────
+        app.MapPatch("/api/admin/users/{userId}/roles", async (
+            Guid                      userId,
+            [FromBody] UpdateRoleRequest req,
+            HttpContext               ctx,
+            IDbConnectionFactory      db,
+            CancellationToken         ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId });
+            foreach (var role in (req.Roles ?? []))
+            {
+                await conn.ExecuteAsync(
+                    "INSERT INTO public.user_roles (user_id, role) VALUES (@id, @role) ON CONFLICT DO NOTHING",
+                    new { id = userId, role });
+            }
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/users/{userId} ─────────────────────────────────────
+        // Updates user's is_admin flag and/or replaces their admin_roles assignments.
+        app.MapPut("/api/admin/users/{userId}", async (
+            Guid                            userId,
+            [FromBody] AdminUpdateUserRequest req,
+            HttpContext                     ctx,
+            IDbConnectionFactory            db,
+            CancellationToken               ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            if (req.IsAdmin.HasValue)
+                await conn.ExecuteAsync(
+                    "UPDATE profiles SET is_admin = @isAdmin WHERE id = @userId",
+                    new { userId, isAdmin = req.IsAdmin.Value });
+
+            if (req.AdminRoles is not null)
+            {
+                await conn.ExecuteAsync(
+                    "DELETE FROM admin_user_roles WHERE user_id = @userId",
+                    new { userId });
+                foreach (var roleId in req.AdminRoles)
+                    await conn.ExecuteAsync(
+                        "INSERT INTO admin_user_roles (user_id, role_id) VALUES (@userId, @roleId) ON CONFLICT DO NOTHING",
+                        new { userId, roleId });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/verified-roles ──────────────────────────────────────
+        app.MapGet("/api/admin/verified-roles", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.granted_at,
+                       p.username, p.email, p.avatar_url
+                FROM verified_roles vr
+                JOIN profiles p ON p.id = vr.user_id
+                ORDER BY vr.granted_at DESC
+                """);
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/users/{userId}/verified-roles ───────────────────────
+        app.MapGet("/api/admin/users/{userId}/verified-roles", async (
+            Guid                 userId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT role, status, is_active, granted_at FROM verified_roles WHERE user_id = @userId",
+                new { userId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/tournaments ─────────────────────────────────────────
+        app.MapGet("/api/admin/tournaments", async (
+            string?              status,
+            int                  page   = 1,
+            int                  limit  = 50,
+            HttpContext          ctx    = default!,
+            IDbConnectionFactory db     = default!,
+            CancellationToken    ct     = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT t.*, p.username AS organizer_name
+                FROM tournaments t
+                LEFT JOIN profiles p ON p.id = t.organizer_id
+                WHERE (@status IS NULL OR t.status::text = @status)
+                ORDER BY t.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { status, limit, offset = (page - 1) * limit });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/tournaments/{id} ───────────────────────────────────
+        // Updates tournament status and/or is_featured flag from admin panel.
+        app.MapPut("/api/admin/tournaments/{id}", async (
+            Guid                                id,
+            [FromBody] AdminUpdateTournamentRequest req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.TournamentsEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournaments SET
+                    status      = COALESCE(@Status::tournament_status, status),
+                    is_featured = COALESCE(@IsFeatured, is_featured),
+                    updated_at  = now()
+                WHERE id = @id
+                """,
+                new { id, req.Status, req.IsFeatured });
+
+            return affected == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/disputes ────────────────────────────────────────────
+        app.MapGet("/api/admin/disputes", async (
+            string?              status,
+            int                  page   = 1,
+            int                  limit  = 50,
+            HttpContext          ctx    = default!,
+            IDbConnectionFactory db     = default!,
+            CancellationToken    ct     = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT td.*, t.name AS tournament_name, p.username AS raised_by_name
+                FROM tournament_disputes td
+                LEFT JOIN tournaments t ON t.id = td.tournament_id
+                LEFT JOIN profiles p ON p.id = td.raised_by_user_id
+                WHERE (@status IS NULL OR td.status = @status)
+                ORDER BY td.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { status, limit, offset = (page - 1) * limit });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/disputes/{disputeId} ────────────────────────────────
+        app.MapGet("/api/admin/disputes/{disputeId}", async (
+            Guid                 disputeId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT td.*, t.name AS tournament_name, p.username AS raised_by_name
+                FROM tournament_disputes td
+                LEFT JOIN tournaments t ON t.id = td.tournament_id
+                LEFT JOIN profiles p ON p.id = td.raised_by_user_id
+                WHERE td.id = @disputeId
+                """, new { disputeId });
+            if (dispute is null) return Results.NotFound();
+
+            var comments = await conn.QueryAsync<dynamic>(
+                """
+                SELECT dc.*, prof.username AS author_name
+                FROM dispute_comments dc
+                LEFT JOIN profiles prof ON prof.id = dc.user_id
+                WHERE dc.dispute_id = @disputeId
+                ORDER BY dc.created_at ASC
+                """, new { disputeId });
+
+            return Results.Ok(new { dispute, comments });
+        }).RequireAuthorization("Admin");
+
+        // ── PATCH /api/admin/disputes/{disputeId} ──────────────────────────────
+        app.MapPatch("/api/admin/disputes/{disputeId}", async (
+            Guid                              disputeId,
+            [FromBody] AdminUpdateDisputeRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_disputes
+                SET status           = COALESCE(@status, status),
+                    resolution_notes = COALESCE(@notes, resolution_notes),
+                    assigned_to_user_id = COALESCE(@assignedTo, assigned_to_user_id),
+                    updated_at       = NOW()
+                WHERE id = @disputeId
+                """,
+                new { disputeId, status = req.Status, notes = req.ResolutionNotes, assignedTo = req.AssignedToUserId });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/disputes/{disputeId}/comments ──────────────────────
+        app.MapPost("/api/admin/disputes/{disputeId}/comments", async (
+            Guid                              disputeId,
+            [FromBody] AddDisputeCommentRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO dispute_comments (dispute_id, user_id, comment, is_internal, attachment_url)
+                VALUES (@disputeId, @userId, @comment, @isInternal, @attachmentUrl)
+                """,
+                new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", isInternal = req.IsInternal, attachmentUrl = req.AttachmentUrl });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/audit-logs ──────────────────────────────────────────
+        app.MapGet("/api/admin/audit-logs", async (
+            Guid?                organizationId,
+            int                  page  = 1,
+            int                  limit = 50,
+            HttpContext          ctx   = default!,
+            IDbConnectionFactory db    = default!,
+            CancellationToken    ct    = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sal.*, p.username AS actor_name
+                FROM staff_audit_log sal
+                LEFT JOIN profiles p ON p.id = sal.actor_id
+                WHERE (@organizationId IS NULL OR sal.organization_id = @organizationId)
+                ORDER BY sal.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { organizationId, limit, offset = (page - 1) * limit });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/system-settings ────────────────────────────────────
+        app.MapGet("/api/admin/system-settings", (HttpContext ctx) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            // Placeholder: no system_settings table yet — return empty config
+            return Results.Ok(new { maintenanceMode = false, registrationsEnabled = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/verification-requests ──────────────────────────────
+        app.MapGet("/api/admin/verification-requests", async (
+            string?              status,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            // Use verified_roles as the source for pending/approved verification requests
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.granted_at,
+                       p.username, p.email, p.avatar_url, p.full_name
+                FROM verified_roles vr
+                JOIN profiles p ON p.id = vr.user_id
+                WHERE (@status IS NULL OR vr.status = @status)
+                ORDER BY vr.granted_at DESC NULLS LAST
+                """,
+                new { status });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── PATCH /api/admin/verification-requests/{userId} ───────────────────
+        app.MapPatch("/api/admin/verification-requests/{userId}", async (
+            Guid                              userId,
+            [FromBody] ApproveVerificationRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE verified_roles
+                SET status     = @status,
+                    is_active  = @isActive,
+                    granted_at = CASE WHEN @status = 'approved' THEN NOW() ELSE granted_at END
+                WHERE user_id = @userId AND role = @role
+                """,
+                new { userId, status = req.Status, isActive = req.Status == "approved", role = req.Role });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/company-profiles ───────────────────────────────────
+        app.MapGet("/api/admin/company-profiles", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            // Return sponsor_accounts as the closest match to company profiles
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sa.*, p.username, p.email, p.avatar_url
+                FROM sponsor_accounts sa
+                JOIN profiles p ON p.id = sa.user_id
+                ORDER BY sa.created_at DESC
+                """);
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/users/{userId}/role ───────────────────────────────────────
+        app.MapGet("/api/users/{userId}/role", async (
+            Guid                 userId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var roles = (await conn.QueryAsync<string>(
+                "SELECT role FROM user_roles WHERE user_id = @userId AND is_active = TRUE",
+                new { userId })).ToList();
+            return Results.Ok(new { userId, roles });
+        });
+
+        // ── PUT /api/users/{userId}/role ───────────────────────────────────────
+        app.MapPut("/api/users/{userId}/role", async (
+            Guid                      userId,
+            [FromBody] SetRoleRequest req,
+            HttpContext               ctx,
+            IDbConnectionFactory      db,
+            CancellationToken         ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId });
+            if (!string.IsNullOrWhiteSpace(req.Role))
+                await conn.ExecuteAsync(
+                    "INSERT INTO public.user_roles (user_id, role) VALUES (@id, @role)",
+                    new { id = userId, role = req.Role });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/sponsors/applications ────────────────────────────────────
+        app.MapGet("/api/sponsors/applications", async (
+            string?              status,
+            int                  page  = 1,
+            int                  limit = 50,
+            HttpContext          ctx   = default!,
+            IDbConnectionFactory db    = default!,
+            CancellationToken    ct    = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT pa.*
+                FROM partner_applications pa
+                WHERE (@status IS NULL OR pa.status = @status)
+                ORDER BY pa.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { status, limit, offset = (page - 1) * limit });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/sponsors/applications/{id} ───────────────────────────────
+        app.MapGet("/api/sponsors/applications/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM partner_applications WHERE id = @id", new { id });
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        }).RequireAuthorization("Admin");
+
+        // ── PATCH /api/sponsors/applications/{id} ─────────────────────────────
+        app.MapPatch("/api/sponsors/applications/{id}", async (
+            Guid                                  id,
+            [FromBody] UpdateApplicationRequest   req,
+            HttpContext                           ctx,
+            IDbConnectionFactory                  db,
+            CancellationToken                     ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE partner_applications
+                SET status     = COALESCE(@status, status),
+                    notes      = COALESCE(@notes, notes),
+                    updated_at = NOW()
+                WHERE id = @id
+                """,
+                new { id, status = req.Status, notes = req.Notes });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -511,3 +1175,14 @@ public static class AdminEndpoints
         return Results.Ok(new { success = true, role });
     }
 }
+
+// ── Admin request records ─────────────────────────────────────────────────────
+public sealed record AssignRoleRequest(Guid UserId, string Role);
+public sealed record UpdateRoleRequest(string[]? Roles = null);
+public sealed record SetRoleRequest(string Role);
+public sealed record AdminUpdateDisputeRequest(string? Status = null, string? ResolutionNotes = null, Guid? AssignedToUserId = null);
+public sealed record ApproveVerificationRequest(string Status, string Role);
+public sealed record UpdateApplicationRequest(string? Status = null, string? Notes = null);
+public sealed record AdminUserRoleAssignRequest(Guid UserId, Guid RoleId);
+public sealed record AdminUpdateTournamentRequest(string? Status = null, bool? IsFeatured = null);
+public sealed record AdminUpdateUserRequest(bool? IsAdmin = null, Guid[]? AdminRoles = null);

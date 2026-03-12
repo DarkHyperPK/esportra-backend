@@ -68,6 +68,58 @@ public static class BracketEndpoints
             });
         }).RequireAuthorization("Organizer");
 
+        // ── POST /api/brackets/persist ────────────────────────────────────────
+        // Used by MatchRepository.ts to save a client-generated bracket graph
+        app.MapPost("/api/brackets/persist", async (
+            [FromBody] BracketGraph            graph,
+            HttpContext                         ctx,
+            BracketPersistenceService          persistence,
+            IDbConnectionFactory               db,
+            IHubContext<BracketHub>            bracketHub,
+            CancellationToken                  ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            // Verify user is organizer of the tournament that owns this stage
+            using var conn = db.CreateConnection();
+            var stageId = graph.Version.StageId;
+            if (stageId is not null)
+            {
+                var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM tournaments t
+                        JOIN tournament_stages ts ON ts.tournament_id = t.id
+                        WHERE ts.id = @stageId
+                        AND (t.organizer_id = @userId OR t.organization_id IN (
+                            SELECT id FROM organizations WHERE owner_id = @userId
+                        ))
+                    )
+                    """, new { stageId, userId = userCtx.UserIdGuid });
+
+                if (!isOrganizer) return Results.Forbid();
+            }
+
+            var errors = GraphValidator.Validate(graph);
+            if (errors.Count > 0)
+                return Results.BadRequest(new { errors });
+
+            var version = await persistence.SaveGraphAsync(graph, ct);
+
+            // Notify subscribers
+            if (graph.Version.TournamentId != Guid.Empty)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.TournamentGroup(graph.Version.TournamentId.ToString()))
+                    .SendAsync(BracketHubEvents.VersionCreated,
+                        new { versionId = version.Id, tournamentId = graph.Version.TournamentId },
+                        ct);
+            }
+
+            return Results.Ok(new { success = true, versionId = version.Id });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
         app.MapPost("/api/brackets/{versionId}/advance-byes", async (
             Guid                      versionId,
@@ -369,6 +421,155 @@ public static class BracketEndpoints
                 """,
                 new { versionId });
             return Results.Ok(rows);
+        });
+
+        // ── GET /api/brackets/matches ─────────────────────────────────────────
+        // Returns all matches for a bracket version
+        app.MapGet("/api/brackets/matches", async (
+            Guid?                versionId,
+            Guid?                stageId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            if (versionId.HasValue)
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT m.*,
+                           t1.name AS team1_name, t1.logo_url AS team1_logo,
+                           t2.name AS team2_name, t2.logo_url AS team2_logo
+                    FROM brkt_matches m
+                    LEFT JOIN teams t1 ON t1.id = m.team1_id
+                    LEFT JOIN teams t2 ON t2.id = m.team2_id
+                    WHERE m.version_id = @versionId
+                    ORDER BY m.round_index, m.match_number
+                    """, new { versionId });
+                return Results.Ok(rows);
+            }
+
+            if (stageId.HasValue)
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT m.*,
+                           t1.name AS team1_name, t1.logo_url AS team1_logo,
+                           t2.name AS team2_name, t2.logo_url AS team2_logo
+                    FROM brkt_matches m
+                    JOIN brkt_versions v ON v.id = m.version_id
+                    LEFT JOIN teams t1 ON t1.id = m.team1_id
+                    LEFT JOIN teams t2 ON t2.id = m.team2_id
+                    WHERE v.stage_id = @stageId
+                    ORDER BY v.version_number DESC, m.round_index, m.match_number
+                    """, new { stageId });
+                return Results.Ok(rows);
+            }
+
+            return Results.BadRequest(new { error = "version_id or stage_id required" });
+        });
+
+        // ── GET /api/brackets/matches/{id} ────────────────────────────────────
+        app.MapGet("/api/brackets/matches/{id}", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT m.*,
+                       t1.name AS team1_name, t1.logo_url AS team1_logo,
+                       t2.name AS team2_name, t2.logo_url AS team2_logo
+                FROM brkt_matches m
+                LEFT JOIN teams t1 ON t1.id = m.team1_id
+                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                WHERE m.id = @id
+                """, new { id });
+            return match is null ? Results.NotFound() : Results.Ok(match);
+        });
+
+        // ── GET /api/brackets/events ──────────────────────────────────────────
+        // Returns bracket match events (scores, status changes, etc.)
+        app.MapGet("/api/brackets/events", async (
+            Guid?                matchId,
+            Guid?                versionId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            if (matchId.HasValue)
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    "SELECT * FROM brkt_match_events WHERE match_id = @matchId ORDER BY created_at DESC",
+                    new { matchId });
+                return Results.Ok(rows);
+            }
+
+            if (versionId.HasValue)
+            {
+                var rows = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT e.*
+                    FROM brkt_match_events e
+                    JOIN brkt_matches m ON m.id = e.match_id
+                    WHERE m.version_id = @versionId
+                    ORDER BY e.created_at DESC
+                    """, new { versionId });
+                return Results.Ok(rows);
+            }
+
+            return Results.BadRequest(new { error = "match_id or version_id required" });
+        });
+
+        // ── GET /api/brackets/match-games ─────────────────────────────────────
+        // Returns individual game results within a match
+        app.MapGet("/api/brackets/match-games", async (
+            Guid?                matchId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            if (!matchId.HasValue)
+                return Results.BadRequest(new { error = "match_id required" });
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM brkt_match_games WHERE match_id = @matchId ORDER BY game_number ASC",
+                new { matchId });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/brackets/versions/{id} ──────────────────────────────────
+        // Alias for GET /api/brackets/{versionId} — same data, different URL pattern
+        app.MapGet("/api/brackets/versions/{id}", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM brkt_versions WHERE id = @id", new { id });
+            if (version is null) return Results.NotFound(new { error = "Version not found." });
+
+            var nodes = await conn.QueryAsync<dynamic>(
+                """
+                SELECT m.*,
+                       l.x, l.y,
+                       t1.name AS team1_name, t1.logo_url AS team1_logo,
+                       t2.name AS team2_name, t2.logo_url AS team2_logo
+                FROM brkt_matches m
+                LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
+                LEFT JOIN teams t1 ON t1.id = m.team1_id
+                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                WHERE m.version_id = @id
+                """, new { id });
+
+            var edges = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM brkt_advancements WHERE version_id = @id", new { id });
+
+            return Results.Ok(new { version, nodes, edges });
         });
     }
 

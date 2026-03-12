@@ -217,6 +217,140 @@ public static class ProfileEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/profiles ─────────────────────────────────────────────────
+        // Paginated list of profiles with optional search
+        app.MapGet("/api/profiles", async (
+            string?              q,
+            string?              game,
+            int                  page  = 1,
+            int                  limit = 50,
+            IDbConnectionFactory db    = default!,
+            CancellationToken    ct    = default) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, username, full_name, avatar_url, bio,
+                       riot_tag, steam_tag, country_code, location
+                FROM profiles
+                WHERE (@q IS NULL OR username ILIKE '%' || @q || '%'
+                                  OR full_name ILIKE '%' || @q || '%')
+                ORDER BY username ASC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { q, limit, offset = (page - 1) * limit });
+            return Results.Ok(rows);
+        });
+
+        // ── GET /api/profiles/riot-accounts ───────────────────────────────────
+        app.MapGet("/api/profiles/riot-accounts", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var accounts = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM riot_accounts WHERE user_id = @userId ORDER BY created_at DESC",
+                new { userId = userCtx.UserIdGuid });
+            return Results.Ok(accounts);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/verification ─────────────────────────────────
+        app.MapGet("/api/profiles/me/verification", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var verifiedRoles = await conn.QueryAsync<dynamic>(
+                "SELECT role, status, is_active, granted_at FROM verified_roles WHERE user_id = @userId",
+                new { userId = userCtx.UserIdGuid });
+            return Results.Ok(new { verifiedRoles });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/verification-requests ────────────────────────
+        app.MapGet("/api/profiles/me/verification-requests", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var requests = await conn.QueryAsync<dynamic>(
+                "SELECT role, status, is_active, granted_at FROM verified_roles WHERE user_id = @userId ORDER BY granted_at DESC NULLS LAST",
+                new { userId = userCtx.UserIdGuid });
+            return Results.Ok(requests);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/profiles/me/verification-requests ───────────────────────
+        app.MapPost("/api/profiles/me/verification-requests", async (
+            [FromBody] VerificationRequestBody req,
+            HttpContext                        ctx,
+            IDbConnectionFactory               db,
+            CancellationToken                  ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active)
+                VALUES (@userId, @role, 'pending', FALSE)
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
+                """,
+                new { userId = userCtx.UserIdGuid, role = req.Role });
+            return Results.Ok(new { success = true, status = "pending" });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/profiles/me/verification-requests/organizer ─────────────
+        app.MapPost("/api/profiles/me/verification-requests/organizer", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active)
+                VALUES (@userId, 'organizer', 'pending', FALSE)
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
+                """,
+                new { userId = userCtx.UserIdGuid });
+            return Results.Ok(new { success = true, status = "pending", role = "organizer" });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/profiles/me/verification-requests/venue_owner ───────────
+        app.MapPost("/api/profiles/me/verification-requests/venue_owner", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active)
+                VALUES (@userId, 'venue_owner', 'pending', FALSE)
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
+                """,
+                new { userId = userCtx.UserIdGuid });
+            return Results.Ok(new { success = true, status = "pending", role = "venue_owner" });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/profiles/{id}/stats ──────────────────────────────────────
         app.MapGet("/api/profiles/{id}/stats", async (
             Guid                 id,
@@ -344,3 +478,4 @@ public static class ProfileEndpoints
 
 public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
+public sealed record VerificationRequestBody(string Role);
