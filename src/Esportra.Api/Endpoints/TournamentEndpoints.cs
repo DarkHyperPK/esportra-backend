@@ -28,22 +28,23 @@ public static class TournamentEndpoints
             string?              status,
             string?              game,
             string?              q,
+            string?              organizer_id,
             int                  limit  = 50,
             int                  offset = 0,
             IDbConnectionFactory db     = null!,
             HybridCache          cache  = null!,
             CancellationToken    ct     = default) =>
         {
-            var cacheKey = $"tournaments:{status}:{game}:{q}:{limit}:{offset}";
-            return await cache.GetOrCreateAsync(
+            var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{limit}:{offset}";
+            var rows = await cache.GetOrCreateAsync(
                 cacheKey,
                 async (_) =>
                 {
                     using var conn = db.CreateConnection();
-
-                    var rows = await conn.QueryAsync<dynamic>(
+                    Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
+                    return (await conn.QueryAsync<dynamic>(
                         """
-                        SELECT t.id, t.name, t.slug, t.game, t.status, t.format,
+                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
                                t.start_date, t.end_date, t.registration_deadline,
                                t.max_teams, t.min_teams, t.team_size,
                                t.entry_fee, t.prize_pool,
@@ -61,18 +62,18 @@ public static class TournamentEndpoints
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
-                          AND (@status IS NULL OR t.status = @status::tournament_status)
+                          AND (@status IS NULL OR t.status::text = @status)
                           AND (@game   IS NULL OR t.game   ILIKE '%' || @game || '%')
                           AND (@q      IS NULL OR t.name   ILIKE '%' || @q   || '%')
+                          AND (@organizerGuid IS NULL OR t.organizer_id = @organizerGuid)
                         ORDER BY t.start_date ASC
                         LIMIT @limit OFFSET @offset
                         """,
-                        new { status, game, q, limit, offset });
-
-                    return Results.Ok(rows);
+                        new { status, game, q, organizerGuid, limit, offset })).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 cancellationToken: ct);
+            return Results.Ok(rows);
         });
 
         // ── GET /api/tournaments/upcoming ─────────────────────────────────────
@@ -82,14 +83,14 @@ public static class TournamentEndpoints
             HybridCache          cache,
             CancellationToken    ct) =>
         {
-            return await cache.GetOrCreateAsync(
+            var rows = await cache.GetOrCreateAsync(
                 "tournaments:upcoming",
                 async (_) =>
                 {
                     using var conn = db.CreateConnection();
-                    var rows = await conn.QueryAsync<dynamic>(
+                    return (await conn.QueryAsync<dynamic>(
                         """
-                        SELECT t.id, t.name, t.slug, t.game, t.status, t.format,
+                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
                                t.start_date, t.end_date, t.registration_deadline,
                                t.max_teams, t.min_teams, t.team_size,
                                t.entry_fee, t.prize_pool,
@@ -110,11 +111,11 @@ public static class TournamentEndpoints
                           AND t.status IN ('open', 'check_in')
                         ORDER BY t.start_date ASC
                         LIMIT 100
-                        """);
-                    return Results.Ok(rows);
+                        """)).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 cancellationToken: ct);
+            return Results.Ok(rows);
         }); // Public
 
         // ── GET /api/tournaments/{slugOrId} ────────────────────────────────────
