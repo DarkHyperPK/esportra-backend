@@ -154,20 +154,21 @@ public static class TeamEndpoints
                 var team = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                      owner_id, is_active)
+                                      owner_id, is_active, country_code)
                     VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                            @ownerId, TRUE)
+                            @ownerId, TRUE, @countryCode)
                     RETURNING *
                     """,
                     new
                     {
                         name        = req.Name,
                         tag         = req.Tag,
-                        game        = req.Game,
-                        gameFormat  = req.GameFormat,
+                        game        = req.Game ?? "General",
+                        gameFormat  = req.GameFormat ?? "squad",
                         logoUrl     = req.LogoUrl,
                         description = req.Description,
                         ownerId     = userCtx.UserIdGuid,
+                        countryCode = req.CountryCode,
                     },
                     tx);
 
@@ -1176,10 +1177,11 @@ public static class TeamEndpoints
 public sealed record CreateTeamRequest(
     string  Name,
     string  Tag,
-    string  Game,
-    string  GameFormat,
+    string? Game        = "General",
+    string? GameFormat  = "squad",
     string? LogoUrl     = null,
     string? Description = null,
+    string? CountryCode = null,
     List<TeamMemberSeed>? Members = null);
 
 public sealed record TeamMemberSeed(string UserId, string Role = "member");

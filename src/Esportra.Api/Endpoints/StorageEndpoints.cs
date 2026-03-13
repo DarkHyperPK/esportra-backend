@@ -49,6 +49,7 @@ public static class StorageEndpoints
             var client = httpFactory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", serviceKey);
             client.DefaultRequestHeaders.Add("apikey", serviceKey);
+            client.DefaultRequestHeaders.Add("x-upsert", "true");
 
             using var stream = file.OpenReadStream();
             var content = new StreamContent(stream);

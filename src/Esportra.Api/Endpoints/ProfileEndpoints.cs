@@ -1,4 +1,5 @@
-﻿using Dapper;
+﻿using System.Text.Json;
+using Dapper;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -17,8 +18,9 @@ public static class ProfileEndpoints
     private static readonly string[] AllowedUpdateFields =
     [
         "username", "full_name", "avatar_url", "bio",
-        "riot_tag", "steam_tag", "phone", "location",
-        "social_links", "card_image_url", "country_code"
+        "riot_tag", "steam_tag", "social_links",
+        "card_image_url", "country_code", "banner_url",
+        "date_of_birth", "faceit_nickname"
     ];
 
     public static void MapProfileEndpoints(this WebApplication app)
@@ -82,9 +84,17 @@ public static class ProfileEndpoints
             }
 
             // Build SET clause dynamically (safe — only allow-listed column names)
-            var setClauses = string.Join(", ", valid.Keys.Select(k => $"{k} = @{k}"));
+            var jsonbFields = new HashSet<string> { "social_links" };
+            var setClauses = string.Join(", ", valid.Keys.Select(k =>
+                jsonbFields.Contains(k) ? $"{k} = @{k}::jsonb" : $"{k} = @{k}"));
             var parameters = new DynamicParameters();
-            foreach (var kv in valid) parameters.Add(kv.Key, kv.Value);
+            foreach (var kv in valid)
+            {
+                if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
+                    parameters.Add(kv.Key, je.GetRawText());
+                else
+                    parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
+            }
             parameters.Add("id", id);
             parameters.Add("updated_at", DateTime.UtcNow);
 
@@ -114,19 +124,37 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/search ─────────────────────────────────────────
         app.MapGet("/api/profiles/search", async (
-            [FromQuery] string   q,
+            [FromQuery] string?  q,
+            [FromQuery] bool?    verified,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            var p = new DynamicParameters();
+
+            if (!string.IsNullOrWhiteSpace(q))
+            {
+                conditions.Add("(username ILIKE '%' || @q || '%' OR email ILIKE '%' || @q || '%')");
+                p.Add("q", q);
+            }
+            if (verified == true)
+            {
+                conditions.Add("is_verified = TRUE");
+            }
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
             var rows = await conn.QueryAsync<dynamic>(
-                """
-                SELECT id, username, email, avatar_url
+                $"""
+                SELECT id, username, full_name, email, avatar_url, is_verified
                 FROM profiles
-                WHERE username ILIKE '%' || @q || '%' OR email ILIKE '%' || @q || '%'
+                {where}
                 ORDER BY username
                 LIMIT 50
-                """,
-                new { q });
+                """, p);
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 

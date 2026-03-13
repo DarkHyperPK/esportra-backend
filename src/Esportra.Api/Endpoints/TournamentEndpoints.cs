@@ -338,8 +338,8 @@ public static class TournamentEndpoints
                         registrationDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
                         bannerUrl            = req.BannerUrl,
                         logoUrl              = req.LogoUrl,
-                        organizationId       = req.OrganizationId,
-                        venueId              = req.VenueId,
+                        organizationId       = Guid.TryParse(req.OrganizationId, out var orgGuid) ? orgGuid : (Guid?)null,
+                        venueId              = Guid.TryParse(req.VenueId, out var venGuid) ? venGuid : (Guid?)null,
                         isPublic             = req.IsPublic ?? true,
                         checkInRequired      = req.CheckInRequired ?? false,
                         checkInDeadline      = req.CheckInDeadline,
@@ -383,7 +383,9 @@ public static class TournamentEndpoints
                 {
                     await conn.ExecuteAsync(
                         "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId)",
-                        req.MapPoolIds.Select(m => new { tournamentId, mapId = m }),
+                        req.MapPoolIds
+                            .Where(m => Guid.TryParse(m, out _))
+                            .Select(m => new { tournamentId, mapId = Guid.Parse(m) }),
                         tx);
                 }
 
