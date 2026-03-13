@@ -22,14 +22,13 @@ namespace Esportra.Api.Endpoints;
 public static class TournamentEndpoints
 {
     // Snake_case serialization for typed DTOs — matches Supabase convention the frontend expects.
-    // Only used for endpoints returning typed records; dynamic queries already return snake_case.
     private static readonly JsonSerializerOptions s_snakeCase = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    /// Typed DTO for tournament list rows — required so HybridCache (System.Text.Json) can
+    /// Typed DTOfor tournament list rows — required so HybridCache (System.Text.Json) can
     /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
     /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
     private sealed record TournamentListRow(

@@ -79,6 +79,7 @@ builder.Services
 
 // ── Authorization — policy per permission ─────────────────────────────────────
 builder.Services.AddSingleton<IAuthorizationHandler, PermissionHandler>();
+builder.Services.AddSingleton<IAuthorizationHandler, AdminHandler>();
 builder.Services.AddAuthorization(opts =>
 {
     foreach (var perm in typeof(Permissions)
@@ -93,6 +94,8 @@ builder.Services.AddAuthorization(opts =>
     opts.AddPolicy("Organizer",    policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("VenueOwner",   policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
+    opts.AddPolicy("Admin", policy =>
+        policy.Requirements.Add(new AdminRequirement()));
 });
 
 // ── Database ──────────────────────────────────────────────────────────────────

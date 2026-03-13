@@ -33,3 +33,27 @@ public sealed class PermissionHandler : AuthorizationHandler<PermissionRequireme
         return Task.CompletedTask;
     }
 }
+
+/// <summary>
+/// Requires the user to have at least one admin role (populated from
+/// admin_user_roles / profiles.admin_roles by RoleEnrichmentMiddleware).
+/// </summary>
+public sealed class AdminRequirement : IAuthorizationRequirement;
+
+public sealed class AdminHandler : AuthorizationHandler<AdminRequirement>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        AdminRequirement requirement)
+    {
+        if (context.Resource is HttpContext httpContext &&
+            httpContext.Items.TryGetValue("UserContext", out var obj) &&
+            obj is UserContext userCtx &&
+            userCtx.AdminRoles.Length > 0)
+        {
+            context.Succeed(requirement);
+        }
+
+        return Task.CompletedTask;
+    }
+}

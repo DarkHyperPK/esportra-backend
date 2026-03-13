@@ -17,6 +17,13 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class BracketEndpoints
 {
+    // Snake_case deserialization — frontend sends snake_case JSON (migrated from Supabase).
+    private static readonly JsonSerializerOptions s_snakeCase = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true
+    };
+
     public static void MapBracketEndpoints(this WebApplication app)
     {
         // ── POST /api/brackets/generate ───────────────────────────────────────
@@ -69,15 +76,19 @@ public static class BracketEndpoints
         }).RequireAuthorization("Organizer");
 
         // ── POST /api/brackets/persist ────────────────────────────────────────
-        // Used by MatchRepository.ts to save a client-generated bracket graph
+        // Used by MatchRepository.ts to save a client-generated bracket graph.
+        // Frontend sends snake_case JSON (migrated from Supabase), so we
+        // deserialize manually with SnakeCaseLower naming policy.
         app.MapPost("/api/brackets/persist", async (
-            [FromBody] BracketGraph            graph,
             HttpContext                         ctx,
             BracketPersistenceService          persistence,
             IDbConnectionFactory               db,
             IHubContext<BracketHub>            bracketHub,
             CancellationToken                  ct) =>
         {
+            var graph = await ctx.Request.ReadFromJsonAsync<BracketGraph>(s_snakeCase, ct);
+            if (graph is null) return Results.BadRequest("Invalid bracket graph");
+
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -586,10 +597,14 @@ public static class BracketEndpoints
             SELECT m.id, m.match_number, m.round_index, m.team1_id, m.team2_id,
                    m.winner_id, m.loser_id, m.team1_score, m.team2_score,
                    m.status, m.scheduled_time, m.best_of, m.party_code,
-                   m.bracket_type, m.stage_id, m.group_id, m.x_pos, m.y_pos,
+                   m.bracket_type, m.group_id,
+                   l.x AS x_pos, l.y AS y_pos,
+                   bv.stage_id,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
                    t2.name AS team2_name, t2.logo_url AS team2_logo
             FROM public.brkt_matches m
+            LEFT JOIN public.brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
+            LEFT JOIN public.brkt_versions bv ON bv.id = m.version_id
             LEFT JOIN public.teams t1 ON t1.id = m.team1_id
             LEFT JOIN public.teams t2 ON t2.id = m.team2_id
             WHERE m.version_id = @versionId

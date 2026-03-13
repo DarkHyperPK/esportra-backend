@@ -16,9 +16,10 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
         using var conn = db.CreateConnection();
 
         // 1. Determine version number
-        var versionNumber = await conn.ExecuteScalarAsync<int>(
-            "SELECT COALESCE(MAX(version_number), 0) + 1 FROM public.brkt_versions WHERE tournament_id = @tid",
-            new { tid = graph.Version.TournamentId }) + 1;
+        var maxVersion = await conn.ExecuteScalarAsync<int>(
+            "SELECT COALESCE(MAX(version_number), 0) FROM public.brkt_versions WHERE tournament_id = @tid",
+            new { tid = graph.Version.TournamentId });
+        var versionNumber = maxVersion + 1;
 
         // 2. Insert version
         await conn.ExecuteAsync(@"
@@ -30,7 +31,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 id             = graph.Version.Id,
                 tournament_id  = graph.Version.TournamentId,
                 stage_id       = graph.Version.StageId,
-                version_number = graph.Version.VersionNumber,
+                version_number = versionNumber,
                 status         = graph.Version.Status,
             });
 
@@ -40,10 +41,10 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
             await conn.ExecuteAsync(@"
                 INSERT INTO public.brkt_matches
                     (id, version_id, round_index, match_number, bracket_type, status,
-                     best_of, team1_id, team2_id, group_id, round_number, scheduled_time, x, y)
+                     best_of, team1_id, team2_id, group_id, round_number, scheduled_time)
                 VALUES
                     (@id, @version_id, @round_index, @match_number, @bracket_type, @status,
-                     @best_of, @team1_id, @team2_id, @group_id, @round_number, @scheduled_time, @x, @y)",
+                     @best_of, @team1_id, @team2_id, @group_id, @round_number, @scheduled_time)",
                 new
                 {
                     id             = node.Id,
@@ -51,16 +52,23 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                     round_index    = node.RoundIndex,
                     match_number   = node.MatchNumber,
                     bracket_type   = node.BracketType,
-                    status         = node.Status,
+                    status         = node.Status == "live" ? "in_progress" : node.Status,
                     best_of        = node.BestOf,
                     team1_id       = node.Team1Id,
                     team2_id       = node.Team2Id,
                     group_id       = node.GroupId,
                     round_number   = node.RoundNumber,
                     scheduled_time = node.ScheduledTime,
-                    x              = node.X,
-                    y              = node.Y,
                 });
+
+            // Store layout coordinates in brkt_layout
+            if (node.X.HasValue || node.Y.HasValue)
+            {
+                await conn.ExecuteAsync(@"
+                    INSERT INTO public.brkt_layout (version_id, match_id, x, y)
+                    VALUES (@version_id, @match_id, @x, @y)",
+                    new { version_id = node.VersionId, match_id = node.Id, x = node.X ?? 0, y = node.Y ?? 0 });
+            }
         }
 
         // 4. Insert edges (brkt_advancements)
