@@ -507,7 +507,9 @@ public static class MatchSystemEndpoints
 
             await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET scheduled_time = @scheduledTime WHERE id = @matchId",
-                new { matchId, scheduledTime = req.ScheduledTime });
+                new { matchId, scheduledTime = string.IsNullOrEmpty(req.ScheduledTime)
+                    ? (DateTime?)null
+                    : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind) });
 
             return Results.Ok(new { success = true, matchId });
         }).RequireAuthorization("Organizer");
