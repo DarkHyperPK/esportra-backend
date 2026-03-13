@@ -58,7 +58,9 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                     team2_id       = node.Team2Id,
                     group_id       = node.GroupId,
                     round_number   = node.RoundNumber,
-                    scheduled_time = node.ScheduledTime,
+                    scheduled_time = string.IsNullOrEmpty(node.ScheduledTime)
+                        ? (DateTime?)null
+                        : DateTime.Parse(node.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind),
                 });
 
             // Store layout coordinates in brkt_layout
