@@ -178,6 +178,47 @@ public static class BracketEndpoints
             return Results.Ok(new { message = "Bracket deleted." });
         }).RequireAuthorization("Organizer");
 
+        // ── PUT /api/brackets/{versionId} ─────────────────────────────────────
+        // Update version status (draft → active → archived) and activated_at.
+        app.MapPut("/api/brackets/{versionId}", async (
+            Guid                 versionId,
+            HttpContext           ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var body = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object?>>(ct);
+            if (body is null) return Results.BadRequest("Invalid body");
+
+            // Accept both camelCase and snake_case
+            var status = body.TryGetValue("status", out var s) ? s?.ToString() : null;
+
+            if (string.IsNullOrEmpty(status))
+                return Results.BadRequest(new { error = "status is required" });
+
+            var sql = status == "active"
+                ? "UPDATE brkt_versions SET status = @status, activated_at = NOW() WHERE id = @versionId"
+                : "UPDATE brkt_versions SET status = @status WHERE id = @versionId";
+
+            await conn.ExecuteAsync(sql, new { versionId, status });
+
+            // Notify subscribers
+            var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT tournament_id FROM brkt_versions WHERE id = @versionId", new { versionId });
+            if (version?.tournament_id is Guid tid)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.TournamentGroup(tid.ToString()))
+                    .SendAsync(BracketHubEvents.VersionCreated, new { versionId, status }, ct);
+            }
+
+            return Results.Ok(new { success = true, versionId, status });
+        }).RequireAuthorization("Organizer");
+
         // ── GET /api/brackets/{versionId}/standings ───────────────────────────
         app.MapGet("/api/brackets/{versionId}/standings", async (
             Guid             versionId,

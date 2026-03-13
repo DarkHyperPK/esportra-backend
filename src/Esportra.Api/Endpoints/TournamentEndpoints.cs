@@ -407,6 +407,7 @@ public static class TournamentEndpoints
                     check_in_deadline    = COALESCE(@checkInDeadline, check_in_deadline),
                     rewards              = COALESCE(@rewards, rewards),
                     stream_url           = COALESCE(@streamUrl, stream_url),
+                    deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
                 WHERE id = @id
                 RETURNING *
@@ -431,6 +432,8 @@ public static class TournamentEndpoints
                     checkInDeadline      = req.CheckInDeadline,
                     rewards              = req.Rewards,
                     streamUrl            = req.StreamUrl,
+                    deletedAt            = req.DeletedAt,
+                    clearDeletedAt       = req.ClearDeletedAt,
                 });
 
             try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
@@ -2100,7 +2103,9 @@ public sealed record UpdateTournamentRequest(
     bool?     CheckInRequired      = null,
     DateTime? CheckInDeadline      = null,
     string?   Rewards              = null,
-    string?   StreamUrl            = null);
+    string?   StreamUrl            = null,
+    DateTime? DeletedAt            = null,
+    bool      ClearDeletedAt       = false);
 
 public sealed record RegisterTournamentRequest(string? TeamId = null);
 public sealed record UpdateBannerRequest(string Url);

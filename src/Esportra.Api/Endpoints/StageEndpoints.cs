@@ -138,6 +138,77 @@ public static class StageEndpoints
             return Results.Ok(new { success = true, count = req.MapIds?.Length ?? 0 });
         }).RequireAuthorization("Authenticated");
 
+        // ── PATCH /api/stages/{stageId}/status ──────────────────────────────
+        // Update a single stage's status (e.g. draft → live → completed).
+        // Used by StageManagementTab after bracket generation.
+        app.MapPatch("/api/stages/{stageId}/status", async (
+            Guid                              stageId,
+            [FromBody] UpdateStageStatusRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, tournament_id FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+            if (stage is null) return Results.NotFound(new { error = "Stage not found" });
+
+            await conn.ExecuteAsync(
+                "UPDATE tournament_stages SET status = @status, updated_at = NOW() WHERE id = @stageId",
+                new { stageId, status = req.Status });
+
+            return Results.Ok(new { success = true, stageId, status = req.Status });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PATCH /api/stages/{stageId}/order ───────────────────────────────
+        // Update a single stage's order. Used during reorder after delete.
+        app.MapPatch("/api/stages/{stageId}/order", async (
+            Guid                              stageId,
+            [FromBody] UpdateStageOrderRequest req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE tournament_stages SET stage_order = @order, updated_at = NOW() WHERE id = @stageId",
+                new { stageId, order = req.StageOrder });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/{tournamentId}/stages/delete ─────────────
+        // Delete specific stages by ID. Used by StageManagementTab.
+        app.MapPost("/api/tournaments/{tournamentId}/stages/delete", async (
+            Guid                              tournamentId,
+            [FromBody] DeleteStagesRequest    req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            if (req.DeleteIds is not { Length: > 0 })
+                return Results.BadRequest(new { error = "No stage IDs provided." });
+
+            await conn.ExecuteAsync(
+                "DELETE FROM tournament_stages WHERE id = ANY(@ids) AND tournament_id = @tournamentId",
+                new { ids = req.DeleteIds, tournamentId });
+
+            return Results.Ok(new { success = true, deleted = req.DeleteIds.Length });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/stages/{stageId}/completion-status ─────────────────────
         app.MapGet("/api/stages/{stageId}/completion-status", async (
             Guid                stageId,
@@ -574,3 +645,9 @@ public static class StageEndpoints
         }).ToList();
     }
 }
+
+// ── Stage request records ──────────────────────────────────────────────────
+
+public sealed record UpdateStageStatusRequest(string Status);
+public sealed record DeleteStagesRequest(Guid[] DeleteIds);
+public sealed record UpdateStageOrderRequest(int StageOrder);
