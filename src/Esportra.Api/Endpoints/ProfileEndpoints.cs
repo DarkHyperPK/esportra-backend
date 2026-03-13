@@ -218,6 +218,7 @@ public static class ProfileEndpoints
         // Paginated list of profiles with optional search
         app.MapGet("/api/profiles", async (
             string?              q,
+            string?              ids,
             string?              game,
             int                  page  = 1,
             int                  limit = 50,
@@ -225,6 +226,27 @@ public static class ProfileEndpoints
             CancellationToken    ct    = default) =>
         {
             using var conn = db.CreateConnection();
+
+            // Bulk fetch by IDs
+            if (!string.IsNullOrWhiteSpace(ids))
+            {
+                var idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => Guid.TryParse(s.Trim(), out var g) ? g : (Guid?)null)
+                    .Where(g => g.HasValue)
+                    .Select(g => g!.Value)
+                    .ToArray();
+                if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                var byIds = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, username, full_name, avatar_url, bio,
+                           riot_tag, steam_tag, country_code, location
+                    FROM profiles
+                    WHERE id = ANY(@idList)
+                    """,
+                    new { idList });
+                return Results.Ok(byIds);
+            }
+
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT id, username, full_name, avatar_url, bio,
@@ -266,7 +288,7 @@ public static class ProfileEndpoints
 
             using var conn = db.CreateConnection();
             var verifiedRoles = await conn.QueryAsync<dynamic>(
-                "SELECT role, status, is_active, granted_at FROM verified_roles WHERE user_id = @userId",
+                "SELECT role, status, is_active, verified_at FROM verified_roles WHERE user_id = @userId",
                 new { userId = userCtx.UserIdGuid });
             return Results.Ok(new { verifiedRoles });
         }).RequireAuthorization("Authenticated");
@@ -282,7 +304,7 @@ public static class ProfileEndpoints
 
             using var conn = db.CreateConnection();
             var requests = await conn.QueryAsync<dynamic>(
-                "SELECT role, status, is_active, granted_at FROM verified_roles WHERE user_id = @userId ORDER BY granted_at DESC NULLS LAST",
+                "SELECT role, status, is_active, verified_at FROM verified_roles WHERE user_id = @userId ORDER BY verified_at DESC NULLS LAST",
                 new { userId = userCtx.UserIdGuid });
             return Results.Ok(requests);
         }).RequireAuthorization("Authenticated");

@@ -266,13 +266,14 @@ public static class IntegrationEndpoints
         {
             var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? ctx.User.FindFirstValue("sub");
-            if (userId is null) return Results.Unauthorized();
+            if (userId is null || !Guid.TryParse(userId, out var userGuid))
+                return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
-                "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId });
+                "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userGuid });
             await conn.ExecuteAsync(
-                "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId });
+                "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId = userGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -283,14 +284,15 @@ public static class IntegrationEndpoints
         {
             var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? ctx.User.FindFirstValue("sub");
-            if (userId is null) return Results.Unauthorized();
+            if (userId is null || !Guid.TryParse(userId, out var userGuid))
+                return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
-                "DELETE FROM public.faceit_accounts WHERE user_id = @userId", new { userId });
+                "DELETE FROM public.faceit_accounts WHERE user_id = @userId", new { userId = userGuid });
             await conn.ExecuteAsync(
                 "UPDATE public.profiles SET faceit_nickname = NULL WHERE id = @userId",
-                new { userId });
+                new { userId = userGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

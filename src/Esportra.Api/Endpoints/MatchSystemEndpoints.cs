@@ -199,32 +199,49 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Call existing RPC that atomically: marks report disputed, writes match_disputes,
-            // tournament_disputes, and sends notifications
+            // 1. Mark the report as disputed
             await conn.ExecuteAsync(
+                "UPDATE match_result_reports SET status = 'disputed', updated_at = NOW() WHERE id = @rid AND match_id = @matchId",
+                new { rid, matchId = id });
+
+            // 2. Find tournament_id for this match
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
-                SELECT public.notify_admins_of_dispute(
-                    @matchId::uuid, @reportId::uuid,
-                    @disputedByTeamId::uuid, @reason, @evidenceUrls::jsonb
-                )
+                SELECT bv.tournament_id FROM brkt_matches bm
+                JOIN brkt_versions bv ON bv.id = bm.version_id
+                WHERE bm.id = @matchId
+                """,
+                new { matchId = id });
+
+            // 3. Insert dispute record
+            var dispute = await conn.QuerySingleAsync<dynamic>(
+                """
+                INSERT INTO tournament_disputes
+                    (tournament_id, match_id, raised_by_user_id, team_id,
+                     title, description, evidence_url, dispute_reason, status)
+                VALUES
+                    (@tournamentId, @matchId, @userId, @teamId,
+                     @title, @reason, @evidenceUrl, @reason, 'open')
+                RETURNING *
                 """,
                 new
                 {
-                    matchId          = id,
-                    reportId         = rid,
-                    disputedByTeamId = req.TeamId,
-                    reason           = req.Reason,
-                    evidenceUrls     = System.Text.Json.JsonSerializer.Serialize(
-                        req.EvidenceUrls ?? []),
+                    tournamentId,
+                    matchId      = id,
+                    userId       = userCtx.UserIdGuid,
+                    teamId       = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null,
+                    title        = $"Match result disputed",
+                    reason       = req.Reason,
+                    evidenceUrl  = req.EvidenceUrls is { Count: > 0 } ? req.EvidenceUrls[0] : (string?)null,
                 });
 
-            // Broadcast dispute event
+            // 4. Broadcast dispute event
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.ReportDisputed,
                     new { matchId = id, reportId = rid, reason = req.Reason }, ct);
 
-            return Results.Ok(new { success = true, matchId = id, reportId = rid });
+            return Results.Ok(new { success = true, matchId = id, reportId = rid, disputeId = (Guid)dispute.id });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/matches/{id}/messages ───────────────────────────────────
@@ -720,14 +737,14 @@ public static class MatchSystemEndpoints
                 new { teamId = req.TeamId, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
-            var evidenceJson = JsonSerializer.Serialize(req.EvidenceUrls ?? []);
+            var evidenceUrls = (req.EvidenceUrls ?? []).ToArray();
 
             var dispute = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO match_disputes
                     (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
                 VALUES
-                    (@matchId, @teamId, @userId, @reason, @evidenceUrls::jsonb, 'pending')
+                    (@matchId, @teamId, @userId, @reason, @evidenceUrls, 'pending')
                 RETURNING *
                 """,
                 new
@@ -736,7 +753,7 @@ public static class MatchSystemEndpoints
                     teamId       = req.TeamId,
                     userId       = userCtx.UserIdGuid,
                     reason       = req.Reason,
-                    evidenceUrls = evidenceJson,
+                    evidenceUrls,
                 });
 
             return Results.Ok(dispute);

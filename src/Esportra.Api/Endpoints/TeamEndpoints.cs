@@ -20,6 +20,45 @@ public static class TeamEndpoints
 {
     public static void MapTeamEndpoints(this WebApplication app)
     {
+        // ── GET /api/teams ──────────────────────────────────────────────────
+        // List/search teams with optional filters (ids, owner_id).
+        app.MapGet("/api/teams", async (
+            string?              ids,
+            string?              owner_id,
+            string?              q,
+            int                  limit  = 50,
+            int                  offset = 0,
+            IDbConnectionFactory db     = null!,
+            CancellationToken    ct     = default) =>
+        {
+            using var conn = db.CreateConnection();
+
+            if (!string.IsNullOrWhiteSpace(ids))
+            {
+                var idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => Guid.TryParse(s.Trim(), out var g) ? g : (Guid?)null)
+                    .Where(g => g.HasValue)
+                    .Select(g => g!.Value)
+                    .ToArray();
+                if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                var byIds = await conn.QueryAsync<dynamic>(
+                    "SELECT * FROM teams WHERE id = ANY(@idList)", new { idList });
+                return Results.Ok(byIds);
+            }
+
+            Guid? ownerGuid = Guid.TryParse(owner_id, out var og) ? og : null;
+            var teams = await conn.QueryAsync<dynamic>(
+                """
+                SELECT * FROM teams
+                WHERE (@ownerGuid IS NULL OR owner_id = @ownerGuid)
+                  AND (@q IS NULL OR name ILIKE '%' || @q || '%')
+                ORDER BY created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { ownerGuid, q, limit, offset });
+            return Results.Ok(teams);
+        });
+
         // ── GET /api/teams/me ─────────────────────────────────────────────────
         // Returns all teams where the user is a member or owner.
         // Single query replacing the previous 3-query + N RPC calls pattern.

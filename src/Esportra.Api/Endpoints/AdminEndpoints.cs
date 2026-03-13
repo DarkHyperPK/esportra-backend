@@ -388,13 +388,24 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             using var conn = db.CreateConnection();
-            // Dynamic update: serialize payload to JSON, use jsonb_each to set fields
             var json = System.Text.Json.JsonSerializer.Serialize(payload);
             await conn.ExecuteAsync(
                 """
                 UPDATE sponsors
-                SET name        = COALESCE(((@j)::jsonb->>'name')::text,        name),
-                    is_active   = COALESCE(((@j)::jsonb->>'is_active')::boolean, is_active)
+                SET name             = COALESCE(((@j)::jsonb->>'name')::text,             name),
+                    tagline          = COALESCE(((@j)::jsonb->>'tagline')::text,           tagline),
+                    description      = COALESCE(((@j)::jsonb->>'description')::text,      description),
+                    website_url      = COALESCE(((@j)::jsonb->>'website_url')::text,       website_url),
+                    logo_url         = COALESCE(((@j)::jsonb->>'logo_url')::text,          logo_url),
+                    banner_image_url = COALESCE(((@j)::jsonb->>'banner_image_url')::text,  banner_image_url),
+                    accent_color     = COALESCE(((@j)::jsonb->>'accent_color')::text,      accent_color),
+                    tier             = COALESCE(((@j)::jsonb->>'tier')::text,               tier),
+                    placement        = COALESCE((SELECT array_agg(e::text) FROM jsonb_array_elements_text(((@j)::jsonb->'placement')) e), placement),
+                    cta_text         = COALESCE(((@j)::jsonb->>'cta_text')::text,          cta_text),
+                    discount_text    = COALESCE(((@j)::jsonb->>'discount_text')::text,     discount_text),
+                    is_active        = COALESCE(((@j)::jsonb->>'is_active')::boolean,      is_active),
+                    priority         = COALESCE(((@j)::jsonb->>'priority')::int,            priority),
+                    gallery_images   = COALESCE((SELECT array_agg(e::text) FROM jsonb_array_elements_text(((@j)::jsonb->'gallery_images')) e), gallery_images)
                 WHERE id = @id
                 """,
                 new { id, j = json });

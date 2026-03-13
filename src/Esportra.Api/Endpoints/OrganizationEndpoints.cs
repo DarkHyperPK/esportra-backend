@@ -594,6 +594,28 @@ public static class OrganizationEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
+        // ── POST /api/organizations/{orgId}/albums — create album ────────────
+        app.MapPost("/api/organizations/{orgId}/albums", async (
+            Guid                             orgId,
+            [FromBody] CreateOrgAlbumRequest  req,
+            HttpContext                       ctx,
+            IDbConnectionFactory             db,
+            CancellationToken                ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var album = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                INSERT INTO organization_albums (organization_id, title, description)
+                VALUES (@orgId, @title, @description)
+                RETURNING *
+                """,
+                new { orgId, title = req.Title, description = req.Description });
+            return Results.Ok(album);
+        }).RequireAuthorization("Organizer");
+
         // ── DELETE /api/organizations/{orgId}/albums/{albumId} ───────────────
         app.MapDelete("/api/organizations/{orgId}/albums/{albumId}", async (
             Guid                 orgId,
@@ -750,7 +772,7 @@ public static class OrganizationEndpoints
                 """,
                 new { userId = userCtx.UserIdGuid });
 
-            return Results.Ok(rows);
+            return Results.Ok(new { organizations = rows });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/organizations ────────────────────────────────────────────
@@ -858,7 +880,16 @@ public static class OrganizationEndpoints
                      WHERE t.organization_id = @orgId AND t.deleted_at IS NULL) AS total_participants
                 """,
                 new { orgId });
-            return Results.Ok(stats);
+
+            if (stats is null) return Results.Ok(new { totalTournaments = 0, activeTournaments = 0, staffCount = 0, totalParticipants = 0 });
+
+            return Results.Ok(new
+            {
+                totalTournaments  = (long)stats.total_tournaments,
+                activeTournaments = (long)stats.active_tournaments,
+                staffCount        = (long)stats.staff_count,
+                totalParticipants = (long)stats.total_participants
+            });
         }).RequireAuthorization("Authenticated");
     }
 
@@ -908,6 +939,7 @@ public sealed record AssignTournamentsRequest(List<string> TournamentIds);
 
 public sealed record InsertOrgMediaRequest(string Url, string Type, string? Caption = null, string? AlbumId = null);
 public sealed record UpdateOrgImageRequest(string Url);
+public sealed record CreateOrgAlbumRequest(string Title, string? Description = null);
 
 public sealed record CreateOrganizationRequest(
     string                      Name,

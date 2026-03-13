@@ -97,12 +97,48 @@ public static class TournamentEndpoints
             string?              game,
             string?              q,
             string?              organizer_id,
+            string?              ids,
             int                  limit  = 50,
             int                  offset = 0,
             IDbConnectionFactory db     = null!,
             HybridCache          cache  = null!,
             CancellationToken    ct     = default) =>
         {
+            // Bulk fetch by IDs — bypass cache for direct lookup
+            if (!string.IsNullOrWhiteSpace(ids))
+            {
+                var idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => Guid.TryParse(s.Trim(), out var g) ? g : (Guid?)null)
+                    .Where(g => g.HasValue)
+                    .Select(g => g!.Value)
+                    .ToArray();
+                if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                using var conn2 = db.CreateConnection();
+                var rows2 = (await conn2.QueryAsync<TournamentListRow>(
+                    """
+                    SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
+                           t.start_date, t.end_date, t.registration_deadline,
+                           t.max_teams, t.min_teams, t.team_size,
+                           t.entry_fee, t.prize_pool,
+                           t.banner_url, t.logo_url, t.is_public,
+                           t.organizer_id, t.venue_id, t.description,
+                           t.created_at, t.updated_at,
+                           (SELECT COUNT(*) FROM tournament_participants tp
+                            WHERE tp.tournament_id = t.id) AS current_participants,
+                           o.name   AS organizer_name,
+                           o.slug   AS organization_slug,
+                           p.username      AS organizer_username,
+                           p.full_name     AS organizer_full_name
+                    FROM tournaments t
+                    LEFT JOIN organizations o ON o.id = t.organization_id
+                    LEFT JOIN profiles      p ON p.id = t.organizer_id
+                    WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
+                    ORDER BY t.start_date ASC
+                    """,
+                    new { idList })).AsList();
+                return Results.Json(rows2, s_snakeCase);
+            }
+
             var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{limit}:{offset}";
             Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
             var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
@@ -951,6 +987,7 @@ public static class TournamentEndpoints
                         created_at = first.created_at,
                         team_name = first.team_name as string,
                         team_logo_url = first.team_logo_url as string,
+                        team_members = string.Join(", ", members.Select(m => m.username)),
                         members,
                     };
                 })
