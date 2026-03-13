@@ -61,9 +61,10 @@ public static class StorageEndpoints
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync();
-                logger.LogError("Supabase storage upload failed: {Status} {Body}", response.StatusCode, errorBody);
-                return Results.Problem(
-                    detail: "File upload failed.",
+                logger.LogError("Supabase storage upload failed: {Url} {Status} {Body}",
+                    uploadUrl, response.StatusCode, errorBody);
+                return Results.Json(
+                    new { error = "File upload failed.", detail = errorBody, url = uploadUrl },
                     statusCode: (int)response.StatusCode);
             }
 

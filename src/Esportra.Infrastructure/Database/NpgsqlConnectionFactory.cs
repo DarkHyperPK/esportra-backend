@@ -9,5 +9,9 @@ public sealed class NpgsqlConnectionFactory(string connectionString) : IDbConnec
     private readonly string _connectionString = connectionString;
 
     public IDbConnection CreateConnection()
-        => new NpgsqlConnection(_connectionString);
+    {
+        var conn = new NpgsqlConnection(_connectionString);
+        conn.Open();
+        return conn;
+    }
 }
