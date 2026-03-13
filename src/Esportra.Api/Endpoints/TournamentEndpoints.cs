@@ -1031,8 +1031,8 @@ public static class TournamentEndpoints
             return Results.Ok(rows);
         });
 
-        // ── GET /api/teams — search teams by name ───────────────────────────────
-        app.MapGet("/api/teams", async (
+        // ── GET /api/teams/search — search teams by name ─────────────────────────
+        app.MapGet("/api/teams/search", async (
             string?              name,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
