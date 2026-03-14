@@ -269,6 +269,7 @@ public static class MatchEndpoints
             IDbConnectionFactory     db,
             IHubContext<MatchHub>    matchHub,
             IHubContext<VetoHub>     vetoHub,
+            IHubContext<BracketHub>  bracketHub,
             CancellationToken        ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -279,14 +280,39 @@ public static class MatchEndpoints
             // 1. Delete associated game results
             await conn.ExecuteAsync("DELETE FROM brkt_match_games WHERE match_id = @matchId", new { matchId });
 
-            // 2. Undo advancements
-            try
-            {
-                await conn.ExecuteAsync(
-                    "SELECT public.undo_match_advancement(@matchId)",
-                    new { matchId });
-            }
-            catch { /* RPC may not exist in all environments */ }
+            // 2. Undo advancements — inline SQL (the RPC uses auth.uid() which is NULL from Dapper)
+            await conn.ExecuteAsync(
+                """
+                UPDATE brkt_matches target
+                SET
+                    team1_id = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM brkt_advancements a
+                            WHERE a.source_match_id = @matchId
+                              AND a.target_match_id = target.id
+                              AND a.target_slot = 1
+                        ) THEN NULL ELSE target.team1_id END,
+                    team2_id = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM brkt_advancements a
+                            WHERE a.source_match_id = @matchId
+                              AND a.target_match_id = target.id
+                              AND a.target_slot = 2
+                        ) THEN NULL ELSE target.team2_id END,
+                    winner_id = NULL,
+                    loser_id = NULL,
+                    status = 'pending',
+                    team1_score = 0,
+                    team2_score = 0,
+                    version = target.version + 1,
+                    updated_at = NOW()
+                WHERE target.id IN (
+                    SELECT target_match_id
+                    FROM brkt_advancements
+                    WHERE source_match_id = @matchId
+                )
+                """,
+                new { matchId });
 
             // 3. Reset veto
             try
@@ -297,7 +323,6 @@ public static class MatchEndpoints
             }
             catch
             {
-                // Fallback: manual deletion
                 await conn.ExecuteAsync("DELETE FROM match_map_veto_actions WHERE match_id = @matchId", new { matchId });
                 await conn.ExecuteAsync("DELETE FROM match_map_vetos WHERE match_id = @matchId", new { matchId });
             }
@@ -311,10 +336,16 @@ public static class MatchEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE brkt_matches
-                SET winner_id = NULL, status = 'pending', team1_score = 0, team2_score = 0, party_code = NULL
+                SET winner_id = NULL, loser_id = NULL, status = 'pending',
+                    team1_score = 0, team2_score = 0, party_code = NULL,
+                    version = version + 1, updated_at = NOW()
                 WHERE id = @matchId
                 """,
                 new { matchId });
+
+            // 6. Broadcast updates
+            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
@@ -324,6 +355,14 @@ public static class MatchEndpoints
             await vetoHub.Clients
                 .Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoReset, new { matchId }, ct);
+
+            if (versionId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId, matchId }, ct);
+            }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
