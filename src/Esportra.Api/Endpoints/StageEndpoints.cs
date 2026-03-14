@@ -119,28 +119,38 @@ public static class StageEndpoints
             [FromBody] SyncMapPoolsRequest    req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            ILogger<Program>                  logger,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
-
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_map_pools WHERE tournament_id = @tournamentId",
-                new { tournamentId });
-
-            if (req.MapIds is { Length: > 0 })
+            try
             {
-                foreach (var mapId in req.MapIds)
-                {
-                    await conn.ExecuteAsync(
-                        "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId) ON CONFLICT DO NOTHING",
-                        new { tournamentId, mapId });
-                }
-            }
+                using var conn = db.CreateConnection();
 
-            return Results.Ok(new { success = true, count = req.MapIds?.Length ?? 0 });
+                await conn.ExecuteAsync(
+                    "DELETE FROM tournament_map_pools WHERE tournament_id = @tournamentId",
+                    new { tournamentId });
+
+                if (req.MapIds is { Length: > 0 })
+                {
+                    foreach (var mapIdStr in req.MapIds)
+                    {
+                        if (!Guid.TryParse(mapIdStr, out var mapId)) continue;
+                        await conn.ExecuteAsync(
+                            "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId) ON CONFLICT DO NOTHING",
+                            new { tournamentId, mapId });
+                    }
+                }
+
+                return Results.Ok(new { success = true, count = req.MapIds?.Length ?? 0 });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error syncing map pool for tournament {TournamentId}", tournamentId);
+                return Results.Problem($"Error syncing map pool: {ex.Message}");
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/stages/{stageId}/status ──────────────────────────────
