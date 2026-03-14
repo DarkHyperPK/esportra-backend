@@ -472,8 +472,14 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            // Only admins can send arbitrary emails
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit) &&
+            // Allow self-service transactional emails for authenticated users
+            var selfServiceTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "TOURNAMENT_REGISTRATION", "CHECKIN_REMINDER", "MATCH_CHECKIN_REMINDER", "WELCOME" };
+            bool isSelfService = selfServiceTypes.Contains(req.Type ?? "")
+                                 && string.Equals(req.Email, userCtx.Email, StringComparison.OrdinalIgnoreCase);
+
+            if (!isSelfService &&
+                !userCtx.Permissions.Contains(Permissions.UsersEdit) &&
                 !userCtx.AdminRoles.Any())
                 return Results.Forbid();
 
