@@ -298,10 +298,14 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             throw new InvalidOperationException("No current team assigned");
 
         // Allow organizer to act on behalf of teams
-        if (await IsOrganizerAsync(userId, veto.TournamentId, ct))
-            return;
+        var isOrg = await IsOrganizerAsync(userId, veto.TournamentId, ct);
+        logger.LogInformation("AssertCaptain: userId={UserId}, tournamentId={TournamentId}, isOrganizer={IsOrg}, currentTeamId={TeamId}",
+            userId, veto.TournamentId, isOrg, veto.CurrentTeamId);
+        if (isOrg) return;
 
-        if (!await IsTeamCaptainAsync(userId, veto.CurrentTeamId.Value, ct))
+        var isCap = await IsTeamCaptainAsync(userId, veto.CurrentTeamId.Value, ct);
+        logger.LogInformation("AssertCaptain: isCaptain={IsCap} for team={TeamId}", isCap, veto.CurrentTeamId);
+        if (!isCap)
             throw new UnauthorizedAccessException("NOT_YOUR_TURN: you are not captain of the acting team");
     }
 
