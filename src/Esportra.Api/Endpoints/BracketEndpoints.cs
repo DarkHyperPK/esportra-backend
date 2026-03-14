@@ -546,10 +546,13 @@ public static class BracketEndpoints
                 """
                 SELECT m.*,
                        t1.name AS team1_name, t1.logo_url AS team1_logo,
-                       t2.name AS team2_name, t2.logo_url AS team2_logo
+                       t2.name AS team2_name, t2.logo_url AS team2_logo,
+                       ts.best_of AS stage_best_of
                 FROM brkt_matches m
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
                 LEFT JOIN teams t2 ON t2.id = m.team2_id
+                LEFT JOIN brkt_versions bv ON bv.id = m.version_id
+                LEFT JOIN tournament_stages ts ON ts.id = bv.stage_id
                 WHERE m.id = @id
                 """, new { id });
             return match is null ? Results.NotFound() : Results.Ok(match);
