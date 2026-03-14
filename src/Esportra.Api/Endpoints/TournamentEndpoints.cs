@@ -262,10 +262,10 @@ public static class TournamentEndpoints
                     """
                     SELECT unnest(permissions) FROM organization_staff
                     WHERE organization_id = (SELECT organization_id FROM tournaments WHERE id = @tid)
-                      AND user_id = @userId AND is_active = TRUE
+                      AND user_id = @userId AND status = 'active'
                     UNION
                     SELECT unnest(permissions) FROM tournament_staff
-                    WHERE tournament_id = @tid AND user_id = @userId AND is_active = TRUE
+                    WHERE tournament_id = @tid AND user_id = @userId AND status = 'active'
                     """,
                     new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
             }
