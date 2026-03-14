@@ -1097,13 +1097,60 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/members ────────────────────────────────────────────
         // Returns team members for a given user_id or team_id
+        // Supports: ?teamId=, ?userId=, ?team_ids=a,b&user_id=x&roles=captain,owner&is_active=true
         app.MapGet("/api/teams/members", async (
+            HttpContext           ctx,
             Guid?                userId,
             Guid?                teamId,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
+
+            // ── Multi-team query (team_ids + user_id + roles + is_active) ──
+            var teamIdsParam = ctx.Request.Query["team_ids"].FirstOrDefault();
+            var userIdParam  = ctx.Request.Query["user_id"].FirstOrDefault();
+            var rolesParam   = ctx.Request.Query["roles"].FirstOrDefault();
+
+            if (!string.IsNullOrEmpty(teamIdsParam))
+            {
+                var teamIdList = teamIdsParam.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => Guid.TryParse(s.Trim(), out var g) ? g : (Guid?)null)
+                    .Where(g => g.HasValue).Select(g => g!.Value).ToArray();
+
+                if (teamIdList.Length == 0)
+                    return Results.BadRequest(new { error = "Invalid team_ids" });
+
+                Guid? filterUserId = null;
+                if (!string.IsNullOrEmpty(userIdParam) && Guid.TryParse(userIdParam, out var uid))
+                    filterUserId = uid;
+
+                var sql = """
+                    SELECT tm.*, p.username, p.avatar_url, p.riot_tag, p.steam_tag,
+                           t.name AS team_name, t.logo_url AS team_logo
+                    FROM team_members tm
+                    JOIN profiles p ON p.id = tm.user_id
+                    JOIN teams    t ON t.id = tm.team_id
+                    WHERE tm.team_id = ANY(@teamIds)
+                    """;
+
+                if (filterUserId.HasValue)
+                    sql += " AND tm.user_id = @filterUserId";
+
+                if (!string.IsNullOrEmpty(rolesParam))
+                {
+                    var roles = rolesParam.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(r => r.Trim()).ToArray();
+                    sql += " AND tm.role = ANY(@roles)";
+                    sql += " AND tm.is_active = TRUE ORDER BY tm.role DESC";
+                    var rows = await conn.QueryAsync<dynamic>(sql, new { teamIds = teamIdList, filterUserId, roles });
+                    return Results.Ok(rows);
+                }
+
+                sql += " AND tm.is_active = TRUE ORDER BY tm.role DESC, p.username ASC";
+                var result = await conn.QueryAsync<dynamic>(sql, new { teamIds = teamIdList, filterUserId });
+                return Results.Ok(result);
+            }
 
             if (teamId.HasValue)
             {
@@ -1118,16 +1165,21 @@ public static class TeamEndpoints
                 return Results.Ok(rows);
             }
 
-            if (userId.HasValue)
+            // Support snake_case user_id param too
+            var effectiveUserId = userId;
+            if (!effectiveUserId.HasValue && !string.IsNullOrEmpty(userIdParam) && Guid.TryParse(userIdParam, out var parsedUid))
+                effectiveUserId = parsedUid;
+
+            if (effectiveUserId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
                     """
                     SELECT tm.*, t.name AS team_name, t.logo_url AS team_logo, t.game
                     FROM team_members tm
                     JOIN teams t ON t.id = tm.team_id
-                    WHERE tm.user_id = @userId AND tm.is_active = TRUE
+                    WHERE tm.user_id = @effectiveUserId AND tm.is_active = TRUE
                     ORDER BY tm.joined_at DESC
-                    """, new { userId });
+                    """, new { effectiveUserId });
                 return Results.Ok(rows);
             }
 

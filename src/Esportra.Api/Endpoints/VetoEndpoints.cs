@@ -288,4 +288,4 @@ public sealed record VetoUpdateRequest(
     string[]?    Team2BannedMaps     = null,
     PickedMap[]? Team1PickedMaps     = null,
     PickedMap[]? Team2PickedMaps     = null,
-    string?      SelectedMapId       = null);
+    Guid?        SelectedMapId       = null);
