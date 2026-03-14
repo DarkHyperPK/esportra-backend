@@ -1141,7 +1141,7 @@ public static class TeamEndpoints
                 {
                     var roles = rolesParam.Split(',', StringSplitOptions.RemoveEmptyEntries)
                         .Select(r => r.Trim()).ToArray();
-                    sql += " AND tm.role = ANY(@roles)";
+                    sql += " AND tm.role::text = ANY(@roles)";
                     sql += " AND tm.is_active = TRUE ORDER BY tm.role DESC";
                     var rows = await conn.QueryAsync<dynamic>(sql, new { teamIds = teamIdList, filterUserId, roles });
                     return Results.Ok(rows);

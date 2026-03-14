@@ -176,12 +176,12 @@ public static class VetoEndpoints
                     current_team_id       = @CurrentTeamId,
                     current_action        = @CurrentAction,
                     current_action_number = COALESCE(@CurrentActionNumber, current_action_number),
-                    team1_banned_maps     = @Team1BannedMaps,
-                    team2_banned_maps     = @Team2BannedMaps,
-                    team1_picked_maps     = @Team1PickedMapsJson::jsonb,
-                    team2_picked_maps     = @Team2PickedMapsJson::jsonb,
-                    selected_map_id       = @SelectedMapId
-                WHERE match_id = @matchId
+                    team1_banned_maps     = COALESCE(@Team1BannedMaps, team1_banned_maps),
+                    team2_banned_maps     = COALESCE(@Team2BannedMaps, team2_banned_maps),
+                    team1_picked_maps     = COALESCE(@Team1PickedMapsJson::jsonb, team1_picked_maps),
+                    team2_picked_maps     = COALESCE(@Team2PickedMapsJson::jsonb, team2_picked_maps),
+                    selected_map_id       = COALESCE(@SelectedMapId, selected_map_id)
+                WHERE match_id = @matchId OR id = @matchId
                 """,
                 new
                 {
@@ -191,18 +191,34 @@ public static class VetoEndpoints
                     req.CurrentTeamId,
                     req.CurrentAction,
                     req.CurrentActionNumber,
-                    Team1BannedMaps     = req.Team1BannedMaps ?? [],
-                    Team2BannedMaps     = req.Team2BannedMaps ?? [],
-                    Team1PickedMapsJson = System.Text.Json.JsonSerializer.Serialize(req.Team1PickedMaps ?? []),
-                    Team2PickedMapsJson = System.Text.Json.JsonSerializer.Serialize(req.Team2PickedMaps ?? []),
+                    Team1BannedMaps     = req.Team1BannedMaps,
+                    Team2BannedMaps     = req.Team2BannedMaps,
+                    Team1PickedMapsJson = req.Team1PickedMaps is not null
+                        ? System.Text.Json.JsonSerializer.Serialize(req.Team1PickedMaps)
+                        : (string?)null,
+                    Team2PickedMapsJson = req.Team2PickedMaps is not null
+                        ? System.Text.Json.JsonSerializer.Serialize(req.Team2PickedMaps)
+                        : (string?)null,
                     req.SelectedMapId,
                 });
 
+            // matchId param may be the veto's own id or the match_id
             var state = await veto.GetAsync(matchId, ct);
+            if (state is null)
+            {
+                // Fallback: lookup by veto id to resolve actual match_id
+                using var conn2 = db.CreateConnection();
+                var actualMatchId = await conn2.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT match_id FROM match_map_vetos WHERE id = @matchId", new { matchId });
+                if (actualMatchId.HasValue)
+                    state = await veto.GetAsync(actualMatchId.Value, ct);
+            }
 
             if (state is not null)
-                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
+            {
+                await hub.Clients.Group(VetoHub.VetoGroup(state.MatchId.ToString()))
                     .SendAsync(VetoHubEvents.StateSync, (object)state, ct);
+            }
 
             return state is null ? Results.NotFound() : Results.Ok(state);
         }).RequireAuthorization("Authenticated");
