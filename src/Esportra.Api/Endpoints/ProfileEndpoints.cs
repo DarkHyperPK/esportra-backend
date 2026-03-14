@@ -258,20 +258,26 @@ public static class ProfileEndpoints
             // Bulk fetch by IDs
             if (!string.IsNullOrWhiteSpace(ids))
             {
-                var idList = ids.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(s => Guid.TryParse(s.Trim(), out var g) ? g : (Guid?)null)
-                    .Where(g => g.HasValue)
-                    .Select(g => g!.Value)
-                    .ToList();
-                if (idList.Count == 0) return Results.Ok(Array.Empty<object>());
+                var idStrings = ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Where(s => Guid.TryParse(s, out _))
+                    .Distinct()
+                    .ToArray();
+                if (idStrings.Length == 0) return Results.Ok(Array.Empty<object>());
+
+                // Build parameterized IN clause: WHERE id IN (@p0, @p1, ...)
+                var paramNames = string.Join(", ", idStrings.Select((_, i) => $"@p{i}::uuid"));
+                var parameters = new Dapper.DynamicParameters();
+                for (int i = 0; i < idStrings.Length; i++)
+                    parameters.Add($"p{i}", Guid.Parse(idStrings[i]));
+
                 var byIds = await conn.QueryAsync<dynamic>(
-                    """
+                    $"""
                     SELECT id, username, full_name, avatar_url, bio,
                            riot_tag, steam_tag, country_code, location
                     FROM profiles
-                    WHERE id = ANY(@idList::uuid[])
+                    WHERE id IN ({paramNames})
                     """,
-                    new { idList });
+                    parameters);
                 return Results.Ok(byIds);
             }
 
