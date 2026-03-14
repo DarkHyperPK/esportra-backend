@@ -728,7 +728,15 @@ public static class OrganizationEndpoints
                       LIMIT 1
                       """,
                 new { slug, slugId = isUuid ? slugGuid : (Guid?)null });
-            return row is null ? Results.NotFound() : Results.Ok(row);
+            if (row is null) return Results.NotFound();
+            // Dapper maps jsonb to string — parse so it serializes as a proper object
+            if (row is IDictionary<string, object?> dict
+                && dict.TryGetValue("organization", out var val) && val is string s)
+            {
+                try { dict["organization"] = JsonSerializer.Deserialize<JsonElement>(s); }
+                catch { /* leave as-is */ }
+            }
+            return Results.Ok(row);
         });
 
         // ── GET /api/organizations/me ──────────────────────────────────────────
