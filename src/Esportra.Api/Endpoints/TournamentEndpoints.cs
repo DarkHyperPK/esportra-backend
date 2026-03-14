@@ -623,21 +623,40 @@ public static class TournamentEndpoints
             if (existing is not null)
                 return Results.Conflict(new { error = "You are already registered for this tournament." });
 
-            Guid? teamIdGuid = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
+            Guid? teamIdGuid      = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
+            Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
+            Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
+            var   participantType = teamIdGuid is not null ? "team" : "solo";
+            // Use requested status if valid, otherwise default based on entry fee
+            var   regStatus       = req.Status is "pending" or "approved" ? req.Status : "approved";
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO tournament_participants
-                    (tournament_id, user_id, team_id, status, participant_type)
-                VALUES (@tournamentId, @userId, @teamId, 'registered', @participantType)
+                    (tournament_id, user_id, team_id, team_captain_id, team_name,
+                     team_members, team_contact_email, roster_id, roster_name,
+                     status, participant_type, entry_fee_amount, entry_fee_paid)
+                VALUES (@tournamentId, @userId, @teamId, @teamCaptainId, @teamName,
+                        @teamMembers::jsonb, @teamContactEmail, @rosterId, @rosterName,
+                        @regStatus::registration_status, @participantType::registration_type,
+                        @entryFeeAmount, @entryFeePaid)
                 RETURNING *
                 """,
                 new
                 {
-                    tournamentId    = id,
-                    userId          = userCtx.UserIdGuid,
-                    teamId          = teamIdGuid,
-                    participantType = teamIdGuid is not null ? "team" : "solo",
+                    tournamentId     = id,
+                    userId           = userCtx.UserIdGuid,
+                    teamId           = teamIdGuid,
+                    teamCaptainId    = captainIdGuid ?? userCtx.UserIdGuid,
+                    teamName         = req.TeamName,
+                    teamMembers      = req.TeamMembers is not null ? $"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]" : "[]",
+                    teamContactEmail = req.TeamContactEmail,
+                    rosterId         = rosterIdGuid,
+                    rosterName       = req.RosterName,
+                    regStatus,
+                    participantType,
+                    entryFeeAmount   = req.EntryFeeAmount ?? 0m,
+                    entryFeePaid     = req.EntryFeePaid ?? true,
                 });
 
             return Results.Ok(row);
@@ -2156,7 +2175,18 @@ public sealed record UpdateTournamentRequest(
     bool      ClearDeletedAt       = false,
     object?   Settings             = null);
 
-public sealed record RegisterTournamentRequest(string? TeamId = null);
+public sealed record RegisterTournamentRequest(
+    string? TeamId            = null,
+    string? ParticipantType   = null,
+    string? TeamCaptainId     = null,
+    string? TeamName          = null,
+    string? TeamMembers       = null,
+    string? RosterId          = null,
+    string? RosterName        = null,
+    string? TeamContactEmail  = null,
+    string? Status            = null,
+    decimal? EntryFeeAmount   = null,
+    bool?   EntryFeePaid      = null);
 public sealed record UpdateBannerRequest(string Url);
 
 // ── Organizer Dispute request records ────────────────────────────────────────

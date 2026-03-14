@@ -310,14 +310,17 @@ public static class ProfileEndpoints
             if (!string.IsNullOrWhiteSpace(userIds))
             {
                 var idList = userIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Select(s => Guid.TryParse(s, out var g) ? g : (Guid?)null)
-                    .Where(g => g.HasValue)
-                    .Select(g => g!.Value)
+                    .Where(s => Guid.TryParse(s, out _))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
                 if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                var paramNames = string.Join(", ", idList.Select((_, i) => $"@p{i}::uuid"));
+                var parameters = new DynamicParameters();
+                for (int i = 0; i < idList.Length; i++)
+                    parameters.Add($"p{i}", Guid.Parse(idList[i]));
                 var accounts = await conn.QueryAsync<dynamic>(
-                    "SELECT * FROM riot_accounts WHERE user_id = ANY(@idList) ORDER BY created_at DESC",
-                    new { idList });
+                    $"SELECT * FROM riot_accounts WHERE user_id IN ({paramNames}) ORDER BY created_at DESC",
+                    parameters);
                 return Results.Ok(accounts);
             }
 
