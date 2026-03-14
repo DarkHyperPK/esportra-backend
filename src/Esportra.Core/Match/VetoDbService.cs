@@ -80,10 +80,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             SELECT EXISTS(
                 SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId
             ) OR EXISTS(
-                SELECT 1 FROM organization_members om
-                JOIN tournaments t ON t.organization_id = om.organization_id
-                WHERE t.id = @tournamentId AND om.user_id = @userId
-                  AND om.role::text IN ('owner','admin')
+                SELECT 1 FROM organization_staff os
+                JOIN tournaments t ON t.organization_id = os.organization_id
+                WHERE t.id = @tournamentId AND os.user_id = @userId
+                  AND os.role IN ('owner','admin') AND os.status = 'active'
             )",
             new { tournamentId, userId });
     }
