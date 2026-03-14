@@ -480,7 +480,11 @@ public static class OrganizationEndpoints
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT sal.*,
-                       to_jsonb(p) AS actor
+                       json_build_object(
+                           'full_name', p.full_name,
+                           'username',  p.username,
+                           'avatar_url', p.avatar_url
+                       )::text AS actor_json
                 FROM staff_audit_log sal
                 LEFT JOIN profiles p ON p.id = sal.actor_id
                 WHERE sal.organization_id = @orgId
@@ -490,11 +494,24 @@ public static class OrganizationEndpoints
                 """,
                 new { orgId, action, limit, offset });
 
+            // Parse actor_json string into object for proper JSON serialization
+            var mapped = rows.Select(r =>
+            {
+                var dict = (IDictionary<string, object?>)r;
+                var actorJson = dict.ContainsKey("actor_json") ? dict["actor_json"] as string : null;
+                dict.Remove("actor_json");
+                if (actorJson is not null)
+                    dict["actor"] = System.Text.Json.JsonSerializer.Deserialize<object>(actorJson);
+                else
+                    dict["actor"] = null;
+                return r;
+            }).ToList();
+
             var total = await conn.QuerySingleAsync<int>(
                 "SELECT COUNT(*) FROM staff_audit_log WHERE organization_id = @orgId",
                 new { orgId });
 
-            return Results.Ok(new { logs = rows, total });
+            return Results.Ok(new { logs = mapped, total });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/by-slug/{slug} — public org lookup ────────
@@ -865,7 +882,10 @@ public static class OrganizationEndpoints
                 """
                 UPDATE organizations
                 SET name         = COALESCE(@name, name),
+                    slug         = COALESCE(@slug, slug),
                     description  = COALESCE(@description, description),
+                    logo_url     = COALESCE(@logoUrl, logo_url),
+                    banner_url   = COALESCE(@bannerUrl, banner_url),
                     social_links = CASE WHEN @socialLinks IS NOT NULL THEN @socialLinks::jsonb ELSE social_links END,
                     updated_at   = NOW()
                 WHERE id = @orgId
@@ -875,7 +895,10 @@ public static class OrganizationEndpoints
                 {
                     orgId,
                     name        = req.Name,
+                    slug        = req.Slug,
                     description = req.Description,
+                    logoUrl     = req.LogoUrl,
+                    bannerUrl   = req.BannerUrl,
                     socialLinks = req.SocialLinks is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.SocialLinks)
                         : null
@@ -972,5 +995,8 @@ public sealed record CreateOrganizationRequest(
 
 public sealed record UpdateOrganizationRequest(
     string?                     Name        = null,
+    string?                     Slug        = null,
     string?                     Description = null,
+    string?                     LogoUrl     = null,
+    string?                     BannerUrl   = null,
     Dictionary<string, string>? SocialLinks = null);
