@@ -1,4 +1,6 @@
 ﻿using System.Data;
+using System.Dynamic;
+using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
@@ -76,6 +78,15 @@ public static class OrganizationEndpoints
                 """,
                 new { orgId });
 
+            foreach (var s in staff)
+            {
+                if (s is IDictionary<string, object?> d)
+                {
+                    foreach (var key in new[] { "profiles", "tournament_assignments" })
+                        if (d.TryGetValue(key, out var v) && v is string str)
+                            try { d[key] = JsonSerializer.Deserialize<JsonElement>(str); } catch { }
+                }
+            }
             return Results.Ok(staff);
         }).RequireAuthorization("Authenticated");
 
@@ -538,6 +549,9 @@ public static class OrganizationEndpoints
                 ORDER BY a.created_at DESC
                 """,
                 new { orgId });
+            foreach (var r in rows)
+                if (r is IDictionary<string, object?> d && d.TryGetValue("media", out var v) && v is string str)
+                    try { d["media"] = JsonSerializer.Deserialize<JsonElement>(str); } catch { }
             return Results.Ok(rows);
         });
 

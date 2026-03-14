@@ -1,4 +1,6 @@
 ﻿using System.Data;
+using System.Dynamic;
+using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
@@ -99,6 +101,7 @@ public static class TeamEndpoints
                 """,
                 new { userId = userCtx.UserIdGuid });
 
+            foreach (var t in teams) ParseJsonbFields(t, "members");
             return Results.Ok(teams);
         }).RequireAuthorization("Authenticated");
 
@@ -132,7 +135,9 @@ public static class TeamEndpoints
                 """,
                 new { id });
 
-            return team is null ? Results.NotFound() : Results.Ok(team);
+            if (team is null) return Results.NotFound();
+            ParseJsonbFields(team, "members");
+            return Results.Ok(team);
         });
 
         // ── POST /api/teams ───────────────────────────────────────────────────
@@ -723,6 +728,7 @@ public static class TeamEndpoints
                 ORDER BY r.created_at DESC
                 """,
                 new { id });
+            foreach (var r in rosters) ParseJsonbFields(r, "members");
             return Results.Ok(rosters);
         }).RequireAuthorization("Authenticated");
 
@@ -1169,6 +1175,24 @@ public static class TeamEndpoints
             new { teamId, userId });
         if (!isCaptain)
             throw new UnauthorizedAccessException("Only a team captain can perform this action.");
+    }
+
+    /// <summary>
+    /// Dapper maps PostgreSQL jsonb columns to strings on ExpandoObject.
+    /// This helper parses known JSON-string fields so they serialize as
+    /// proper arrays/objects instead of escaped strings.
+    /// </summary>
+    private static void ParseJsonbFields(dynamic row, params string[] fields)
+    {
+        if (row is not IDictionary<string, object?> dict) return;
+        foreach (var f in fields)
+        {
+            if (dict.TryGetValue(f, out var val) && val is string s)
+            {
+                try { dict[f] = JsonSerializer.Deserialize<JsonElement>(s); }
+                catch { /* leave as string if not valid JSON */ }
+            }
+        }
     }
 }
 
