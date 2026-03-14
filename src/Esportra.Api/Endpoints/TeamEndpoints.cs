@@ -647,7 +647,7 @@ public static class TeamEndpoints
                 JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN riot_accounts ra ON ra.user_id = tm.user_id
                 LEFT JOIN faceit_accounts fa ON fa.user_id = tm.user_id
-                LEFT JOIN valorant_player_stats vs ON vs.user_id = tm.user_id
+                LEFT JOIN leaderboard vs ON vs.user_id = tm.user_id AND vs.game = 'valorant'
                 WHERE tm.team_id = @id AND tm.is_active = true
                 """,
                 new { id });
