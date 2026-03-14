@@ -449,6 +449,7 @@ public static class TournamentEndpoints
                     check_in_deadline    = COALESCE(@checkInDeadline, check_in_deadline),
                     rewards              = COALESCE(@rewards, rewards),
                     stream_url           = COALESCE(@streamUrl, stream_url),
+                    settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
                 WHERE id = @id
@@ -474,6 +475,9 @@ public static class TournamentEndpoints
                     checkInDeadline      = req.CheckInDeadline,
                     rewards              = req.Rewards,
                     streamUrl            = req.StreamUrl,
+                    settings             = req.Settings is not null
+                                             ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
+                                             : null,
                     deletedAt            = req.DeletedAt,
                     clearDeletedAt       = req.ClearDeletedAt,
                 });
@@ -2149,7 +2153,8 @@ public sealed record UpdateTournamentRequest(
     string?   Rewards              = null,
     string?   StreamUrl            = null,
     DateTime? DeletedAt            = null,
-    bool      ClearDeletedAt       = false);
+    bool      ClearDeletedAt       = false,
+    object?   Settings             = null);
 
 public sealed record RegisterTournamentRequest(string? TeamId = null);
 public sealed record UpdateBannerRequest(string Url);
