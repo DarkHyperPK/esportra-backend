@@ -66,7 +66,9 @@ public static class StageEndpoints
                         UPDATE tournament_stages
                         SET name = @name, format = @format, stage_order = @stageOrder,
                             best_of = @bestOf, capacity = @capacity,
-                            advancement_count = @advancementCount, updated_at = NOW()
+                            advancement_count = @advancementCount,
+                            config = CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE config END,
+                            updated_at = NOW()
                         WHERE id = @id
                         """,
                         new
@@ -78,14 +80,16 @@ public static class StageEndpoints
                             bestOf           = s.BestOf ?? 1,
                             capacity         = s.Capacity,
                             advancementCount = s.AdvancementCount,
+                            config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
                         });
                 }
                 else
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, capacity, advancement_count)
-                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount)
+                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, capacity, advancement_count, config)
+                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount,
+                                CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END)
                         """,
                         new
                         {
@@ -96,6 +100,7 @@ public static class StageEndpoints
                             bestOf           = s.BestOf ?? 1,
                             capacity         = s.Capacity,
                             advancementCount = s.AdvancementCount,
+                            config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
                         });
                 }
             }
