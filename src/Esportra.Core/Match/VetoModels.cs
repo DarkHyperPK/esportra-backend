@@ -36,6 +36,8 @@ public sealed record MatchMapVeto
     public string? StartedAt           { get; init; }
     public string? CompletedAt         { get; init; }
     public string? Game                { get; init; } = "valorant";
+    public string? Team1LinkToken      { get; init; }
+    public string? Team2LinkToken      { get; init; }
 }
 
 public sealed record PickedMap(string MapId, string? Side = null);
