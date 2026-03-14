@@ -238,6 +238,18 @@ public static class BracketEndpoints
             return Results.Ok(standings);
         });
 
+        // ── GET /api/stages/{stageId}/standings ──────────────────────────────
+        // Convenience route: frontend passes stageId directly (not versionId)
+        app.MapGet("/api/stages/{stageId}/standings", async (
+            Guid             stageId,
+            string?          groupId,
+            StandingsService standingsSvc,
+            CancellationToken ct) =>
+        {
+            var standings = await standingsSvc.CalculateStandingsAsync(stageId, groupId, ct);
+            return Results.Ok(standings);
+        });
+
         // ── POST /api/swiss/next-round ────────────────────────────────────────
         app.MapPost("/api/swiss/next-round", async (
             [FromBody]      SwissNextRoundRequest req,
