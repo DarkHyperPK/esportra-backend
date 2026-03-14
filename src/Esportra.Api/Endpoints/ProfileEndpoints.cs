@@ -262,14 +262,14 @@ public static class ProfileEndpoints
                     .Select(s => Guid.TryParse(s.Trim(), out var g) ? g : (Guid?)null)
                     .Where(g => g.HasValue)
                     .Select(g => g!.Value)
-                    .ToArray();
-                if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                    .ToList();
+                if (idList.Count == 0) return Results.Ok(Array.Empty<object>());
                 var byIds = await conn.QueryAsync<dynamic>(
                     """
                     SELECT id, username, full_name, avatar_url, bio,
                            riot_tag, steam_tag, country_code, location
                     FROM profiles
-                    WHERE id = ANY(@idList)
+                    WHERE id = ANY(@idList::uuid[])
                     """,
                     new { idList });
                 return Results.Ok(byIds);
