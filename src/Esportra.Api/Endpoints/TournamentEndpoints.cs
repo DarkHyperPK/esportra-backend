@@ -28,6 +28,9 @@ public static class TournamentEndpoints
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private static readonly HashSet<string> AllowedCreateStatuses = new(StringComparer.OrdinalIgnoreCase)
+        { "draft", "open" };
+
     /// Typed DTOfor tournament list rows — required so HybridCache (System.Text.Json) can
     /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
     /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
@@ -316,7 +319,7 @@ public static class TournamentEndpoints
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
-                        'draft', @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
+                        @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
                         @rewards, @streamUrl, @settings::jsonb, @organizerId
                     )
@@ -336,6 +339,7 @@ public static class TournamentEndpoints
                         startDate            = req.StartDate,
                         endDate              = req.EndDate ?? req.StartDate.AddHours(2),
                         registrationDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
+                        status               = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "open",
                         bannerUrl            = req.BannerUrl,
                         logoUrl              = req.LogoUrl,
                         organizationId       = Guid.TryParse(req.OrganizationId, out var orgGuid) ? orgGuid : (Guid?)null,
@@ -2103,6 +2107,7 @@ public sealed record CreateTournamentRequest(
     decimal?   PrizePool            = null,
     DateTime?  EndDate              = null,
     DateTime?  RegistrationDeadline = null,
+    string?    Status               = null,
     string?    BannerUrl            = null,
     string?    LogoUrl              = null,
     string?    OrganizationId       = null,
