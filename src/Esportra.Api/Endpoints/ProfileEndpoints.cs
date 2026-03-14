@@ -291,6 +291,7 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/riot-accounts ───────────────────────────────────
         app.MapGet("/api/profiles/riot-accounts", async (
+            string?              userIds,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
@@ -299,10 +300,25 @@ public static class ProfileEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var accounts = await conn.QueryAsync<dynamic>(
+
+            if (!string.IsNullOrWhiteSpace(userIds))
+            {
+                var idList = userIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => Guid.TryParse(s, out var g) ? g : (Guid?)null)
+                    .Where(g => g.HasValue)
+                    .Select(g => g!.Value)
+                    .ToArray();
+                if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                var accounts = await conn.QueryAsync<dynamic>(
+                    "SELECT * FROM riot_accounts WHERE user_id = ANY(@idList) ORDER BY created_at DESC",
+                    new { idList });
+                return Results.Ok(accounts);
+            }
+
+            var myAccounts = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM riot_accounts WHERE user_id = @userId ORDER BY created_at DESC",
                 new { userId = userCtx.UserIdGuid });
-            return Results.Ok(accounts);
+            return Results.Ok(myAccounts);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/me/verification ─────────────────────────────────
