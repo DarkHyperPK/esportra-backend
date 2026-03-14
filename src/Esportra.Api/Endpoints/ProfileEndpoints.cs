@@ -273,7 +273,7 @@ public static class ProfileEndpoints
                 var byIds = await conn.QueryAsync<dynamic>(
                     $"""
                     SELECT id, username, full_name, avatar_url, bio,
-                           riot_tag, steam_tag, country_code, location
+                           riot_tag, steam_tag, country_code
                     FROM profiles
                     WHERE id IN ({paramNames})
                     """,
@@ -284,7 +284,7 @@ public static class ProfileEndpoints
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT id, username, full_name, avatar_url, bio,
-                       riot_tag, steam_tag, country_code, location
+                       riot_tag, steam_tag, country_code
                 FROM profiles
                 WHERE (@q IS NULL OR username ILIKE '%' || @q || '%'
                                   OR full_name ILIKE '%' || @q || '%')
