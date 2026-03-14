@@ -795,6 +795,27 @@ public static class TeamEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/teams/{id}/rosters/{rosterId}/members ────────────────────
+        app.MapGet("/api/teams/{id}/rosters/{rosterId}/members", async (
+            Guid                 id,
+            Guid                 rosterId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT trm.user_id, trm.is_starter, trm.role,
+                       p.username, p.full_name, p.avatar_url, p.riot_tag, p.steam_tag
+                FROM team_roster_members trm
+                LEFT JOIN profiles p ON p.id = trm.user_id
+                WHERE trm.roster_id = @rosterId
+                ORDER BY trm.is_starter DESC, p.username ASC
+                """,
+                new { rosterId });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/teams/{id}/rosters/{rosterId}/members ───────────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/members", async (
             Guid                            id,
