@@ -536,8 +536,8 @@ public static class MatchEndpoints
 // ── Match request records ────────────────────────────────────────────────────
 
 public sealed record WalkoverRequest(
-    string WinnerId,
-    string LoserId,
+    Guid   WinnerId,
+    Guid   LoserId,
     int    Team1Score,
     int    Team2Score);
 
