@@ -39,34 +39,55 @@ public static class VetoEndpoints
             HttpContext                ctx,
             VetoDbService              veto,
             IHubContext<VetoHub>       hub,
+            ILogger<VetoDbService>    logger,
             CancellationToken         ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            // S2: Only organizer or captain can init
-            var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct);
-            if (!isOrg)
+            try
             {
-                // Allow captain of either team
-                bool isCaptain = false;
-                if (req.Team1Id.HasValue)
-                    isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team1Id.Value, ct);
-                if (!isCaptain && req.Team2Id.HasValue)
-                    isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team2Id.Value, ct);
-                if (!isCaptain)
-                    return Results.Forbid();
+                // Idempotent: if veto already exists, return it
+                var existing = await veto.GetAsync(matchId, ct);
+                if (existing is not null)
+                    return Results.Ok(existing);
+
+                // S2: Only organizer or captain can init
+                var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct);
+                if (!isOrg)
+                {
+                    bool isCaptain = false;
+                    if (req.Team1Id.HasValue)
+                        isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team1Id.Value, ct);
+                    if (!isCaptain && req.Team2Id.HasValue)
+                        isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team2Id.Value, ct);
+                    if (!isCaptain)
+                        return Results.Json(new { error = "FORBIDDEN: only organizer or team captain can init veto" }, statusCode: 403);
+                }
+
+                var result = await veto.InitAsync(
+                    matchId, req.TournamentId,
+                    req.Team1Id, req.Team2Id,
+                    req.BestOf, req.Game ?? "valorant", ct);
+
+                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
+                    .SendAsync(VetoHubEvents.StateSync, result, ct);
+
+                return Results.Ok(result);
             }
-
-            var result = await veto.InitAsync(
-                matchId, req.TournamentId,
-                req.Team1Id, req.Team2Id,
-                req.BestOf, req.Game ?? "valorant", ct);
-
-            await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
-                .SendAsync(VetoHubEvents.StateSync, result, ct);
-
-            return Results.Ok(result);
+            catch (InvalidOperationException ex)
+            {
+                logger.LogWarning(ex, "Veto init failed for match {MatchId}", matchId);
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Veto init unexpected error for match {MatchId}", matchId);
+                // On conflict (duplicate), try to return existing
+                var fallback = await veto.GetAsync(matchId, ct);
+                if (fallback is not null) return Results.Ok(fallback);
+                return Results.Json(new { error = "Failed to initialize veto: " + ex.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/veto/{matchId}/ban ─────────────────────────────────────

@@ -1,12 +1,13 @@
 using Dapper;
 using Esportra.Contracts.Database;
+using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Esportra.Core.Match;
 
 /// <summary>DB-backed veto operations with FSM validation and optimistic locking.</summary>
-public sealed class VetoDbService(IDbConnectionFactory db)
+public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService> logger)
 {
     // ── Fetch ────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,9 @@ public sealed class VetoDbService(IDbConnectionFactory db)
         int bestOf, string game = "valorant",
         CancellationToken ct = default)
     {
+        logger.LogInformation("InitAsync: matchId={MatchId}, tournamentId={TournamentId}, bestOf={BestOf}, team1={T1}, team2={T2}",
+            matchId, tournamentId, bestOf, team1Id, team2Id);
+
         var firstStep = VetoSequences.GetStep(bestOf, 1)
             ?? throw new InvalidOperationException("No veto sequence for bestOf=" + bestOf);
 
