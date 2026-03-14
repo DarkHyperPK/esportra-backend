@@ -606,9 +606,9 @@ public static class TournamentEndpoints
             if ((string)tourn.status != "open")
                 return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
 
-            // Check capacity
+            // Check capacity (0 or null = unlimited)
             int? maxTeams = (int?)tourn.max_teams;
-            if (maxTeams.HasValue)
+            if (maxTeams.HasValue && maxTeams.Value > 0)
             {
                 var currentCount = await conn.QuerySingleAsync<int>(
                     "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id", new { id });
