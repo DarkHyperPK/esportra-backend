@@ -373,8 +373,21 @@ public static class MatchEndpoints
             if (req.Team1Score == req.Team2Score)
                 return Results.BadRequest(new { error = "Scores cannot be equal." });
 
-            var winnerId = req.Team1Score > req.Team2Score ? req.Team1Id : req.Team2Id;
-            var loserId  = req.Team1Score > req.Team2Score ? req.Team2Id : req.Team1Id;
+            // Resolve team IDs from request or from the match itself
+            var t1Id = req.Team1Id;
+            var t2Id = req.Team2Id;
+            if (t1Id is null || t2Id is null)
+            {
+                var matchRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT team1_id, team2_id FROM brkt_matches WHERE id = @matchId",
+                    new { matchId });
+                if (matchRow is null) return Results.NotFound(new { error = "Match not found" });
+                t1Id ??= (Guid?)matchRow.team1_id;
+                t2Id ??= (Guid?)matchRow.team2_id;
+            }
+
+            var winnerId = req.Team1Score > req.Team2Score ? t1Id : t2Id;
+            var loserId  = req.Team1Score > req.Team2Score ? t2Id : t1Id;
 
             // 1. Save score
             await conn.ExecuteAsync(
@@ -407,7 +420,7 @@ public static class MatchEndpoints
 
             foreach (var adv in advancements)
             {
-                string? teamId = (string?)adv.type == "winner" ? winnerId : loserId;
+                Guid? teamId = (string?)adv.type == "winner" ? winnerId : loserId;
                 if (teamId is null) continue;
                 string field = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
                 await conn.ExecuteAsync(
@@ -533,5 +546,5 @@ public sealed record GoLiveRequest(string PartyCode);
 public sealed record SaveScoreRequest(
     int     Team1Score,
     int     Team2Score,
-    string? Team1Id,
-    string? Team2Id);
+    Guid?   Team1Id,
+    Guid?   Team2Id);

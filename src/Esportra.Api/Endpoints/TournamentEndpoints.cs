@@ -1917,7 +1917,7 @@ public static class TournamentEndpoints
                 """
                 SELECT mr.*, p.username AS reported_by_name
                 FROM public.tournament_match_results mr
-                LEFT JOIN public.profiles p ON p.id = mr.reported_by
+                LEFT JOIN public.profiles p ON p.id = mr.reporter_user_id
                 WHERE mr.tournament_id = @id
                 ORDER BY mr.created_at DESC
                 """, new { id });

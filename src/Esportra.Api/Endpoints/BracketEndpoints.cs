@@ -578,20 +578,41 @@ public static class BracketEndpoints
         });
 
         // ── GET /api/brackets/match-games ─────────────────────────────────────
-        // Returns individual game results within a match
+        // Returns individual game results within a match (by matchId) or
+        // all completed games for a tournament (by tournament_id + status)
         app.MapGet("/api/brackets/match-games", async (
             Guid?                matchId,
+            Guid?                tournament_id,
+            string?              status,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
-            if (!matchId.HasValue)
-                return Results.BadRequest(new { error = "match_id required" });
-
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
+
+            if (tournament_id.HasValue)
+            {
+                var sql = """
+                    SELECT g.*, gm.map_name
+                    FROM brkt_match_games g
+                    LEFT JOIN game_maps gm ON gm.id = g.map_id
+                    JOIN brkt_matches m ON m.id = g.match_id
+                    JOIN brkt_versions v ON v.id = m.version_id
+                    WHERE v.tournament_id = @tournament_id
+                    """;
+                if (!string.IsNullOrEmpty(status))
+                    sql += " AND g.status = @status";
+                sql += " ORDER BY g.game_number ASC";
+                var rows = await conn.QueryAsync<dynamic>(sql, new { tournament_id, status });
+                return Results.Ok(rows);
+            }
+
+            if (!matchId.HasValue)
+                return Results.BadRequest(new { error = "match_id or tournament_id required" });
+
+            var games = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM brkt_match_games WHERE match_id = @matchId ORDER BY game_number ASC",
                 new { matchId });
-            return Results.Ok(rows);
+            return Results.Ok(games);
         });
 
         // ── GET /api/brackets/versions/{id} ──────────────────────────────────
