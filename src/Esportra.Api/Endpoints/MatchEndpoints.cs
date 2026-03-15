@@ -314,18 +314,13 @@ public static class MatchEndpoints
                 """,
                 new { matchId });
 
-            // 3. Reset veto
+            // 3. Reset veto — delete entirely for a clean reinit
             try
-            {
-                await conn.ExecuteAsync(
-                    "SELECT public.reset_match_veto(@matchId)",
-                    new { matchId });
-            }
-            catch
             {
                 await conn.ExecuteAsync("DELETE FROM match_map_veto_actions WHERE match_id = @matchId", new { matchId });
                 await conn.ExecuteAsync("DELETE FROM match_map_vetos WHERE match_id = @matchId", new { matchId });
             }
+            catch { /* veto tables may not exist yet */ }
 
             // 4. Delete reports/disputes
             await conn.ExecuteAsync("DELETE FROM tournament_match_results WHERE match_id = @matchId", new { matchId });
