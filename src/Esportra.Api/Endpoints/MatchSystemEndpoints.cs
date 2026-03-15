@@ -541,7 +541,7 @@ public static class MatchSystemEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, match_id, proposed_by, proposed_time, status,
+                SELECT id::text, match_id::text, proposed_by::text, proposed_time, status,
                        created_at, responded_at
                 FROM match_time_proposals
                 WHERE match_id = @matchId
@@ -557,6 +557,7 @@ public static class MatchSystemEndpoints
             [FromBody] ProposeTimeRequest       req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
+            ILogger<Program>                    logger,
             CancellationToken                   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -564,26 +565,34 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a captain of one of the teams in this match
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            try
+            {
+                // Verify caller is a captain of one of the teams in this match
+                var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
+                    """
+                    SELECT tm.team_id::text FROM team_members tm
+                    JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                    WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                    LIMIT 1
+                    """,
+                    new { matchId, userId = userCtx.UserIdGuid });
+                if (captainTeam is null) return Results.Forbid();
 
-            var proposal = await conn.QuerySingleAsync<dynamic>(
-                """
-                INSERT INTO match_time_proposals (match_id, proposed_by, proposed_time, status)
-                VALUES (@matchId, @proposedBy, @proposedTime, 'pending')
-                RETURNING *
-                """,
-                new { matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
+                var proposal = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    INSERT INTO match_time_proposals (match_id, proposed_by, proposed_time, status)
+                    VALUES (@matchId, @proposedBy, @proposedTime::timestamptz, 'pending')
+                    RETURNING id::text, match_id::text, proposed_by::text, proposed_time, status, created_at, responded_at
+                    """,
+                    new { matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
 
-            return Results.Ok(proposal);
+                return Results.Ok(proposal);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to create time proposal for match {MatchId}", matchId);
+                return Results.Json(new { error = "Failed to create time proposal.", detail = ex.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/accept ──
@@ -601,7 +610,7 @@ public static class MatchSystemEndpoints
 
             var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
                 """
-                SELECT tm.team_id FROM team_members tm
+                SELECT tm.team_id::text FROM team_members tm
                 JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
@@ -643,7 +652,7 @@ public static class MatchSystemEndpoints
 
             var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
                 """
-                SELECT tm.team_id FROM team_members tm
+                SELECT tm.team_id::text FROM team_members tm
                 JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
@@ -678,7 +687,7 @@ public static class MatchSystemEndpoints
 
             var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
                 """
-                SELECT tm.team_id FROM team_members tm
+                SELECT tm.team_id::text FROM team_members tm
                 JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
                 WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
                 LIMIT 1
@@ -695,8 +704,8 @@ public static class MatchSystemEndpoints
                     WHERE id = @proposalId AND match_id = @matchId AND status = 'pending'
                 )
                 INSERT INTO match_time_proposals (match_id, proposed_by, proposed_time, status)
-                VALUES (@matchId, @proposedBy, @proposedTime, 'pending')
-                RETURNING *
+                VALUES (@matchId, @proposedBy, @proposedTime::timestamptz, 'pending')
+                RETURNING id::text, match_id::text, proposed_by::text, proposed_time, status, created_at, responded_at
                 """,
                 new { proposalId, matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
 
