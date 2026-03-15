@@ -332,8 +332,9 @@ public static class MatchEndpoints
             await conn.ExecuteAsync("DELETE FROM match_result_reports WHERE match_id = @matchId", new { matchId });
             await conn.ExecuteAsync("DELETE FROM tournament_disputes WHERE match_id = @matchId", new { matchId });
 
-            // 4b. Delete time proposals so teams can re-propose
+            // 4b. Delete time proposals and check-ins so teams can re-propose and re-checkin
             await conn.ExecuteAsync("DELETE FROM match_time_proposals WHERE match_id = @matchId", new { matchId });
+            await conn.ExecuteAsync("DELETE FROM match_checkins WHERE match_id = @matchId", new { matchId });
 
             // 5. Reset match record
             await conn.ExecuteAsync(
