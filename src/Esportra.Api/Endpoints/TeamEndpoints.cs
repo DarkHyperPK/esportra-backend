@@ -44,7 +44,7 @@ public static class TeamEndpoints
                     .ToArray();
                 if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
                 var byIds = await conn.QueryAsync<dynamic>(
-                    "SELECT * FROM teams WHERE id = ANY(@idList)", new { idList });
+                    "SELECT id::text, name, owner_id::text, logo_url, created_at FROM teams WHERE id = ANY(@idList)", new { idList });
                 return Results.Ok(byIds);
             }
 
@@ -1147,7 +1147,9 @@ public static class TeamEndpoints
                     filterUserId = uid;
 
                 var sql = """
-                    SELECT tm.*, p.username, p.avatar_url, p.riot_tag, p.steam_tag,
+                    SELECT tm.team_id::text as team_id, tm.user_id::text as user_id,
+                           tm.role, tm.is_active, tm.joined_at,
+                           p.username, p.avatar_url, p.riot_tag, p.steam_tag,
                            t.name AS team_name, t.logo_url AS team_logo
                     FROM team_members tm
                     JOIN profiles p ON p.id = tm.user_id
