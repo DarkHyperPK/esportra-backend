@@ -89,7 +89,7 @@ public static class GameEndpoints
             using var conn = db.CreateConnection();
             var maps = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, game, map_name, map_image_url, is_active
+                SELECT id::text as id, game, map_name, map_image_url, is_active
                 FROM public.game_maps
                 WHERE game ILIKE @game AND is_active = true
                 ORDER BY map_name ASC
@@ -110,7 +110,7 @@ public static class GameEndpoints
                 return Results.BadRequest(new { error = "Query parameter 'game' is required." });
 
             using var conn = db.CreateConnection();
-            var sql = "SELECT id, game, map_name, map_image_url, is_active FROM public.game_maps WHERE game ILIKE @game";
+            var sql = "SELECT id::text as id, game, map_name, map_image_url, is_active FROM public.game_maps WHERE game ILIKE @game";
             if (is_active.HasValue) sql += " AND is_active = @is_active";
             if (!string.IsNullOrWhiteSpace(map_name)) sql += " AND map_name ILIKE @map_name";
             sql += " ORDER BY map_name ASC";

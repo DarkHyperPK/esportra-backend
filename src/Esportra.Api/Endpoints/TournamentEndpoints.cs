@@ -1913,7 +1913,7 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var maps = await conn.QueryAsync<dynamic>(
                 """
-                SELECT gm.id, gm.game, gm.map_name, gm.map_image_url, gm.is_active
+                SELECT gm.id::text as id, gm.game, gm.map_name, gm.map_image_url, gm.is_active
                 FROM public.tournament_map_pools tmp
                 JOIN public.game_maps gm ON gm.id = tmp.map_id
                 WHERE tmp.tournament_id = @id
