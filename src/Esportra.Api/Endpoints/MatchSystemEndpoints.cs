@@ -394,7 +394,6 @@ public static class MatchSystemEndpoints
         // ── PUT /api/stages/{stageId}/scheduling-config ─────────────────────
         app.MapPut("/api/stages/{stageId}/scheduling-config", async (
             Guid                                stageId,
-            [FromBody] SchedulingConfigRequest   req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
             CancellationToken                   ct) =>
@@ -416,7 +415,8 @@ public static class MatchSystemEndpoints
                 new { stageId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
-            var json = JsonSerializer.Serialize(req);
+            // Store raw JSON body as-is to preserve frontend key casing (snake_case)
+            var json = await new StreamReader(ctx.Request.Body).ReadToEndAsync(ct);
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET scheduling_config = @json::jsonb WHERE id = @stageId",
                 new { json, stageId });
