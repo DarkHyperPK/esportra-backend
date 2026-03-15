@@ -122,7 +122,7 @@ public static class StorageEndpoints
             var content = new StreamContent(stream);
             content.Headers.ContentType = new MediaTypeHeaderValue(file.ContentType ?? "application/octet-stream");
 
-            const string bucket = "user.avatars";
+            const string bucket = "users.avatars";
             var uploadUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
             var response = await client.PostAsync(uploadUrl, content);
 
