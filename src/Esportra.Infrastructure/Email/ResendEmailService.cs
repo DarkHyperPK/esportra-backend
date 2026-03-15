@@ -18,6 +18,13 @@ public sealed class ResendEmailService(
 
     public async Task SendAsync(string toEmail, EmailType type, object data, CancellationToken ct = default)
     {
+        var apiKey = config["Resend:ApiKey"];
+        if (string.IsNullOrWhiteSpace(apiKey) || apiKey.StartsWith("REPLACE"))
+        {
+            logger.LogWarning("[Email] Resend API key not configured — skipping {Type} to {Email}", type, toEmail);
+            return;
+        }
+
         var (subject, html) = BuildTemplate(type, data);
 
         var payload = new
@@ -28,16 +35,26 @@ public sealed class ResendEmailService(
             html    = html,
         };
 
-        var response = await http.PostAsJsonAsync("https://api.resend.com/emails", payload, ct);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(10));
 
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            var err = await response.Content.ReadAsStringAsync(ct);
-            logger.LogError("[Email] Resend API error {Status}: {Body}", response.StatusCode, err);
-            throw new InvalidOperationException($"Email send failed ({response.StatusCode}): {err}");
-        }
+            var response = await http.PostAsJsonAsync("https://api.resend.com/emails", payload, cts.Token);
 
-        logger.LogInformation("[Email] Sent {Type} email to {Email}", type, toEmail);
+            if (!response.IsSuccessStatusCode)
+            {
+                var err = await response.Content.ReadAsStringAsync(cts.Token);
+                logger.LogError("[Email] Resend API error {Status}: {Body}", response.StatusCode, err);
+                throw new InvalidOperationException($"Email send failed ({response.StatusCode}): {err}");
+            }
+
+            logger.LogInformation("[Email] Sent {Type} email to {Email}", type, toEmail);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogWarning("[Email] Resend API timed out for {Type} to {Email}", type, toEmail);
+        }
     }
 
     private static (string Subject, string Html) BuildTemplate(EmailType type, object data)
