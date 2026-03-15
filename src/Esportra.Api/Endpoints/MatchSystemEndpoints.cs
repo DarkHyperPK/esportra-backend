@@ -95,7 +95,7 @@ public static class MatchSystemEndpoints
                     new { vid = (Guid)match.version_id })
                 : (Guid?)null;
             var matchLink = tournamentId is not null
-                ? $"/tournaments/{tournamentId}/captain-match"
+                ? $"/tournaments/{tournamentId}/captain-match/{id}"
                 : "/tournaments";
 
             if (match is not null)
@@ -836,7 +836,7 @@ public static class MatchSystemEndpoints
                     "SELECT v.tournament_id FROM brkt_matches m JOIN brkt_versions v ON v.id = m.version_id WHERE m.id = @matchId",
                     new { matchId });
                 var disputeLink = disputeTournamentId is not null
-                    ? $"/tournaments/{disputeTournamentId}/captain-match"
+                    ? $"/tournaments/{disputeTournamentId}/captain-match/{matchId}"
                     : "/tournaments";
 
                 // Notify the disputing user
