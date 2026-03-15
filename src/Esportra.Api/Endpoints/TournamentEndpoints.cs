@@ -1554,6 +1554,37 @@ public static class TournamentEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/tournaments/captain ──────────────────────────────────────
+        // Returns tournaments where the current user is a team captain
+        // Used by Details.tsx captain-match view
+        app.MapGet("/api/tournaments/captain", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var tournaments = await conn.QueryAsync<dynamic>(
+                """
+                SELECT DISTINCT t.id, t.name, t.slug, t.game, t.status::text AS status,
+                       t.start_date, t.logo_url, t.format,
+                       tp.team_id, teams.name AS team_name, teams.logo_url AS team_logo
+                FROM public.team_members tm
+                JOIN public.tournament_participants tp ON tp.team_id = tm.team_id
+                JOIN public.tournaments t ON t.id = tp.tournament_id
+                JOIN public.teams ON teams.id = tm.team_id
+                WHERE tm.user_id = @userId
+                  AND tm.role = 'captain'
+                  AND tm.is_active = TRUE
+                  AND t.status IN ('in_progress', 'check_in', 'registration_open', 'registration_closed')
+                ORDER BY t.start_date DESC
+                """, new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(tournaments);
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/tournaments/my-registrations ────────────────────────────
         // Used by RaiseDispute.tsx — returns tournaments the user is registered in
         app.MapGet("/api/tournaments/my-registrations", async (
