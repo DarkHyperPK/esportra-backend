@@ -74,21 +74,31 @@ public sealed class ChatHub : Hub
         {
             using var conn = _db.CreateConnection();
 
-            // Fetch username from profiles
-            var username = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
+            // Fetch username and team_id for this match
+            var userInfo = await conn.QuerySingleOrDefaultAsync<dynamic>("""
+                SELECT p.username,
+                       (SELECT tm.team_id FROM team_members tm
+                        JOIN brkt_matches bm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                        WHERE bm.id = @MatchId AND tm.user_id = @UserId
+                        LIMIT 1) AS team_id
+                FROM profiles p WHERE p.id = @UserId
+                """, new { MatchId = Guid.Parse(matchId), UserId = Guid.Parse(userId) });
+
+            var username = (string?)(userInfo?.username) ?? "Unknown";
+            var teamId   = (Guid?)(userInfo?.team_id);
 
             const string sql = """
-                INSERT INTO match_messages (match_id, sender_id, sender_name, content, message_type, created_at)
-                VALUES (@MatchId, @SenderId, @SenderName, @Content, 'user', NOW())
-                RETURNING id::text, match_id::text, sender_id::text, sender_name, content, message_type, created_at;
+                INSERT INTO match_messages (match_id, sender_id, sender_name, team_id, content, message_type, created_at)
+                VALUES (@MatchId, @SenderId, @SenderName, @TeamId, @Content, 'user', NOW())
+                RETURNING id::text, match_id::text, sender_id::text, sender_name, team_id::text, content, message_type, created_at;
                 """;
 
             var message = await conn.QuerySingleAsync<MessageDto>(sql, new
             {
                 MatchId    = Guid.Parse(matchId),
                 SenderId   = Guid.Parse(userId),
-                SenderName = username ?? "Unknown",
+                SenderName = username,
+                TeamId     = teamId,
                 Content    = content.Trim(),
             });
 
@@ -158,6 +168,7 @@ public sealed record MessageDto(
     string   MatchId,
     string   SenderId,
     string   SenderName,
+    string?  TeamId,
     string   Content,
     string   MessageType,
     DateTime CreatedAt);
