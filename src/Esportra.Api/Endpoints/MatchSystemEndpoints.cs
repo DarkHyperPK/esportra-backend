@@ -86,7 +86,17 @@ public static class MatchSystemEndpoints
 
             // Notify opposing captain via notification + SignalR
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT team1_id, team2_id FROM brkt_matches WHERE id = @id", new { id });
+                "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @id", new { id });
+
+            // Resolve tournament ID for notification link
+            var tournamentId = match?.version_id is not null
+                ? await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT tournament_id FROM brkt_versions WHERE id = @vid",
+                    new { vid = (Guid)match.version_id })
+                : (Guid?)null;
+            var matchLink = tournamentId is not null
+                ? $"/tournaments/{tournamentId}/captain-match"
+                : "/tournaments";
 
             if (match is not null)
             {
@@ -113,11 +123,12 @@ public static class MatchSystemEndpoints
                             VALUES
                               (@userId, 'result_reported', 'Match Result Reported',
                                'Your opponent has reported the match result. Please verify or dispute.',
-                               '/tournaments/captain', @data::jsonb, FALSE)
+                               @link, @data::jsonb, FALSE)
                             """,
                             new
                             {
                                 userId = captainId,
+                                link   = matchLink,
                                 data   = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
                             });
 
@@ -820,14 +831,22 @@ public static class MatchSystemEndpoints
                     : $"Your match dispute was rejected. Organizer note: {req.Resolution}";
                 var notifData    = JsonSerializer.Serialize(new { match_id = matchId });
 
+                // Resolve tournament ID for notification link
+                var disputeTournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT v.tournament_id FROM brkt_matches m JOIN brkt_versions v ON v.id = m.version_id WHERE m.id = @matchId",
+                    new { matchId });
+                var disputeLink = disputeTournamentId is not null
+                    ? $"/tournaments/{disputeTournamentId}/captain-match"
+                    : "/tournaments";
+
                 // Notify the disputing user
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                    VALUES (@userId, @type, @title, @message, '/tournaments/captain', @data::jsonb, FALSE)
+                    VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                     """,
                     new { userId = (Guid)dispute.disputed_by_user_id, type = notifType,
-                          title = notifTitle, message = notifMessage, data = notifData });
+                          title = notifTitle, message = notifMessage, link = disputeLink, data = notifData });
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -843,10 +862,10 @@ public static class MatchSystemEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                        VALUES (@userId, @type, @title, @message, '/tournaments/captain', @data::jsonb, FALSE)
+                        VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                         """,
                         new { userId = reporter, type = notifType, title = notifTitle,
-                              message = notifMessage, data = notifData });
+                              message = notifMessage, link = disputeLink, data = notifData });
                 }
             }
 

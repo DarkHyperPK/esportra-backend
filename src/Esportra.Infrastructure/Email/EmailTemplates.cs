@@ -26,7 +26,7 @@ public static class EmailTemplates
                 <!-- Header -->
                 <tr>
                   <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-                    <img src="https://staging.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="180" style="display:inline-block;border:0;outline:none;" />
+                    <img src="https://staging.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
                   </td>
                 </tr>
                 <!-- Body -->
