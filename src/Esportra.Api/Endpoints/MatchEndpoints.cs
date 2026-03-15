@@ -443,12 +443,40 @@ public static class MatchEndpoints
             {
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO brkt_match_games (match_id, game_number, team1_score, team2_score, map_name, status)
-                    VALUES (@matchId, 1, @t1, @t2, 'Manual Result', 'completed')
+                    INSERT INTO brkt_match_games (match_id, game_number, team1_score, team2_score, map_name, status, winner_id, loser_id, completed_at)
+                    VALUES (@matchId, 1, @t1, @t2, 'Manual Result', 'completed', @winnerId, @loserId, NOW())
                     ON CONFLICT (match_id, game_number) DO UPDATE
-                    SET team1_score = @t1, team2_score = @t2, status = 'completed'
+                    SET team1_score = @t1, team2_score = @t2, status = 'completed', winner_id = @winnerId, loser_id = @loserId, completed_at = NOW()
                     """,
-                    new { matchId, t1 = req.Team1Score, t2 = req.Team2Score });
+                    new { matchId, t1 = req.Team1Score, t2 = req.Team2Score, winnerId, loserId });
+            }
+            catch { /* Non-critical */ }
+
+            // 2b. Log match event for analytics
+            try
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO brkt_match_events (match_id, type, payload, created_by)
+                    VALUES (@matchId, 'score_reported', @payload::jsonb, @userId)
+                    """,
+                    new { matchId, userId = userCtx.UserIdGuid,
+                          payload = System.Text.Json.JsonSerializer.Serialize(new {
+                              team1_score = req.Team1Score, team2_score = req.Team2Score,
+                              winner_id = winnerId, loser_id = loserId
+                          }) });
+            }
+            catch { /* Non-critical */ }
+
+            // 2c. Insert match completed event for analytics pipeline
+            try
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO match_completed_events (match_id, winner_id, loser_id, status)
+                    VALUES (@matchId, @winnerId, @loserId, 'completed')
+                    """,
+                    new { matchId, winnerId, loserId });
             }
             catch { /* Non-critical */ }
 
@@ -494,13 +522,35 @@ public static class MatchEndpoints
 
                         if (existingReset is null && previousFinal is null)
                         {
+                            var resetMatchId = Guid.NewGuid();
+                            var vid = (Guid)match.version_id;
+                            var newRi = (int)match.round_index + 1;
+
                             await conn.ExecuteAsync(
                                 """
                                 INSERT INTO brkt_matches (id, version_id, bracket_type, round_index, match_number, status, team1_id, team2_id, best_of)
-                                VALUES (gen_random_uuid(), @vid, 'final', @ri, 1, 'pending', @t1, @t2, @bo)
+                                VALUES (@resetId, @vid, 'final', @ri, 1, 'pending', @t1, @t2, @bo)
                                 """,
-                                new { vid = (Guid)match.version_id, ri = (int)match.round_index + 1,
+                                new { resetId = resetMatchId, vid, ri = newRi,
                                       t1 = (Guid?)match.team1_id, t2 = (Guid?)match.team2_id, bo = (int?)match.best_of ?? 1 });
+
+                            // Position reset match to the right of the original final
+                            var layout = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                                "SELECT x, y FROM brkt_layout WHERE version_id = @vid AND match_id = @matchId",
+                                new { vid, matchId });
+
+                            int resetX = (layout is not null ? (int)layout.x : 0) + 350;
+                            int resetY = layout is not null ? (int)layout.y : 0;
+
+                            await conn.ExecuteAsync(
+                                "INSERT INTO brkt_layout (version_id, match_id, x, y) VALUES (@vid, @matchId, @x, @y)",
+                                new { vid, matchId = resetMatchId, x = resetX, y = resetY });
+
+                            // Broadcast new match insertion so clients refetch bracket
+                            await bracketHub.Clients
+                                .Group(BracketHub.BracketGroup(vid.ToString()))
+                                .SendAsync(BracketHubEvents.MatchInserted,
+                                    new { versionId = vid, matchId = resetMatchId }, ct);
                         }
                     }
                 }
