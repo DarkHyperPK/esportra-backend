@@ -21,7 +21,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                    current_team_id, current_action, current_action_number,
                    team1_banned_maps, team2_banned_maps,
                    team1_picked_maps, team2_picked_maps,
-                   selected_map_id, selected_map_pool,
+                   selected_map_id::text as selected_map_id, selected_map_pool,
                    started_at, completed_at, game,
                    team1_link_token, team2_link_token,
                    turn_started_at, turn_duration_seconds
@@ -44,7 +44,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                    current_team_id, current_action, current_action_number,
                    team1_banned_maps, team2_banned_maps,
                    team1_picked_maps, team2_picked_maps,
-                   selected_map_id, selected_map_pool,
+                   selected_map_id::text as selected_map_id, selected_map_pool,
                    started_at, completed_at, game,
                    team1_link_token, team2_link_token,
                    turn_started_at, turn_duration_seconds
