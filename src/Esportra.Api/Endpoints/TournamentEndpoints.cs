@@ -982,6 +982,7 @@ public static class TournamentEndpoints
             var flat = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
+                       tp.participant_type::text AS participant_type,
                        tp.status::text AS status, tp.created_at,
                        t.name AS team_name, t.logo_url AS team_logo_url,
                        tm.user_id AS member_user_id,
@@ -1012,6 +1013,7 @@ public static class TournamentEndpoints
                         tournament_id = (Guid)first.tournament_id,
                         user_id = first.user_id as Guid?,
                         team_id = first.team_id as Guid?,
+                        participant_type = first.participant_type as string,
                         status = (string)first.status,
                         created_at = first.created_at,
                         team_name = first.team_name as string,
