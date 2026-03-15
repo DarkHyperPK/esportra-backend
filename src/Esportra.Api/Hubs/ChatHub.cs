@@ -70,28 +70,36 @@ public sealed class ChatHub : Hub
             return;
         }
 
-        using var conn = _db.CreateConnection();
-
-        // Fetch username from profiles
-        var username = await conn.QuerySingleOrDefaultAsync<string>(
-            "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
-
-        const string sql = """
-            INSERT INTO match_messages (match_id, sender_id, sender_name, content, message_type, created_at)
-            VALUES (@MatchId, @SenderId, @SenderName, @Content, 'user', NOW())
-            RETURNING id, match_id, sender_id, sender_name, content, message_type, created_at;
-            """;
-
-        var message = await conn.QuerySingleAsync<MessageDto>(sql, new
+        try
         {
-            MatchId    = Guid.Parse(matchId),
-            SenderId   = Guid.Parse(userId),
-            SenderName = username ?? "Unknown",
-            Content    = content.Trim(),
-        });
+            using var conn = _db.CreateConnection();
 
-        await Clients.Group(ChatGroup(matchId))
-            .SendAsync(ChatHubEvents.MessageReceived, message);
+            // Fetch username from profiles
+            var username = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
+
+            const string sql = """
+                INSERT INTO match_messages (match_id, sender_id, sender_name, content, message_type, created_at)
+                VALUES (@MatchId, @SenderId, @SenderName, @Content, 'user', NOW())
+                RETURNING id::text, match_id::text, sender_id::text, sender_name, content, message_type, created_at;
+                """;
+
+            var message = await conn.QuerySingleAsync<MessageDto>(sql, new
+            {
+                MatchId    = Guid.Parse(matchId),
+                SenderId   = Guid.Parse(userId),
+                SenderName = username ?? "Unknown",
+                Content    = content.Trim(),
+            });
+
+            await Clients.Group(ChatGroup(matchId))
+                .SendAsync(ChatHubEvents.MessageReceived, message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SendMessage failed for match {MatchId}, user {UserId}", matchId, userId);
+            await Clients.Caller.SendAsync(ChatHubEvents.Error, "Failed to send message. Please try again.");
+        }
     }
 
     /// <summary>Broadcast typing indicator to other members of the chat group.</summary>
