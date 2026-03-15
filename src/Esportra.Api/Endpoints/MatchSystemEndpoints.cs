@@ -330,7 +330,7 @@ public static class MatchSystemEndpoints
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                "SELECT * FROM match_checkins WHERE match_id = @id", new { id });
+                "SELECT match_id::text, team_id::text, user_id::text, checked_in_at FROM match_checkins WHERE match_id = @id", new { id });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -346,12 +346,15 @@ public static class MatchSystemEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!Guid.TryParse(req.TeamId, out var teamIdGuid))
+                return Results.BadRequest(new { error = "Invalid team ID." });
+
             using var conn = db.CreateConnection();
 
             // Verify caller belongs to the team
             var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
-                new { teamId = req.TeamId, userId = userCtx.UserIdGuid });
+                new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -360,14 +363,14 @@ public static class MatchSystemEndpoints
                 VALUES (@matchId, @teamId, @userId, NOW())
                 ON CONFLICT (match_id, team_id) DO NOTHING
                 """,
-                new { matchId = id, teamId = req.TeamId, userId = userCtx.UserIdGuid });
+                new { matchId = id, teamId = teamIdGuid, userId = userCtx.UserIdGuid });
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.CheckInUpdated,
-                    new { matchId = id, teamId = req.TeamId }, ct);
+                    new { matchId = id, teamId = teamIdGuid }, ct);
 
-            return Results.Ok(new { success = true, matchId = id, teamId = req.TeamId });
+            return Results.Ok(new { success = true, matchId = id, teamId = teamIdGuid });
         }).RequireAuthorization("Authenticated");
     }
 
