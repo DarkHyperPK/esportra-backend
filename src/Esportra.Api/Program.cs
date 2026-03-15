@@ -219,11 +219,7 @@ builder.Services.AddCors(opts =>
 });
 
 // ── Email service (Resend) ────────────────────────────────────────────────────
-builder.Services.AddHttpClient<ResendEmailService>(http =>
-{
-    http.DefaultRequestHeaders.Add("Authorization",
-        $"Bearer {builder.Configuration["Resend:ApiKey"]}");
-});
+builder.Services.AddHttpClient<ResendEmailService>();
 builder.Services.AddScoped<IEmailService, ResendEmailService>();
 
 // ── Supabase Admin client ─────────────────────────────────────────────────────

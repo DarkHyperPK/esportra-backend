@@ -35,25 +35,36 @@ public sealed class ResendEmailService(
             html    = html,
         };
 
+        logger.LogInformation("[Email] Sending {Type} to {Email} (from: {From})", type, toEmail, _from);
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(10));
 
         try
         {
-            var response = await http.PostAsJsonAsync("https://api.resend.com/emails", payload, cts.Token);
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.resend.com/emails");
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            request.Content = JsonContent.Create(payload);
+
+            var response = await http.SendAsync(request, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
                 var err = await response.Content.ReadAsStringAsync(cts.Token);
                 logger.LogError("[Email] Resend API error {Status}: {Body}", response.StatusCode, err);
-                throw new InvalidOperationException($"Email send failed ({response.StatusCode}): {err}");
             }
-
-            logger.LogInformation("[Email] Sent {Type} email to {Email}", type, toEmail);
+            else
+            {
+                logger.LogInformation("[Email] Sent {Type} email to {Email} successfully", type, toEmail);
+            }
         }
         catch (OperationCanceledException)
         {
             logger.LogWarning("[Email] Resend API timed out for {Type} to {Email}", type, toEmail);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "[Email] Failed to send {Type} to {Email}", type, toEmail);
         }
     }
 
