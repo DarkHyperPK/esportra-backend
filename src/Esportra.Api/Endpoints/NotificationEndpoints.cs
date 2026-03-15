@@ -124,6 +124,48 @@ public static class NotificationEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/notifications ─────────────────────────────────────────
+        // Create a notification for a specific user (used by veto, scheduling, etc.)
+        app.MapPost("/api/notifications", async (
+            [FromBody] CreateNotificationRequest req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            IHubContext<NotificationHub>         notifHub,
+            CancellationToken                    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var dataJson = req.Data is not null
+                ? JsonSerializer.Serialize(req.Data)
+                : null;
+
+            var id = await conn.QuerySingleAsync<Guid>(
+                """
+                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
+                RETURNING id
+                """,
+                new {
+                    userId  = Guid.Parse(req.UserId),
+                    type    = req.Type,
+                    title   = req.Title,
+                    message = req.Message,
+                    link    = req.Link,
+                    data    = dataJson
+                });
+
+            // Push real-time notification via SignalR
+            await notifHub.Clients
+                .Group(NotificationHub.UserGroup(req.UserId))
+                .SendAsync(NotificationHubEvents.NewNotification,
+                    new { id, type = req.Type, title = req.Title, message = req.Message, link = req.Link }, ct);
+
+            return Results.Ok(new { id, success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/notifications/bulk-delete ─────────────────────────────
         app.MapPost("/api/notifications/bulk-delete", async (
             [FromBody] BulkDeleteNotificationsRequest req,
@@ -296,6 +338,15 @@ public static class NotificationEndpoints
 // ── Request records ──────────────────────────────────────────────────────────
 
 public sealed record BulkDeleteNotificationsRequest(List<string> Ids);
+
+public sealed record CreateNotificationRequest(
+    string  UserId,
+    string  Type,
+    string  Title,
+    string  Message,
+    string? Link = null,
+    object? Data = null,
+    bool    IsRead = false);
 
 public sealed record InviteActionRequest(
     string  TeamId,
