@@ -474,9 +474,8 @@ public static class AdminEndpoints
 
             // Allow self-service transactional emails for authenticated users
             var selfServiceTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "TOURNAMENT_REGISTRATION", "CHECKIN_REMINDER", "MATCH_CHECKIN_REMINDER", "WELCOME" };
-            bool isSelfService = selfServiceTypes.Contains(req.Type ?? "")
-                                 && string.Equals(req.Email, userCtx.Email, StringComparison.OrdinalIgnoreCase);
+                { "TournamentRegistration", "CheckinReminder", "MatchCheckinReminder", "Welcome" };
+            bool isSelfService = selfServiceTypes.Contains(req.Type ?? "");
 
             if (!isSelfService &&
                 !userCtx.Permissions.Contains(Permissions.UsersEdit) &&
