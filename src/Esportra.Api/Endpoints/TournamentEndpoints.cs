@@ -1,6 +1,5 @@
 ﻿using System.Data;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
@@ -21,13 +20,6 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class TournamentEndpoints
 {
-    // Snake_case serialization for typed DTOs — matches Supabase convention the frontend expects.
-    private static readonly JsonSerializerOptions s_snakeCase = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
-
     private static readonly HashSet<string> AllowedCreateStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "draft", "open" };
 
@@ -139,7 +131,7 @@ public static class TournamentEndpoints
                     ORDER BY t.start_date ASC
                     """,
                     new { idList })).AsList();
-                return Results.Json(rows2, s_snakeCase);
+                return Results.Ok(rows2);
             }
 
             var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{limit}:{offset}";
@@ -155,7 +147,7 @@ public static class TournamentEndpoints
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 cancellationToken: ct);
-            return Results.Json(rows, s_snakeCase);
+            return Results.Ok(rows);
         });
 
         // ── GET /api/tournaments/upcoming ─────────────────────────────────────
@@ -197,7 +189,7 @@ public static class TournamentEndpoints
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 cancellationToken: ct);
-            return Results.Json(rows, s_snakeCase);
+            return Results.Ok(rows);
         }); // Public
 
         // ── GET /api/tournaments/{slugOrId} ────────────────────────────────────

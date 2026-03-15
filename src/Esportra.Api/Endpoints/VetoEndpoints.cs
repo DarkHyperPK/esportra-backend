@@ -272,10 +272,10 @@ public static class VetoEndpoints
                     Team1BannedMaps     = req.Team1BannedMaps,
                     Team2BannedMaps     = req.Team2BannedMaps,
                     Team1PickedMapsJson = req.Team1PickedMaps is not null
-                        ? System.Text.Json.JsonSerializer.Serialize(req.Team1PickedMaps)
+                        ? System.Text.Json.JsonSerializer.Serialize(req.Team1PickedMaps, Esportra.Core.JsonDefaults.SnakeCase)
                         : (string?)null,
                     Team2PickedMapsJson = req.Team2PickedMaps is not null
-                        ? System.Text.Json.JsonSerializer.Serialize(req.Team2PickedMaps)
+                        ? System.Text.Json.JsonSerializer.Serialize(req.Team2PickedMaps, Esportra.Core.JsonDefaults.SnakeCase)
                         : (string?)null,
                     req.SelectedMapId,
                     req.TurnStartedAt,

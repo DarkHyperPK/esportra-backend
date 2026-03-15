@@ -202,6 +202,11 @@ builder.Services.AddHealthChecks()
 builder.Services.AddSignalR(opts =>
 {
     opts.EnableDetailedErrors = builder.Environment.IsDevelopment();
+})
+.AddJsonProtocol(opts =>
+{
+    opts.PayloadSerializerOptions.PropertyNamingPolicy        = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+    opts.PayloadSerializerOptions.PropertyNameCaseInsensitive = true;
 });
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
@@ -250,6 +255,15 @@ builder.Services.AddScoped<AuditService>();
 // ── Background jobs ───────────────────────────────────────────────────────────
 builder.Services.AddHostedService<AutomatedRemindersJob>();
 builder.Services.AddHostedService<RedisBackgroundConnector>();
+
+// ── JSON serialization — global snake_case for all API responses ───────────────
+// Typed C# records (PascalCase) → snake_case in JSON (matches PostgreSQL columns
+// and Dapper dynamic results). Eliminates camelCase/snake_case mismatches.
+builder.Services.ConfigureHttpJsonOptions(opts =>
+{
+    opts.SerializerOptions.PropertyNamingPolicy        = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+    opts.SerializerOptions.PropertyNameCaseInsensitive = true;
+});
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();

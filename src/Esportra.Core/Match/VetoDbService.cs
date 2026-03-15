@@ -420,7 +420,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         {
             if (json is null) return [];
             var str = json.ToString() ?? "[]";
-            try { return JsonSerializer.Deserialize<PickedMap[]>(str, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? []; }
+            try
+            {
+                return JsonSerializer.Deserialize<PickedMap[]>(str, JsonDefaults.SnakeCase) ?? [];
+            }
             catch { return []; }
         }
 
