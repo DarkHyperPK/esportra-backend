@@ -630,6 +630,26 @@ public static class BracketEndpoints
             return Results.Ok(games);
         });
 
+        // ── GET /api/brackets/versions/tournament/{tournamentId} ─────────────
+        // List bracket versions for a tournament (replaces direct Supabase query)
+        app.MapGet("/api/brackets/versions/tournament/{tournamentId}", async (
+            Guid                 tournamentId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, tournament_id, stage_id, status
+                FROM brkt_versions
+                WHERE tournament_id = @tournamentId
+                  AND status IN ('published', 'active')
+                ORDER BY created_at ASC
+                """,
+                new { tournamentId });
+            return Results.Ok(rows);
+        });
+
         // ── GET /api/brackets/versions/{id} ──────────────────────────────────
         // Alias for GET /api/brackets/{versionId} — same data, different URL pattern
         app.MapGet("/api/brackets/versions/{id}", async (
