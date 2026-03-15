@@ -332,12 +332,16 @@ public static class MatchEndpoints
             await conn.ExecuteAsync("DELETE FROM match_result_reports WHERE match_id = @matchId", new { matchId });
             await conn.ExecuteAsync("DELETE FROM tournament_disputes WHERE match_id = @matchId", new { matchId });
 
+            // 4b. Delete time proposals so teams can re-propose
+            await conn.ExecuteAsync("DELETE FROM match_time_proposals WHERE match_id = @matchId", new { matchId });
+
             // 5. Reset match record
             await conn.ExecuteAsync(
                 """
                 UPDATE brkt_matches
                 SET winner_id = NULL, loser_id = NULL, status = 'pending',
                     team1_score = 0, team2_score = 0, party_code = NULL,
+                    scheduled_time = NULL,
                     version = version + 1, updated_at = NOW()
                 WHERE id = @matchId
                 """,
