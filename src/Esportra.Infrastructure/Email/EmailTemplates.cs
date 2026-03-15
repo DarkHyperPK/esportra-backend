@@ -26,7 +26,7 @@ public static class EmailTemplates
                 <!-- Header -->
                 <tr>
                   <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-                    <span style="font-size:24px;font-weight:700;color:#ffffff;letter-spacing:-0.5px;">⚡ Esportra</span>
+                    <img src="https://staging.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="180" style="display:inline-block;border:0;outline:none;" />
                   </td>
                 </tr>
                 <!-- Body -->
@@ -66,14 +66,73 @@ public static class EmailTemplates
     );
 
     public static (string Subject, string Html) TournamentRegistration(
-        string username, string tournamentName, string startDate, string tournamentUrl) =>
+        string username, string tournamentName, string startDate, string tournamentUrl,
+        string endDate = "", string game = "", string teamName = "", string registrationType = "") =>
     (
         $"You're registered for {tournamentName}",
         Wrap($"You're in for {tournamentName}", "Tournament Registration", $"""
-            {H1("Registration Confirmed!")}
-            {P($"Hi {username}, you've successfully registered for <strong style='color:#f9fafb;'>{tournamentName}</strong>.")}
-            {P($"<strong style='color:#f9fafb;'>Start Date:</strong> {startDate}")}
+            {H1("Registration Confirmed! 🎮")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, you've successfully registered for <strong style='color:#f9fafb;'>{tournamentName}</strong>.")}
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0 24px; border:1px solid #1f2937; border-radius:8px; overflow:hidden;">
+              <tr style="background:#1a1a2e;">
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937;">
+                  <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Tournament</span>
+                </td>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
+                  <strong style="color:#f9fafb; font-size:14px;">{tournamentName}</strong>
+                </td>
+              </tr>
+              {(string.IsNullOrWhiteSpace(game) ? "" : $"""
+              <tr>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937;">
+                  <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Game</span>
+                </td>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
+                  <strong style="color:#f9fafb; font-size:14px;">{game}</strong>
+                </td>
+              </tr>
+              """)}
+              {(string.IsNullOrWhiteSpace(teamName) ? "" : $"""
+              <tr>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937;">
+                  <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Team</span>
+                </td>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
+                  <strong style="color:#f9fafb; font-size:14px;">{teamName}</strong>
+                </td>
+              </tr>
+              """)}
+              {(string.IsNullOrWhiteSpace(registrationType) ? "" : $"""
+              <tr>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937;">
+                  <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Type</span>
+                </td>
+                <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
+                  <strong style="color:#f9fafb; font-size:14px;">{registrationType.ToUpper()}</strong>
+                </td>
+              </tr>
+              """)}
+              <tr>
+                <td style="padding:12px 16px;{(string.IsNullOrWhiteSpace(endDate) ? "" : " border-bottom:1px solid #1f2937;")}">
+                  <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Start Date</span>
+                </td>
+                <td style="padding:12px 16px;{(string.IsNullOrWhiteSpace(endDate) ? "" : " border-bottom:1px solid #1f2937;")} text-align:right;">
+                  <strong style="color:#f9fafb; font-size:14px;">{(string.IsNullOrWhiteSpace(startDate) ? "TBA" : startDate)}</strong>
+                </td>
+              </tr>
+              {(string.IsNullOrWhiteSpace(endDate) ? "" : $"""
+              <tr>
+                <td style="padding:12px 16px;">
+                  <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">End Date</span>
+                </td>
+                <td style="padding:12px 16px; text-align:right;">
+                  <strong style="color:#f9fafb; font-size:14px;">{endDate}</strong>
+                </td>
+              </tr>
+              """)}
+            </table>
             {P("Keep an eye on your notifications for check-in reminders and match schedules.")}
+            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? "https://esportra.com" : tournamentUrl)}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
             {Btn(tournamentUrl, "View Tournament")}
         """)
     );

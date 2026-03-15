@@ -84,7 +84,9 @@ public sealed class ResendEmailService(
             EmailType.TournamentRegistration =>
                 EmailTemplates.TournamentRegistration(
                     Get("username"), Get("tournamentName"),
-                    Get("startDate"), Get("tournamentUrl")),
+                    Get("startDate"), Get("tournamentUrl"),
+                    Get("endDate"), Get("game"),
+                    Get("teamName"), Get("registrationType")),
 
             EmailType.CheckinReminder or EmailType.MatchCheckinReminder =>
                 EmailTemplates.CheckinReminder(
