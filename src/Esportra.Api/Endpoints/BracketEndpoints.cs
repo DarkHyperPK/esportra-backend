@@ -17,6 +17,12 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class BracketEndpoints
 {
+    private static readonly JsonSerializerOptions s_snakeCase = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true
+    };
+
     public static void MapBracketEndpoints(this WebApplication app)
     {
         // ── POST /api/brackets/generate ───────────────────────────────────────
@@ -70,7 +76,7 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/persist ────────────────────────────────────────
         // Used by MatchRepository.ts to save a client-generated bracket graph.
-        // Frontend sends snake_case JSON — global SnakeCaseLower policy handles this.
+        // Frontend sends snake_case JSON — deserialize with SnakeCaseLower naming policy.
         app.MapPost("/api/brackets/persist", async (
             HttpContext                         ctx,
             BracketPersistenceService          persistence,
@@ -78,7 +84,7 @@ public static class BracketEndpoints
             IHubContext<BracketHub>            bracketHub,
             CancellationToken                  ct) =>
         {
-            var graph = await ctx.Request.ReadFromJsonAsync<BracketGraph>(cancellationToken: ct);
+            var graph = await ctx.Request.ReadFromJsonAsync<BracketGraph>(s_snakeCase, ct);
             if (graph is null) return Results.BadRequest("Invalid bracket graph");
 
             var userCtx = ctx.Items["UserContext"] as UserContext;
