@@ -136,34 +136,44 @@ public static class NotificationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!Guid.TryParse(req.UserId, out var targetUserId))
+                return Results.BadRequest(new { error = "Invalid userId" });
+
             using var conn = db.CreateConnection();
 
             var dataJson = req.Data is not null
                 ? JsonSerializer.Serialize(req.Data)
                 : null;
 
-            var id = await conn.QuerySingleAsync<Guid>(
-                """
-                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
-                RETURNING id
-                """,
-                new {
-                    userId  = Guid.Parse(req.UserId),
-                    type    = req.Type,
-                    title   = req.Title,
-                    message = req.Message,
-                    link    = req.Link,
-                    data    = dataJson
-                });
+            try
+            {
+                var id = await conn.QuerySingleAsync<Guid>(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                    VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
+                    RETURNING id
+                    """,
+                    new {
+                        userId  = targetUserId,
+                        type    = req.Type ?? "general",
+                        title   = req.Title ?? "",
+                        message = req.Message ?? "",
+                        link    = req.Link,
+                        data    = dataJson
+                    });
 
-            // Push real-time notification via SignalR
-            await notifHub.Clients
-                .Group(NotificationHub.UserGroup(req.UserId))
-                .SendAsync(NotificationHubEvents.NewNotification,
-                    new { id, type = req.Type, title = req.Title, message = req.Message, link = req.Link }, ct);
+                // Push real-time notification via SignalR
+                await notifHub.Clients
+                    .Group(NotificationHub.UserGroup(targetUserId.ToString()))
+                    .SendAsync(NotificationHubEvents.NewNotification,
+                        new { id, type = req.Type, title = req.Title, message = req.Message, link = req.Link }, ct);
 
-            return Results.Ok(new { id, success = true });
+                return Results.Ok(new { id, success = true });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { error = "Failed to create notification", detail = ex.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/notifications/bulk-delete ─────────────────────────────

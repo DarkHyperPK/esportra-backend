@@ -1219,7 +1219,7 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             var captain = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT tm.user_id, tm.role, tm.joined_at,
+                SELECT tm.user_id::text as user_id, tm.role, tm.joined_at,
                        p.username, p.avatar_url, p.riot_tag
                 FROM team_members tm
                 JOIN profiles p ON p.id = tm.user_id
