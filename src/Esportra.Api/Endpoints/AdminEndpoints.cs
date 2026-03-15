@@ -485,8 +485,15 @@ public static class AdminEndpoints
             if (!Enum.TryParse<EmailType>(req.Type, ignoreCase: true, out var emailType))
                 return Results.BadRequest(new { error = $"Unknown email type: {req.Type}" });
 
-            await email.SendAsync(req.Email, emailType, req.Data, ct);
-            return Results.Ok(new { success = true });
+            try
+            {
+                await email.SendAsync(req.Email, emailType, req.Data, ct);
+                return Results.Ok(new { success = true });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { error = ex.Message }, statusCode: 502);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/admin/user-roles ──────────────────────────────────────────
