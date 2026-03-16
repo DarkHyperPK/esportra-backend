@@ -15,6 +15,30 @@ public static class IntegrationEndpoints
 {
     public static void MapIntegrationEndpoints(this WebApplication app)
     {
+        // ── GET /api/integrations/riot/redirect ──────────────────────────────
+        // Riot OAuth redirects here (registered in Riot dev portal).
+        // Forwards code+state to the frontend Settings page for token exchange.
+        app.MapGet("/api/integrations/riot/redirect", (
+            HttpContext ctx, IConfiguration config) =>
+        {
+            var code  = ctx.Request.Query["code"].FirstOrDefault();
+            var state = ctx.Request.Query["state"].FirstOrDefault();
+            var error = ctx.Request.Query["error"].FirstOrDefault();
+
+            // Resolve frontend origin from config or CORS allowed origins
+            var frontendUrl = config["Frontend:BaseUrl"]
+                ?? config.GetSection("Cors:AllowedOrigins").Get<string[]>()?.FirstOrDefault()
+                ?? "http://localhost:5173";
+
+            if (!string.IsNullOrEmpty(error))
+                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason={Uri.EscapeDataString(error)}");
+
+            if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(state))
+                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=missing_params");
+
+            return Results.Redirect($"{frontendUrl}/settings?riot_callback=true&code={Uri.EscapeDataString(code)}&state={Uri.EscapeDataString(state)}");
+        }); // Public — no auth required (Riot redirect has no JWT)
+
         // ── GET /api/integrations/riot ────────────────────────────────────────
         // Returns the current user's linked Riot account (if any).
         app.MapGet("/api/integrations/riot", async (
