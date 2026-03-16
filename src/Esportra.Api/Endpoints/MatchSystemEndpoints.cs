@@ -74,6 +74,19 @@ public static class MatchSystemEndpoints
                    @riotMatchId, @mapId::uuid, @mapName,
                    @team1Score, @team2Score, @winnerTeamId::uuid, @matchData::jsonb,
                    @screenshotUrls::jsonb, @comment, 'pending')
+                ON CONFLICT (match_id, game_number, reported_by_team_id)
+                DO UPDATE SET
+                   team1_score    = EXCLUDED.team1_score,
+                   team2_score    = EXCLUDED.team2_score,
+                   riot_match_id  = COALESCE(EXCLUDED.riot_match_id, match_result_reports.riot_match_id),
+                   map_id         = COALESCE(EXCLUDED.map_id, match_result_reports.map_id),
+                   map_name       = COALESCE(EXCLUDED.map_name, match_result_reports.map_name),
+                   winner_team_id = COALESCE(EXCLUDED.winner_team_id, match_result_reports.winner_team_id),
+                   match_data     = EXCLUDED.match_data,
+                   screenshot_urls = EXCLUDED.screenshot_urls,
+                   comment        = EXCLUDED.comment,
+                   status         = 'pending',
+                   updated_at     = now()
                 RETURNING *
                 """,
                 new
