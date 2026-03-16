@@ -38,12 +38,12 @@ public static class IntegrationEndpoints
             if (account is null) return Results.Ok(new { linked = false });
             return Results.Ok(new
             {
-                linked   = true,
-                puuid    = (string?)account.puuid,
-                gameName = (string?)account.game_name,
-                tagLine  = (string?)account.tag_line,
-                region   = (string?)account.region,
-                riotTag  = (string?)account.riot_tag
+                linked    = true,
+                puuid     = (string?)account.puuid,
+                game_name = (string?)account.game_name,
+                tag_line  = (string?)account.tag_line,
+                region    = (string?)account.region,
+                riot_tag  = (string?)account.riot_tag
             });
         }).RequireAuthorization("Authenticated");
 
@@ -70,11 +70,11 @@ public static class IntegrationEndpoints
             if (account is null) return Results.Ok(new { linked = false });
             return Results.Ok(new
             {
-                linked        = true,
-                faceitId      = (string?)account.faceit_id,
-                nickname      = (string?)account.nickname,
-                avatarUrl     = (string?)account.avatar_url,
-                faceitNickname = (string?)account.faceit_nickname
+                linked          = true,
+                faceit_id       = (string?)account.faceit_id,
+                nickname        = (string?)account.nickname,
+                avatar_url      = (string?)account.avatar_url,
+                faceit_nickname = (string?)account.faceit_nickname
             });
         }).RequireAuthorization("Authenticated");
 
