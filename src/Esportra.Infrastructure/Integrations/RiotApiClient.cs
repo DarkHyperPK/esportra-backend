@@ -14,6 +14,7 @@ public sealed class RiotApiClient(HttpClient http, IConfiguration config)
     private static readonly string[] AllowedPrefixes =
     [
         "/riot/account/v1/accounts/",
+        "/riot/account/v1/active-shards/",
         "/val/match/v1/matches/",
         "/val/match/v1/matchlists/",
         "/val/content/v1/contents",

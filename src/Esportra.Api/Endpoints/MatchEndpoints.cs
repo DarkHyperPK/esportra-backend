@@ -70,17 +70,37 @@ public static class MatchEndpoints
                 return Results.Ok(new { matches = Array.Empty<object>(), reason = "Your Riot account is not linked or you are not in this match" });
 
             var scannerPuuid = (string)scanner.puuid;
-            var region = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
-            // Valorant API shards: na, eu, ap, kr, br, latam
-            var shard = region switch
+
+            // Detect actual Valorant shard via Riot active-shards API (like the debug page does)
+            var shard = "eu"; // default fallback
+            var (shardStatus, shardBody) = await riotApi.ProxyAsync(
+                "americas", $"/riot/account/v1/active-shards/by-game/val/by-puuid/{scannerPuuid}", ct);
+            if (shardStatus == 200)
             {
-                "na" or "br" or "latam" or "kr" => region,
-                "ap" or "eu" => region,
-                "americas" => "na",
-                "europe" => "eu",
-                "asia" => "ap",
-                _ => "eu"
-            };
+                try
+                {
+                    using var shardDoc = JsonDocument.Parse(shardBody);
+                    var activeShard = shardDoc.RootElement.GetProperty("activeShard").GetString()?.ToLowerInvariant();
+                    if (!string.IsNullOrEmpty(activeShard))
+                        shard = activeShard;
+                    log.LogInformation("Active shard for PUUID {Puuid}: {Shard}", scannerPuuid, shard);
+                }
+                catch { /* fallback to default */ }
+            }
+            else
+            {
+                // Fallback to DB region
+                var region = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
+                shard = region switch
+                {
+                    "na" or "br" or "latam" or "kr" or "ap" or "eu" => region,
+                    "americas" => "na",
+                    "europe" => "eu",
+                    "asia" => "ap",
+                    _ => "eu"
+                };
+                log.LogWarning("Shard detection failed ({Status}), falling back to DB region: {Shard}", shardStatus, shard);
+            }
 
             log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
                 scannerPuuid, shard, req.MapName);
