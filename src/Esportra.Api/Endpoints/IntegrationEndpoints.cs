@@ -89,7 +89,9 @@ public static class IntegrationEndpoints
             if (payload is null || payload.Provider != "riot")
                 return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=invalid_state");
 
-            var userId       = payload.UserId;
+            if (!Guid.TryParse(payload.UserId, out var userGuid))
+                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=invalid_user");
+
             var clientId     = config["Riot:OAuthClientId"]     ?? string.Empty;
             var clientSecret = config["Riot:OAuthClientSecret"] ?? string.Empty;
             var backendUrl   = ResolveBackendUrl(config);
@@ -140,7 +142,7 @@ public static class IntegrationEndpoints
             // Guard: PUUID already linked to another user
             var existingUserId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT user_id FROM public.riot_accounts WHERE puuid = @puuid AND user_id != @userId",
-                new { puuid, userId });
+                new { puuid, userId = userGuid });
             if (existingUserId is not null)
                 return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=already_linked_to_another_user");
 
@@ -156,12 +158,12 @@ public static class IntegrationEndpoints
                     access_token = EXCLUDED.access_token,
                     refresh_token = EXCLUDED.refresh_token,
                     token_expires_at = EXCLUDED.token_expires_at
-                """, new { userId, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
+                """, new { userId = userGuid, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
 
             // Sync profiles.riot_tag
             await conn.ExecuteAsync(
                 "UPDATE public.profiles SET riot_tag = @riotTag WHERE id = @userId",
-                new { riotTag = $"{gameName}#{tagLine}", userId });
+                new { riotTag = $"{gameName}#{tagLine}", userId = userGuid });
 
             return Results.Redirect($"{frontendUrl}/settings?riot_linked=success");
         }); // Public — Riot redirect has no JWT
@@ -282,7 +284,9 @@ public static class IntegrationEndpoints
             if (payload is null || payload.Provider != "faceit" || payload.CodeVerifier is null)
                 return Results.Redirect($"{frontendUrl}/settings?faceit_linked=error&reason=invalid_state");
 
-            var userId      = payload.UserId;
+            if (!Guid.TryParse(payload.UserId, out var userGuid))
+                return Results.Redirect($"{frontendUrl}/settings?faceit_linked=error&reason=invalid_user");
+
             var backendUrl  = ResolveBackendUrl(config);
             var redirectUri = $"{backendUrl}/api/integrations/faceit/callback";
 
@@ -315,7 +319,7 @@ public static class IntegrationEndpoints
             // Guard: faceit_id already linked to another user
             var existingUserId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT user_id FROM public.faceit_accounts WHERE faceit_id = @faceitId AND user_id != @userId",
-                new { faceitId, userId });
+                new { faceitId, userId = userGuid });
             if (existingUserId is not null)
                 return Results.Redirect($"{frontendUrl}/settings?faceit_linked=error&reason=already_linked_to_another_user");
 
@@ -330,13 +334,13 @@ public static class IntegrationEndpoints
                     access_token = EXCLUDED.access_token,
                     refresh_token = EXCLUDED.refresh_token,
                     token_expires_at = EXCLUDED.token_expires_at
-                """, new { userId, faceitId, nickname, avatarUrl,
+                """, new { userId = userGuid, faceitId, nickname, avatarUrl,
                            accessToken = tokens.access_token,
                            refreshToken = tokens.refresh_token, expiresAt });
 
             await conn.ExecuteAsync(
                 "UPDATE public.profiles SET faceit_nickname = @nickname WHERE id = @userId",
-                new { nickname, userId });
+                new { nickname, userId = userGuid });
 
             return Results.Redirect($"{frontendUrl}/settings?faceit_linked=success");
         }); // Public — Faceit redirect has no JWT
