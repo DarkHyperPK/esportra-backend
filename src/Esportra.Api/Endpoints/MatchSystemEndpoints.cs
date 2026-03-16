@@ -60,11 +60,13 @@ public static class MatchSystemEndpoints
                 INSERT INTO match_result_reports
                   (match_id, game_number, reported_by, reported_by_team_id,
                    riot_match_id, map_id, map_name,
-                   team1_score, team2_score, winner_team_id, match_data, status)
+                   team1_score, team2_score, winner_team_id, match_data,
+                   screenshot_urls, comment, status)
                 VALUES
                   (@matchId, @gameNumber, @reportedBy, @reportedByTeamId,
                    @riotMatchId, @mapId, @mapName,
-                   @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb, 'pending')
+                   @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb,
+                   @screenshotUrls::jsonb, @comment, 'pending')
                 RETURNING *
                 """,
                 new
@@ -73,7 +75,7 @@ public static class MatchSystemEndpoints
                     gameNumber        = req.GameNumber,
                     reportedBy        = userCtx.UserIdGuid,
                     reportedByTeamId  = req.ReportedByTeamId,
-                    riotMatchId       = req.RiotMatchId,
+                    riotMatchId       = (string?)req.RiotMatchId,
                     mapId             = req.MapId,
                     mapName           = req.MapName,
                     team1Score        = req.Team1Score,
@@ -82,6 +84,10 @@ public static class MatchSystemEndpoints
                     matchData         = req.MatchData is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
                         : "{}",
+                    screenshotUrls    = req.ScreenshotUrls is not null
+                        ? System.Text.Json.JsonSerializer.Serialize(req.ScreenshotUrls)
+                        : "[]",
+                    comment           = req.Comment,
                 });
 
             // Notify opposing captain via notification + SignalR
@@ -100,9 +106,9 @@ public static class MatchSystemEndpoints
 
             if (match is not null)
             {
-                string? opposingTeamId = (string?)match.team1_id == req.ReportedByTeamId
-                    ? (string?)match.team2_id
-                    : (string?)match.team1_id;
+                string? opposingTeamId = match.team1_id?.ToString() == req.ReportedByTeamId
+                    ? match.team2_id?.ToString()
+                    : match.team1_id?.ToString();
 
                 if (opposingTeamId is not null)
                 {
@@ -890,14 +896,16 @@ public static class MatchSystemEndpoints
 
 public sealed record SubmitReportRequest(
     int     GameNumber,
-    string  RiotMatchId,
     string  ReportedByTeamId,
     int     Team1Score,
     int     Team2Score,
-    string  WinnerTeamId,
-    string? MapId    = null,
-    string? MapName  = null,
-    object? MatchData = null);
+    string? WinnerTeamId  = null,
+    string? RiotMatchId   = null,
+    string? MapId         = null,
+    string? MapName       = null,
+    object? MatchData     = null,
+    string[]? ScreenshotUrls = null,
+    string? Comment       = null);
 
 public sealed record AcceptReportRequest(
     string RiotMatchId,
