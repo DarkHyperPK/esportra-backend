@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
@@ -20,21 +21,22 @@ public static class MatchEndpoints
     public static void MapMatchEndpoints(this WebApplication app)
     {
         // ── POST /api/matches/scan ────────────────────────────────────────────
-        // Scans for a recent match result via Riot API match history.
-        // Called after a match report is submitted to cross-reference with official data.
+        // Scans Riot API match history and returns parsed MatchCandidate objects.
         app.MapPost("/api/matches/scan", async (
             [FromBody] ScanRecentMatchesRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory               db,
             Esportra.Infrastructure.Integrations.RiotApiClient riotApi,
+            ILoggerFactory                     loggerFactory,
             CancellationToken                  ct) =>
         {
+            var log = loggerFactory.CreateLogger("MatchEndpoints.Scan");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            // Get the match and participating players' Riot PUUIDs
+            // 1. Get match + tournament info
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT bm.id, bm.team1_id, bm.team2_id, t.id AS tournament_id, t.game
@@ -48,36 +50,181 @@ public static class MatchEndpoints
 
             if (match is null) return Results.NotFound(new { error = "Match not found" });
 
-            // Get Riot accounts linked to players in both teams
-            var riotAccounts = (await conn.QueryAsync<dynamic>(
+            // 2. Get scanning user's Riot account (puuid + region)
+            var scanner = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT ra.puuid, ra.game_name, ra.tag_line, tm.team_id
+                SELECT ra.puuid, ra.game_name, ra.tag_line, ra.region, tm.team_id
+                FROM riot_accounts ra
+                JOIN team_members tm ON tm.user_id = ra.user_id
+                WHERE ra.user_id = @userId AND ra.puuid IS NOT NULL
+                  AND tm.team_id IN (@team1Id, @team2Id)
+                """,
+                new { userId = userCtx.UserId, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
+
+            if (scanner is null)
+                return Results.Ok(new { matches = Array.Empty<object>(), reason = "Your Riot account is not linked or you are not in this match" });
+
+            var scannerPuuid = (string)scanner.puuid;
+            var region = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
+            // Valorant API shards: na, eu, ap, kr, br, latam
+            var shard = region switch
+            {
+                "na" or "br" or "latam" or "kr" => region,
+                "ap" or "eu" => region,
+                "americas" => "na",
+                "europe" => "eu",
+                "asia" => "ap",
+                _ => "eu"
+            };
+
+            log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
+                scannerPuuid, shard, req.MapName);
+
+            // 3. Collect all team members' PUUIDs for player identification
+            var allAccounts = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT ra.puuid, tm.team_id
                 FROM riot_accounts ra
                 JOIN team_members tm ON tm.user_id = ra.user_id
                 WHERE tm.team_id IN (@team1Id, @team2Id) AND ra.puuid IS NOT NULL
                 """,
                 new { team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id })).AsList();
 
-            if (riotAccounts.Count == 0)
-                return Results.Ok(new { found = false, reason = "No linked Riot accounts for match participants" });
+            var team1Puuids = allAccounts
+                .Where(a => (Guid)a.team_id == (Guid)match.team1_id)
+                .Select(a => (string)a.puuid).ToHashSet();
+            var team2Puuids = allAccounts
+                .Where(a => (Guid)a.team_id == (Guid)match.team2_id)
+                .Select(a => (string)a.puuid).ToHashSet();
 
-            // Scan the first available player's recent match history
-            var puuid = (string)riotAccounts[0].puuid;
-            var (statusCode, body) = await riotApi.ProxyAsync(
-                "na",
-                $"/val/match/v1/matchlists/{puuid}",
-                ct);
+            // 4. Fetch matchlist from Riot API
+            var (listStatus, listBody) = await riotApi.ProxyAsync(
+                shard, $"/val/match/v1/matchlists/{scannerPuuid}", ct);
 
-            if (statusCode != 200)
-                return Results.Ok(new { found = false, reason = $"Riot API returned {statusCode}" });
-
-            return Results.Ok(new
+            if (listStatus != 200)
             {
-                found     = true,
-                matchId   = req.MatchId,
-                mapName   = req.MapName,
-                riotData  = body,
-            });
+                log.LogWarning("Riot matchlist returned {Status}: {Body}", listStatus, listBody);
+                return Results.Ok(new { matches = Array.Empty<object>(), reason = $"Riot API returned {listStatus}" });
+            }
+
+            // 5. Parse matchlist — take last 10 entries
+            using var listDoc = JsonDocument.Parse(listBody);
+            var history = listDoc.RootElement.GetProperty("history");
+            var recentIds = history.EnumerateArray()
+                .Take(10)
+                .Select(e => e.GetProperty("matchId").GetString()!)
+                .ToList();
+
+            if (recentIds.Count == 0)
+                return Results.Ok(new { matches = Array.Empty<object>(), reason = "No recent matches in Riot history" });
+
+            // 6. Fetch each match detail and build candidates
+            var candidates = new List<object>();
+
+            foreach (var riotMatchId in recentIds)
+            {
+                var (detStatus, detBody) = await riotApi.ProxyAsync(
+                    shard, $"/val/match/v1/matches/{riotMatchId}", ct);
+                if (detStatus != 200) continue;
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(detBody);
+                    var info = doc.RootElement.GetProperty("matchInfo");
+                    var riotMapId = info.GetProperty("mapId").GetString() ?? "";
+                    var mapDisplayName = ResolveValorantMapName(riotMapId);
+
+                    // Filter by map name if specified
+                    if (!string.IsNullOrEmpty(req.MapName) &&
+                        !string.Equals(mapDisplayName, req.MapName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var queueId = info.GetProperty("queueId").GetString() ?? "";
+                    var gameLengthMillis = info.GetProperty("gameLengthMillis").GetInt64();
+                    var gameStartMillis = info.GetProperty("gameStartMillis").GetInt64();
+
+                    // Parse teams
+                    int blueRounds = 0, redRounds = 0;
+                    bool blueWon = false, redWon = false;
+                    foreach (var team in doc.RootElement.GetProperty("teams").EnumerateArray())
+                    {
+                        var tid = team.GetProperty("teamId").GetString();
+                        var won = team.GetProperty("won").GetBoolean();
+                        var rw = team.GetProperty("roundsWon").GetInt32();
+                        if (tid == "Blue") { blueRounds = rw; blueWon = won; }
+                        else if (tid == "Red") { redRounds = rw; redWon = won; }
+                    }
+
+                    // Parse players, find scanner
+                    string? scannerSide = null, scannerAgent = null;
+                    int kills = 0, deaths = 0, assists = 0;
+                    var playerList = new List<object>();
+
+                    foreach (var p in doc.RootElement.GetProperty("players").EnumerateArray())
+                    {
+                        var pPuuid = p.GetProperty("puuid").GetString() ?? "";
+                        var pTeam = p.GetProperty("teamId").GetString() ?? "";
+                        var pName = p.TryGetProperty("gameName", out var gn) ? gn.GetString() ?? "" : "";
+                        var pTag = p.TryGetProperty("tagLine", out var tl) ? tl.GetString() ?? "" : "";
+                        var charId = p.GetProperty("characterId").GetString() ?? "";
+                        var stats = p.GetProperty("stats");
+                        var pK = stats.GetProperty("kills").GetInt32();
+                        var pD = stats.GetProperty("deaths").GetInt32();
+                        var pA = stats.GetProperty("assists").GetInt32();
+                        var pScore = stats.GetProperty("score").GetInt32();
+
+                        playerList.Add(new
+                        {
+                            puuid = pPuuid, gameName = pName, tagLine = pTag,
+                            teamId = pTeam, characterId = charId,
+                            kills = pK, deaths = pD, assists = pA, score = pScore,
+                            isTeam1 = team1Puuids.Contains(pPuuid),
+                            isTeam2 = team2Puuids.Contains(pPuuid),
+                        });
+
+                        if (pPuuid == scannerPuuid)
+                        {
+                            scannerSide = pTeam;
+                            scannerAgent = charId;
+                            kills = pK; deaths = pD; assists = pA;
+                        }
+                    }
+
+                    if (scannerSide is null) continue; // scanner not in this match
+
+                    var isBlue = scannerSide == "Blue";
+                    var myRounds = isBlue ? blueRounds : redRounds;
+                    var enemyRounds = isBlue ? redRounds : blueRounds;
+                    var didWin = isBlue ? blueWon : redWon;
+
+                    candidates.Add(new
+                    {
+                        id = riotMatchId,
+                        map = mapDisplayName,
+                        mapId = riotMapId,
+                        queueId,
+                        startTime = gameStartMillis,
+                        gameLengthMillis,
+                        myTeamScore = myRounds,
+                        enemyTeamScore = enemyRounds,
+                        reporterSide = scannerSide,
+                        score = $"{myRounds}-{enemyRounds}",
+                        result = didWin ? "Victory" : "Defeat",
+                        kda = $"{kills}/{deaths}/{assists}",
+                        agent = scannerAgent,
+                        blueTeam = new { roundsWon = blueRounds, won = blueWon },
+                        redTeam = new { roundsWon = redRounds, won = redWon },
+                        players = playerList,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "Failed to parse Riot match {MatchId}", riotMatchId);
+                }
+            }
+
+            log.LogInformation("Found {Count} candidates for map '{Map}'", candidates.Count, req.MapName);
+            return Results.Ok(new { matches = candidates });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/process ───────────────────────────────
@@ -620,6 +767,36 @@ public static class MatchEndpoints
             return Results.Ok(rows);
         });
     }
+
+    /// <summary>Resolve Riot Valorant map path to display name.</summary>
+    private static string ResolveValorantMapName(string riotMapId)
+    {
+        // Riot uses internal paths like /Game/Maps/Triad/Triad
+        var map = ValorantMaps.GetValueOrDefault(riotMapId);
+        if (map is not null) return map;
+
+        // Fallback: extract last path segment
+        var lastSlash = riotMapId.LastIndexOf('/');
+        return lastSlash >= 0 ? riotMapId[(lastSlash + 1)..] : riotMapId;
+    }
+
+    private static readonly Dictionary<string, string> ValorantMaps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["/Game/Maps/Ascent/Ascent"]       = "Ascent",
+        ["/Game/Maps/Duality/Duality"]     = "Bind",
+        ["/Game/Maps/Triad/Triad"]         = "Haven",
+        ["/Game/Maps/Bonsai/Bonsai"]       = "Split",
+        ["/Game/Maps/Port/Port"]           = "Icebox",
+        ["/Game/Maps/Foxtrot/Foxtrot"]     = "Breeze",
+        ["/Game/Maps/Canyon/Canyon"]       = "Fracture",
+        ["/Game/Maps/Pitt/Pitt"]           = "Pearl",
+        ["/Game/Maps/Jam/Jam"]             = "Lotus",
+        ["/Game/Maps/Juliett/Juliett"]     = "Sunset",
+        ["/Game/Maps/Infinity/Infinity"]   = "Abyss",
+        ["/Game/Maps/HURM/HURM_Alley/HURM_Alley"]     = "District",
+        ["/Game/Maps/HURM/HURM_Bowl/HURM_Bowl"]       = "Kasbah",
+        ["/Game/Maps/HURM/HURM_Yard/HURM_Yard"]       = "Piazza",
+    };
 }
 
 // ── Match request records ────────────────────────────────────────────────────
