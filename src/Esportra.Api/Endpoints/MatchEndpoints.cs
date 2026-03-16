@@ -162,11 +162,12 @@ public static class MatchEndpoints
                     var info = doc.RootElement.GetProperty("matchInfo");
                     var riotMapId = info.GetProperty("mapId").GetString() ?? "";
                     var mapDisplayName = ResolveValorantMapName(riotMapId);
+                    log.LogInformation("Match {RiotId}: mapId={MapId}, resolved={MapName}",
+                        riotMatchId, riotMapId, mapDisplayName);
 
-                    // Filter by map name if specified
-                    if (!string.IsNullOrEmpty(req.MapName) &&
-                        !string.Equals(mapDisplayName, req.MapName, StringComparison.OrdinalIgnoreCase))
-                        continue;
+                    // Track if this match is on the expected map (for UI highlighting)
+                    var isExpectedMap = !string.IsNullOrEmpty(req.MapName) &&
+                        string.Equals(mapDisplayName, req.MapName, StringComparison.OrdinalIgnoreCase);
 
                     var queueId = info.GetProperty("queueId").GetString() ?? "";
                     var gameLengthMillis = info.GetProperty("gameLengthMillis").GetInt64();
@@ -241,6 +242,7 @@ public static class MatchEndpoints
                         result = didWin ? "Victory" : "Defeat",
                         kda = $"{kills}/{deaths}/{assists}",
                         agent = scannerAgent,
+                        isExpectedMap,
                         blueTeam = new { roundsWon = blueRounds, won = blueWon },
                         redTeam = new { roundsWon = redRounds, won = redWon },
                         players = playerList,
@@ -828,6 +830,7 @@ public static class MatchEndpoints
         ["/Game/Maps/Jam/Jam"]             = "Lotus",
         ["/Game/Maps/Juliett/Juliett"]     = "Sunset",
         ["/Game/Maps/Infinity/Infinity"]   = "Abyss",
+        ["/Game/Maps/Drift/Drift"]         = "Corrode",
         ["/Game/Maps/HURM/HURM_Alley/HURM_Alley"]     = "District",
         ["/Game/Maps/HURM/HURM_Bowl/HURM_Bowl"]       = "Kasbah",
         ["/Game/Maps/HURM/HURM_Yard/HURM_Yard"]       = "Piazza",

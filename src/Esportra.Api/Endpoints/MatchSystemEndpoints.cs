@@ -166,7 +166,7 @@ public static class MatchSystemEndpoints
                         await matchHub.Clients
                             .Group(MatchHub.MatchGroup(id.ToString()))
                             .SendAsync(MatchHubEvents.ReportSubmitted,
-                                new { matchId = id, reportId = (string?)report.id }, ct);
+                                new { matchId = id, reportId = report.id?.ToString() }, ct);
                     }
                 }
             }
@@ -191,6 +191,7 @@ public static class MatchSystemEndpoints
             HttpContext                     ctx,
             IDbConnectionFactory           db,
             IHubContext<MatchHub>          matchHub,
+            IHubContext<BracketHub>        bracketHub,
             ILoggerFactory                 loggerFactory,
             CancellationToken              ct) =>
         {
@@ -222,6 +223,60 @@ public static class MatchSystemEndpoints
                 """,
                 new { rid, matchId = id, userId = userCtx.UserIdGuid });
 
+            // Auto-process: finalize the match and update bracket
+            Guid? winnerId = null;
+            try
+            {
+                var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT winner_team_id, team1_score, team2_score
+                    FROM match_result_reports WHERE id = @rid
+                    """, new { rid });
+
+                if (report?.winner_team_id is not null)
+                {
+                    winnerId = (Guid)report.winner_team_id;
+                    var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT version, team1_id, team2_id, version_id FROM brkt_matches WHERE id = @matchId",
+                        new { matchId = id });
+
+                    if (match is not null)
+                    {
+                        var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
+                        var t1 = (int)report.team1_score;
+                        var t2 = (int)report.team2_score;
+
+                        var finalized = await conn.QuerySingleOrDefaultAsync<bool>(
+                            """
+                            SELECT public.finalize_match_locked(
+                                @matchId, @version, @winnerId, @loserId, @t1, @t2
+                            )
+                            """,
+                            new { matchId = id, version = (int)match.version, winnerId, loserId, t1, t2 });
+
+                        if (finalized)
+                        {
+                            logger.LogInformation("Match {MatchId} auto-processed: winner={Winner}, score={T1}-{T2}",
+                                id, winnerId, t1, t2);
+
+                            // Broadcast bracket update
+                            if (match.version_id is not null)
+                            {
+                                var vid = (Guid)match.version_id;
+                                await bracketHub.Clients
+                                    .Group(BracketHub.BracketGroup(vid.ToString()))
+                                    .SendAsync(BracketHubEvents.MatchUpdated,
+                                        new { versionId = vid, matchId = id }, ct);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Auto-process after accept failed for match {MatchId} (non-fatal)", id);
+            }
+
             // Notify via SignalR
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
@@ -234,6 +289,7 @@ public static class MatchSystemEndpoints
                 matchId     = id,
                 reportId    = rid,
                 riotMatchId = req.RiotMatchId,
+                processed   = winnerId is not null,
             });
             }
             catch (Exception ex)
