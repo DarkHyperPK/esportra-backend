@@ -8,6 +8,7 @@ using Esportra.Core.Match;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -27,6 +28,7 @@ public static class MatchEndpoints
             HttpContext                        ctx,
             IDbConnectionFactory               db,
             Esportra.Infrastructure.Integrations.RiotApiClient riotApi,
+            HybridCache                        cache,
             ILoggerFactory                     loggerFactory,
             CancellationToken                  ct) =>
         {
@@ -71,36 +73,30 @@ public static class MatchEndpoints
 
             var scannerPuuid = (string)scanner.puuid;
 
-            // Detect actual Valorant shard via Riot active-shards API (like the debug page does)
-            var shard = "eu"; // default fallback
-            var (shardStatus, shardBody) = await riotApi.ProxyAsync(
-                "americas", $"/riot/account/v1/active-shards/by-game/val/by-puuid/{scannerPuuid}", ct);
-            if (shardStatus == 200)
-            {
-                try
+            // Detect shard (cached 30 min — shard rarely changes)
+            var shard = await cache.GetOrCreateAsync(
+                $"riot:shard:{scannerPuuid}",
+                async (_) =>
                 {
-                    using var shardDoc = JsonDocument.Parse(shardBody);
-                    var activeShard = shardDoc.RootElement.GetProperty("activeShard").GetString()?.ToLowerInvariant();
-                    if (!string.IsNullOrEmpty(activeShard))
-                        shard = activeShard;
-                    log.LogInformation("Active shard for PUUID {Puuid}: {Shard}", scannerPuuid, shard);
-                }
-                catch { /* fallback to default */ }
-            }
-            else
-            {
-                // Fallback to DB region
-                var region = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
-                shard = region switch
-                {
-                    "na" or "br" or "latam" or "kr" or "ap" or "eu" => region,
-                    "americas" => "na",
-                    "europe" => "eu",
-                    "asia" => "ap",
-                    _ => "eu"
-                };
-                log.LogWarning("Shard detection failed ({Status}), falling back to DB region: {Shard}", shardStatus, shard);
-            }
+                    var (s, b) = await riotApi.ProxyAsync(
+                        "americas", $"/riot/account/v1/active-shards/by-game/val/by-puuid/{scannerPuuid}", ct);
+                    if (s == 200)
+                    {
+                        using var doc = JsonDocument.Parse(b);
+                        var val = doc.RootElement.GetProperty("activeShard").GetString()?.ToLowerInvariant();
+                        if (!string.IsNullOrEmpty(val)) return val;
+                    }
+                    // Fallback to DB region
+                    var r = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
+                    return r switch
+                    {
+                        "na" or "br" or "latam" or "kr" or "ap" or "eu" => r,
+                        "americas" => "na", "europe" => "eu", "asia" => "ap",
+                        _ => "eu"
+                    };
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(30) },
+                cancellationToken: ct) ?? "eu";
 
             log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
                 scannerPuuid, shard, req.MapName);
@@ -122,18 +118,26 @@ public static class MatchEndpoints
                 .Where(a => (Guid)a.team_id == (Guid)match.team2_id)
                 .Select(a => (string)a.puuid).ToHashSet();
 
-            // 4. Fetch matchlist from Riot API
-            var (listStatus, listBody) = await riotApi.ProxyAsync(
-                shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
+            // 4. Fetch matchlist from Riot API (cached 5 min per PUUID)
+            var matchlistJson = await cache.GetOrCreateAsync(
+                $"riot:matchlist:{scannerPuuid}",
+                async (_) =>
+                {
+                    var (s, b) = await riotApi.ProxyAsync(
+                        shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
+                    return s == 200 ? b : null;
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
+                cancellationToken: ct);
 
-            if (listStatus != 200)
+            if (matchlistJson is null)
             {
-                log.LogWarning("Riot matchlist returned {Status}: {Body}", listStatus, listBody);
-                return Results.Ok(new { matches = Array.Empty<object>(), reason = $"Riot API returned {listStatus}" });
+                log.LogWarning("Riot matchlist unavailable for {Puuid} on shard {Shard}", scannerPuuid, shard);
+                return Results.Ok(new { matches = Array.Empty<object>(), reason = "Could not fetch match history from Riot" });
             }
 
             // 5. Parse matchlist — take last 10 entries
-            using var listDoc = JsonDocument.Parse(listBody);
+            using var listDoc = JsonDocument.Parse(matchlistJson);
             var history = listDoc.RootElement.GetProperty("history");
             var recentIds = history.EnumerateArray()
                 .Take(10)

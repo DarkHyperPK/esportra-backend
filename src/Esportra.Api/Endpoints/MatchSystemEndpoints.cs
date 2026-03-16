@@ -71,8 +71,8 @@ public static class MatchSystemEndpoints
                    screenshot_urls, comment, status)
                 VALUES
                   (@matchId, @gameNumber, @reportedBy, @reportedByTeamId,
-                   @riotMatchId, @mapId::uuid, @mapName,
-                   @team1Score, @team2Score, @winnerTeamId::uuid, @matchData::jsonb,
+                   @riotMatchId, @mapId, @mapName,
+                   @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb,
                    @screenshotUrls::jsonb, @comment, 'pending')
                 ON CONFLICT (match_id, game_number, reported_by_team_id)
                 DO UPDATE SET
@@ -96,11 +96,11 @@ public static class MatchSystemEndpoints
                     reportedBy        = userCtx.UserIdGuid,
                     reportedByTeamId  = reportingTeamId,
                     riotMatchId       = (string?)req.RiotMatchId,
-                    mapId             = (string?)req.MapId,
+                    mapId             = Guid.TryParse(req.MapId, out var parsedMapId) ? (Guid?)parsedMapId : null,
                     mapName           = (string?)req.MapName,
                     team1Score        = req.Team1Score,
                     team2Score        = req.Team2Score,
-                    winnerTeamId      = (string?)req.WinnerTeamId,
+                    winnerTeamId      = Guid.TryParse(req.WinnerTeamId, out var parsedWinner) ? (Guid?)parsedWinner : null,
                     matchData         = req.MatchData is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
                         : "{}",
