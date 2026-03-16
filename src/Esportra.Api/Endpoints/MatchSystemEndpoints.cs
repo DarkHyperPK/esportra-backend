@@ -130,6 +130,9 @@ public static class MatchSystemEndpoints
                     ? match.team2_id?.ToString()
                     : match.team1_id?.ToString();
 
+                if (!Guid.TryParse(opposingTeamId, out var opposingTeamGuid))
+                    return Results.Ok(report);
+
                 if (opposingTeamId is not null)
                 {
                     var captain = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -138,10 +141,11 @@ public static class MatchSystemEndpoints
                         WHERE team_id = @tid AND role = 'captain' AND is_active = TRUE
                         LIMIT 1
                         """,
-                        new { tid = opposingTeamId });
+                        new { tid = opposingTeamGuid });
 
-                    if (captain?.user_id is string captainId)
+                    if (captain?.user_id is not null)
                     {
+                        var captainId = captain.user_id is Guid g ? g : Guid.Parse(captain.user_id.ToString());
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications
