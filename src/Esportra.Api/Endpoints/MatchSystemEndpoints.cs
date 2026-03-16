@@ -42,19 +42,26 @@ public static class MatchSystemEndpoints
             HttpContext                    ctx,
             IDbConnectionFactory          db,
             IHubContext<MatchHub>         matchHub,
+            ILoggerFactory                loggerFactory,
             CancellationToken             ct) =>
         {
+            var logger = loggerFactory.CreateLogger("MatchReports");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
             // Verify caller is a captain of the reporting team
+            if (!Guid.TryParse(req.ReportedByTeamId, out var reportingTeamId))
+                return Results.BadRequest(new { error = "Invalid team ID" });
+
             var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND role = 'captain' AND is_active = TRUE)",
-                new { teamId = req.ReportedByTeamId, userId = userCtx.UserIdGuid });
+                new { teamId = reportingTeamId, userId = userCtx.UserIdGuid });
             if (!isCaptain) return Results.Forbid();
 
+            try
+            {
             var report = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO match_result_reports
@@ -64,8 +71,8 @@ public static class MatchSystemEndpoints
                    screenshot_urls, comment, status)
                 VALUES
                   (@matchId, @gameNumber, @reportedBy, @reportedByTeamId,
-                   @riotMatchId, @mapId, @mapName,
-                   @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb,
+                   @riotMatchId, @mapId::uuid, @mapName,
+                   @team1Score, @team2Score, @winnerTeamId::uuid, @matchData::jsonb,
                    @screenshotUrls::jsonb, @comment, 'pending')
                 RETURNING *
                 """,
@@ -74,20 +81,20 @@ public static class MatchSystemEndpoints
                     matchId           = id,
                     gameNumber        = req.GameNumber,
                     reportedBy        = userCtx.UserIdGuid,
-                    reportedByTeamId  = req.ReportedByTeamId,
+                    reportedByTeamId  = reportingTeamId,
                     riotMatchId       = (string?)req.RiotMatchId,
-                    mapId             = req.MapId,
-                    mapName           = req.MapName,
+                    mapId             = (string?)req.MapId,
+                    mapName           = (string?)req.MapName,
                     team1Score        = req.Team1Score,
                     team2Score        = req.Team2Score,
-                    winnerTeamId      = req.WinnerTeamId,
+                    winnerTeamId      = (string?)req.WinnerTeamId,
                     matchData         = req.MatchData is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
                         : "{}",
                     screenshotUrls    = req.ScreenshotUrls is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.ScreenshotUrls)
                         : "[]",
-                    comment           = req.Comment,
+                    comment           = (string?)req.Comment,
                 });
 
             // Notify opposing captain via notification + SignalR
@@ -148,6 +155,15 @@ public static class MatchSystemEndpoints
             }
 
             return Results.Ok(report);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to submit match report for match {MatchId}", id);
+                return Results.Problem(
+                    detail: ex.Message,
+                    statusCode: 500,
+                    title: "Report submission failed");
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{id}/reports/{rid}/accept ───────────────────────
