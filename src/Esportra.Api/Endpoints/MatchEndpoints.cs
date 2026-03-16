@@ -104,7 +104,7 @@ public static class MatchEndpoints
 
             // 4. Fetch matchlist from Riot API
             var (listStatus, listBody) = await riotApi.ProxyAsync(
-                shard, $"/val/match/v1/matchlists/{scannerPuuid}", ct);
+                shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
 
             if (listStatus != 200)
             {
