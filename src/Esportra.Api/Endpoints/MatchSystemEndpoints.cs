@@ -187,15 +187,19 @@ public static class MatchSystemEndpoints
             HttpContext                     ctx,
             IDbConnectionFactory           db,
             IHubContext<MatchHub>          matchHub,
+            ILoggerFactory                 loggerFactory,
             CancellationToken              ct) =>
         {
+            var logger = loggerFactory.CreateLogger("MatchReports");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            try
+            {
             using var conn = db.CreateConnection();
 
             // Verify caller is a captain in this match (opposing team)
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
+            var captainTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
                 SELECT tm.team_id FROM team_members tm
                 JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
@@ -203,7 +207,7 @@ public static class MatchSystemEndpoints
                 LIMIT 1
                 """,
                 new { matchId = id, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            if (captainTeamId is null) return Results.Forbid();
 
             // Mark report accepted
             await conn.ExecuteAsync(
@@ -214,8 +218,7 @@ public static class MatchSystemEndpoints
                 """,
                 new { rid, matchId = id, userId = userCtx.UserIdGuid });
 
-            // Delegate result processing to the .NET process endpoint (Riot API + score sync)
-            // This is a fire-and-forget; the caller gets the acknowledgement immediately
+            // Notify via SignalR
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.ReportAccepted,
@@ -228,6 +231,12 @@ public static class MatchSystemEndpoints
                 reportId    = rid,
                 riotMatchId = req.RiotMatchId,
             });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to accept report {ReportId} for match {MatchId}", rid, id);
+                return Results.Problem(detail: ex.Message, statusCode: 500, title: "Accept failed");
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{id}/reports/{rid}/dispute ──────────────────────
@@ -937,8 +946,8 @@ public sealed record SubmitReportRequest(
     string? Comment       = null);
 
 public sealed record AcceptReportRequest(
-    string RiotMatchId,
     int    GameNumber,
+    string? RiotMatchId = null,
     string? MapId = null);
 
 public sealed record DisputeReportRequest(
