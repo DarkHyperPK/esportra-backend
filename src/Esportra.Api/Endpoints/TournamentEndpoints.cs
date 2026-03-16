@@ -1983,6 +1983,29 @@ public static class TournamentEndpoints
             return Results.Ok(reports);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/tournaments/{id}/result-reports ─────────────────────────
+        // Returns match_result_reports (with screenshots) for all matches in this tournament
+        app.MapGet("/api/tournaments/{id}/result-reports", async (
+            Guid                 id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var reports = await conn.QueryAsync<dynamic>(
+                """
+                SELECT mrr.id, mrr.match_id, mrr.game_number,
+                       mrr.reported_by_team_id, mrr.team1_score, mrr.team2_score,
+                       mrr.map_name, mrr.screenshot_urls, mrr.comment,
+                       mrr.status, mrr.created_at
+                FROM public.match_result_reports mrr
+                JOIN public.brkt_matches m ON m.id = mrr.match_id
+                JOIN public.brkt_versions v ON v.id = m.version_id
+                WHERE v.tournament_id = @id
+                ORDER BY mrr.created_at DESC
+                """, new { id });
+            return Results.Ok(reports);
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/tournaments/{id}/announcements ──────────────────────────
         app.MapPost("/api/tournaments/{id}/announcements", async (
             Guid                                 id,
