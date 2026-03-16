@@ -15,6 +15,7 @@ using Esportra.Infrastructure.Integrations;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -230,6 +231,11 @@ builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
 builder.Services.AddHttpClient<RiotApiClient>();
 builder.Services.AddHttpClient<FaceitApiClient>();
 builder.Services.AddHttpClient<RawgApiClient>();
+
+// ── Data Protection (OAuth state encryption) ─────────────────────────────────
+builder.Services.AddDataProtection()
+    .SetApplicationName("Esportra");
+builder.Services.AddSingleton<OAuthStateProtector>();
 
 // Generic HttpClient for use in endpoints (Riot/Faceit OAuth flows)
 builder.Services.AddHttpClient();
