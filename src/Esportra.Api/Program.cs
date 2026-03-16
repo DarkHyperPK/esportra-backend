@@ -390,6 +390,8 @@ app.Use(async (ctx, next) =>
     }
     catch (Exception ex)
     {
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("GlobalExceptionHandler");
+        logger?.LogError(ex, "Unhandled exception on {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
         if (!ctx.Response.HasStarted)
         {
             ctx.Response.StatusCode = 500;

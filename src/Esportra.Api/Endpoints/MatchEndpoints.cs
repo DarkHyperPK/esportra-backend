@@ -31,12 +31,17 @@ public static class MatchEndpoints
             CancellationToken                  ct) =>
         {
             var log = loggerFactory.CreateLogger("MatchEndpoints.Scan");
+            try
+            {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
             // 1. Get match + tournament info
+            if (!Guid.TryParse(userCtx.UserId, out var userGuid))
+                return Results.BadRequest(new { error = "Invalid user ID" });
+
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT bm.id, bm.team1_id, bm.team2_id, t.id AS tournament_id, t.game
@@ -59,7 +64,7 @@ public static class MatchEndpoints
                 WHERE ra.user_id = @userId AND ra.puuid IS NOT NULL
                   AND tm.team_id IN (@team1Id, @team2Id)
                 """,
-                new { userId = userCtx.UserId, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
+                new { userId = userGuid, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
 
             if (scanner is null)
                 return Results.Ok(new { matches = Array.Empty<object>(), reason = "Your Riot account is not linked or you are not in this match" });
@@ -225,6 +230,12 @@ public static class MatchEndpoints
 
             log.LogInformation("Found {Count} candidates for map '{Map}'", candidates.Count, req.MapName);
             return Results.Ok(new { matches = candidates });
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "Scan failed for match {MatchId}", req.MatchId);
+                return Results.Json(new { error = ex.Message, type = ex.GetType().Name }, statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/process ───────────────────────────────
