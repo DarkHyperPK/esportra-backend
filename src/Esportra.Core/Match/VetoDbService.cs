@@ -379,6 +379,9 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                        {selectedMapSql ?? ""}
                  WHERE match_id = @matchId",
                 new { matchId });
+
+            // Create brkt_match_games rows from the finalized veto
+            await CreateMatchGamesFromVetoAsync(matchId, veto);
         }
         else
         {
@@ -403,6 +406,100 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         }
     }
 
+    /// <summary>
+    /// After veto completes, create brkt_match_games rows for each game in the series
+    /// with resolved map_id and map_name. This is the single source of truth for
+    /// which maps are played in which order.
+    /// </summary>
+    private async Task CreateMatchGamesFromVetoAsync(Guid matchId, MatchMapVeto veto)
+    {
+        try
+        {
+            using var conn = db.CreateConnection();
+
+            // Re-fetch to get the final state (including selected_map_id for BO1)
+            var finalVeto = await conn.QuerySingleOrDefaultAsync<dynamic>(@"
+                SELECT team1_picked_maps, team2_picked_maps, selected_map_id::text as selected_map_id, best_of
+                FROM public.match_map_vetos
+                WHERE match_id = @matchId", new { matchId });
+
+            if (finalVeto is null) return;
+
+            int bestOf = (int)(finalVeto.best_of ?? 1);
+            var t1Picked = ParsePicked(finalVeto.team1_picked_maps);
+            var t2Picked = ParsePicked(finalVeto.team2_picked_maps);
+            string? selectedMapId = (string?)finalVeto.selected_map_id;
+
+            // Build ordered game map list based on veto sequence
+            var gameMapIds = new List<string>();
+
+            if (bestOf == 1)
+            {
+                // BO1: the picked map or selected_map_id (last remaining)
+                if (t1Picked.Length > 0)
+                    gameMapIds.Add(t1Picked[0].MapId);
+                else if (selectedMapId is not null)
+                    gameMapIds.Add(selectedMapId);
+            }
+            else if (bestOf == 3)
+            {
+                // BO3: T1 pick, T2 pick, decider (selected_map_id)
+                if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
+                if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
+                if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
+            }
+            else if (bestOf == 5)
+            {
+                // BO5: T1 pick, T2 pick, T1 pick, T2 pick, decider
+                if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
+                if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
+                if (t1Picked.Length > 1) gameMapIds.Add(t1Picked[1].MapId);
+                if (t2Picked.Length > 1) gameMapIds.Add(t2Picked[1].MapId);
+                if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
+            }
+
+            if (gameMapIds.Count == 0)
+            {
+                logger.LogWarning("Veto completed for match {MatchId} but no maps resolved", matchId);
+                return;
+            }
+
+            // Resolve map names in bulk
+            var mapNames = (await conn.QueryAsync<dynamic>(@"
+                SELECT id::text as id, map_name
+                FROM public.game_maps
+                WHERE id::text = ANY(@ids)",
+                new { ids = gameMapIds.ToArray() })).ToDictionary(
+                    m => (string)m.id,
+                    m => (string)m.map_name);
+
+            // Insert game rows (idempotent via ON CONFLICT)
+            for (int i = 0; i < gameMapIds.Count; i++)
+            {
+                var mapId = gameMapIds[i];
+                mapNames.TryGetValue(mapId, out var mapName);
+
+                await conn.ExecuteAsync(@"
+                    INSERT INTO public.brkt_match_games (match_id, game_number, map_id, map_name, status)
+                    VALUES (@matchId, @gameNumber, @mapId::uuid, @mapName, 'pending')
+                    ON CONFLICT (match_id, game_number) DO UPDATE
+                    SET map_id = @mapId::uuid, map_name = @mapName",
+                    new { matchId, gameNumber = i + 1, mapId, mapName });
+            }
+
+            logger.LogInformation(
+                "Created {Count} match game(s) for match {MatchId} from veto: {Maps}",
+                gameMapIds.Count, matchId,
+                string.Join(", ", gameMapIds.Select((id, i) =>
+                    $"Game {i + 1}: {(mapNames.TryGetValue(id, out var n) ? n : id)}")));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to create match games from veto for match {MatchId}", matchId);
+            // Non-fatal: veto completion still succeeds
+        }
+    }
+
     // ── Crypto token generation (S5) ─────────────────────────────────────────
 
     private static string GenerateCryptoToken()
@@ -412,20 +509,23 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         return Convert.ToBase64String(bytes).Replace("+", "-").Replace("/", "_").TrimEnd('=');
     }
 
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static PickedMap[] ParsePicked(object? json)
+    {
+        if (json is null) return [];
+        var str = json.ToString() ?? "[]";
+        try
+        {
+            return JsonSerializer.Deserialize<PickedMap[]>(str, JsonDefaults.SnakeCase) ?? [];
+        }
+        catch { return []; }
+    }
+
     // ── Row mapping ──────────────────────────────────────────────────────────
 
     private static MatchMapVeto MapRow(dynamic row)
     {
-        static PickedMap[] ParsePicked(object? json)
-        {
-            if (json is null) return [];
-            var str = json.ToString() ?? "[]";
-            try
-            {
-                return JsonSerializer.Deserialize<PickedMap[]>(str, JsonDefaults.SnakeCase) ?? [];
-            }
-            catch { return []; }
-        }
 
         static string[] ParseArray(object? arr) => arr switch
         {
