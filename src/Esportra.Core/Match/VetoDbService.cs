@@ -461,6 +461,13 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             PickedMap[] t2Picked = ParsePicked(finalVeto.team2_picked_maps);
             string? selectedMapId = (string?)finalVeto.selected_map_id;
 
+            logger.LogInformation(
+                "CreateMatchGames for {MatchId}: bestOf={BestOf}, t1Picked=[{T1}], t2Picked=[{T2}], selectedMapId={SelMap}",
+                matchId, bestOf,
+                string.Join(",", t1Picked.Select(p => p.MapId)),
+                string.Join(",", t2Picked.Select(p => p.MapId)),
+                selectedMapId ?? "null");
+
             // For BO3/BO5: compute decider map if selected_map_id not set
             // Decider = pool minus all bans and picks
             if (selectedMapId is null && bestOf > 1)
@@ -511,6 +518,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                 logger.LogWarning("Veto completed for match {MatchId} but no maps resolved", matchId);
                 return;
             }
+
+            logger.LogInformation(
+                "Match {MatchId} game map order: [{Maps}]",
+                matchId, string.Join(", ", gameMapIds));
 
             // Resolve map names in bulk
             var mapNames = (await conn.QueryAsync<dynamic>(@"
