@@ -264,6 +264,17 @@ builder.Services.AddOpenApi();
 Console.WriteLine("[STARTUP] Building app...");
 var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
+
+// ── Run database migrations ──────────────────────────────────────────────────
+{
+    var migrationLogger = app.Services.GetRequiredService<ILogger<Esportra.Infrastructure.Migrations.MigrationRunner>>();
+    var migrationRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(pgConnStr, migrationLogger);
+    if (!migrationRunner.Run())
+    {
+        Console.Error.WriteLine("[STARTUP] Database migration failed. Aborting.");
+        Environment.Exit(1);
+    }
+}
 // ═════════════════════════════════════════════════════════════════════════════
 
 if (app.Environment.IsDevelopment())

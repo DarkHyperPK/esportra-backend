@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.72" />
+    <PackageReference Include="dbup-postgresql" Version="5.0.40" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="9.0.3" />
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.4.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.4" />
@@ -21,5 +22,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\Scripts\*.sql" />
+  </ItemGroup>
 
 </Project>
