@@ -33,6 +33,7 @@ public sealed record MatchMapVeto
     public PickedMap[] Team1PickedMaps { get; init; } = [];
     public PickedMap[] Team2PickedMaps { get; init; } = [];
     public string? SelectedMapId       { get; init; }
+    public string[] SelectedMapPool    { get; init; } = [];
     public string? StartedAt           { get; init; }
     public string? CompletedAt         { get; init; }
     public string? Game                { get; init; } = "valorant";

@@ -600,6 +600,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             Team1PickedMaps     = ParsePicked(row.team1_picked_maps),
             Team2PickedMaps     = ParsePicked(row.team2_picked_maps),
             SelectedMapId       = row.selected_map_id,
+            SelectedMapPool     = ParseArray(row.selected_map_pool),
             StartedAt           = row.started_at?.ToString(),
             CompletedAt         = row.completed_at?.ToString(),
             Game                = row.game ?? "valorant",
