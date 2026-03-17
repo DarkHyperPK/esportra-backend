@@ -273,6 +273,12 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
     public async Task ResetAsync(Guid matchId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
+
+        // Delete game rows created from the previous veto so stale data doesn't survive
+        await conn.ExecuteAsync(
+            "DELETE FROM public.brkt_match_games WHERE match_id = @matchId",
+            new { matchId });
+
         await conn.ExecuteAsync(@"
             UPDATE public.match_map_vetos
                SET status = 'pending',
