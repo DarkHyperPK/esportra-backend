@@ -101,7 +101,26 @@ public static class MatchEndpoints
             log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
                 scannerPuuid, shard, req.MapName);
 
-            // 3. Collect all team members' PUUIDs for player identification
+            // 3. Get veto-finalized maps for this match (only these maps are scannable)
+            var vetoMaps = (await conn.QueryAsync<string>(
+                """
+                SELECT COALESCE(g.map_name, gm.map_name)
+                FROM brkt_match_games g
+                LEFT JOIN game_maps gm ON gm.id = g.map_id
+                WHERE g.match_id = @matchId AND g.status != 'completed'
+                """,
+                new { matchId = req.MatchId })).AsList();
+
+            // If specific game's map is provided, use that; otherwise use all veto maps
+            var allowedMaps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(req.MapName))
+                allowedMaps.Add(req.MapName);
+            foreach (var m in vetoMaps)
+                if (!string.IsNullOrEmpty(m)) allowedMaps.Add(m);
+
+            log.LogInformation("Allowed maps for scan: [{Maps}]", string.Join(", ", allowedMaps));
+
+            // 4. Collect all team members' PUUIDs for player identification
             var allAccounts = (await conn.QueryAsync<dynamic>(
                 """
                 SELECT ra.puuid, tm.team_id
@@ -118,7 +137,7 @@ public static class MatchEndpoints
                 .Where(a => (Guid)a.team_id == (Guid)match.team2_id)
                 .Select(a => (string)a.puuid).ToHashSet();
 
-            // 4. Fetch matchlist from Riot API (cached 5 min per PUUID)
+            // 5. Fetch matchlist from Riot API (cached 5 min per PUUID)
             var matchlistJson = await cache.GetOrCreateAsync(
                 $"riot:matchlist:{scannerPuuid}",
                 async (_) =>
@@ -136,7 +155,7 @@ public static class MatchEndpoints
                 return Results.Ok(new { matches = Array.Empty<object>(), reason = "Could not fetch match history from Riot" });
             }
 
-            // 5. Parse matchlist — take last 10 entries
+            // 6. Parse matchlist — take last 10 entries
             using var listDoc = JsonDocument.Parse(matchlistJson);
             var history = listDoc.RootElement.GetProperty("history");
             var recentIds = history.EnumerateArray()
@@ -147,7 +166,7 @@ public static class MatchEndpoints
             if (recentIds.Count == 0)
                 return Results.Ok(new { matches = Array.Empty<object>(), reason = "No recent matches in Riot history" });
 
-            // 6. Fetch each match detail and build candidates
+            // 7. Fetch each match detail and build candidates
             var candidates = new List<object>();
 
             foreach (var riotMatchId in recentIds)
@@ -164,6 +183,13 @@ public static class MatchEndpoints
                     var mapDisplayName = ResolveValorantMapName(riotMapId);
                     log.LogInformation("Match {RiotId}: mapId={MapId}, resolved={MapName}",
                         riotMatchId, riotMapId, mapDisplayName);
+
+                    // Skip matches not on a veto-finalized map
+                    if (allowedMaps.Count > 0 && !allowedMaps.Contains(mapDisplayName))
+                    {
+                        log.LogDebug("Skipping match {RiotId}: map {Map} not in allowed set", riotMatchId, mapDisplayName);
+                        continue;
+                    }
 
                     // Track if this match is on the expected map (for UI highlighting)
                     var isExpectedMap = !string.IsNullOrEmpty(req.MapName) &&
