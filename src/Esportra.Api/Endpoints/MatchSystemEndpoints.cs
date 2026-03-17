@@ -245,7 +245,9 @@ public static class MatchSystemEndpoints
             {
                 var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT winner_team_id, team1_score, team2_score
+                    SELECT winner_team_id, team1_score, team2_score,
+                           match_data, map_name, map_id, riot_match_id,
+                           screenshot_urls, game_number, reported_by_team_id
                     FROM match_result_reports WHERE id = @rid
                     """, new { rid });
 
@@ -292,6 +294,56 @@ public static class MatchSystemEndpoints
                             {
                                 logger.LogInformation("Match {MatchId} auto-processed: winner={Winner}, score={T1}-{T2}",
                                     id, winnerId, t1, t2);
+
+                                // Upsert brkt_match_games row with report evidence for organizer view
+                                try
+                                {
+                                    var gameNumber = (int)report.game_number;
+                                    var mapName = (string?)(report.map_name?.ToString());
+                                    var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
+                                    var riotMatchId = (string?)(report.riot_match_id?.ToString());
+                                    var matchDetails = report.match_data is string mdStr ? mdStr
+                                        : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)
+                                        : null;
+                                    // Dapper returns jsonb as string; pass through directly
+                                    var matchDetailsJson = matchDetails ?? "{}";
+
+                                    await conn.ExecuteAsync(
+                                        """
+                                        INSERT INTO brkt_match_games
+                                            (match_id, game_number, team1_score, team2_score, map_name, map_id,
+                                             riot_match_id, status, winner_id, loser_id, match_details,
+                                             reported_by_team_id, completed_at)
+                                        VALUES
+                                            (@matchId, @gameNumber, @t1, @t2, @mapName, @mapId,
+                                             @riotMatchId, 'completed', @winnerId, @loserId, @matchDetails::jsonb,
+                                             @reportedByTeamId, NOW())
+                                        ON CONFLICT (match_id, game_number) DO UPDATE SET
+                                            team1_score    = @t1,
+                                            team2_score    = @t2,
+                                            map_name       = COALESCE(@mapName, brkt_match_games.map_name),
+                                            map_id         = COALESCE(@mapId, brkt_match_games.map_id),
+                                            riot_match_id  = COALESCE(@riotMatchId, brkt_match_games.riot_match_id),
+                                            status         = 'completed',
+                                            winner_id      = @winnerId,
+                                            loser_id       = @loserId,
+                                            match_details  = COALESCE(@matchDetails::jsonb, brkt_match_games.match_details),
+                                            reported_by_team_id = @reportedByTeamId,
+                                            completed_at   = NOW()
+                                        """,
+                                        new
+                                        {
+                                            matchId = id, gameNumber, t1, t2,
+                                            mapName, mapId, riotMatchId,
+                                            matchDetails = matchDetailsJson,
+                                            winnerId, loserId,
+                                            reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
+                                        });
+                                }
+                                catch (Exception gmEx)
+                                {
+                                    logger.LogWarning(gmEx, "Failed to upsert brkt_match_games for match {MatchId} (non-fatal)", id);
+                                }
 
                                 // Broadcast bracket update
                                 if (match.version_id is not null)

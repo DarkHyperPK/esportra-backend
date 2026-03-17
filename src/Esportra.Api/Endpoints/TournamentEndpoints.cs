@@ -1995,8 +1995,8 @@ public static class TournamentEndpoints
                 """
                 SELECT mrr.id, mrr.match_id, mrr.game_number,
                        mrr.reported_by_team_id, mrr.team1_score, mrr.team2_score,
-                       mrr.map_name, mrr.screenshot_urls, mrr.comment,
-                       mrr.status, mrr.created_at
+                       mrr.map_name, mrr.screenshot_urls, mrr.match_data,
+                       mrr.comment, mrr.status, mrr.created_at
                 FROM public.match_result_reports mrr
                 JOIN public.brkt_matches m ON m.id = mrr.match_id
                 JOIN public.brkt_versions v ON v.id = m.version_id
