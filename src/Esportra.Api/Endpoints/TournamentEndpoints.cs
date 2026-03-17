@@ -1467,6 +1467,45 @@ public static class TournamentEndpoints
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/organizer/disputes/{disputeId} ──────────────────────────
+        app.MapGet("/api/organizer/disputes/{disputeId}", async (
+            Guid                 disputeId,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, status, dispute_reason, resolution_notes, updated_at FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+            return row is null ? Results.NotFound() : Results.Ok(row);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/organizer/disputes/{disputeId} ──────────────────────────
+        app.MapPut("/api/organizer/disputes/{disputeId}", async (
+            Guid                 disputeId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var req = await System.Text.Json.JsonSerializer.DeserializeAsync<UpdateDisputeRequest>(
+                ctx.Request.Body, s_snakeCase, ct);
+            if (req is null) return Results.BadRequest("Invalid body");
+
+            using var conn = db.CreateConnection();
+            var setClauses = new List<string>();
+            var parameters = new DynamicParameters();
+            parameters.Add("disputeId", disputeId);
+
+            if (req.Status is not null) { setClauses.Add("status = @status"); parameters.Add("status", req.Status); }
+            if (req.AssignedToUserId is not null) { setClauses.Add("assigned_to_user_id = @assignedTo"); parameters.Add("assignedTo", Guid.Parse(req.AssignedToUserId)); }
+            if (req.ResolutionNotes is not null) { setClauses.Add("resolution_notes = @notes"); parameters.Add("notes", req.ResolutionNotes); }
+            setClauses.Add("updated_at = NOW()");
+
+            var sql = $"UPDATE tournament_disputes SET {string.Join(", ", setClauses)} WHERE id = @disputeId";
+            await conn.ExecuteAsync(sql, parameters);
+            return Results.Ok();
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/organizer/disputes/{disputeId}/comments ─────────────────
         app.MapGet("/api/organizer/disputes/{disputeId}/comments", async (
             Guid                 disputeId,
@@ -2288,7 +2327,7 @@ public sealed record UpdateBannerRequest(string Url);
 // ── Organizer Dispute request records ────────────────────────────────────────
 
 public sealed record AddDisputeCommentRequest(string Comment, bool IsInternal = false, string? AttachmentUrl = null);
-public sealed record UpdateDisputeRequest(string? Status = null, string? UpdatedAt = null);
+public sealed record UpdateDisputeRequest(string? Status = null, string? UpdatedAt = null, string? AssignedToUserId = null, string? ResolutionNotes = null);
 public sealed record ResolveDisputeRequest2(string Status, string? ResolutionNotes = null);
 public sealed record BanParticipantRequest(string ParticipantId, string? UserId = null, string? BanReason = null);
 public sealed record AddMapToPoolRequest(Guid MapId);
