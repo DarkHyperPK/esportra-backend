@@ -254,8 +254,9 @@ public static class MatchSystemEndpoints
                 """,
                 new { rid, matchId = id, userId = userCtx.UserIdGuid });
 
-            // Auto-process: finalize the match and update bracket
+            // Auto-process: record game result, check if series is complete
             Guid? winnerId = null;
+            bool seriesComplete = false;
             try
             {
                 var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -269,106 +270,143 @@ public static class MatchSystemEndpoints
                 if (report is not null)
                 {
                     var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        "SELECT version, team1_id, team2_id, version_id FROM brkt_matches WHERE id = @matchId",
+                        "SELECT version, team1_id, team2_id, version_id, best_of FROM brkt_matches WHERE id = @matchId",
                         new { matchId = id });
 
                     if (match is not null)
                     {
                         var t1 = (int)report.team1_score;
                         var t2 = (int)report.team2_score;
+                        int bestOf = (int)(match.best_of ?? 1);
+                        int winsNeeded = (bestOf / 2) + 1; // BO1→1, BO3→2, BO5→3
 
-                        // Derive winner: use explicit winner_team_id, or fall back to score comparison
+                        // Derive game winner from this report
+                        Guid? gameWinnerId = null;
                         if (report.winner_team_id is not null)
                         {
-                            winnerId = (Guid)report.winner_team_id;
+                            gameWinnerId = (Guid)report.winner_team_id;
                         }
                         else if (t1 != t2)
                         {
-                            winnerId = t1 > t2 ? (Guid)match.team1_id : (Guid)match.team2_id;
-                            logger.LogInformation("Derived winner from scores for match {MatchId}: {T1}-{T2} → {Winner}",
-                                id, t1, t2, winnerId);
+                            gameWinnerId = t1 > t2 ? (Guid)match.team1_id : (Guid)match.team2_id;
                         }
 
-                        if (winnerId is null)
+                        if (gameWinnerId is null)
                         {
                             logger.LogWarning("Cannot auto-process match {MatchId}: tied scores {T1}-{T2} and no explicit winner", id, t1, t2);
                         }
                         else
                         {
-                            var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
+                            var gameLoserId = gameWinnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
 
-                            var finalized = await conn.QuerySingleOrDefaultAsync<bool>(
-                                """
-                                SELECT public.finalize_match_locked(
-                                    @matchId, @version, @winnerId, @loserId, @t1, @t2
-                                )
-                                """,
-                                new { matchId = id, version = (int)match.version, winnerId, loserId, t1, t2 });
-
-                            if (finalized)
+                            // 1. Upsert brkt_match_games FIRST (before checking series)
+                            try
                             {
-                                logger.LogInformation("Match {MatchId} auto-processed: winner={Winner}, score={T1}-{T2}",
-                                    id, winnerId, t1, t2);
+                                var gameNumber = (int)report.game_number;
+                                var mapName = (string?)(report.map_name?.ToString());
+                                var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
+                                var riotMatchId = (string?)(report.riot_match_id?.ToString());
+                                var matchDetails = report.match_data is string mdStr ? mdStr
+                                    : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)
+                                    : null;
+                                var matchDetailsJson = matchDetails ?? "{}";
 
-                                // Upsert brkt_match_games row with report evidence for organizer view
-                                try
-                                {
-                                    var gameNumber = (int)report.game_number;
-                                    var mapName = (string?)(report.map_name?.ToString());
-                                    var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
-                                    var riotMatchId = (string?)(report.riot_match_id?.ToString());
-                                    var matchDetails = report.match_data is string mdStr ? mdStr
-                                        : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)
-                                        : null;
-                                    // Dapper returns jsonb as string; pass through directly
-                                    var matchDetailsJson = matchDetails ?? "{}";
+                                await conn.ExecuteAsync(
+                                    """
+                                    INSERT INTO brkt_match_games
+                                        (match_id, game_number, team1_score, team2_score, map_name, map_id,
+                                         riot_match_id, status, winner_id, loser_id, match_details,
+                                         reported_by_team_id, completed_at)
+                                    VALUES
+                                        (@matchId, @gameNumber, @t1, @t2, @mapName, @mapId,
+                                         @riotMatchId, 'completed', @winnerId, @loserId, @matchDetails::jsonb,
+                                         @reportedByTeamId, NOW())
+                                    ON CONFLICT (match_id, game_number) DO UPDATE SET
+                                        team1_score    = @t1,
+                                        team2_score    = @t2,
+                                        map_name       = COALESCE(@mapName, brkt_match_games.map_name),
+                                        map_id         = COALESCE(@mapId, brkt_match_games.map_id),
+                                        riot_match_id  = COALESCE(@riotMatchId, brkt_match_games.riot_match_id),
+                                        status         = 'completed',
+                                        winner_id      = @winnerId,
+                                        loser_id       = @loserId,
+                                        match_details  = COALESCE(@matchDetails::jsonb, brkt_match_games.match_details),
+                                        reported_by_team_id = @reportedByTeamId,
+                                        completed_at   = NOW()
+                                    """,
+                                    new
+                                    {
+                                        matchId = id, gameNumber, t1, t2,
+                                        mapName, mapId, riotMatchId,
+                                        matchDetails = matchDetailsJson,
+                                        winnerId = gameWinnerId, loserId = gameLoserId,
+                                        reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
+                                    });
+                            }
+                            catch (Exception gmEx)
+                            {
+                                logger.LogWarning(gmEx, "Failed to upsert brkt_match_games for match {MatchId} (non-fatal)", id);
+                            }
 
-                                    await conn.ExecuteAsync(
-                                        """
-                                        INSERT INTO brkt_match_games
-                                            (match_id, game_number, team1_score, team2_score, map_name, map_id,
-                                             riot_match_id, status, winner_id, loser_id, match_details,
-                                             reported_by_team_id, completed_at)
-                                        VALUES
-                                            (@matchId, @gameNumber, @t1, @t2, @mapName, @mapId,
-                                             @riotMatchId, 'completed', @winnerId, @loserId, @matchDetails::jsonb,
-                                             @reportedByTeamId, NOW())
-                                        ON CONFLICT (match_id, game_number) DO UPDATE SET
-                                            team1_score    = @t1,
-                                            team2_score    = @t2,
-                                            map_name       = COALESCE(@mapName, brkt_match_games.map_name),
-                                            map_id         = COALESCE(@mapId, brkt_match_games.map_id),
-                                            riot_match_id  = COALESCE(@riotMatchId, brkt_match_games.riot_match_id),
-                                            status         = 'completed',
-                                            winner_id      = @winnerId,
-                                            loser_id       = @loserId,
-                                            match_details  = COALESCE(@matchDetails::jsonb, brkt_match_games.match_details),
-                                            reported_by_team_id = @reportedByTeamId,
-                                            completed_at   = NOW()
-                                        """,
-                                        new
-                                        {
-                                            matchId = id, gameNumber, t1, t2,
-                                            mapName, mapId, riotMatchId,
-                                            matchDetails = matchDetailsJson,
-                                            winnerId, loserId,
-                                            reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
-                                        });
-                                }
-                                catch (Exception gmEx)
-                                {
-                                    logger.LogWarning(gmEx, "Failed to upsert brkt_match_games for match {MatchId} (non-fatal)", id);
-                                }
+                            // 2. Count series wins from all completed games
+                            var seriesWins = await conn.QuerySingleAsync<dynamic>(
+                                """
+                                SELECT
+                                    COALESCE(SUM(CASE WHEN winner_id = @team1Id THEN 1 ELSE 0 END), 0) AS team1_wins,
+                                    COALESCE(SUM(CASE WHEN winner_id = @team2Id THEN 1 ELSE 0 END), 0) AS team2_wins
+                                FROM brkt_match_games
+                                WHERE match_id = @matchId AND status = 'completed'
+                                """,
+                                new { matchId = id, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
 
-                                // Broadcast bracket update
-                                if (match.version_id is not null)
+                            int team1Wins = (int)seriesWins.team1_wins;
+                            int team2Wins = (int)seriesWins.team2_wins;
+
+                            logger.LogInformation(
+                                "Match {MatchId} series update: {T1Wins}-{T2Wins} (need {WinsNeeded} for BO{BestOf})",
+                                id, team1Wins, team2Wins, winsNeeded, bestOf);
+
+                            // 3. Update series score on brkt_matches (visible in bracket UI)
+                            await conn.ExecuteAsync(
+                                """
+                                UPDATE brkt_matches
+                                SET team1_score = @team1Wins, team2_score = @team2Wins, updated_at = NOW()
+                                WHERE id = @matchId
+                                """,
+                                new { matchId = id, team1Wins, team2Wins });
+
+                            // 4. Only finalize + advance if a team has reached winsNeeded
+                            if (team1Wins >= winsNeeded || team2Wins >= winsNeeded)
+                            {
+                                seriesComplete = true;
+                                winnerId = team1Wins >= winsNeeded ? (Guid)match.team1_id : (Guid)match.team2_id;
+                                var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
+
+                                var finalized = await conn.QuerySingleOrDefaultAsync<bool>(
+                                    """
+                                    SELECT public.finalize_match_locked(
+                                        @matchId, @version, @winnerId, @loserId, @t1, @t2
+                                    )
+                                    """,
+                                    new { matchId = id, version = (int)match.version, winnerId, loserId,
+                                          t1 = team1Wins, t2 = team2Wins });
+
+                                if (finalized)
                                 {
-                                    var vid = (Guid)match.version_id;
-                                    await bracketHub.Clients
-                                        .Group(BracketHub.BracketGroup(vid.ToString()))
-                                        .SendAsync(BracketHubEvents.MatchUpdated,
-                                            new { versionId = vid, matchId = id }, ct);
+                                    logger.LogInformation(
+                                        "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
+                                        id, winnerId, team1Wins, team2Wins, bestOf);
                                 }
+                            }
+
+                            // 5. Broadcast bracket update (even for partial series progress)
+                            if (match.version_id is not null)
+                            {
+                                var vid = (Guid)match.version_id;
+                                await bracketHub.Clients
+                                    .Group(BracketHub.BracketGroup(vid.ToString()))
+                                    .SendAsync(BracketHubEvents.MatchUpdated,
+                                        new { versionId = vid, matchId = id }, ct);
                             }
                         }
                     }
@@ -387,11 +425,12 @@ public static class MatchSystemEndpoints
 
             return Results.Ok(new
             {
-                success     = true,
-                matchId     = id,
-                reportId    = rid,
-                riotMatchId = req.RiotMatchId,
-                processed   = winnerId is not null,
+                success       = true,
+                matchId       = id,
+                reportId      = rid,
+                riotMatchId   = req.RiotMatchId,
+                processed     = winnerId is not null,
+                seriesComplete,
             });
             }
             catch (Exception ex)
