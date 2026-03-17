@@ -62,6 +62,22 @@ public static class MatchSystemEndpoints
 
             try
             {
+            // Derive winner from scores if not explicitly provided
+            Guid? derivedWinner = Guid.TryParse(req.WinnerTeamId, out var parsedWinner) ? parsedWinner : (Guid?)null;
+            if (derivedWinner is null && req.Team1Score != req.Team2Score)
+            {
+                var matchTeams = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT team1_id, team2_id FROM brkt_matches WHERE id = @id", new { id });
+                if (matchTeams is not null)
+                {
+                    derivedWinner = req.Team1Score > req.Team2Score
+                        ? (Guid)matchTeams.team1_id
+                        : (Guid)matchTeams.team2_id;
+                    logger.LogInformation("Derived winner for report on match {MatchId}: {T1}-{T2} → {Winner}",
+                        id, req.Team1Score, req.Team2Score, derivedWinner);
+                }
+            }
+
             var report = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO match_result_reports
@@ -100,7 +116,7 @@ public static class MatchSystemEndpoints
                     mapName           = (string?)req.MapName,
                     team1Score        = req.Team1Score,
                     team2Score        = req.Team2Score,
-                    winnerTeamId      = Guid.TryParse(req.WinnerTeamId, out var parsedWinner) ? (Guid?)parsedWinner : null,
+                    winnerTeamId      = derivedWinner,
                     matchData         = req.MatchData is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
                         : "{}",
@@ -233,40 +249,59 @@ public static class MatchSystemEndpoints
                     FROM match_result_reports WHERE id = @rid
                     """, new { rid });
 
-                if (report?.winner_team_id is not null)
+                if (report is not null)
                 {
-                    winnerId = (Guid)report.winner_team_id;
                     var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                         "SELECT version, team1_id, team2_id, version_id FROM brkt_matches WHERE id = @matchId",
                         new { matchId = id });
 
                     if (match is not null)
                     {
-                        var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
                         var t1 = (int)report.team1_score;
                         var t2 = (int)report.team2_score;
 
-                        var finalized = await conn.QuerySingleOrDefaultAsync<bool>(
-                            """
-                            SELECT public.finalize_match_locked(
-                                @matchId, @version, @winnerId, @loserId, @t1, @t2
-                            )
-                            """,
-                            new { matchId = id, version = (int)match.version, winnerId, loserId, t1, t2 });
-
-                        if (finalized)
+                        // Derive winner: use explicit winner_team_id, or fall back to score comparison
+                        if (report.winner_team_id is not null)
                         {
-                            logger.LogInformation("Match {MatchId} auto-processed: winner={Winner}, score={T1}-{T2}",
-                                id, winnerId, t1, t2);
+                            winnerId = (Guid)report.winner_team_id;
+                        }
+                        else if (t1 != t2)
+                        {
+                            winnerId = t1 > t2 ? (Guid)match.team1_id : (Guid)match.team2_id;
+                            logger.LogInformation("Derived winner from scores for match {MatchId}: {T1}-{T2} → {Winner}",
+                                id, t1, t2, winnerId);
+                        }
 
-                            // Broadcast bracket update
-                            if (match.version_id is not null)
+                        if (winnerId is null)
+                        {
+                            logger.LogWarning("Cannot auto-process match {MatchId}: tied scores {T1}-{T2} and no explicit winner", id, t1, t2);
+                        }
+                        else
+                        {
+                            var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
+
+                            var finalized = await conn.QuerySingleOrDefaultAsync<bool>(
+                                """
+                                SELECT public.finalize_match_locked(
+                                    @matchId, @version, @winnerId, @loserId, @t1, @t2
+                                )
+                                """,
+                                new { matchId = id, version = (int)match.version, winnerId, loserId, t1, t2 });
+
+                            if (finalized)
                             {
-                                var vid = (Guid)match.version_id;
-                                await bracketHub.Clients
-                                    .Group(BracketHub.BracketGroup(vid.ToString()))
-                                    .SendAsync(BracketHubEvents.MatchUpdated,
-                                        new { versionId = vid, matchId = id }, ct);
+                                logger.LogInformation("Match {MatchId} auto-processed: winner={Winner}, score={T1}-{T2}",
+                                    id, winnerId, t1, t2);
+
+                                // Broadcast bracket update
+                                if (match.version_id is not null)
+                                {
+                                    var vid = (Guid)match.version_id;
+                                    await bracketHub.Clients
+                                        .Group(BracketHub.BracketGroup(vid.ToString()))
+                                        .SendAsync(BracketHubEvents.MatchUpdated,
+                                            new { versionId = vid, matchId = id }, ct);
+                                }
                             }
                         }
                     }
