@@ -830,7 +830,7 @@ public static class MatchEndpoints
         ["/Game/Maps/Jam/Jam"]             = "Lotus",
         ["/Game/Maps/Juliett/Juliett"]     = "Sunset",
         ["/Game/Maps/Infinity/Infinity"]   = "Abyss",
-        ["/Game/Maps/Drift/Drift"]         = "Corrode",
+        ["/Game/Maps/Rook/Rook"]           = "Corrode",
         ["/Game/Maps/HURM/HURM_Alley/HURM_Alley"]     = "District",
         ["/Game/Maps/HURM/HURM_Bowl/HURM_Bowl"]       = "Kasbah",
         ["/Game/Maps/HURM/HURM_Yard/HURM_Yard"]       = "Piazza",
