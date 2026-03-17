@@ -443,16 +443,34 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
 
             // Re-fetch to get the final state (including selected_map_id for BO1)
             var finalVeto = await conn.QuerySingleOrDefaultAsync<dynamic>(@"
-                SELECT team1_picked_maps, team2_picked_maps, selected_map_id::text as selected_map_id, best_of
+                SELECT team1_picked_maps, team2_picked_maps, selected_map_id::text as selected_map_id,
+                       team1_banned_maps, team2_banned_maps, selected_map_pool, best_of
                 FROM public.match_map_vetos
                 WHERE match_id = @matchId", new { matchId });
 
             if (finalVeto is null) return;
 
-            int bestOf = (int)(finalVeto.best_of ?? 1);
-            var t1Picked = ParsePicked(finalVeto.team1_picked_maps);
-            var t2Picked = ParsePicked(finalVeto.team2_picked_maps);
+            int bestOf = Convert.ToInt32(finalVeto.best_of ?? 1);
+            PickedMap[] t1Picked = ParsePicked(finalVeto.team1_picked_maps);
+            PickedMap[] t2Picked = ParsePicked(finalVeto.team2_picked_maps);
             string? selectedMapId = (string?)finalVeto.selected_map_id;
+
+            // For BO3/BO5: compute decider map if selected_map_id not set
+            // Decider = pool minus all bans and picks
+            if (selectedMapId is null && bestOf > 1)
+            {
+                string[] pool = ParseStringArray(finalVeto.selected_map_pool);
+                string[] bans1 = ParseStringArray(finalVeto.team1_banned_maps);
+                string[] bans2 = ParseStringArray(finalVeto.team2_banned_maps);
+                var picks = new HashSet<string>(
+                    t1Picked.Select(p => p.MapId).Concat(t2Picked.Select(p => p.MapId)));
+                var allExcluded = new HashSet<string>(bans1.Concat(bans2));
+                allExcluded.UnionWith(picks);
+
+                selectedMapId = pool.FirstOrDefault(m => !allExcluded.Contains(m));
+                if (selectedMapId is not null)
+                    logger.LogInformation("Computed decider map for match {MatchId}: {MapId}", matchId, selectedMapId);
+            }
 
             // Build ordered game map list based on veto sequence
             var gameMapIds = new List<string>();
@@ -545,6 +563,13 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         }
         catch { return []; }
     }
+
+    private static string[] ParseStringArray(object? arr) => arr switch
+    {
+        string[] s => s,
+        string   s => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
+        _          => []
+    };
 
     // ── Row mapping ──────────────────────────────────────────────────────────
 
