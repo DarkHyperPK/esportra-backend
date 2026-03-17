@@ -1409,8 +1409,43 @@ public static class TournamentEndpoints
                            'team1_score', bm.team1_score,
                            'team2_score', bm.team2_score,
                            'team1_name', t1.name,
-                           'team2_name', t2.name
-                       ) ELSE NULL END AS match
+                           'team2_name', t2.name,
+                           'team1_id', bm.team1_id,
+                           'team2_id', bm.team2_id
+                       ) ELSE NULL END AS match,
+                       -- Match reports (screenshots, scoreboard, riot match id)
+                       (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                           'id', mrr.id,
+                           'game_number', mrr.game_number,
+                           'reported_by_team_id', mrr.reported_by_team_id,
+                           'riot_match_id', mrr.riot_match_id,
+                           'map_name', mrr.map_name,
+                           'team1_score', mrr.team1_score,
+                           'team2_score', mrr.team2_score,
+                           'match_data', mrr.match_data,
+                           'screenshot_urls', mrr.screenshot_urls,
+                           'status', mrr.status,
+                           'created_at', mrr.created_at
+                       ) ORDER BY mrr.game_number, mrr.created_at), '[]'::jsonb)
+                       FROM match_result_reports mrr
+                       WHERE mrr.match_id = td.match_id) AS reports,
+                       -- Riot accounts for all players in both teams
+                       CASE WHEN bm.id IS NOT NULL THEN (
+                           SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                               'team_id', tm.team_id,
+                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN t1.name ELSE t2.name END,
+                               'user_id', tm.user_id,
+                               'username', COALESCE(pr.full_name, pr.username),
+                               'game_name', ra.game_name,
+                               'tag_line', ra.tag_line,
+                               'puuid', ra.puuid
+                           )), '[]'::jsonb)
+                           FROM team_members tm
+                           INNER JOIN riot_accounts ra ON ra.user_id = tm.user_id
+                           LEFT JOIN profiles pr ON pr.id = tm.user_id
+                           WHERE tm.team_id IN (bm.team1_id, bm.team2_id)
+                             AND tm.is_active = true
+                       ) ELSE '[]'::jsonb END AS riot_accounts
                 FROM tournament_disputes td
                 JOIN tournaments t ON t.id = td.tournament_id
                 LEFT JOIN profiles p ON p.id = td.raised_by_user_id

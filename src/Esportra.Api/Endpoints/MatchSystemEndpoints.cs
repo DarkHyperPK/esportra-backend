@@ -64,6 +64,18 @@ public static class MatchSystemEndpoints
 
             try
             {
+            // Block submission if same game is already disputed
+            var existingDisputed = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM match_result_reports
+                    WHERE match_id = @matchId AND game_number = @gameNumber AND status = 'disputed'
+                )
+                """,
+                new { matchId = id, gameNumber = req.GameNumber });
+            if (existingDisputed)
+                return Results.Conflict(new { error = "This game is currently disputed. Results cannot be submitted until the dispute is resolved." });
+
             // Derive winner from scores if not explicitly provided
             Guid? derivedWinner = Guid.TryParse(req.WinnerTeamId, out var parsedWinner) ? parsedWinner : (Guid?)null;
             if (derivedWinner is null && req.Team1Score != req.Team2Score)
@@ -1077,6 +1089,113 @@ public static class MatchSystemEndpoints
 
             return Results.Ok(new { success = true, disputeId, status = req.Status });
         }).RequireAuthorization("Organizer");
+
+        // ── GET /api/matches/{id}/riot-accounts ──────────────────────────────
+        // Returns all Riot accounts for players in both teams of a match
+        app.MapGet("/api/matches/{id}/riot-accounts", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT tm.team_id, teams.name AS team_name,
+                       tm.user_id, COALESCE(p.full_name, p.username) AS username,
+                       ra.game_name, ra.tag_line, ra.puuid
+                FROM brkt_matches bm
+                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id) AND tm.is_active = true
+                JOIN riot_accounts ra ON ra.user_id = tm.user_id
+                LEFT JOIN teams ON teams.id = tm.team_id
+                LEFT JOIN profiles p ON p.id = tm.user_id
+                WHERE bm.id = @matchId
+                """,
+                new { matchId = id });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/matches/{id}/verify ─────────────────────────────────────
+        // Organizer match verification: returns reports, riot accounts, game details
+        app.MapGet("/api/matches/{id}/verify", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify organizer/staff access
+            var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT bm.id, bm.team1_id, bm.team2_id, bm.team1_score, bm.team2_score,
+                       bm.match_number, bm.best_of, bm.status, bm.bracket_type, bm.round_index,
+                       t1.name AS team1_name, t2.name AS team2_name,
+                       bm.tournament_id
+                FROM brkt_matches bm
+                LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                WHERE bm.id = @matchId
+                """, new { matchId = id });
+            if (match is null) return Results.NotFound();
+
+            Guid tournamentId = (Guid)match.tournament_id;
+            var isOrgOrStaff = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournaments t
+                    WHERE t.id = @tid AND (t.organizer_id = @uid OR EXISTS (
+                        SELECT 1 FROM tournament_staff ts
+                        WHERE ts.tournament_id = @tid AND ts.user_id = @uid AND ts.status = 'active'
+                    ))
+                )
+                """, new { tid = tournamentId, uid = userCtx.UserIdGuid });
+            if (!isOrgOrStaff) return Results.Forbid();
+
+            // All submitted reports for this match
+            var reports = await conn.QueryAsync<dynamic>(
+                """
+                SELECT mrr.*, COALESCE(p.full_name, p.username) AS reported_by_name,
+                       rpt.name AS reported_by_team_name
+                FROM match_result_reports mrr
+                LEFT JOIN profiles p ON p.id = mrr.reported_by
+                LEFT JOIN teams rpt ON rpt.id = mrr.reported_by_team_id
+                WHERE mrr.match_id = @matchId
+                ORDER BY mrr.game_number, mrr.created_at
+                """, new { matchId = id });
+            DapperJsonbHelper.FixJsonb(reports);
+
+            // Riot accounts for both teams
+            var riotAccounts = await conn.QueryAsync<dynamic>(
+                """
+                SELECT tm.team_id, teams.name AS team_name,
+                       tm.user_id, COALESCE(p.full_name, p.username) AS username,
+                       ra.game_name, ra.tag_line, ra.puuid
+                FROM team_members tm
+                JOIN riot_accounts ra ON ra.user_id = tm.user_id
+                LEFT JOIN teams ON teams.id = tm.team_id
+                LEFT JOIN profiles p ON p.id = tm.user_id
+                WHERE tm.team_id IN (@team1Id, @team2Id) AND tm.is_active = true
+                """,
+                new { team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
+
+            // Game details (map veto results)
+            var games = await conn.QueryAsync<dynamic>(
+                """
+                SELECT * FROM brkt_match_games
+                WHERE match_id = @matchId
+                ORDER BY game_number
+                """, new { matchId = id });
+            DapperJsonbHelper.FixJsonb(games);
+
+            return Results.Ok(new { match, reports, riotAccounts, games });
+        }).RequireAuthorization("Authenticated");
     }
 }
 
