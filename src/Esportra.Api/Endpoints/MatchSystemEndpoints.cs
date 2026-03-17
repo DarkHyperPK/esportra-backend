@@ -1137,8 +1137,9 @@ public static class MatchSystemEndpoints
                 SELECT bm.id, bm.team1_id, bm.team2_id, bm.team1_score, bm.team2_score,
                        bm.match_number, bm.best_of, bm.status, bm.bracket_type, bm.round_index,
                        t1.name AS team1_name, t2.name AS team2_name,
-                       bm.tournament_id
+                       bv.tournament_id
                 FROM brkt_matches bm
+                JOIN brkt_versions bv ON bv.id = bm.version_id
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
                 WHERE bm.id = @matchId
