@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
@@ -616,6 +617,7 @@ public static class BracketEndpoints
                     sql += " AND g.status = @status";
                 sql += " ORDER BY g.game_number ASC";
                 var rows = await conn.QueryAsync<dynamic>(sql, new { tournament_id, status });
+                DapperJsonbHelper.FixJsonb(rows);
                 return Results.Ok(rows);
             }
 
@@ -625,6 +627,7 @@ public static class BracketEndpoints
             var games = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM brkt_match_games WHERE match_id = @matchId ORDER BY game_number ASC",
                 new { matchId });
+            DapperJsonbHelper.FixJsonb(games);
             return Results.Ok(games);
         });
 

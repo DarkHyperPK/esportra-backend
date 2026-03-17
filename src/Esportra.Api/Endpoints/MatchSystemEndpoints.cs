@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
@@ -32,6 +33,7 @@ public static class MatchSystemEndpoints
                 ORDER BY created_at DESC
                 """,
                 new { id });
+            DapperJsonbHelper.FixJsonb(reports);
             return Results.Ok(reports);
         }).RequireAuthorization("Authenticated");
 
@@ -187,6 +189,7 @@ public static class MatchSystemEndpoints
                 }
             }
 
+            DapperJsonbHelper.FixJsonb(report);
             return Results.Ok(report);
             }
             catch (Exception ex)

@@ -2,6 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
@@ -1056,6 +1057,7 @@ public static class TournamentEndpoints
                 WHERE v.tournament_id = @id AND g.status = 'completed'
                 """,
                 new { id });
+            DapperJsonbHelper.FixJsonb(rows);
             return Results.Ok(rows);
         });
 
@@ -1394,9 +1396,10 @@ public static class TournamentEndpoints
                 """
                 SELECT td.id, td.title, td.description, td.status, td.dispute_reason,
                        td.resolution_notes, td.evidence_url, td.created_at, td.updated_at,
-                       td.tournament_id, td.match_id, td.raised_by_user_id,
+                       td.tournament_id, td.match_id, td.raised_by_user_id, td.team_id,
                        t.name AS tournament_name,
                        COALESCE(p.full_name, p.username, 'Unknown') AS raised_by_name,
+                       td_team.name AS team_name,
                        CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
                            'match_number', bm.match_number,
                            'round_index', bm.round_index,
@@ -1411,6 +1414,7 @@ public static class TournamentEndpoints
                 FROM tournament_disputes td
                 JOIN tournaments t ON t.id = td.tournament_id
                 LEFT JOIN profiles p ON p.id = td.raised_by_user_id
+                LEFT JOIN teams td_team ON td_team.id = td.team_id
                 LEFT JOIN brkt_matches bm ON bm.id = td.match_id
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
@@ -1424,6 +1428,7 @@ public static class TournamentEndpoints
                 """,
                 new { userId = userCtx.UserIdGuid });
 
+            DapperJsonbHelper.FixJsonb(rows);
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -2003,6 +2008,7 @@ public static class TournamentEndpoints
                 WHERE v.tournament_id = @id
                 ORDER BY mrr.created_at DESC
                 """, new { id });
+            DapperJsonbHelper.FixJsonb(reports);
             return Results.Ok(reports);
         }).RequireAuthorization("Authenticated");
 
