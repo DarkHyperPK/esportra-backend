@@ -1531,7 +1531,6 @@ public static class TournamentEndpoints
         // ── POST /api/organizer/disputes/{disputeId}/comments ────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/comments", async (
             Guid                              disputeId,
-            [FromBody] AddDisputeCommentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             IHubContext<NotificationHub>      notifHub,
@@ -1539,6 +1538,10 @@ public static class TournamentEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            var req = await System.Text.Json.JsonSerializer.DeserializeAsync<AddDisputeCommentRequest>(
+                ctx.Request.Body, s_snakeCase, ct);
+            if (req is null) return Results.BadRequest("Invalid body");
 
             using var conn = db.CreateConnection();
 
@@ -1574,7 +1577,6 @@ public static class TournamentEndpoints
         // ── POST /api/organizer/disputes/{disputeId}/resolve ─────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/resolve", async (
             Guid                                disputeId,
-            [FromBody] ResolveDisputeRequest2   req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
             IHubContext<NotificationHub>        notifHub,
@@ -1583,9 +1585,13 @@ public static class TournamentEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var req = await System.Text.Json.JsonSerializer.DeserializeAsync<ResolveDisputeRequest2>(
+                ctx.Request.Body, s_snakeCase, ct);
+            if (req is null) return Results.BadRequest("Invalid body");
+
             using var conn = db.CreateConnection();
 
-            // Update dispute
+            // Update dispute status
             await conn.ExecuteAsync(
                 """
                 UPDATE tournament_disputes
@@ -1595,7 +1601,86 @@ public static class TournamentEndpoints
                 """,
                 new { disputeId, status = req.Status, notes = req.ResolutionNotes, userId = userCtx.UserIdGuid });
 
-            // Send notification to filer
+            // If resolving with an accepted report: enforce scores on the match
+            if (req.Status == "resolved" && req.ReportId is not null
+                && Guid.TryParse(req.ReportId, out var reportId))
+            {
+                var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT mrr.match_id, mrr.team1_score, mrr.team2_score,
+                           mrr.reported_by_team_id,
+                           bm.team1_id, bm.team2_id
+                    FROM match_result_reports mrr
+                    JOIN brkt_matches bm ON bm.id = mrr.match_id
+                    WHERE mrr.id = @reportId
+                    """,
+                    new { reportId });
+
+                if (report is not null)
+                {
+                    Guid matchId = (Guid)report.match_id;
+                    int t1Score  = (int)report.team1_score;
+                    int t2Score  = (int)report.team2_score;
+
+                    // Determine winner
+                    Guid? winnerId = t1Score > t2Score ? (Guid?)report.team1_id
+                                  : t2Score > t1Score ? (Guid?)report.team2_id
+                                  : null;
+
+                    // Enforce scores + winner on match
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE brkt_matches
+                        SET team1_score = @t1, team2_score = @t2,
+                            winner_team_id = @winner, status = 'completed', updated_at = NOW()
+                        WHERE id = @matchId
+                        """,
+                        new { t1 = t1Score, t2 = t2Score, winner = winnerId, matchId });
+
+                    // Mark report as accepted, others for this match as rejected
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE match_result_reports SET status = 'accepted'  WHERE id = @reportId;
+                        UPDATE match_result_reports SET status = 'rejected'
+                          WHERE match_id = @matchId AND id != @reportId AND status = 'disputed';
+                        """,
+                        new { reportId, matchId });
+
+                    // Notify both team captains about enforced result
+                    var captains = await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT tm.user_id, t.name AS team_name,
+                               CASE WHEN t.id = @team1Id THEN @t1Score ELSE @t2Score END AS own_score,
+                               CASE WHEN t.id = @team1Id THEN @t2Score ELSE @t1Score END AS opp_score
+                        FROM teams t
+                        JOIN team_members tm ON tm.team_id = t.id AND tm.role = 'captain' AND tm.is_active = true
+                        WHERE t.id IN (@team1Id, @team2Id)
+                        """,
+                        new { team1Id = (Guid)report.team1_id, team2Id = (Guid)report.team2_id,
+                              t1Score, t2Score });
+
+                    foreach (var captain in captains)
+                    {
+                        Guid captainId = (Guid)captain.user_id;
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                            VALUES (@userId, 'match_result_enforced', 'Match Result Enforced',
+                                    @message, '/user/matches', @data::jsonb, FALSE)
+                            """,
+                            new
+                            {
+                                userId  = captainId,
+                                message = $"The organizer has enforced the match result: {captain.own_score} – {captain.opp_score} for your team.",
+                                data    = System.Text.Json.JsonSerializer.Serialize(new { match_id = matchId, dispute_id = disputeId }),
+                            });
+                        await notifHub.Clients.Group($"user:{captainId}")
+                            .SendAsync("NewNotification", new { type = "match_result_enforced" }, ct);
+                    }
+                }
+            }
+
+            // Notify the dispute filer
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
                 new { disputeId });
@@ -1604,9 +1689,9 @@ public static class TournamentEndpoints
             {
                 Guid filerId = (Guid)dispute.raised_by_user_id;
                 string title = (string)(dispute.title ?? "Your dispute");
-                var notifType = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
+                var notifType  = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
                 var notifTitle = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
-                var notifMsg = req.Status == "resolved"
+                var notifMsg   = req.Status == "resolved"
                     ? $"Your dispute \"{title}\" has been resolved by the organizer."
                     : $"Your dispute \"{title}\" has been rejected by the organizer.";
 
@@ -1810,13 +1895,16 @@ public static class TournamentEndpoints
         // ── POST /api/disputes/{disputeId}/comments ──────────────────────────
         app.MapPost("/api/disputes/{disputeId}/comments", async (
             Guid                              disputeId,
-            [FromBody] AddDisputeCommentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            var req = await System.Text.Json.JsonSerializer.DeserializeAsync<AddDisputeCommentRequest>(
+                ctx.Request.Body, s_snakeCase, ct);
+            if (req is null) return Results.BadRequest("Invalid body");
 
             using var conn = db.CreateConnection();
 
@@ -2328,7 +2416,7 @@ public sealed record UpdateBannerRequest(string Url);
 
 public sealed record AddDisputeCommentRequest(string Comment, bool IsInternal = false, string? AttachmentUrl = null);
 public sealed record UpdateDisputeRequest(string? Status = null, string? UpdatedAt = null, string? AssignedToUserId = null, string? ResolutionNotes = null);
-public sealed record ResolveDisputeRequest2(string Status, string? ResolutionNotes = null);
+public sealed record ResolveDisputeRequest2(string Status, string? ResolutionNotes = null, string? ReportId = null);
 public sealed record BanParticipantRequest(string ParticipantId, string? UserId = null, string? BanReason = null);
 public sealed record AddMapToPoolRequest(Guid MapId);
 public sealed record CreateAnnouncementRequest(string Title, string Content);
