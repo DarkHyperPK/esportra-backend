@@ -275,10 +275,15 @@ public static class MatchSystemEndpoints
 
                     if (match is not null)
                     {
-                        var t1 = (int)report.team1_score;
-                        var t2 = (int)report.team2_score;
-                        int bestOf = (int)(match.best_of ?? 1);
+                        // Use Convert.ToInt32 for safe numeric conversion (Dapper may return long/short)
+                        int t1 = Convert.ToInt32(report.team1_score);
+                        int t2 = Convert.ToInt32(report.team2_score);
+                        int bestOf = Convert.ToInt32(match.best_of ?? 1);
                         int winsNeeded = (bestOf / 2) + 1; // BO1→1, BO3→2, BO5→3
+
+                        logger.LogInformation(
+                            "Accept report for match {MatchId}: game score {T1}-{T2}, bestOf={BestOf}, winsNeeded={WinsNeeded}",
+                            id, t1, t2, bestOf, winsNeeded);
 
                         // Derive game winner from this report
                         Guid? gameWinnerId = null;
@@ -302,7 +307,7 @@ public static class MatchSystemEndpoints
                             // 1. Upsert brkt_match_games FIRST (before checking series)
                             try
                             {
-                                var gameNumber = (int)report.game_number;
+                                var gameNumber = Convert.ToInt32(report.game_number);
                                 var mapName = (string?)(report.map_name?.ToString());
                                 var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
                                 var riotMatchId = (string?)(report.riot_match_id?.ToString());
@@ -349,18 +354,19 @@ public static class MatchSystemEndpoints
                             }
 
                             // 2. Count series wins from all completed games
+                            // Use COUNT + FILTER instead of SUM to get integer (not bigint)
                             var seriesWins = await conn.QuerySingleAsync<dynamic>(
                                 """
                                 SELECT
-                                    COALESCE(SUM(CASE WHEN winner_id = @team1Id THEN 1 ELSE 0 END), 0) AS team1_wins,
-                                    COALESCE(SUM(CASE WHEN winner_id = @team2Id THEN 1 ELSE 0 END), 0) AS team2_wins
+                                    COUNT(*) FILTER (WHERE winner_id = @team1Id)::int AS team1_wins,
+                                    COUNT(*) FILTER (WHERE winner_id = @team2Id)::int AS team2_wins
                                 FROM brkt_match_games
                                 WHERE match_id = @matchId AND status = 'completed'
                                 """,
                                 new { matchId = id, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
 
-                            int team1Wins = (int)seriesWins.team1_wins;
-                            int team2Wins = (int)seriesWins.team2_wins;
+                            int team1Wins = Convert.ToInt32(seriesWins.team1_wins);
+                            int team2Wins = Convert.ToInt32(seriesWins.team2_wins);
 
                             logger.LogInformation(
                                 "Match {MatchId} series update: {T1Wins}-{T2Wins} (need {WinsNeeded} for BO{BestOf})",
@@ -388,7 +394,7 @@ public static class MatchSystemEndpoints
                                         @matchId, @version, @winnerId, @loserId, @t1, @t2
                                     )
                                     """,
-                                    new { matchId = id, version = (int)match.version, winnerId, loserId,
+                                    new { matchId = id, version = Convert.ToInt32(match.version), winnerId, loserId,
                                           t1 = team1Wins, t2 = team2Wins });
 
                                 if (finalized)
@@ -397,6 +403,12 @@ public static class MatchSystemEndpoints
                                         "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
                                         id, winnerId, team1Wins, team2Wins, bestOf);
                                 }
+                            }
+                            else
+                            {
+                                logger.LogInformation(
+                                    "Match {MatchId} series in progress: {T1Wins}-{T2Wins}, need {WinsNeeded} wins (BO{BestOf})",
+                                    id, team1Wins, team2Wins, winsNeeded, bestOf);
                             }
 
                             // 5. Broadcast bracket update (even for partial series progress)
