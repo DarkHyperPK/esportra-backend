@@ -1503,7 +1503,7 @@ public static class TournamentEndpoints
 
             var sql = $"UPDATE tournament_disputes SET {string.Join(", ", setClauses)} WHERE id = @disputeId";
             await conn.ExecuteAsync(sql, parameters);
-            return Results.Ok();
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizer/disputes/{disputeId}/comments ─────────────────
