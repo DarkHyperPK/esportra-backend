@@ -3,6 +3,7 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Match;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -221,6 +222,7 @@ public static class MatchSystemEndpoints
             [FromBody] AcceptReportRequest  req,
             HttpContext                     ctx,
             IDbConnectionFactory           db,
+            VetoDbService                  vetoService,
             IHubContext<MatchHub>          matchHub,
             IHubContext<BracketHub>        bracketHub,
             ILoggerFactory                 loggerFactory,
@@ -310,6 +312,18 @@ public static class MatchSystemEndpoints
                                 var gameNumber = Convert.ToInt32(report.game_number);
                                 var mapName = (string?)(report.map_name?.ToString());
                                 var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
+
+                                // Enrich map info from veto data if report doesn't have it
+                                if (mapId is null || mapName is null)
+                                {
+                                    var gameMapOrder = await vetoService.GetGameMapOrderAsync(id, ct);
+                                    var vetoGame = gameMapOrder.FirstOrDefault(g => g.GameNumber == gameNumber);
+                                    if (vetoGame != default)
+                                    {
+                                        mapId ??= Guid.TryParse(vetoGame.MapId, out var vid) ? vid : null;
+                                        mapName ??= vetoGame.MapName;
+                                    }
+                                }
                                 var riotMatchId = (string?)(report.riot_match_id?.ToString());
                                 var matchDetails = report.match_data is string mdStr ? mdStr
                                     : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)

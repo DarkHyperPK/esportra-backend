@@ -418,8 +418,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                  WHERE match_id = @matchId",
                 new { matchId });
 
-            // Create brkt_match_games rows from the finalized veto
-            await CreateMatchGamesFromVetoAsync(matchId, veto);
+            // No longer pre-generating brkt_match_games rows.
+            // Game rows are created on-demand when reports are accepted.
         }
         else
         {
@@ -445,7 +445,82 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
     }
 
     /// <summary>
-    /// After veto completes, create brkt_match_games rows for each game in the series
+    /// Derives the ordered list of (gameNumber, mapId, mapName) for a completed veto.
+    /// Used by scan endpoint and accept endpoint to resolve which map each game uses.
+    /// </summary>
+    public async Task<List<(int GameNumber, string MapId, string MapName)>> GetGameMapOrderAsync(
+        Guid matchId, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+
+        var veto = await conn.QuerySingleOrDefaultAsync<dynamic>(@"
+            SELECT team1_picked_maps, team2_picked_maps, selected_map_id::text as selected_map_id,
+                   team1_banned_maps, team2_banned_maps, selected_map_pool, best_of
+            FROM public.match_map_vetos
+            WHERE match_id = @matchId AND status = 'completed'", new { matchId });
+
+        if (veto is null) return [];
+
+        int bestOf = Convert.ToInt32(veto.best_of ?? 1);
+        PickedMap[] t1Picked = ParsePicked(veto.team1_picked_maps);
+        PickedMap[] t2Picked = ParsePicked(veto.team2_picked_maps);
+        string? selectedMapId = (string?)veto.selected_map_id;
+
+        // Compute decider if not stored
+        if (selectedMapId is null && bestOf > 1)
+        {
+            string[] pool = ParseStringArray(veto.selected_map_pool);
+            string[] bans1 = ParseStringArray(veto.team1_banned_maps);
+            string[] bans2 = ParseStringArray(veto.team2_banned_maps);
+            var picks = new HashSet<string>(
+                t1Picked.Select(p => p.MapId).Concat(t2Picked.Select(p => p.MapId)));
+            var allExcluded = new HashSet<string>(bans1.Concat(bans2));
+            allExcluded.UnionWith(picks);
+            selectedMapId = pool.FirstOrDefault(m => !allExcluded.Contains(m));
+        }
+
+        var gameMapIds = new List<string>();
+        if (bestOf == 1)
+        {
+            if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
+            else if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
+        }
+        else if (bestOf == 3)
+        {
+            if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
+            if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
+            if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
+        }
+        else if (bestOf == 5)
+        {
+            if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
+            if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
+            if (t1Picked.Length > 1) gameMapIds.Add(t1Picked[1].MapId);
+            if (t2Picked.Length > 1) gameMapIds.Add(t2Picked[1].MapId);
+            if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
+        }
+
+        if (gameMapIds.Count == 0) return [];
+
+        var mapNames = (await conn.QueryAsync<dynamic>(@"
+            SELECT id::text as id, map_name
+            FROM public.game_maps
+            WHERE id::text = ANY(@ids)",
+            new { ids = gameMapIds.ToArray() })).ToDictionary(
+                m => (string)m.id,
+                m => (string)m.map_name);
+
+        var result = new List<(int, string, string)>();
+        for (int i = 0; i < gameMapIds.Count; i++)
+        {
+            var mapId = gameMapIds[i];
+            mapNames.TryGetValue(mapId, out var mapName);
+            result.Add((i + 1, mapId, mapName ?? "Unknown"));
+        }
+        return result;
+    }
+
+    /// <summary>
     /// with resolved map_id and map_name. This is the single source of truth for
     /// which maps are played in which order.
     /// </summary>

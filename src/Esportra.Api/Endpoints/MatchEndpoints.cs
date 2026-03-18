@@ -27,6 +27,7 @@ public static class MatchEndpoints
             [FromBody] ScanRecentMatchesRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory               db,
+            VetoDbService                      vetoService,
             Esportra.Infrastructure.Integrations.RiotApiClient riotApi,
             HybridCache                        cache,
             ILoggerFactory                     loggerFactory,
@@ -101,15 +102,18 @@ public static class MatchEndpoints
             log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
                 scannerPuuid, shard, req.MapName);
 
-            // 3. Get veto-finalized maps for this match (only these maps are scannable)
-            var vetoMaps = (await conn.QueryAsync<string>(
-                """
-                SELECT COALESCE(g.map_name, gm.map_name)
-                FROM brkt_match_games g
-                LEFT JOIN game_maps gm ON gm.id = g.map_id
-                WHERE g.match_id = @matchId AND g.status != 'completed'
-                """,
-                new { matchId = req.MatchId })).AsList();
+            // 3. Get veto-derived maps for this match (only these maps are scannable)
+            var gameMapOrder = await vetoService.GetGameMapOrderAsync(req.MatchId, ct);
+
+            // Get completed game count to determine which maps are still pending
+            var completedMaps = (await conn.QueryAsync<string>(
+                "SELECT map_name FROM brkt_match_games WHERE match_id = @matchId AND status = 'completed'",
+                new { matchId = req.MatchId })).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var vetoMaps = gameMapOrder
+                .Where(g => !completedMaps.Contains(g.MapName))
+                .Select(g => g.MapName)
+                .ToList();
 
             // If specific game's map is provided, use that; otherwise use all veto maps
             var allowedMaps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -821,13 +825,52 @@ public static class MatchEndpoints
         app.MapGet("/api/matches/{matchId}/games", async (
             Guid                 matchId,
             IDbConnectionFactory db,
+            VetoDbService        vetoService,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
+
+            // Get completed game rows from DB
+            var completedRows = (await conn.QueryAsync<dynamic>(
                 "SELECT * FROM brkt_match_games WHERE match_id = @matchId ORDER BY game_number ASC",
-                new { matchId });
-            return Results.Ok(rows);
+                new { matchId })).AsList();
+
+            // Derive full game map order from veto data
+            var gameMapOrder = await vetoService.GetGameMapOrderAsync(matchId, ct);
+
+            if (gameMapOrder.Count == 0)
+                return Results.Ok(completedRows);
+
+            // Merge: completed rows take precedence, pending games filled from veto
+            var completedGameNumbers = completedRows
+                .Select(r => (int)Convert.ToInt32(r.game_number))
+                .ToHashSet();
+
+            var result = new List<dynamic>(completedRows);
+            foreach (var (gameNumber, mapId, mapName) in gameMapOrder)
+            {
+                if (!completedGameNumbers.Contains(gameNumber))
+                {
+                    result.Add(new Dictionary<string, object?>
+                    {
+                        ["match_id"] = matchId,
+                        ["game_number"] = gameNumber,
+                        ["map_id"] = Guid.Parse(mapId),
+                        ["map_name"] = mapName,
+                        ["status"] = "pending",
+                        ["team1_score"] = null,
+                        ["team2_score"] = null,
+                        ["winner_id"] = null,
+                        ["loser_id"] = null,
+                    });
+                }
+            }
+
+            return Results.Ok(result.OrderBy(r =>
+            {
+                if (r is IDictionary<string, object?> dict) return (int)dict["game_number"]!;
+                return Convert.ToInt32(((dynamic)r).game_number);
+            }));
         });
     }
 
