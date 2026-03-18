@@ -863,14 +863,32 @@ public static class OrganizationEndpoints
         // Update organization details (owner only).
         app.MapPut("/api/organizations/{orgId}", async (
             Guid                                orgId,
-            [FromBody] UpdateOrganizationRequest req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
+            ILoggerFactory                      loggerFactory,
             CancellationToken                   ct) =>
         {
+            var logger = loggerFactory.CreateLogger("OrganizationUpdate");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            UpdateOrganizationRequest? req;
+            try
+            {
+                req = await System.Text.Json.JsonSerializer.DeserializeAsync<UpdateOrganizationRequest>(
+                    ctx.Request.Body,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true },
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to deserialize organization update body");
+                return Results.BadRequest(new { error = "Invalid request body", details = ex.Message });
+            }
+            if (req is null) return Results.BadRequest(new { error = "Empty request body" });
+
+            try
+            {
             using var conn = db.CreateConnection();
 
             var isOwner = await conn.ExecuteScalarAsync<bool>(
@@ -905,6 +923,12 @@ public static class OrganizationEndpoints
                 });
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to update organization {OrgId}", orgId);
+                return Results.Problem($"Failed to update organization: {ex.Message}", statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/{orgId}/stats ───────────────────────────────
