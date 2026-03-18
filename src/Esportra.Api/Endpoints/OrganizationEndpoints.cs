@@ -522,9 +522,36 @@ public static class OrganizationEndpoints
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM organizations WHERE slug = @slug",
+                """
+                SELECT id, owner_id, name, slug, logo_url, banner_url, description,
+                       social_links::text AS social_links_raw,
+                       is_verified, created_at
+                FROM organizations WHERE slug = @slug
+                """,
                 new { slug });
-            return row is null ? Results.NotFound() : Results.Ok(row);
+            if (row is null) return Results.NotFound();
+
+            // Parse social_links from jsonb string into an object for the frontend
+            object? socialLinks = null;
+            if (row.social_links_raw is string raw && !string.IsNullOrEmpty(raw))
+            {
+                try { socialLinks = System.Text.Json.JsonSerializer.Deserialize<object>(raw); }
+                catch { socialLinks = null; }
+            }
+
+            return Results.Ok(new
+            {
+                id           = (Guid)row.id,
+                owner_id     = (Guid)row.owner_id,
+                name         = (string)row.name,
+                slug         = (string)row.slug,
+                logo_url     = (string?)row.logo_url,
+                banner_url   = (string?)row.banner_url,
+                description  = (string?)row.description,
+                social_links = socialLinks,
+                is_verified  = (bool)row.is_verified,
+                created_at   = row.created_at,
+            });
         });
 
         // ── GET /api/organizations/{orgId}/tournaments — full details ───────
