@@ -536,10 +536,18 @@ public static class MatchEndpoints
             }
             catch { /* veto tables may not exist yet */ }
 
-            // 4. Delete reports/disputes
+            // 4. Soft-close open disputes, delete reports
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_disputes
+                SET status = 'resolved',
+                    resolution_notes = 'Match was reset by organizer.',
+                    updated_at = NOW()
+                WHERE match_id = @matchId AND status NOT IN ('resolved', 'closed')
+                """,
+                new { matchId });
             await conn.ExecuteAsync("DELETE FROM tournament_match_results WHERE match_id = @matchId", new { matchId });
             await conn.ExecuteAsync("DELETE FROM match_result_reports WHERE match_id = @matchId", new { matchId });
-            await conn.ExecuteAsync("DELETE FROM tournament_disputes WHERE match_id = @matchId", new { matchId });
 
             // 4b. Delete time proposals and check-ins so teams can re-propose and re-checkin
             await conn.ExecuteAsync("DELETE FROM match_time_proposals WHERE match_id = @matchId", new { matchId });
