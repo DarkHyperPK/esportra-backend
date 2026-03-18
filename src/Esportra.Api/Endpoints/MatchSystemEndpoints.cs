@@ -316,12 +316,19 @@ public static class MatchSystemEndpoints
                                 // Enrich map info from veto data if report doesn't have it
                                 if (mapId is null || mapName is null)
                                 {
-                                    var gameMapOrder = await vetoService.GetGameMapOrderAsync(id, ct);
-                                    var vetoGame = gameMapOrder.FirstOrDefault(g => g.GameNumber == gameNumber);
-                                    if (vetoGame != default)
+                                    try
                                     {
-                                        mapId ??= Guid.TryParse(vetoGame.MapId, out var vid) ? vid : null;
-                                        mapName ??= vetoGame.MapName;
+                                        var gameMapOrder = await vetoService.GetGameMapOrderAsync(id, ct);
+                                        var vetoGame = gameMapOrder.FirstOrDefault(g => g.GameNumber == gameNumber);
+                                        if (vetoGame != default)
+                                        {
+                                            mapId ??= Guid.TryParse(vetoGame.MapId, out var vid) ? vid : null;
+                                            mapName ??= vetoGame.MapName;
+                                        }
+                                    }
+                                    catch (Exception vetoEx)
+                                    {
+                                        logger.LogWarning(vetoEx, "Failed to enrich map from veto for match {MatchId} game {GameNumber}", id, (int)gameNumber);
                                     }
                                 }
                                 var riotMatchId = (string?)(report.riot_match_id?.ToString());
@@ -329,6 +336,10 @@ public static class MatchSystemEndpoints
                                     : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)
                                     : null;
                                 var matchDetailsJson = matchDetails ?? "{}";
+
+                                logger.LogInformation(
+                                    "Upserting brkt_match_games for match {MatchId}: game={GameNumber}, map={MapName}, mapId={MapId}, winner={Winner}",
+                                    id, (int)gameNumber, mapName ?? "null", mapId?.ToString() ?? "null", (Guid?)gameWinnerId);
 
                                 await conn.ExecuteAsync(
                                     """
@@ -361,10 +372,12 @@ public static class MatchSystemEndpoints
                                         winnerId = gameWinnerId, loserId = gameLoserId,
                                         reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
                                     });
+
+                                logger.LogInformation("brkt_match_games upsert succeeded for match {MatchId} game {GameNumber}", id, (int)gameNumber);
                             }
                             catch (Exception gmEx)
                             {
-                                logger.LogWarning(gmEx, "Failed to upsert brkt_match_games for match {MatchId} (non-fatal)", id);
+                                logger.LogError(gmEx, "Failed to upsert brkt_match_games for match {MatchId}", id);
                             }
 
                             // 2. Count series wins from all completed games
