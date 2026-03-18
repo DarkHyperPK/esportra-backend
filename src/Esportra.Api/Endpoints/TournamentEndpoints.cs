@@ -1580,6 +1580,7 @@ public static class TournamentEndpoints
             HttpContext                          ctx,
             IDbConnectionFactory                db,
             IHubContext<NotificationHub>        notifHub,
+            ILoggerFactory                      loggerFactory,
             CancellationToken                   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1589,6 +1590,9 @@ public static class TournamentEndpoints
                 ctx.Request.Body, s_snakeCase, ct);
             if (req is null) return Results.BadRequest("Invalid body");
 
+            var logger = loggerFactory.CreateLogger("DisputeResolve");
+            try
+            {
             using var conn = db.CreateConnection();
 
             // Update dispute status
@@ -1688,7 +1692,7 @@ public static class TournamentEndpoints
             if (dispute is not null)
             {
                 Guid filerId = (Guid)dispute.raised_by_user_id;
-                string title = (string)(dispute.title ?? "Your dispute");
+                string title = ((string?)dispute.title) ?? "Your dispute";
                 var notifType  = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
                 var notifTitle = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
                 var notifMsg   = req.Status == "resolved"
@@ -1715,6 +1719,12 @@ public static class TournamentEndpoints
             }
 
             return Results.Ok(new { success = true });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to resolve dispute {DisputeId}", disputeId);
+                return Results.Problem($"Failed to resolve dispute: {ex.Message}", statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/captain ──────────────────────────────────────
