@@ -23,6 +23,20 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class OrganizationEndpoints
 {
+    /// <summary>Converts a Dapper dynamic org row's social_links from raw jsonb string to a parsed object.</summary>
+    private static object ParseOrgSocialLinks(dynamic org)
+    {
+        var dict = (IDictionary<string, object?>)org;
+        object? socialLinks = null;
+        if (dict.TryGetValue("social_links", out var raw) && raw is string rawStr && !string.IsNullOrEmpty(rawStr))
+        {
+            try { socialLinks = System.Text.Json.JsonSerializer.Deserialize<object>(rawStr); }
+            catch { socialLinks = null; }
+        }
+        dict["social_links"] = socialLinks;
+        return org;
+    }
+
     public static void MapOrganizationEndpoints(this WebApplication app)
     {
         // ── GET /api/organizations/{orgId}/staff ───────────────────────────────
@@ -522,36 +536,10 @@ public static class OrganizationEndpoints
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT id, owner_id, name, slug, logo_url, banner_url, description,
-                       social_links::text AS social_links_raw,
-                       is_verified, created_at
-                FROM organizations WHERE slug = @slug
-                """,
+                "SELECT * FROM organizations WHERE slug = @slug",
                 new { slug });
             if (row is null) return Results.NotFound();
-
-            // Parse social_links from jsonb string into an object for the frontend
-            object? socialLinks = null;
-            if (row.social_links_raw is string raw && !string.IsNullOrEmpty(raw))
-            {
-                try { socialLinks = System.Text.Json.JsonSerializer.Deserialize<object>(raw); }
-                catch { socialLinks = null; }
-            }
-
-            return Results.Ok(new
-            {
-                id           = (Guid)row.id,
-                owner_id     = (Guid)row.owner_id,
-                name         = (string)row.name,
-                slug         = (string)row.slug,
-                logo_url     = (string?)row.logo_url,
-                banner_url   = (string?)row.banner_url,
-                description  = (string?)row.description,
-                social_links = socialLinks,
-                is_verified  = (bool)row.is_verified,
-                created_at   = row.created_at,
-            });
+            return Results.Ok(ParseOrgSocialLinks(row));
         });
 
         // ── GET /api/organizations/{orgId}/tournaments — full details ───────
@@ -799,7 +787,7 @@ public static class OrganizationEndpoints
                 "SELECT * FROM organizations WHERE owner_id = @userId LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
-            return org is null ? Results.NotFound() : Results.Ok(org);
+            return org is null ? Results.NotFound() : Results.Ok(ParseOrgSocialLinks(org));
         }).RequireAuthorization("Authenticated");
 
         app.MapGet("/api/organizations/mine", async (
@@ -815,7 +803,7 @@ public static class OrganizationEndpoints
                 "SELECT * FROM organizations WHERE owner_id = @userId LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
-            return org is null ? Results.NotFound() : Results.Ok(org);
+            return org is null ? Results.NotFound() : Results.Ok(ParseOrgSocialLinks(org));
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/my-staff ────────────────────────────────────
@@ -951,7 +939,7 @@ public static class OrganizationEndpoints
                         : null
                 });
 
-            return updated is null ? Results.NotFound() : Results.Ok(updated);
+            return updated is null ? Results.NotFound() : Results.Ok(ParseOrgSocialLinks(updated));
             }
             catch (Exception ex)
             {
