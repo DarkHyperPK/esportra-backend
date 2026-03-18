@@ -1684,7 +1684,9 @@ public static class TournamentEndpoints
                 }
             }
 
-            // Notify the dispute filer
+            // Notify the dispute filer (best-effort — don't fail the request)
+            try
+            {
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
                 new { disputeId });
@@ -1716,6 +1718,11 @@ public static class TournamentEndpoints
 
                 await notifHub.Clients.Group($"user:{filerId}")
                     .SendAsync("NewNotification", new { type = notifType }, ct);
+            }
+            }
+            catch (Exception notifEx)
+            {
+                logger.LogWarning(notifEx, "Failed to send resolve notification for dispute {DisputeId} (non-fatal)", disputeId);
             }
 
             return Results.Ok(new { success = true });
