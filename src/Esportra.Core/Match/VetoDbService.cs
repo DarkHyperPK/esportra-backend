@@ -241,26 +241,32 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
 
         // Decider fix: if the map wasn't in either team's picks (leftover map),
         // append it to the current team's picks so the side is stored.
-        var newEntry = System.Text.Json.JsonSerializer.Serialize(
-            new[] { new { map_id = mapId, side } });
+        // Only do this for decider maps — not for regular side picks where
+        // the map belongs to the opposing team.
+        var step = VetoSequences.GetStep(veto.BestOf, veto.CurrentActionNumber);
+        if (step?.IsDecider == true)
+        {
+            var newEntry = System.Text.Json.JsonSerializer.Serialize(
+                new[] { new { map_id = mapId, side } });
 
-        var isTeam1 = veto.CurrentTeamId == veto.Team1Id;
-        var appendSql = isTeam1
-            ? @"UPDATE public.match_map_vetos
-                   SET team1_picked_maps = team1_picked_maps || @entry::jsonb
-                 WHERE match_id = @matchId
-                   AND NOT EXISTS (
-                       SELECT 1 FROM jsonb_array_elements(team1_picked_maps) m
-                        WHERE m->>'map_id' = @mapId
-                   )"
-            : @"UPDATE public.match_map_vetos
-                   SET team2_picked_maps = team2_picked_maps || @entry::jsonb
-                 WHERE match_id = @matchId
-                   AND NOT EXISTS (
-                       SELECT 1 FROM jsonb_array_elements(team2_picked_maps) m
-                        WHERE m->>'map_id' = @mapId
-                   )";
-        await conn.ExecuteAsync(appendSql, new { matchId, mapId, entry = newEntry });
+            var isTeam1 = veto.CurrentTeamId == veto.Team1Id;
+            var appendSql = isTeam1
+                ? @"UPDATE public.match_map_vetos
+                       SET team1_picked_maps = team1_picked_maps || @entry::jsonb
+                     WHERE match_id = @matchId
+                       AND NOT EXISTS (
+                           SELECT 1 FROM jsonb_array_elements(team1_picked_maps) m
+                            WHERE m->>'map_id' = @mapId
+                       )"
+                : @"UPDATE public.match_map_vetos
+                       SET team2_picked_maps = team2_picked_maps || @entry::jsonb
+                     WHERE match_id = @matchId
+                       AND NOT EXISTS (
+                           SELECT 1 FROM jsonb_array_elements(team2_picked_maps) m
+                            WHERE m->>'map_id' = @mapId
+                       )";
+            await conn.ExecuteAsync(appendSql, new { matchId, mapId, entry = newEntry });
+        }
 
         var next = VetoEngine.NextAction(veto.BestOf, veto.CurrentActionNumber);
         await SetNextActionAsync(matchId, veto, next);
