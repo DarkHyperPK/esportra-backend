@@ -853,7 +853,9 @@ public static class OrganizationEndpoints
                     description = req.Description,
                     logoUrl     = req.LogoUrl,
                     bannerUrl   = req.BannerUrl,
-                    socialLinks = System.Text.Json.JsonSerializer.Serialize(req.SocialLinks ?? new Dictionary<string, string>())
+                    socialLinks = req.SocialLinks.HasValue
+                        ? req.SocialLinks.Value.GetRawText()
+                        : "{}"
                 });
 
             return Results.Created($"/api/organizations/{((Guid)org.id)}", org);
@@ -917,8 +919,8 @@ public static class OrganizationEndpoints
                     description = req.Description,
                     logoUrl     = req.LogoUrl,
                     bannerUrl   = req.BannerUrl,
-                    socialLinks = req.SocialLinks is not null
-                        ? System.Text.Json.JsonSerializer.Serialize(req.SocialLinks)
+                    socialLinks = req.SocialLinks.HasValue
+                        ? req.SocialLinks.Value.GetRawText()
                         : null
                 });
 
@@ -1011,16 +1013,16 @@ public sealed record UpdateOrgImageRequest(string Url);
 public sealed record CreateOrgAlbumRequest(string Title, string? Description = null);
 
 public sealed record CreateOrganizationRequest(
-    string                      Name,
-    string?                     Description = null,
-    string?                     LogoUrl     = null,
-    string?                     BannerUrl   = null,
-    Dictionary<string, string>? SocialLinks = null);
+    string                               Name,
+    string?                              Description = null,
+    string?                              LogoUrl     = null,
+    string?                              BannerUrl   = null,
+    System.Text.Json.JsonElement?        SocialLinks = null);
 
 public sealed record UpdateOrganizationRequest(
-    string?                     Name        = null,
-    string?                     Slug        = null,
-    string?                     Description = null,
-    string?                     LogoUrl     = null,
-    string?                     BannerUrl   = null,
-    Dictionary<string, string>? SocialLinks = null);
+    string?                              Name        = null,
+    string?                              Slug        = null,
+    string?                              Description = null,
+    string?                              LogoUrl     = null,
+    string?                              BannerUrl   = null,
+    System.Text.Json.JsonElement?        SocialLinks = null);
