@@ -1394,7 +1394,7 @@ public static class TournamentEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT td.id, td.title, td.description, td.status, td.dispute_reason,
+                SELECT td.id, td.reference_number, td.title, td.description, td.status, td.dispute_reason,
                        td.resolution_notes, td.evidence_url, td.created_at, td.updated_at,
                        td.tournament_id, td.match_id, td.raised_by_user_id, td.team_id,
                        t.name AS tournament_name,
@@ -1806,7 +1806,7 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var disputes = await conn.QueryAsync<dynamic>(
                 """
-                SELECT td.id, td.tournament_id, td.match_id, td.raised_by_user_id,
+                SELECT td.id, td.reference_number, td.tournament_id, td.match_id, td.raised_by_user_id,
                        td.team_id, td.title, td.description, td.evidence_url,
                        td.status, td.resolution_notes, td.dispute_reason,
                        td.created_at, td.updated_at,
@@ -1834,7 +1834,7 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT td.id, td.tournament_id, td.match_id, td.raised_by_user_id,
+                SELECT td.id, td.reference_number, td.tournament_id, td.match_id, td.raised_by_user_id,
                        td.team_id, td.title, td.description, td.evidence_url,
                        td.status, td.resolution_notes, td.dispute_reason,
                        td.created_at, td.updated_at,
@@ -2274,10 +2274,12 @@ public static class TournamentEndpoints
                 """
                 INSERT INTO tournament_disputes
                     (tournament_id, match_id, team_id, raised_by_user_id, title,
-                     description, evidence_url, dispute_reason, status)
+                     description, evidence_url, dispute_reason, status,
+                     reference_number)
                 VALUES
                     (@tournamentId, @matchId, @teamId, @userId, @title,
-                     @description, @evidenceUrl, @reason, 'open')
+                     @description, @evidenceUrl, @reason, 'open',
+                     'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
                 RETURNING *
                 """,
                 new
