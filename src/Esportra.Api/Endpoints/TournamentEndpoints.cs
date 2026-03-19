@@ -2255,7 +2255,7 @@ public static class TournamentEndpoints
                         {
                             userId = uid,
                             title = notifTitle,
-                            message = req.Title,
+                            message = req.Content,
                             link = notifLink,
                             data = notifData
                         }));
@@ -2264,7 +2264,7 @@ public static class TournamentEndpoints
                         notifHub.Clients
                             .Group(NotificationHub.UserGroup(uid.ToString()))
                             .SendAsync(NotificationHubEvents.NewNotification,
-                                new { type = "tournament_announcement", title = notifTitle, message = req.Title, link = notifLink }, ct));
+                                new { type = "tournament_announcement", title = notifTitle, message = req.Content, link = notifLink }, ct));
                     await Task.WhenAll(pushTasks);
                 }
                 catch (Exception ex)
