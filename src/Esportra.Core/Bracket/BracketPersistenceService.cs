@@ -91,13 +91,6 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 });
         }
 
-        // 5. Notify captains for matches that have both teams assigned at creation
-        foreach (var node in graph.Nodes)
-        {
-            if (node.Team1Id is not null && node.Team2Id is not null)
-                await NotifyMatchReadyCaptainsAsync(conn, node.Id, node.Team1Id.Value, node.Team2Id.Value);
-        }
-
         return graph.Version;
     }
 
@@ -208,10 +201,11 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     }
 
     /// <summary>
-    /// Replaces <c>notify_match_ready()</c> DB trigger for initial bracket seeding.
+    /// Replaces <c>notify_match_ready()</c> DB trigger.
     /// Notifies captains of both teams when a match has both teams assigned.
+    /// Called on bracket publish and after BYE auto-advancement.
     /// </summary>
-    private static async Task NotifyMatchReadyCaptainsAsync(
+    public static async Task NotifyMatchReadyCaptainsAsync(
         System.Data.IDbConnection conn, Guid matchId, Guid team1Id, Guid team2Id)
     {
         var captainIds = (await conn.QueryAsync<Guid>(

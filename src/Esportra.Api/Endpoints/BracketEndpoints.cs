@@ -205,6 +205,23 @@ public static class BracketEndpoints
 
             await conn.ExecuteAsync(sql, new { versionId, status });
 
+            // When publishing (status → active), notify captains of all ready matches
+            if (status == "active")
+            {
+                var readyMatches = (await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, team1_id, team2_id FROM brkt_matches
+                    WHERE version_id = @versionId AND team1_id IS NOT NULL AND team2_id IS NOT NULL
+                    """,
+                    new { versionId })).AsList();
+
+                foreach (var m in readyMatches)
+                {
+                    await BracketPersistenceService.NotifyMatchReadyCaptainsAsync(
+                        conn, (Guid)m.id, (Guid)m.team1_id, (Guid)m.team2_id);
+                }
+            }
+
             // Notify subscribers
             var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT tournament_id FROM brkt_versions WHERE id = @versionId", new { versionId });

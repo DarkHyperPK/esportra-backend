@@ -497,107 +497,109 @@ public static class MatchSystemEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            using var tx   = conn.BeginTransaction();
 
-            // 1. Mark the report as disputed (full fields matching DB RPC)
-            await conn.ExecuteAsync(
-                """
-                UPDATE match_result_reports
-                SET status = 'disputed', responded_by = @userId, responded_at = NOW(),
-                    dispute_reason = @reason, updated_at = NOW()
-                WHERE id = @rid AND match_id = @matchId
-                """,
-                new { rid, matchId = id, userId = userCtx.UserIdGuid, reason = req.Reason });
-
-            // 2. Resolve tournament info (organizer, reporter, slug)
-            var info = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT bv.tournament_id, t.organizer_id, r.reported_by, t.slug
-                FROM match_result_reports r
-                JOIN brkt_matches bm ON bm.id = r.match_id
-                JOIN brkt_versions bv ON bv.id = bm.version_id
-                JOIN tournaments t ON t.id = bv.tournament_id
-                WHERE r.id = @rid
-                """,
-                new { rid });
-
-            Guid? tournamentId = info?.tournament_id;
-            Guid? organizerId  = info?.organizer_id;
-            Guid? reporterId   = info?.reported_by;
-            string? slug       = info?.slug;
-
-            // 3. Insert match-level dispute (used by useMatchDispute hook)
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO match_disputes
-                    (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
-                VALUES
-                    (@matchId, @teamId, @userId, @reason, '{}', 'pending')
-                """,
-                new
-                {
-                    matchId = id,
-                    teamId  = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null,
-                    userId  = userCtx.UserIdGuid,
-                    reason  = req.Reason,
-                });
-
-            // 4. Insert tournament-level dispute (organizer disputes tab)
-            var dispute = await conn.QuerySingleAsync<dynamic>(
-                """
-                INSERT INTO tournament_disputes
-                    (tournament_id, match_id, raised_by_user_id, team_id,
-                     title, description, evidence_url, dispute_reason, status)
-                VALUES
-                    (@tournamentId, @matchId, @userId, @teamId,
-                     'Match Result Disputed', @reason, @evidenceUrl, 'result_dispute', 'open')
-                RETURNING *
-                """,
-                new
-                {
-                    tournamentId,
-                    matchId      = id,
-                    userId       = userCtx.UserIdGuid,
-                    teamId       = Guid.TryParse(req.TeamId, out var tg2) ? tg2 : (Guid?)null,
-                    reason       = req.Reason,
-                    evidenceUrl  = req.EvidenceUrls is { Count: > 0 } ? req.EvidenceUrls[0] : (string?)null,
-                });
-
-            // 5. Notify reporter that their result is being disputed
-            if (reporterId is not null && reporterId != userCtx.UserIdGuid)
+            try
             {
+                // 1. Mark the report as disputed
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                    VALUES (@userId, 'result_disputed', 'Match Result Disputed',
-                            'The opposing team has disputed your reported result. An organizer will review.',
-                            '/tournaments/captain',
-                            jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                    UPDATE match_result_reports
+                    SET status = 'disputed', updated_at = NOW()
+                    WHERE id = @rid AND match_id = @matchId
                     """,
-                    new { userId = reporterId, matchId = id });
-            }
+                    new { rid, matchId = id }, tx);
 
-            // 6. Notify tournament organizer
-            if (organizerId is not null)
-            {
-                var link = $"/organizer/tournament/{slug ?? tournamentId?.ToString()}?tab=disputes";
+                // 2. Resolve tournament info (organizer, reporter, slug)
+                var info = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT bv.tournament_id, t.organizer_id, r.reported_by, t.slug
+                    FROM match_result_reports r
+                    JOIN brkt_matches bm ON bm.id = r.match_id
+                    JOIN brkt_versions bv ON bv.id = bm.version_id
+                    JOIN tournaments t ON t.id = bv.tournament_id
+                    WHERE r.id = @rid
+                    """,
+                    new { rid }, tx);
+
+                Guid? tournamentId = info?.tournament_id;
+                Guid? organizerId  = info?.organizer_id;
+                Guid? reporterId   = info?.reported_by;
+                string? slug       = info?.slug;
+
+                // 3. Insert match-level dispute (used by useMatchDispute hook)
+                var teamId = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null;
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                    VALUES (@userId, 'dispute_filed', 'Match Dispute Filed',
-                            'A team has disputed a match result in your tournament. Review in the Disputes tab.',
-                            @link,
-                            jsonb_build_object('match_id', @matchId::text, 'tournament_id', @tournamentId::text)::jsonb, false)
+                    INSERT INTO match_disputes
+                        (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
+                    VALUES
+                        (@matchId, @teamId, @userId, @reason, '{}', 'pending')
                     """,
-                    new { userId = organizerId, matchId = id, tournamentId, link });
+                    new { matchId = id, teamId, userId = userCtx.UserIdGuid, reason = req.Reason }, tx);
+
+                // 4. Insert tournament-level dispute (organizer disputes tab)
+                var dispute = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    INSERT INTO tournament_disputes
+                        (tournament_id, match_id, raised_by_user_id, team_id,
+                         title, description, dispute_reason, status)
+                    VALUES
+                        (@tournamentId, @matchId, @userId, @teamId,
+                         'Match Result Disputed', @reason, 'result_dispute', 'open')
+                    RETURNING *
+                    """,
+                    new
+                    {
+                        tournamentId, matchId = id,
+                        userId = userCtx.UserIdGuid, teamId,
+                        reason = req.Reason,
+                    }, tx);
+
+                // 5. Notify reporter that their result is being disputed
+                if (reporterId is not null && reporterId != userCtx.UserIdGuid)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                        VALUES (@userId, 'result_disputed', 'Match Result Disputed',
+                                'The opposing team has disputed your reported result. An organizer will review.',
+                                '/tournaments/captain',
+                                jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                        """,
+                        new { userId = reporterId, matchId = id }, tx);
+                }
+
+                // 6. Notify tournament organizer
+                if (organizerId is not null)
+                {
+                    var link = $"/organizer/tournament/{slug ?? tournamentId?.ToString()}?tab=disputes";
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                        VALUES (@userId, 'dispute_filed', 'Match Dispute Filed',
+                                'A team has disputed a match result in your tournament. Review in the Disputes tab.',
+                                @link,
+                                jsonb_build_object('match_id', @matchId::text, 'tournament_id', @tournamentId::text)::jsonb, false)
+                        """,
+                        new { userId = organizerId, matchId = id, tournamentId, link }, tx);
+                }
+
+                tx.Commit();
+
+                // 7. Broadcast dispute event via SignalR (after commit)
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(id.ToString()))
+                    .SendAsync(MatchHubEvents.ReportDisputed,
+                        new { matchId = id, reportId = rid, reason = req.Reason }, ct);
+
+                return Results.Ok(new { success = true, matchId = id, reportId = rid, disputeId = (Guid)dispute.id });
             }
-
-            // 7. Broadcast dispute event via SignalR
-            await matchHub.Clients
-                .Group(MatchHub.MatchGroup(id.ToString()))
-                .SendAsync(MatchHubEvents.ReportDisputed,
-                    new { matchId = id, reportId = rid, reason = req.Reason }, ct);
-
-            return Results.Ok(new { success = true, matchId = id, reportId = rid, disputeId = (Guid)dispute.id });
+            catch (Exception ex)
+            {
+                tx.Rollback();
+                return Results.Problem($"Failed to file dispute: {ex.Message}");
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/matches/{id}/messages ───────────────────────────────────

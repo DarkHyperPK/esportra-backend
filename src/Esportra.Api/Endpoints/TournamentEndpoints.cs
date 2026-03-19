@@ -2197,6 +2197,7 @@ public static class TournamentEndpoints
             [FromBody] CreateAnnouncementRequest req,
             HttpContext                          ctx,
             IDbConnectionFactory                 db,
+            IHubContext<NotificationHub>          notifHub,
             CancellationToken                    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -2210,6 +2211,58 @@ public static class TournamentEndpoints
                 RETURNING *
                 """,
                 new { tournamentId = id, senderId = userCtx.UserIdGuid, title = req.Title, content = req.Content });
+
+            // Get tournament name + slug for the notification link
+            var tourney = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT name, slug FROM tournaments WHERE id = @id", new { id });
+            var tourneyName = (string?)(tourney?.name) ?? "Tournament";
+            var tourneySlug = (string?)(tourney?.slug) ?? id.ToString();
+
+            // Collect all user IDs who are participants (solo user_id + team member user_ids)
+            var participantUserIds = await conn.QueryAsync<Guid>(
+                """
+                SELECT DISTINCT uid FROM (
+                    SELECT tp.user_id AS uid FROM tournament_participants tp
+                    WHERE tp.tournament_id = @id AND tp.user_id IS NOT NULL
+                    UNION
+                    SELECT tm.user_id AS uid FROM tournament_participants tp
+                    JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = TRUE
+                    WHERE tp.tournament_id = @id AND tp.team_id IS NOT NULL
+                ) sub
+                WHERE uid != @senderId
+                """,
+                new { id, senderId = userCtx.UserIdGuid });
+
+            var userIds = participantUserIds.ToList();
+            if (userIds.Count > 0)
+            {
+                var notifLink = $"/tournaments/{tourneySlug}";
+                var notifData = JsonSerializer.Serialize(new { tournament_id = id, announcement_id = (Guid)announcement.id });
+
+                // Batch-insert notifications
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                    VALUES (@userId, 'tournament_announcement', @title, @message, @link, @data::jsonb, FALSE)
+                    """,
+                    userIds.Select(uid => new
+                    {
+                        userId = uid,
+                        title = $"📢 {tourneyName}",
+                        message = req.Title,
+                        link = notifLink,
+                        data = notifData
+                    }));
+
+                // Push real-time via SignalR
+                var pushTasks = userIds.Select(uid =>
+                    notifHub.Clients
+                        .Group(NotificationHub.UserGroup(uid.ToString()))
+                        .SendAsync(NotificationHubEvents.NewNotification,
+                            new { type = "tournament_announcement", title = $"📢 {tourneyName}", message = req.Title, link = notifLink }, ct));
+                await Task.WhenAll(pushTasks);
+            }
+
             return Results.Created($"/api/tournaments/{id}/announcements/{announcement.id}", announcement);
         }).RequireAuthorization("Authenticated");
 
@@ -2278,7 +2331,6 @@ public static class TournamentEndpoints
 
         // ── POST /api/disputes ────────────────────────────────────────────────
         app.MapPost("/api/disputes", async (
-            [FromBody] CreateDisputeRequest req,
             HttpContext                     ctx,
             IDbConnectionFactory            db,
             CancellationToken               ct) =>
@@ -2286,42 +2338,71 @@ public static class TournamentEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var body = await ctx.Request.ReadFromJsonAsync<Dictionary<string, JsonElement>>(ct);
+            if (body is null) return Results.BadRequest("Invalid body");
+
+            // Accept both snake_case and camelCase
+            Guid tournamentId = body.TryGetValue("tournament_id", out var tid) ? tid.GetGuid()
+                              : body.TryGetValue("tournamentId", out tid) ? tid.GetGuid() : Guid.Empty;
+            if (tournamentId == Guid.Empty) return Results.BadRequest(new { error = "tournament_id is required" });
+
+            Guid? matchId = body.TryGetValue("match_id", out var mid) ? mid.GetGuid()
+                          : body.TryGetValue("matchId", out mid) ? mid.GetGuid() : null;
+            Guid? teamId = body.TryGetValue("team_id", out var tmid) ? tmid.GetGuid()
+                         : body.TryGetValue("teamId", out tmid) ? tmid.GetGuid() : null;
+            string? title = body.TryGetValue("title", out var t) ? t.GetString() : null;
+            string? description = body.TryGetValue("description", out var d) ? d.GetString() : null;
+            string? evidenceUrl = body.TryGetValue("evidence_url", out var eu) ? eu.GetString()
+                                : body.TryGetValue("evidenceUrl", out eu) ? eu.GetString() : null;
+            string? reason = body.TryGetValue("dispute_reason", out var dr) ? dr.GetString()
+                           : body.TryGetValue("reason", out dr) ? dr.GetString() : null;
+
             using var conn = db.CreateConnection();
             var dispute = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO tournament_disputes
                     (tournament_id, match_id, team_id, raised_by_user_id, title,
-                     description, evidence_url, dispute_reason, status,
-                     reference_number)
+                     description, evidence_url, dispute_reason, status)
                 VALUES
                     (@tournamentId, @matchId, @teamId, @userId, @title,
-                     @description, @evidenceUrl, @reason, 'open',
-                     'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
+                     @description, @evidenceUrl, @reason, 'open')
                 RETURNING *
                 """,
                 new
                 {
-                    tournamentId = req.TournamentId,
-                    matchId      = req.MatchId,
-                    teamId       = req.TeamId,
+                    tournamentId,
+                    matchId,
+                    teamId,
                     userId       = userCtx.UserIdGuid,
-                    title        = req.Title,
-                    description  = req.Description,
-                    evidenceUrl  = req.EvidenceUrl,
-                    reason       = req.Reason,
+                    title,
+                    description,
+                    evidenceUrl,
+                    reason,
                 });
             return Results.Created($"/api/disputes/{dispute.id}", dispute);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/disputes/notify-admins ──────────────────────────────────
         app.MapPost("/api/disputes/notify-admins", async (
-            [FromBody] NotifyAdminsRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory           db,
             CancellationToken              ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            var body = await ctx.Request.ReadFromJsonAsync<Dictionary<string, JsonElement>>(ct);
+            if (body is null) return Results.BadRequest("Invalid body");
+
+            Guid disputeId = body.TryGetValue("dispute_id", out var did) ? did.GetGuid()
+                           : body.TryGetValue("disputeId", out did) ? did.GetGuid()
+                           : body.TryGetValue("DisputeId", out did) ? did.GetGuid() : Guid.Empty;
+            if (disputeId == Guid.Empty) return Results.BadRequest(new { error = "dispute_id is required" });
+
+            string? type    = body.TryGetValue("type", out var tv) ? tv.GetString() : null;
+            string? title   = body.TryGetValue("title", out var ttl) ? ttl.GetString() : null;
+            string? message = body.TryGetValue("message", out var msg) ? msg.GetString() : null;
+            string? link    = body.TryGetValue("link", out var lnk) ? lnk.GetString() : null;
 
             using var conn = db.CreateConnection();
 
@@ -2351,11 +2432,11 @@ public static class TournamentEndpoints
                 new
                 {
                     adminIds  = adminIds.ToArray(),
-                    type      = req.Type ?? "new_dispute",
-                    title     = req.Title ?? "New Dispute Filed",
-                    message   = req.Message ?? "A new dispute has been filed.",
-                    link      = req.Link ?? "",
-                    disputeId = req.DisputeId,
+                    type      = type ?? "new_dispute",
+                    title     = title ?? "New Dispute Filed",
+                    message   = message ?? "A new dispute has been filed.",
+                    link      = link ?? "",
+                    disputeId,
                 });
             return Results.Ok(new { notified = adminIds.Count });
         }).RequireAuthorization("Authenticated");
