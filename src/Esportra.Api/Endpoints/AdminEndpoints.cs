@@ -891,12 +891,13 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         // ── PATCH /api/admin/disputes/{disputeId} ──────────────────────────────
-        app.MapPatch("/api/admin/disputes/{disputeId}", async (
+        // Also mapped as PUT for frontend compatibility
+        async Task<IResult> AdminUpdateDispute(
             Guid                              disputeId,
             [FromBody] AdminUpdateDisputeRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            CancellationToken                 ct)
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -913,6 +914,34 @@ public static class AdminEndpoints
                 """,
                 new { disputeId, status = req.Status, notes = req.ResolutionNotes, assignedTo = req.AssignedToUserId });
             return Results.Ok(new { success = true });
+        }
+        app.MapPatch("/api/admin/disputes/{disputeId}", AdminUpdateDispute).RequireAuthorization("Admin");
+        app.MapPut("/api/admin/disputes/{disputeId}", AdminUpdateDispute).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/disputes/{disputeId}/comments ──────────────────────
+        app.MapGet("/api/admin/disputes/{disputeId}/comments", async (
+            Guid                 disputeId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT dc.id, dc.dispute_id, dc.user_id, dc.comment, dc.is_internal,
+                       dc.attachment_url, dc.created_at,
+                       COALESCE(p.full_name, p.username, 'Unknown') AS user_name,
+                       p.avatar_url AS user_avatar
+                FROM dispute_comments dc
+                LEFT JOIN profiles p ON p.id = dc.user_id
+                WHERE dc.dispute_id = @disputeId
+                ORDER BY dc.created_at ASC
+                """,
+                new { disputeId });
+            return Results.Ok(rows);
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/disputes/{disputeId}/comments ──────────────────────
