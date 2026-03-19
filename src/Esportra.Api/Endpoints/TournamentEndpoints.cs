@@ -1534,6 +1534,7 @@ public static class TournamentEndpoints
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             IHubContext<NotificationHub>      notifHub,
+            IHubContext<MatchHub>             matchHub,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1570,6 +1571,10 @@ public static class TournamentEndpoints
                     "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
                     new { disputeId });
             }
+
+            await matchHub.Clients.All.SendAsync(
+                MatchHubEvents.DisputeCommentAdded,
+                new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
             return Results.Ok(new { success = true, autoPromoted = currentStatus == "open" });
         }).RequireAuthorization("Authenticated");
@@ -1916,6 +1921,7 @@ public static class TournamentEndpoints
             Guid                              disputeId,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            IHubContext<MatchHub>             matchHub,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1937,6 +1943,10 @@ public static class TournamentEndpoints
             await conn.ExecuteAsync(
                 "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
                 new { disputeId });
+
+            await matchHub.Clients.All.SendAsync(
+                MatchHubEvents.DisputeCommentAdded,
+                new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

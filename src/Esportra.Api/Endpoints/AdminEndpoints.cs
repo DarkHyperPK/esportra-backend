@@ -6,6 +6,8 @@ using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Email;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using Esportra.Api.Hubs;
 
 namespace Esportra.Api.Endpoints;
 
@@ -919,6 +921,7 @@ public static class AdminEndpoints
             [FromBody] AddDisputeCommentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            IHubContext<MatchHub>             matchHub,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -931,6 +934,11 @@ public static class AdminEndpoints
                 VALUES (@disputeId, @userId, @comment, @isInternal, @attachmentUrl)
                 """,
                 new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", isInternal = req.IsInternal, attachmentUrl = req.AttachmentUrl });
+
+            await matchHub.Clients.All.SendAsync(
+                MatchHubEvents.DisputeCommentAdded,
+                new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 

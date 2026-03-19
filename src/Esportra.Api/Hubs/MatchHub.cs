@@ -47,6 +47,9 @@ public static class MatchHubEvents
     /// <summary>An admin/organizer resolved the dispute.</summary>
     public const string DisputeResolved = "DisputeResolved";
 
+    /// <summary>A new comment was added to a dispute thread.</summary>
+    public const string DisputeCommentAdded = "DisputeCommentAdded";
+
     /// <summary>Match check-in status changed.</summary>
     public const string CheckInUpdated = "CheckInUpdated";
 
