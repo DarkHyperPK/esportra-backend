@@ -1554,29 +1554,15 @@ public static class TournamentEndpoints
                 """,
                 new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", attachmentUrl = req.AttachmentUrl });
 
-            // Auto-promote to in_review if open
-            var currentStatus = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT status FROM tournament_disputes WHERE id = @disputeId",
+            await conn.ExecuteAsync(
+                "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
                 new { disputeId });
-
-            if (currentStatus == "open")
-            {
-                await conn.ExecuteAsync(
-                    "UPDATE tournament_disputes SET status = 'in_review', updated_at = NOW() WHERE id = @disputeId",
-                    new { disputeId });
-            }
-            else
-            {
-                await conn.ExecuteAsync(
-                    "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
-                    new { disputeId });
-            }
 
             await matchHub.Clients.All.SendAsync(
                 MatchHubEvents.DisputeCommentAdded,
                 new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
-            return Results.Ok(new { success = true, autoPromoted = currentStatus == "open" });
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/organizer/disputes/{disputeId}/resolve ─────────────────
