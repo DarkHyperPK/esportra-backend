@@ -2385,10 +2385,11 @@ public static class TournamentEndpoints
                 """
                 INSERT INTO tournament_disputes
                     (tournament_id, match_id, team_id, raised_by_user_id, title,
-                     description, evidence_url, dispute_reason, status)
+                     description, evidence_url, dispute_reason, status, reference_number)
                 VALUES
                     (@tournamentId, @matchId, @teamId, @userId, @title,
-                     @description, @evidenceUrl, @reason, 'open')
+                     @description, @evidenceUrl, @reason, 'open',
+                     'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
                 RETURNING *
                 """,
                 new

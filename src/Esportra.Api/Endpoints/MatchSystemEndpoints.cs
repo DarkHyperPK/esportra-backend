@@ -543,10 +543,11 @@ public static class MatchSystemEndpoints
                     """
                     INSERT INTO tournament_disputes
                         (tournament_id, match_id, raised_by_user_id, team_id,
-                         title, description, dispute_reason, status)
+                         title, description, dispute_reason, status, reference_number)
                     VALUES
                         (@tournamentId, @matchId, @userId, @teamId,
-                         'Match Result Disputed', @reason, 'result_dispute', 'open')
+                         'Match Result Disputed', @reason, 'result_dispute', 'open',
+                         'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
                     RETURNING *
                     """,
                     new
