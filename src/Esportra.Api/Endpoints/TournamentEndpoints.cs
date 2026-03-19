@@ -1453,12 +1453,13 @@ public static class TournamentEndpoints
                 LEFT JOIN brkt_matches bm ON bm.id = td.match_id
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
-                WHERE t.organizer_id = @userId
+                WHERE (t.organizer_id = @userId
                    OR EXISTS (
                        SELECT 1 FROM tournament_staff ts
                        WHERE ts.tournament_id = td.tournament_id
                          AND ts.user_id = @userId AND ts.status = 'active'
-                   )
+                   ))
+                  AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
                 ORDER BY td.created_at DESC
                 """,
                 new { userId = userCtx.UserIdGuid });
