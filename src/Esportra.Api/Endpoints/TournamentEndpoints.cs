@@ -1790,14 +1790,15 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/announcements ──────────────────────────
-        // Tournament announcements with sender info
         app.MapGet("/api/tournaments/{id}/announcements", async (
             Guid                 id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            [FromQuery] int      limit = 50,
+            [FromQuery] int      offset = 0,
+            CancellationToken    ct = default) =>
         {
             using var conn = db.CreateConnection();
-            var announcements = await conn.QueryAsync<dynamic>(
+            var announcements = await conn.QueryAsync<object>(
                 """
                 SELECT ta.id, ta.tournament_id, ta.sender_id, ta.title, ta.content,
                        ta.created_at, ta.updated_at, p.username AS sender_name
@@ -1805,7 +1806,8 @@ public static class TournamentEndpoints
                 LEFT JOIN public.profiles p ON p.id = ta.sender_id
                 WHERE ta.tournament_id = @id
                 ORDER BY ta.created_at DESC
-                """, new { id });
+                LIMIT @limit OFFSET @offset
+                """, new { id, limit = Math.Clamp(limit, 1, 100), offset = Math.Max(offset, 0) });
 
             return Results.Ok(announcements);
         }); // Public
@@ -2204,22 +2206,25 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var announcement = await conn.QuerySingleAsync<dynamic>(
+
+            // Validate tournament exists + verify organizer in a single query
+            var tourney = await conn.QuerySingleOrDefaultAsync<(string name, string slug, Guid organizer_id)>(
+                "SELECT name, slug, organizer_id FROM tournaments WHERE id = @id", new { id });
+            if (tourney == default)
+                return Results.NotFound(new { error = "Tournament not found" });
+            if (tourney.organizer_id != userCtx.UserIdGuid)
+                return Results.Json(new { error = "Only the tournament organizer can post announcements" }, statusCode: 403);
+
+            var announcement = await conn.QuerySingleAsync<(Guid id, Guid tournament_id, string title, string content, DateTime created_at)>(
                 """
                 INSERT INTO tournament_announcements (tournament_id, sender_id, title, content)
                 VALUES (@tournamentId, @senderId, @title, @content)
-                RETURNING *
+                RETURNING id, tournament_id, title, content, created_at
                 """,
                 new { tournamentId = id, senderId = userCtx.UserIdGuid, title = req.Title, content = req.Content });
 
-            // Get tournament name + slug for the notification link
-            var tourney = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT name, slug FROM tournaments WHERE id = @id", new { id });
-            var tourneyName = (string?)(tourney?.name) ?? "Tournament";
-            var tourneySlug = (string?)(tourney?.slug) ?? id.ToString();
-
-            // Collect all user IDs who are participants (solo user_id + team member user_ids)
-            var participantUserIds = await conn.QueryAsync<Guid>(
+            // Collect all participant user IDs (solo + team members), excluding sender
+            var userIds = (await conn.QueryAsync<Guid>(
                 """
                 SELECT DISTINCT uid FROM (
                     SELECT tp.user_id AS uid FROM tournament_participants tp
@@ -2231,36 +2236,42 @@ public static class TournamentEndpoints
                 ) sub
                 WHERE uid != @senderId
                 """,
-                new { id, senderId = userCtx.UserIdGuid });
+                new { id, senderId = userCtx.UserIdGuid })).ToList();
 
-            var userIds = participantUserIds.ToList();
             if (userIds.Count > 0)
             {
-                var notifLink = $"/tournaments/{tourneySlug}";
-                var notifData = JsonSerializer.Serialize(new { tournament_id = id, announcement_id = (Guid)announcement.id });
+                var notifLink = $"/tournaments/{tourney.slug}";
+                var notifData = JsonSerializer.Serialize(new { tournament_id = id, announcement_id = announcement.id });
+                var notifTitle = $"📢 {tourney.name}";
 
-                // Batch-insert notifications
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                    VALUES (@userId, 'tournament_announcement', @title, @message, @link, @data::jsonb, FALSE)
-                    """,
-                    userIds.Select(uid => new
-                    {
-                        userId = uid,
-                        title = $"📢 {tourneyName}",
-                        message = req.Title,
-                        link = notifLink,
-                        data = notifData
-                    }));
+                try
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                        VALUES (@userId, 'tournament_announcement', @title, @message, @link, @data::jsonb, FALSE)
+                        """,
+                        userIds.Select(uid => new
+                        {
+                            userId = uid,
+                            title = notifTitle,
+                            message = req.Title,
+                            link = notifLink,
+                            data = notifData
+                        }));
 
-                // Push real-time via SignalR
-                var pushTasks = userIds.Select(uid =>
-                    notifHub.Clients
-                        .Group(NotificationHub.UserGroup(uid.ToString()))
-                        .SendAsync(NotificationHubEvents.NewNotification,
-                            new { type = "tournament_announcement", title = $"📢 {tourneyName}", message = req.Title, link = notifLink }, ct));
-                await Task.WhenAll(pushTasks);
+                    var pushTasks = userIds.Select(uid =>
+                        notifHub.Clients
+                            .Group(NotificationHub.UserGroup(uid.ToString()))
+                            .SendAsync(NotificationHubEvents.NewNotification,
+                                new { type = "tournament_announcement", title = notifTitle, message = req.Title, link = notifLink }, ct));
+                    await Task.WhenAll(pushTasks);
+                }
+                catch (Exception ex)
+                {
+                    ctx.RequestServices.GetRequiredService<ILogger<Program>>()
+                        .LogError(ex, "Failed to deliver announcement notifications for tournament {TournamentId}", id);
+                }
             }
 
             return Results.Created($"/api/tournaments/{id}/announcements/{announcement.id}", announcement);
@@ -2279,17 +2290,25 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+
+            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOrganizer) return Results.Forbid();
+
+            var updated = await conn.QuerySingleOrDefaultAsync<object>(
                 """
                 UPDATE tournament_announcements
                 SET title      = COALESCE(@title, title),
                     content    = COALESCE(@content, content),
                     updated_at = NOW()
                 WHERE id = @announcementId AND tournament_id = @id
-                RETURNING *
+                RETURNING id, tournament_id, sender_id, title, content, created_at, updated_at
                 """,
                 new { announcementId, id, title = req.Title, content = req.Content });
-            return updated is null ? Results.NotFound() : Results.Ok(updated);
+            return updated is null
+                ? Results.NotFound(new { error = "Announcement not found" })
+                : Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/tournaments/{id}/announcements/{announcementId} ───────
@@ -2304,10 +2323,18 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await conn.ExecuteAsync(
+
+            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOrganizer) return Results.Forbid();
+
+            var rows = await conn.ExecuteAsync(
                 "DELETE FROM tournament_announcements WHERE id = @announcementId AND tournament_id = @id",
                 new { announcementId, id });
-            return Results.Ok(new { success = true });
+            return rows == 0
+                ? Results.NotFound(new { error = "Announcement not found" })
+                : Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournament-participants/{id} ─────────────────────────────

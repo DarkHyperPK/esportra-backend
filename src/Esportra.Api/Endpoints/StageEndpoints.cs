@@ -556,7 +556,7 @@ public static class StageEndpoints
                 if (config?.TryGetValue("swiss_rounds", out var srVal) == true)
                     int.TryParse(srVal?.ToString(), out swissRounds);
             }
-            catch { }
+            catch { /* Config is optional JSON; default to 0 swiss_rounds on parse failure */ }
         }
 
         if (stageFormat == "swiss" && swissRounds > 0)
@@ -593,7 +593,7 @@ public static class StageEndpoints
                 if (config?.TryGetValue("swiss_groups", out var sgVal) == true)
                     int.TryParse(sgVal?.ToString(), out swissGroups);
             }
-            catch { }
+            catch { /* Config is optional JSON; default to 1 swiss_groups on parse failure */ }
         }
 
         var advancingTeams = new List<AdvancingTeam>();
