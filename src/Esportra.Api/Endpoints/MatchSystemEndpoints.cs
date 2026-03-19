@@ -3,6 +3,7 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Bracket;
 using Esportra.Core.Match;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -223,6 +224,7 @@ public static class MatchSystemEndpoints
             HttpContext                     ctx,
             IDbConnectionFactory           db,
             VetoDbService                  vetoService,
+            MatchFinalizationService       finalizer,
             IHubContext<MatchHub>          matchHub,
             IHubContext<BracketHub>        bracketHub,
             ILoggerFactory                 loggerFactory,
@@ -415,20 +417,22 @@ public static class MatchSystemEndpoints
                                 winnerId = team1Wins >= winsNeeded ? (Guid)match.team1_id : (Guid)match.team2_id;
                                 var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
 
-                                var finalized = await conn.QuerySingleOrDefaultAsync<bool>(
-                                    """
-                                    SELECT public.finalize_match_locked(
-                                        @matchId, @version, @winnerId, @loserId, @t1, @t2
-                                    )
-                                    """,
-                                    new { matchId = id, version = Convert.ToInt32(match.version), winnerId, loserId,
-                                          t1 = team1Wins, t2 = team2Wins });
-
-                                if (finalized)
+                                try
                                 {
-                                    logger.LogInformation(
-                                        "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
-                                        id, winnerId, team1Wins, team2Wins, bestOf);
+                                    var finalized = await finalizer.FinalizeAsync(
+                                        id, Convert.ToInt32(match.version), winnerId.Value, loserId,
+                                        team1Wins, team2Wins, ct);
+
+                                    if (finalized)
+                                    {
+                                        logger.LogInformation(
+                                            "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
+                                            id, winnerId, team1Wins, team2Wins, bestOf);
+                                    }
+                                }
+                                catch (InvalidOperationException ex)
+                                {
+                                    logger.LogWarning(ex, "Match {MatchId} finalization version conflict", id);
                                 }
                             }
                             else
@@ -494,21 +498,50 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // 1. Mark the report as disputed
+            // 1. Mark the report as disputed (full fields matching DB RPC)
             await conn.ExecuteAsync(
-                "UPDATE match_result_reports SET status = 'disputed', updated_at = NOW() WHERE id = @rid AND match_id = @matchId",
-                new { rid, matchId = id });
-
-            // 2. Find tournament_id for this match
-            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
-                SELECT bv.tournament_id FROM brkt_matches bm
-                JOIN brkt_versions bv ON bv.id = bm.version_id
-                WHERE bm.id = @matchId
+                UPDATE match_result_reports
+                SET status = 'disputed', responded_by = @userId, responded_at = NOW(),
+                    dispute_reason = @reason, updated_at = NOW()
+                WHERE id = @rid AND match_id = @matchId
                 """,
-                new { matchId = id });
+                new { rid, matchId = id, userId = userCtx.UserIdGuid, reason = req.Reason });
 
-            // 3. Insert dispute record
+            // 2. Resolve tournament info (organizer, reporter, slug)
+            var info = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT bv.tournament_id, t.organizer_id, r.reported_by, t.slug
+                FROM match_result_reports r
+                JOIN brkt_matches bm ON bm.id = r.match_id
+                JOIN brkt_versions bv ON bv.id = bm.version_id
+                JOIN tournaments t ON t.id = bv.tournament_id
+                WHERE r.id = @rid
+                """,
+                new { rid });
+
+            Guid? tournamentId = info?.tournament_id;
+            Guid? organizerId  = info?.organizer_id;
+            Guid? reporterId   = info?.reported_by;
+            string? slug       = info?.slug;
+
+            // 3. Insert match-level dispute (used by useMatchDispute hook)
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO match_disputes
+                    (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
+                VALUES
+                    (@matchId, @teamId, @userId, @reason, '{}', 'pending')
+                """,
+                new
+                {
+                    matchId = id,
+                    teamId  = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null,
+                    userId  = userCtx.UserIdGuid,
+                    reason  = req.Reason,
+                });
+
+            // 4. Insert tournament-level dispute (organizer disputes tab)
             var dispute = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO tournament_disputes
@@ -516,7 +549,7 @@ public static class MatchSystemEndpoints
                      title, description, evidence_url, dispute_reason, status)
                 VALUES
                     (@tournamentId, @matchId, @userId, @teamId,
-                     @title, @reason, @evidenceUrl, @reason, 'open')
+                     'Match Result Disputed', @reason, @evidenceUrl, 'result_dispute', 'open')
                 RETURNING *
                 """,
                 new
@@ -524,13 +557,41 @@ public static class MatchSystemEndpoints
                     tournamentId,
                     matchId      = id,
                     userId       = userCtx.UserIdGuid,
-                    teamId       = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null,
-                    title        = $"Match result disputed",
+                    teamId       = Guid.TryParse(req.TeamId, out var tg2) ? tg2 : (Guid?)null,
                     reason       = req.Reason,
                     evidenceUrl  = req.EvidenceUrls is { Count: > 0 } ? req.EvidenceUrls[0] : (string?)null,
                 });
 
-            // 4. Broadcast dispute event
+            // 5. Notify reporter that their result is being disputed
+            if (reporterId is not null && reporterId != userCtx.UserIdGuid)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                    VALUES (@userId, 'result_disputed', 'Match Result Disputed',
+                            'The opposing team has disputed your reported result. An organizer will review.',
+                            '/tournaments/captain',
+                            jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                    """,
+                    new { userId = reporterId, matchId = id });
+            }
+
+            // 6. Notify tournament organizer
+            if (organizerId is not null)
+            {
+                var link = $"/organizer/tournament/{slug ?? tournamentId?.ToString()}?tab=disputes";
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                    VALUES (@userId, 'dispute_filed', 'Match Dispute Filed',
+                            'A team has disputed a match result in your tournament. Review in the Disputes tab.',
+                            @link,
+                            jsonb_build_object('match_id', @matchId::text, 'tournament_id', @tournamentId::text)::jsonb, false)
+                    """,
+                    new { userId = organizerId, matchId = id, tournamentId, link });
+            }
+
+            // 7. Broadcast dispute event via SignalR
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.ReportDisputed,

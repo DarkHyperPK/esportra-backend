@@ -2324,21 +2324,37 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Query moderators + ops_admins from both profiles.admin_roles and admin_user_roles
             var adminIds = (await conn.QueryAsync<Guid>(
-                "SELECT DISTINCT user_id FROM public.user_roles WHERE role = 'admin'")).ToList();
+                """
+                SELECT DISTINCT uid FROM (
+                    SELECT p.id AS uid FROM profiles p
+                    WHERE 'moderator' = ANY(p.admin_roles) OR 'ops_admin' = ANY(p.admin_roles)
+                    UNION
+                    SELECT aur.user_id AS uid FROM admin_user_roles aur
+                    JOIN admin_roles ar ON ar.id = aur.role_id
+                    WHERE lower(ar.name) = ANY(ARRAY['moderator', 'ops_admin'])
+                ) sub
+                """)).ToList();
+
             if (adminIds.Count == 0) return Results.Ok(new { notified = 0 });
 
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, data, is_read)
-                SELECT uid, 'new_dispute', 'New Dispute Filed', @message,
-                       jsonb_build_object('dispute_id', @disputeId)::jsonb, FALSE
+                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                SELECT uid, @type, @title, @message, @link,
+                       jsonb_build_object('dispute_id', @disputeId::text)::jsonb, FALSE
                 FROM UNNEST(@adminIds::uuid[]) AS uid
+                WHERE uid IS NOT NULL
                 """,
                 new
                 {
                     adminIds  = adminIds.ToArray(),
+                    type      = req.Type ?? "new_dispute",
+                    title     = req.Title ?? "New Dispute Filed",
                     message   = req.Message ?? "A new dispute has been filed.",
+                    link      = req.Link ?? "",
                     disputeId = req.DisputeId,
                 });
             return Results.Ok(new { notified = adminIds.Count });
@@ -2448,7 +2464,12 @@ public sealed record CreateDisputeRequest(
     Guid?   TeamId      = null,
     string? EvidenceUrl = null,
     string? Reason      = null);
-public sealed record NotifyAdminsRequest(Guid DisputeId, string? Message = null);
+public sealed record NotifyAdminsRequest(
+    Guid DisputeId,
+    string? Message = null,
+    string? Type    = null,
+    string? Title   = null,
+    string? Link    = null);
 
 // ── Tournament Staff request records ─────────────────────────────────────────
 

@@ -248,6 +248,7 @@ builder.Services.AddHttpClient("GeoIP", http =>
 
 // ── Phase 2: Core services ────────────────────────────────────────────────────
 builder.Services.AddScoped<BracketPersistenceService>();
+builder.Services.AddScoped<MatchFinalizationService>();
 builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();

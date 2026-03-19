@@ -4,6 +4,7 @@ using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
+using Esportra.Core.Bracket;
 using Esportra.Core.Match;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -302,6 +303,7 @@ public static class MatchEndpoints
             [FromBody] ProcessMatchResultRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory           db,
+            MatchFinalizationService       finalizer,
             IHubContext<MatchHub>          matchHub,
             CancellationToken              ct) =>
         {
@@ -340,25 +342,19 @@ public static class MatchEndpoints
             var team1Score = (int)report.team1_score;
             var team2Score = (int)report.team2_score;
 
-            // 4. Finalize match via RPC (handles locking + bracket advancement)
-            var success = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT public.finalize_match_locked(
-                    @matchId, @version, @winnerId, @loserId, @team1Score, @team2Score
-                )
-                """,
-                new
-                {
-                    matchId,
-                    version  = (int)match.version,
-                    winnerId,
-                    loserId,
-                    team1Score,
-                    team2Score,
-                });
+            // 4. Finalize match via .NET service (handles locking + bracket advancement)
+            try
+            {
+                var success = await finalizer.FinalizeAsync(
+                    matchId, (int)match.version, winnerId, loserId, team1Score, team2Score, ct);
 
-            if (!success)
-                return Results.Conflict(new { error = "Match state has changed — retry." });
+                if (!success)
+                    return Results.Conflict(new { error = "Match state has changed — retry." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
 
             // 5. Mark report as processed
             await conn.ExecuteAsync(
@@ -377,25 +373,39 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/finalize ──────────────────────────────
         app.MapPost("/api/matches/{matchId}/finalize", async (
-            Guid                 matchId,
-            IDbConnectionFactory db,
-            IHubContext<MatchHub> matchHub,
-            CancellationToken    ct) =>
+            Guid                         matchId,
+            [FromBody] FinalizeRequest?  req,
+            MatchFinalizationService     finalizer,
+            IDbConnectionFactory         db,
+            IHubContext<MatchHub>        matchHub,
+            CancellationToken            ct) =>
         {
-            using var conn = db.CreateConnection();
+            var winnerId = req?.WinnerId ?? Guid.Empty;
+            var loserId  = req?.LoserId  ?? Guid.Empty;
 
-            var result = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<dynamic>(conn,
-                "SELECT public.finalize_match_locked(@matchId) AS result",
-                new { matchId });
+            // Auto-detect winner/loser from existing scores if not provided
+            if (winnerId == Guid.Empty || loserId == Guid.Empty)
+            {
+                using var conn = db.CreateConnection();
+                var m = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT team1_id, team2_id, team1_score, team2_score FROM brkt_matches WHERE id = @matchId",
+                    new { matchId });
+                if (m is not null && m.team1_score is not null && m.team2_score is not null)
+                {
+                    winnerId = (int)m.team1_score >= (int)m.team2_score ? (Guid)m.team1_id : (Guid)m.team2_id;
+                    loserId  = winnerId == (Guid)m.team1_id ? (Guid)m.team2_id : (Guid)m.team1_id;
+                }
+            }
 
-            // Notify match group that status changed
+            var success = await finalizer.FinalizeAsync(matchId, winnerId, loserId, ct: ct);
+
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
-                    new { matchId, status = "completed", result },
+                    new { matchId, status = "completed" },
                     ct);
 
-            return Results.Ok(new { success = true, matchId, result });
+            return Results.Ok(new { success, matchId });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/award-walkover ──────────────────────
@@ -403,39 +413,24 @@ public static class MatchEndpoints
             Guid                         matchId,
             [FromBody] WalkoverRequest   req,
             HttpContext                  ctx,
-            IDbConnectionFactory         db,
+            MatchFinalizationService     finalizer,
             IHubContext<MatchHub>        matchHub,
             CancellationToken            ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            try
+            {
+                var success = await finalizer.FinalizeAsync(
+                    matchId, req.WinnerId, req.LoserId, req.Team1Score, req.Team2Score, ct);
 
-            // Get current match version for locking
-            var version = await conn.QuerySingleOrDefaultAsync<int?>(
-                "SELECT version FROM brkt_matches WHERE id = @matchId",
-                new { matchId });
-            if (version is null) return Results.NotFound();
-
-            // Finalize match via RPC
-            var success = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT public.finalize_match_locked(
-                    @matchId, @version, @winnerId, @loserId, @team1Score, @team2Score
-                )
-                """,
-                new
-                {
-                    matchId,
-                    version,
-                    winnerId = req.WinnerId,
-                    loserId = req.LoserId,
-                    team1Score = req.Team1Score,
-                    team2Score = req.Team2Score
-                });
-
-            if (!success) return Results.Conflict(new { error = "Match state has changed." });
+                if (!success) return Results.Conflict(new { error = "Match state has changed." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
@@ -921,6 +916,10 @@ public sealed record WalkoverRequest(
     Guid   LoserId,
     int    Team1Score,
     int    Team2Score);
+
+public sealed record FinalizeRequest(
+    Guid? WinnerId = null,
+    Guid? LoserId  = null);
 
 public sealed record GoLiveRequest(string PartyCode);
 

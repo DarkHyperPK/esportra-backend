@@ -91,6 +91,13 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 });
         }
 
+        // 5. Notify captains for matches that have both teams assigned at creation
+        foreach (var node in graph.Nodes)
+        {
+            if (node.Team1Id is not null && node.Team2Id is not null)
+                await NotifyMatchReadyCaptainsAsync(conn, node.Id, node.Team1Id.Value, node.Team2Id.Value);
+        }
+
         return graph.Version;
     }
 
@@ -197,6 +204,34 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
             await conn.ExecuteAsync(
                 $"UPDATE public.brkt_matches SET {col} = @teamId WHERE id = @targetId",
                 new { teamId, targetId = (Guid)edge.target_match_id });
+        }
+    }
+
+    /// <summary>
+    /// Replaces <c>notify_match_ready()</c> DB trigger for initial bracket seeding.
+    /// Notifies captains of both teams when a match has both teams assigned.
+    /// </summary>
+    private static async Task NotifyMatchReadyCaptainsAsync(
+        System.Data.IDbConnection conn, Guid matchId, Guid team1Id, Guid team2Id)
+    {
+        var captainIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT tm.user_id FROM public.team_members tm
+            WHERE tm.team_id IN (@t1, @t2) AND tm.role = 'captain' AND tm.is_active = true
+            """,
+            new { t1 = team1Id, t2 = team2Id })).AsList();
+
+        foreach (var captainId in captainIds)
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
+                VALUES (@userId, 'match_ready', 'Match Ready',
+                        'Your match is ready. Head to the Captain dashboard to start the map veto.',
+                        '/tournaments/captain',
+                        jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                """,
+                new { userId = captainId, matchId });
         }
     }
 }
