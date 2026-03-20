@@ -986,13 +986,20 @@ public static class TournamentEndpoints
                        tp.status::text AS status, tp.created_at,
                        t.name AS team_name, t.logo_url AS team_logo_url,
                        tm.user_id AS member_user_id,
-                       p.username AS member_username
+                       p.username AS member_username,
+                       sp.username AS solo_username,
+                       sp.full_name AS solo_full_name,
+                       sp.riot_tag AS solo_riot_tag,
+                       sp.faceit_nickname AS solo_faceit_nickname,
+                       sp.avatar_url AS solo_avatar_url
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
                 LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = true
                 LEFT JOIN profiles p ON p.id = tm.user_id
+                LEFT JOIN profiles sp ON sp.id = tp.user_id
                 WHERE tp.tournament_id = @id
                 ORDER BY tp.created_at ASC
+                LIMIT 500
                 """, new { id });
 
             // Group by participant to nest members
@@ -1020,6 +1027,11 @@ public static class TournamentEndpoints
                         team_logo_url = first.team_logo_url as string,
                         team_members = string.Join(", ", members.Select(m => m.username)),
                         members,
+                        solo_username = first.solo_username as string,
+                        solo_full_name = first.solo_full_name as string,
+                        solo_riot_tag = first.solo_riot_tag as string,
+                        solo_faceit_nickname = first.solo_faceit_nickname as string,
+                        solo_avatar_url = first.solo_avatar_url as string,
                     };
                 })
                 .ToList();
@@ -1126,6 +1138,7 @@ public static class TournamentEndpoints
                 LEFT JOIN profiles p ON p.id = ts.user_id
                 WHERE ts.tournament_id = @tournamentId
                 ORDER BY ts.created_at ASC
+                LIMIT 200
                 """,
                 new { tournamentId });
             return Results.Ok(rows);
