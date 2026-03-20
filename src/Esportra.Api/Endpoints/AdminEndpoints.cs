@@ -311,13 +311,19 @@ public static class AdminEndpoints
                 SELECT
                     (SELECT COUNT(*) FROM profiles) AS total_users,
                     (SELECT COUNT(*) FROM venues) AS active_venues,
-                    (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments
+                    (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments,
+                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications,
+                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '1 day') AS new_users_today
                 """);
             return Results.Ok(new {
                 totalUsers = (long)row.total_users,
                 activeVenues = (long)row.active_venues,
                 activeTournaments = (long)row.active_tournaments,
-                totalRevenue = 0
+                totalRevenue = 0,
+                pendingVerifications = (long)row.pending_verifications,
+                totalBookings = 0,
+                newUsersToday = (long)row.new_users_today,
+                pendingPartners = 0
             });
         }).RequireAuthorization("Admin");
 
@@ -975,27 +981,61 @@ public static class AdminEndpoints
         // ── GET /api/admin/audit-logs ──────────────────────────────────────────
         app.MapGet("/api/admin/audit-logs", async (
             Guid?                organizationId,
-            int                  page  = 1,
-            int                  limit = 50,
-            HttpContext          ctx   = default!,
-            IDbConnectionFactory db    = default!,
-            CancellationToken    ct    = default) =>
+            [FromQuery] string?  search      = null,
+            [FromQuery] string?  target_type = null,
+            [FromQuery] string?  from        = null,
+            [FromQuery] string?  to          = null,
+            int                  page        = 1,
+            int                  limit       = 50,
+            HttpContext          ctx          = default!,
+            IDbConnectionFactory db           = default!,
+            CancellationToken    ct           = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
-                """
+
+            var conditions = new List<string>();
+            conditions.Add("(@organizationId IS NULL OR sal.organization_id = @organizationId)");
+
+            if (!string.IsNullOrWhiteSpace(search))
+                conditions.Add("(p.username ILIKE @search OR sal.action ILIKE @search OR sal.target_type ILIKE @search)");
+            if (!string.IsNullOrWhiteSpace(target_type))
+                conditions.Add("sal.target_type = @target_type");
+
+            DateTime? fromDate = null;
+            DateTime? toDate = null;
+            if (!string.IsNullOrWhiteSpace(from) && DateTime.TryParse(from, out var fd))
+            {
+                fromDate = fd;
+                conditions.Add("sal.created_at >= @fromDate");
+            }
+            if (!string.IsNullOrWhiteSpace(to) && DateTime.TryParse(to, out var td))
+            {
+                toDate = td;
+                conditions.Add("sal.created_at <= @toDate");
+            }
+
+            var where = "WHERE " + string.Join(" AND ", conditions);
+
+            var sql = $"""
                 SELECT sal.*, p.username AS actor_name
                 FROM staff_audit_log sal
                 LEFT JOIN profiles p ON p.id = sal.actor_id
-                WHERE (@organizationId IS NULL OR sal.organization_id = @organizationId)
+                {where}
                 ORDER BY sal.created_at DESC
                 LIMIT @limit OFFSET @offset
-                """,
-                new { organizationId, limit, offset = (page - 1) * limit });
-            return Results.Ok(rows);
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(sql,
+                new { organizationId, search = $"%{search}%", target_type, fromDate, toDate, limit, offset = (page - 1) * limit });
+
+            var countSql = $"SELECT COUNT(*) FROM staff_audit_log sal LEFT JOIN profiles p ON p.id = sal.actor_id {where}";
+            var total = await conn.ExecuteScalarAsync<int>(countSql,
+                new { organizationId, search = $"%{search}%", target_type, fromDate, toDate });
+
+            return Results.Ok(new { data = rows, count = total });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/system-settings ────────────────────────────────────
@@ -1024,7 +1064,7 @@ public static class AdminEndpoints
                        vr.first_name, vr.last_name, vr.business_name, vr.business_type,
                        vr.business_description, vr.email AS contact_email,
                        vr.cnic_front_url, vr.cnic_back_url,
-                       vr.organizer_data, vr.venue_data, vr.notes,
+                       vr.verification_notes AS notes,
                        vr.created_at, vr.updated_at,
                        p.username  AS profile_username,
                        p.full_name AS profile_full_name,
