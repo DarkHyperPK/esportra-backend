@@ -282,7 +282,17 @@ public static class AdminEndpoints
                 $"SELECT COUNT(*) FROM profiles p {where}",
                 new { search = $"%{search}%" });
 
-            return Results.Ok(new { users = enriched, total });
+            // Role breakdown counts (unfiltered — always reflects full platform)
+            var roleCountRows = await conn.QueryAsync<dynamic>(
+                "SELECT role, COUNT(DISTINCT user_id)::int AS count FROM user_roles WHERE is_active = TRUE GROUP BY role");
+            var roleCounts = new Dictionary<string, int>();
+            foreach (var r in roleCountRows)
+                roleCounts[(string)r.role] = (int)r.count;
+
+            var adminCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(DISTINCT user_id) FROM admin_user_roles");
+
+            return Results.Ok(new { users = enriched, total, roleCounts, adminCount });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/sponsors/track ────────────────────────────────────────
