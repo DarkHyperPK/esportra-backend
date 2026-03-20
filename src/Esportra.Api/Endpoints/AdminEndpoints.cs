@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
@@ -1017,27 +1018,33 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            // Use verified_roles as the source for pending/approved verification requests
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT vr.user_id, vr.role, vr.status, vr.is_active, vr.verified_at,
-                       p.username, p.email, p.avatar_url, p.full_name
-                FROM verified_roles vr
+                SELECT vr.id, vr.user_id, vr.requested_role, vr.status,
+                       vr.first_name, vr.last_name, vr.business_name, vr.business_type,
+                       vr.business_description, vr.email AS contact_email,
+                       vr.cnic_front_url, vr.cnic_back_url,
+                       vr.organizer_data, vr.venue_data, vr.notes,
+                       vr.created_at, vr.updated_at,
+                       p.username  AS profile_username,
+                       p.full_name AS profile_full_name,
+                       p.email     AS profile_email
+                FROM verification_requests vr
                 JOIN profiles p ON p.id = vr.user_id
                 WHERE (@status IS NULL OR vr.status = @status)
-                ORDER BY vr.verified_at DESC NULLS LAST
+                ORDER BY vr.created_at DESC
                 """,
                 new { status });
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
 
-        // ── PATCH /api/admin/verification-requests/{userId} ───────────────────
-        app.MapPatch("/api/admin/verification-requests/{userId}", async (
-            Guid                              userId,
-            [FromBody] ApproveVerificationRequest req,
+        // ── PATCH/PUT /api/admin/verification-requests/{requestId} ────────────
+        async Task<IResult> AdminUpdateVerificationRequest(
+            Guid                              requestId,
+            [FromBody] UpdateVerificationRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            CancellationToken                 ct)
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1046,13 +1053,39 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 """
-                UPDATE verified_roles
+                UPDATE verification_requests
                 SET status     = @status,
-                    is_active  = @isActive,
-                    verified_at = CASE WHEN @status = 'approved' THEN NOW() ELSE verified_at END
-                WHERE user_id = @userId AND role = @role
+                    updated_at = NOW()
+                WHERE id = @requestId
                 """,
-                new { userId, status = req.Status, isActive = req.Status == "approved", role = req.Role });
+                new { requestId, status = req.Status });
+            return Results.Ok(new { success = true });
+        }
+        app.MapPatch("/api/admin/verification-requests/{requestId}", AdminUpdateVerificationRequest)
+           .RequireAuthorization("Admin");
+        app.MapPut("/api/admin/verification-requests/{requestId}", AdminUpdateVerificationRequest)
+           .RequireAuthorization("Admin");
+
+        // ── POST /api/admin/verified-roles ────────────────────────────────────
+        app.MapPost("/api/admin/verified-roles", async (
+            [FromBody] CreateVerifiedRoleRequest req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
+                VALUES (@userId, @role, @status, @isActive, NOW())
+                ON CONFLICT (user_id, role) DO UPDATE
+                SET status = @status, is_active = @isActive, verified_at = NOW()
+                """,
+                new { userId = req.UserId, role = req.Role, status = req.Status, isActive = req.IsActive });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -1241,6 +1274,12 @@ public sealed record UpdateRoleRequest(string[]? Roles = null);
 public sealed record SetRoleRequest(string Role);
 public sealed record AdminUpdateDisputeRequest(string? Status = null, string? ResolutionNotes = null, Guid? AssignedToUserId = null);
 public sealed record ApproveVerificationRequest(string Status, string Role);
+public sealed record UpdateVerificationRequest(string Status);
+public sealed record CreateVerifiedRoleRequest(
+    [property: JsonPropertyName("user_id")] Guid UserId,
+    string Role,
+    string Status,
+    [property: JsonPropertyName("is_active")] bool IsActive);
 public sealed record UpdateApplicationRequest(string? Status = null, string? Notes = null);
 public sealed record AdminUserRoleAssignRequest(Guid UserId, Guid RoleId);
 public sealed record AdminUpdateTournamentRequest(string? Status = null, bool? IsFeatured = null);
