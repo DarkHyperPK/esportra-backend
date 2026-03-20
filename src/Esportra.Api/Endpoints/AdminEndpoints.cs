@@ -247,7 +247,7 @@ public static class AdminEndpoints
                     COALESCE(
                         (SELECT jsonb_agg(ur.role) FROM user_roles ur WHERE ur.user_id = p.id AND ur.is_active = TRUE),
                         '[]'::jsonb
-                    ) AS roles
+                    )::text AS roles
                 FROM profiles p
                 {where}
                 ORDER BY p.created_at DESC
@@ -1004,14 +1004,14 @@ public static class AdminEndpoints
             if (!string.IsNullOrWhiteSpace(target_type))
                 conditions.Add("sal.target_type = @target_type");
 
-            DateTime? fromDate = null;
-            DateTime? toDate = null;
-            if (!string.IsNullOrWhiteSpace(from) && DateTime.TryParse(from, out var fd))
+            DateTimeOffset? fromDate = null;
+            DateTimeOffset? toDate = null;
+            if (!string.IsNullOrWhiteSpace(from) && DateTimeOffset.TryParse(from, out var fd))
             {
                 fromDate = fd;
                 conditions.Add("sal.created_at >= @fromDate");
             }
-            if (!string.IsNullOrWhiteSpace(to) && DateTime.TryParse(to, out var td))
+            if (!string.IsNullOrWhiteSpace(to) && DateTimeOffset.TryParse(to, out var td))
             {
                 toDate = td;
                 conditions.Add("sal.created_at <= @toDate");
