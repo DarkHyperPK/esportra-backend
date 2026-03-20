@@ -133,10 +133,29 @@ public static class BracketEndpoints
         // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
         app.MapPost("/api/brackets/{versionId}/advance-byes", async (
             Guid                      versionId,
+            HttpContext               ctx,
             BracketPersistenceService persistence,
+            IDbConnectionFactory      db,
             IHubContext<BracketHub>   bracketHub,
             CancellationToken         ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_versions v
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { versionId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             int count = await persistence.AutoAdvanceByesAsync(versionId, ct);
 
             if (count > 0)
@@ -154,10 +173,29 @@ public static class BracketEndpoints
         // ── POST /api/brackets/{versionId}/reset ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/reset", async (
             Guid                      versionId,
+            HttpContext               ctx,
             BracketPersistenceService persistence,
+            IDbConnectionFactory      db,
             IHubContext<BracketHub>   bracketHub,
             CancellationToken         ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_versions v
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { versionId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             await persistence.ResetAsync(versionId, ct);
 
             await bracketHub.Clients
@@ -170,9 +208,28 @@ public static class BracketEndpoints
         // ── DELETE /api/brackets/{versionId} ─────────────────────────────────
         app.MapDelete("/api/brackets/{versionId}", async (
             Guid                      versionId,
+            HttpContext               ctx,
             BracketPersistenceService persistence,
+            IDbConnectionFactory      db,
             CancellationToken         ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_versions v
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { versionId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             await persistence.ClearAsync(versionId, ct);
             return Results.Ok(new { message = "Bracket deleted." });
         }).RequireAuthorization("Organizer");
@@ -190,6 +247,21 @@ public static class BracketEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller is the organizer of the tournament owning this version
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_versions v
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { versionId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var body = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object?>>(ct);
             if (body is null) return Results.BadRequest("Invalid body");
 
@@ -269,10 +341,29 @@ public static class BracketEndpoints
         // ── POST /api/swiss/next-round ────────────────────────────────────────
         app.MapPost("/api/swiss/next-round", async (
             [FromBody]      SwissNextRoundRequest req,
+            HttpContext                           ctx,
             SwissNextRoundService                 swissSvc,
+            IDbConnectionFactory                  db,
             IHubContext<BracketHub>               bracketHub,
             CancellationToken                     ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_versions v
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { versionId = req.VersionId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var (ok, msg) = await swissSvc.GenerateNextRoundAsync(req.StageId, req.VersionId, req.CurrentRound, ct);
             if (!ok) return Results.BadRequest(new { error = msg });
 
@@ -289,11 +380,29 @@ public static class BracketEndpoints
         app.MapDelete("/api/swiss/{stageId}/round/{roundNumber:int}", async (
             Guid                     stageId,
             int                      roundNumber,
+            HttpContext              ctx,
             IDbConnectionFactory     db,
             IHubContext<BracketHub>  bracketHub,
             CancellationToken        ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+
+            // Verify caller owns the tournament containing this stage
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_stages s
+                    JOIN tournaments t ON t.id = s.tournament_id
+                    WHERE s.id = @stageId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { stageId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             // Find the version_id for this stage
             var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(

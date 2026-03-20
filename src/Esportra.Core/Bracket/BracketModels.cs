@@ -16,7 +16,7 @@ public sealed record BracketNode(
     int     RoundIndex,
     int     MatchNumber,
     string  BracketType,     // winners | losers | final | group | swiss_round
-    string  Status,          // pending | live | completed
+    string  Status,          // pending | in_progress | completed (DB stores "in_progress", not "live")
     int     BestOf = 1,
     Guid?   Team1Id = null,
     Guid?   Team2Id = null,

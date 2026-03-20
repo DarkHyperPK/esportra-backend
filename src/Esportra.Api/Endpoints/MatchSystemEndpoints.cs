@@ -64,6 +64,12 @@ public static class MatchSystemEndpoints
                 new { teamId = reportingTeamId, userId = userCtx.UserIdGuid });
             if (!isCaptain) return Results.Forbid();
 
+            // Verify the reporting team is actually in this match
+            var isTeamInMatch = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM brkt_matches WHERE id = @matchId AND (team1_id = @teamId OR team2_id = @teamId))",
+                new { matchId = id, teamId = reportingTeamId });
+            if (!isTeamInMatch) return Results.Forbid();
+
             try
             {
             // Block submission if same game is already disputed
@@ -249,6 +255,13 @@ public static class MatchSystemEndpoints
                 new { matchId = id, userId = userCtx.UserIdGuid });
             if (captainTeamId is null) return Results.Forbid();
 
+            // Prevent a team from accepting their own report
+            var reportingTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT reported_by_team_id FROM match_result_reports WHERE id = @rid AND match_id = @matchId",
+                new { rid, matchId = id });
+            if (reportingTeamId is not null && captainTeamId == reportingTeamId)
+                return Results.BadRequest(new { error = "Cannot accept your own team's report." });
+
             // Mark report accepted
             await conn.ExecuteAsync(
                 """
@@ -433,6 +446,16 @@ public static class MatchSystemEndpoints
                                 catch (InvalidOperationException ex)
                                 {
                                     logger.LogWarning(ex, "Match {MatchId} finalization version conflict", id);
+                                    // Surface the conflict so the client can retry
+                                    return Results.Conflict(new
+                                    {
+                                        success        = false,
+                                        error          = "version_conflict",
+                                        message        = "Match state changed during finalization. Please retry.",
+                                        matchId        = id,
+                                        reportId       = rid,
+                                        seriesComplete = true,
+                                    });
                                 }
                             }
                             else
@@ -497,7 +520,19 @@ public static class MatchSystemEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            using var tx   = conn.BeginTransaction();
+
+            // Verify caller is a captain of a team in this match
+            var captainTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT tm.team_id FROM team_members tm
+                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                LIMIT 1
+                """,
+                new { matchId = id, userId = userCtx.UserIdGuid });
+            if (captainTeamId is null) return Results.Forbid();
+
+            using var tx = conn.BeginTransaction();
 
             try
             {
@@ -705,6 +740,12 @@ public static class MatchSystemEndpoints
                 new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
+            // Verify the team is actually in this match
+            var isTeamInMatch = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM brkt_matches WHERE id = @matchId AND (team1_id = @teamId OR team2_id = @teamId))",
+                new { matchId = id, teamId = teamIdGuid });
+            if (!isTeamInMatch) return Results.Forbid();
+
             await conn.ExecuteAsync(
                 """
                 INSERT INTO match_checkins (match_id, team_id, user_id, checked_in_at)
@@ -835,8 +876,9 @@ public static class MatchSystemEndpoints
                 SET scheduled_time = u.scheduled_time
                 FROM UNNEST(@ids::uuid[], @times::timestamptz[]) AS u(id, scheduled_time)
                 WHERE m.id = u.id
+                  AND m.version_id IN (SELECT v.id FROM brkt_versions v WHERE v.stage_id = @stageId)
                 """,
-                new { ids, times });
+                new { ids, times, stageId });
 
             return Results.Ok(new { success = true, updated });
         }).RequireAuthorization("Organizer");
@@ -968,6 +1010,13 @@ public static class MatchSystemEndpoints
                 """,
                 new { matchId, userId = userCtx.UserIdGuid });
             if (captainTeam is null) return Results.Forbid();
+
+            // Prevent accepting own proposal
+            var proposerTeamId = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT proposed_by_team_id::text FROM match_time_proposals WHERE id = @proposalId AND match_id = @matchId",
+                new { proposalId, matchId });
+            if (proposerTeamId is not null && captainTeam == proposerTeamId)
+                return Results.BadRequest(new { error = "Cannot accept your own time proposal." });
 
             // Atomic: accept proposal + update match scheduled_time in a CTE
             var rows = await conn.ExecuteAsync(

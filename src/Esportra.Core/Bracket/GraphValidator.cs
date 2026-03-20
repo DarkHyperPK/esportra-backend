@@ -34,8 +34,10 @@ public static class GraphValidator
 
             var potentialChampions = nodes.Where(n => !nodesWithOutgoingWinner.Contains(n.Id)).ToList();
 
-            if (potentialChampions.Count == 0)
-                errors.Add("No champion node found (infinite loop?).");
+            if (potentialChampions.Count != 1)
+                errors.Add(potentialChampions.Count == 0
+                    ? "No champion node found (infinite loop?)."
+                    : $"Expected 1 champion node but found {potentialChampions.Count} (disconnected graph?).");
         }
 
         return errors;

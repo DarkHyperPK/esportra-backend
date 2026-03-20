@@ -39,7 +39,7 @@ public static class PartnerEndpoints
                 VALUES
                     (@companyName, @companyWebsite, @companySize, @industry,
                      @contactName, @contactEmail, @contactPhone, @contactTitle,
-                     @partnershipTier, @partnershipGoals, @budgetRange, @message, @howHeard)
+                     @partnershipTier, @partnershipGoals::text[], @budgetRange, @message, @howHeard)
                 RETURNING *
                 """,
                 new

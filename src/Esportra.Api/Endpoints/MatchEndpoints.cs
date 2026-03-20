@@ -375,24 +375,47 @@ public static class MatchEndpoints
         app.MapPost("/api/matches/{matchId}/finalize", async (
             Guid                         matchId,
             [FromBody] FinalizeRequest?  req,
+            HttpContext                  ctx,
             MatchFinalizationService     finalizer,
             IDbConnectionFactory         db,
             IHubContext<MatchHub>        matchHub,
             CancellationToken            ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify caller is the organizer of the tournament owning this match
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN brkt_versions v ON v.id = bm.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var winnerId = req?.WinnerId ?? Guid.Empty;
             var loserId  = req?.LoserId  ?? Guid.Empty;
 
             // Auto-detect winner/loser from existing scores if not provided
             if (winnerId == Guid.Empty || loserId == Guid.Empty)
             {
-                using var conn = db.CreateConnection();
                 var m = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     "SELECT team1_id, team2_id, team1_score, team2_score FROM brkt_matches WHERE id = @matchId",
                     new { matchId });
                 if (m is not null && m.team1_score is not null && m.team2_score is not null)
                 {
-                    winnerId = (int)m.team1_score >= (int)m.team2_score ? (Guid)m.team1_id : (Guid)m.team2_id;
+                    if ((int)m.team1_score == (int)m.team2_score)
+                        return Results.BadRequest(new { error = "Cannot auto-finalize: scores are tied. Provide explicit winnerId." });
+
+                    winnerId = (int)m.team1_score > (int)m.team2_score ? (Guid)m.team1_id : (Guid)m.team2_id;
                     loserId  = winnerId == (Guid)m.team1_id ? (Guid)m.team2_id : (Guid)m.team1_id;
                 }
             }
@@ -406,7 +429,7 @@ public static class MatchEndpoints
                     ct);
 
             return Results.Ok(new { success, matchId });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Organizer");
 
         // ── POST /api/matches/{matchId}/award-walkover ──────────────────────
         app.MapPost("/api/matches/{matchId}/award-walkover", async (
@@ -414,11 +437,29 @@ public static class MatchEndpoints
             [FromBody] WalkoverRequest   req,
             HttpContext                  ctx,
             MatchFinalizationService     finalizer,
+            IDbConnectionFactory         db,
             IHubContext<MatchHub>        matchHub,
             CancellationToken            ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify caller is the organizer of the tournament owning this match
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN brkt_versions v ON v.id = bm.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             try
             {
@@ -452,6 +493,22 @@ public static class MatchEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns the tournament containing this match
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN brkt_versions v ON v.id = bm.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var rows = await conn.ExecuteAsync(
                 """
                 UPDATE brkt_matches
@@ -486,6 +543,21 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Verify caller is the organizer of the tournament owning this match
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN brkt_versions v ON v.id = bm.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             // 1. Delete associated game results
             await conn.ExecuteAsync("DELETE FROM brkt_match_games WHERE match_id = @matchId", new { matchId });
 
@@ -511,8 +583,8 @@ public static class MatchEndpoints
                     winner_id = NULL,
                     loser_id = NULL,
                     status = 'pending',
-                    team1_score = 0,
-                    team2_score = 0,
+                    team1_score = NULL,
+                    team2_score = NULL,
                     version = target.version + 1,
                     updated_at = NOW()
                 WHERE target.id IN (
@@ -553,7 +625,7 @@ public static class MatchEndpoints
                 """
                 UPDATE brkt_matches
                 SET winner_id = NULL, loser_id = NULL, status = 'pending',
-                    team1_score = 0, team2_score = 0, party_code = NULL,
+                    team1_score = NULL, team2_score = NULL, party_code = NULL,
                     scheduled_time = NULL,
                     version = version + 1, updated_at = NOW()
                 WHERE id = @matchId
@@ -597,6 +669,22 @@ public static class MatchEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns the tournament containing this match
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN brkt_versions v ON v.id = bm.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+
             var rows = await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET status = 'in_progress', party_code = @code WHERE id = @matchId",
                 new { matchId, code = req.PartyCode.Trim().ToUpperInvariant() });
@@ -625,6 +713,21 @@ public static class MatchEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns the tournament containing this match
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN brkt_versions v ON v.id = bm.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                    ))
+                )
+                """,
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             if (req.Team1Score == req.Team2Score)
                 return Results.BadRequest(new { error = "Scores cannot be equal." });

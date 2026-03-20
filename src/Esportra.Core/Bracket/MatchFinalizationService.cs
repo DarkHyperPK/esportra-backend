@@ -158,12 +158,13 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
         if (match is null || match.team1_id is null || match.team2_id is null)
             return;
 
+        var teamIds = new[] { (Guid)match.team1_id, (Guid)match.team2_id };
         var captainIds = (await conn.QueryAsync<Guid>(
             """
             SELECT tm.user_id FROM public.team_members tm
-            WHERE tm.team_id IN (@t1, @t2) AND tm.role = 'captain' AND tm.is_active = true
+            WHERE tm.team_id = ANY(@teamIds) AND tm.role = 'captain' AND tm.is_active = true
             """,
-            new { t1 = (Guid)match.team1_id, t2 = (Guid)match.team2_id }, tx)).AsList();
+            new { teamIds }, tx)).AsList();
 
         foreach (var captainId in captainIds)
         {

@@ -14,7 +14,10 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     public async Task<BracketVersion> SaveGraphAsync(BracketGraph graph, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
+        using var tx   = conn.BeginTransaction();
 
+        try
+        {
         // 1. Determine version number
         var maxVersion = await conn.ExecuteScalarAsync<int>(
             "SELECT COALESCE(MAX(version_number), 0) FROM public.brkt_versions WHERE tournament_id = @tid",
@@ -33,7 +36,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 stage_id       = graph.Version.StageId,
                 version_number = versionNumber,
                 status         = graph.Version.Status,
-            });
+            }, tx);
 
         // 3. Insert nodes (brkt_matches)
         foreach (var node in graph.Nodes)
@@ -61,7 +64,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                     scheduled_time = string.IsNullOrEmpty(node.ScheduledTime)
                         ? (DateTime?)null
                         : DateTime.Parse(node.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind),
-                });
+                }, tx);
 
             // Store layout coordinates in brkt_layout
             if (node.X.HasValue || node.Y.HasValue)
@@ -69,7 +72,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 await conn.ExecuteAsync(@"
                     INSERT INTO public.brkt_layout (version_id, match_id, x, y)
                     VALUES (@version_id, @match_id, @x, @y)",
-                    new { version_id = node.VersionId, match_id = node.Id, x = node.X ?? 0, y = node.Y ?? 0 });
+                    new { version_id = node.VersionId, match_id = node.Id, x = node.X ?? 0, y = node.Y ?? 0 }, tx);
             }
         }
 
@@ -88,7 +91,15 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                     target_match_id = edge.TargetMatchId,
                     type           = edge.Type,
                     target_slot    = edge.TargetSlot,
-                });
+                }, tx);
+        }
+
+        tx.Commit();
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
         }
 
         return graph.Version;

@@ -84,11 +84,22 @@ public sealed class SwissNextRoundService(
         if (standingsList.Count < 2)
             return (false, "Not enough teams with completed matches to generate next round.");
 
-        int maxRounds = (int)Math.Ceiling(Math.Log2(standingsList.Count));
+        using var conn = db.CreateConnection();
+
+        // Use total participant count for max rounds (not just teams with completed matches)
+        var totalTeams = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(DISTINCT t.id)
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            LEFT JOIN teams t ON t.id = m.team1_id OR t.id = m.team2_id
+            WHERE v.stage_id = @stageId AND t.id IS NOT NULL
+            """,
+            new { stageId });
+        int teamCount = Math.Max(totalTeams, standingsList.Count);
+        int maxRounds = (int)Math.Ceiling(Math.Log2(teamCount));
         if (currentRound >= maxRounds)
             return (false, $"Round limit reached ({maxRounds} rounds).");
-
-        using var conn = db.CreateConnection();
 
         // Fetch match history for rematch avoidance
         var history = (await conn.QueryAsync(
