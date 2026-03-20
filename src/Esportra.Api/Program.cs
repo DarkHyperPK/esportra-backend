@@ -457,6 +457,7 @@ app.MapMessagingEndpoints();
 app.MapVetoEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
+app.MapSponsorEndpoints();
 
 // ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");

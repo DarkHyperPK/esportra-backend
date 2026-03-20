@@ -19,3 +19,15 @@ public sealed record SponsorTrackRequest(
     string  SponsorId,
     string  EventType,
     string? PageUrl = null);
+
+public sealed record CreateAuditLogRequest(
+    string  AdminId,
+    string  AdminName,
+    string  ActionType,
+    string  TargetType,
+    string  TargetId,
+    string  TargetName,
+    string  Severity = "low",
+    string? UserAgent = null,
+    string? IpAddress = null,
+    object? Details   = null);

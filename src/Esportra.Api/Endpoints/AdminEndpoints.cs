@@ -1112,6 +1112,44 @@ public static class AdminEndpoints
             return Results.Ok(new { data = rows, count = total });
         }).RequireAuthorization("Admin");
 
+        // ── POST /api/admin/audit-logs ─────────────────────────────────────────
+        app.MapPost("/api/admin/audit-logs", async (
+            [FromBody] CreateAuditLogRequest req,
+            HttpContext                      ctx,
+            IDbConnectionFactory             db,
+            CancellationToken                ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var details = new
+            {
+                admin_name  = req.AdminName,
+                target_name = req.TargetName,
+                severity    = req.Severity,
+                user_agent  = req.UserAgent,
+                extra       = req.Details,
+            };
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO staff_audit_log (actor_id, action, target_type, target_id, details)
+                VALUES (@actorId, @action, @targetType, @targetId, @details::jsonb)
+                """,
+                new
+                {
+                    actorId    = userCtx.UserIdGuid,
+                    action     = req.ActionType,
+                    targetType = req.TargetType,
+                    targetId   = Guid.TryParse(req.TargetId, out var tid) ? tid : (Guid?)null,
+                    details    = System.Text.Json.JsonSerializer.Serialize(details),
+                });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
         // ── GET /api/admin/system-settings ────────────────────────────────────
         app.MapGet("/api/admin/system-settings", (HttpContext ctx) =>
         {
