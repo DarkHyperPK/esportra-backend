@@ -135,11 +135,14 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.SponsorsCreate))
                 return Results.Forbid();
 
+            if (!Guid.TryParse(req.SponsorId, out var sponsorId))
+                return Results.BadRequest(new { error = "Invalid SponsorId." });
+
             using var conn = db.CreateConnection();
 
             // Get sponsor name
             var sponsorName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM public.sponsors WHERE id = @id", new { id = req.SponsorId });
+                "SELECT name FROM public.sponsors WHERE id = @id", new { id = sponsorId });
 
             if (sponsorName is null)
                 return Results.NotFound(new { error = "Sponsor not found." });
@@ -161,7 +164,7 @@ public static class AdminEndpoints
                     INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
                     VALUES (@userId, @sponsorId, 'owner', '{}')
                     ON CONFLICT (user_id, sponsor_id) DO NOTHING
-                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId = req.SponsorId });
+                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId });
 
                 // Send portal access email
                 await email.SendAsync(req.Email, EmailType.PartnerWelcome, new
@@ -176,14 +179,14 @@ public static class AdminEndpoints
 
                 // Create new user
                 var newUser = await supabase.CreateUserAsync(req.Email,
-                    new { sponsor_id = req.SponsorId }, ct);
+                    new { sponsor_id = sponsorId.ToString() }, ct);
                 sponsorUserId = newUser.Id;
 
                 await conn.ExecuteAsync("""
                     INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
                     VALUES (@userId, @sponsorId, 'owner', '{}')
                     ON CONFLICT DO NOTHING
-                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId = req.SponsorId });
+                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId });
 
                 // Generate recovery link for password setup
                 var link    = await supabase.GenerateRecoveryLinkAsync(req.Email, ct);
@@ -199,9 +202,12 @@ public static class AdminEndpoints
             // Mark partner application as approved if provided
             if (!string.IsNullOrWhiteSpace(req.ApplicationId))
             {
-                await conn.ExecuteAsync(
-                    "UPDATE public.partner_applications SET status = 'approved' WHERE id = @id",
-                    new { id = req.ApplicationId });
+                if (Guid.TryParse(req.ApplicationId, out var appId))
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE public.partner_applications SET status = 'approved' WHERE id = @id",
+                        new { id = appId });
+                }
             }
 
             return Results.Ok(new { success = true, isNewUser, userId = sponsorUserId });
@@ -1135,11 +1141,12 @@ public static class AdminEndpoints
 
             await conn.ExecuteAsync(
                 """
-                INSERT INTO staff_audit_log (actor_id, action, target_type, target_id, details)
-                VALUES (@actorId, @action, @targetType, @targetId, @details::jsonb)
+                INSERT INTO staff_audit_log (organization_id, actor_id, action, target_type, target_id, details)
+                VALUES (@orgId, @actorId, @action, @targetType, @targetId, @details::jsonb)
                 """,
                 new
                 {
+                    orgId      = (Guid?)null,
                     actorId    = userCtx.UserIdGuid,
                     action     = req.ActionType,
                     targetType = req.TargetType,
