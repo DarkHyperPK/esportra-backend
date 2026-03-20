@@ -423,12 +423,41 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
             using var conn = db.CreateConnection();
             var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+            var j = System.Text.Json.JsonDocument.Parse(json).RootElement;
+
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
-                INSERT INTO sponsors SELECT * FROM jsonb_populate_record(NULL::sponsors, @json::jsonb)
+                INSERT INTO sponsors
+                    (name, tagline, description, website_url, logo_url, banner_image_url,
+                     accent_color, tier, placement, cta_text, discount_text,
+                     is_active, priority, gallery_images)
+                VALUES
+                    (@name, @tagline, @description, @websiteUrl, @logoUrl, @bannerImageUrl,
+                     @accentColor, @tier, @placement::text[], @ctaText, @discountText,
+                     @isActive, @priority, @galleryImages::text[])
                 RETURNING *
                 """,
-                new { json });
+                new
+                {
+                    name           = j.TryGetProperty("name", out var n) ? n.GetString() : null,
+                    tagline        = j.TryGetProperty("tagline", out var tl) ? tl.GetString() : null,
+                    description    = j.TryGetProperty("description", out var d) ? d.GetString() : null,
+                    websiteUrl     = j.TryGetProperty("website_url", out var wu) ? wu.GetString() : null,
+                    logoUrl        = j.TryGetProperty("logo_url", out var lu) ? lu.GetString() : null,
+                    bannerImageUrl = j.TryGetProperty("banner_image_url", out var bi) ? bi.GetString() : null,
+                    accentColor    = j.TryGetProperty("accent_color", out var ac) ? ac.GetString() : "#8b5cf6",
+                    tier           = j.TryGetProperty("tier", out var ti) ? ti.GetString() : "standard",
+                    placement      = j.TryGetProperty("placement", out var pl)
+                        ? "{" + string.Join(",", pl.EnumerateArray().Select(e => e.GetString())) + "}"
+                        : "{banner}",
+                    ctaText        = j.TryGetProperty("cta_text", out var ct2) ? ct2.GetString() : "Learn More",
+                    discountText   = j.TryGetProperty("discount_text", out var dt) ? dt.GetString() : null,
+                    isActive       = !j.TryGetProperty("is_active", out var ia) || ia.GetBoolean(),
+                    priority       = j.TryGetProperty("priority", out var pr) ? pr.GetInt32() : 0,
+                    galleryImages  = j.TryGetProperty("gallery_images", out var gi)
+                        ? "{" + string.Join(",", gi.EnumerateArray().Select(e => e.GetString())) + "}"
+                        : "{}",
+                });
             return Results.Ok(row);
         }).RequireAuthorization("Admin");
 
