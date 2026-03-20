@@ -243,11 +243,7 @@ public static class AdminEndpoints
                     p.full_name,
                     p.avatar_url,
                     p.is_suspended,
-                    p.created_at,
-                    COALESCE(
-                        (SELECT jsonb_agg(ur.role) FROM user_roles ur WHERE ur.user_id = p.id AND ur.is_active = TRUE),
-                        '[]'::jsonb
-                    )::text AS roles
+                    p.created_at
                 FROM profiles p
                 {where}
                 ORDER BY p.created_at DESC
@@ -257,11 +253,36 @@ public static class AdminEndpoints
             var users = await conn.QueryAsync<dynamic>(sql,
                 new { search = $"%{search}%", limit, offset });
 
+            // Fetch roles for these users in a single query
+            var userIds = users.Select(u => (Guid)u.id).ToList();
+            var rolesMap = new Dictionary<Guid, List<string>>();
+            if (userIds.Count > 0)
+            {
+                var roleRows = await conn.QueryAsync<dynamic>(
+                    "SELECT user_id, role FROM user_roles WHERE user_id = ANY(@ids) AND is_active = TRUE",
+                    new { ids = userIds.ToArray() });
+                foreach (var r in roleRows)
+                {
+                    var uid = (Guid)r.user_id;
+                    if (!rolesMap.ContainsKey(uid)) rolesMap[uid] = new List<string>();
+                    rolesMap[uid].Add((string)r.role);
+                }
+            }
+
+            var enriched = users.Select(u => {
+                var uid = (Guid)u.id;
+                return new {
+                    u.id, u.username, u.email, u.full_name,
+                    u.avatar_url, u.is_suspended, u.created_at,
+                    roles = rolesMap.ContainsKey(uid) ? rolesMap[uid].ToArray() : Array.Empty<string>()
+                };
+            });
+
             var total = await conn.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM profiles p {where}",
                 new { search = $"%{search}%" });
 
-            return Results.Ok(new { users, total });
+            return Results.Ok(new { users = enriched, total });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/sponsors/track ────────────────────────────────────────
