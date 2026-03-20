@@ -216,6 +216,7 @@ public static class AdminEndpoints
             [FromQuery] int      offset = 0,
             [FromQuery] string?  search = null,
             [FromQuery] string?  status = null,
+            [FromQuery] string?  role   = null,
             CancellationToken    ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -230,6 +231,18 @@ public static class AdminEndpoints
                 conditions.Add("p.is_suspended = TRUE");
             else if (status == "active")
                 conditions.Add("(p.is_suspended IS NULL OR p.is_suspended = FALSE)");
+
+            // Role filtering via JOIN
+            var roleJoin = "";
+            if (!string.IsNullOrWhiteSpace(role))
+            {
+                if (role == "admin")
+                    conditions.Add("EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = p.id)");
+                else if (role == "casual")
+                    conditions.Add("NOT EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.is_active = TRUE) AND NOT EXISTS (SELECT 1 FROM admin_user_roles aur2 WHERE aur2.user_id = p.id)");
+                else
+                    conditions.Add("EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.role = @role AND ur2.is_active = TRUE)");
+            }
 
             var where = conditions.Count > 0
                 ? "WHERE " + string.Join(" AND ", conditions)
@@ -251,7 +264,7 @@ public static class AdminEndpoints
                 """;
 
             var users = await conn.QueryAsync<dynamic>(sql,
-                new { search = $"%{search}%", limit, offset });
+                new { search = $"%{search}%", limit, offset, role });
 
             // Fetch roles for these users in a single query
             var userIds = users.Select(u => (Guid)u.id).ToList();
@@ -280,7 +293,7 @@ public static class AdminEndpoints
 
             var total = await conn.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM profiles p {where}",
-                new { search = $"%{search}%" });
+                new { search = $"%{search}%", role });
 
             // Role breakdown counts (unfiltered — always reflects full platform)
             var roleCountRows = await conn.QueryAsync<dynamic>(
