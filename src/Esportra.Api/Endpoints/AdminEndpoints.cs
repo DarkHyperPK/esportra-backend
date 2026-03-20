@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
@@ -421,7 +422,7 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             using var conn = db.CreateConnection();
-            var json = System.Text.Json.JsonSerializer.Serialize(payload);
+            var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO sponsors SELECT * FROM jsonb_populate_record(NULL::sponsors, @json::jsonb)
@@ -441,7 +442,7 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             using var conn = db.CreateConnection();
-            var json = System.Text.Json.JsonSerializer.Serialize(payload);
+            var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
             await conn.ExecuteAsync(
                 """
                 UPDATE sponsors
