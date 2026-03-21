@@ -26,6 +26,13 @@ using StackExchange.Redis;
 Console.WriteLine("[STARTUP] Creating builder...");
 var builder = WebApplication.CreateBuilder(args);
 
+// Configure JSON serialization: accept snake_case from frontend, output camelCase
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+    options.SerializerOptions.PropertyNameCaseInsensitive = true;
+});
+
 // Enable Dapper snake_case → PascalCase mapping for typed record DTOs
 Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
