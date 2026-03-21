@@ -219,11 +219,13 @@ public static class TournamentEndpoints
                        o.name       AS organization_name, o.slug AS organization_slug,
                        o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
                        p.username   AS organizer_username,  p.avatar_url AS organizer_avatar,
-                       v.name       AS venue_name
+                       v.name       AS venue_name,
+                       wt.name      AS winner_team_name,    wt.logo_url AS winner_team_logo
                 FROM tournaments t
                 LEFT JOIN organizations o ON o.id = t.organization_id
                 LEFT JOIN profiles      p ON p.id = t.organizer_id
                 LEFT JOIN venues        v ON v.id = t.venue_id
+                LEFT JOIN teams        wt ON wt.id = t.winner_id
                 WHERE t.deleted_at IS NULL
                   AND (t.slug = @slugOrId
                     OR t.id::text = @slugOrId
@@ -481,6 +483,31 @@ public static class TournamentEndpoints
                     deletedAt            = req.DeletedAt,
                     clearDeletedAt       = req.ClearDeletedAt,
                 });
+
+            // Auto-set winner_id when tournament is marked completed
+            if (req.Status == "completed" && updated is not null)
+            {
+                var winnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT m.winner_id
+                    FROM brkt_matches m
+                    JOIN brkt_versions v ON v.id = m.version_id
+                    JOIN bracket_stages s ON s.id = v.stage_id
+                    WHERE s.tournament_id = @id
+                      AND m.status = 'completed'
+                      AND m.winner_id IS NOT NULL
+                    ORDER BY s.stage_order DESC, m.round DESC, m.position DESC
+                    LIMIT 1
+                    """,
+                    new { id });
+
+                if (winnerId.HasValue)
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE tournaments SET winner_id = @winnerId WHERE id = @id",
+                        new { id, winnerId = winnerId.Value });
+                }
+            }
 
             try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
             return updated is null ? Results.NotFound() : Results.Ok(updated);

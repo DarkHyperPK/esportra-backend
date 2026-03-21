@@ -60,7 +60,12 @@ public static class LeaderboardEndpoints
                 )
                 SELECT
                     id, name, logo_url, game, country_code,
-                    wins, losses, tournament_wins,
+                    wins, losses,
+                    (wins + losses) AS matches_played,
+                    CASE WHEN (wins + losses) > 0
+                         THEN ROUND(wins * 100.0 / (wins + losses), 1)
+                         ELSE 0 END AS win_rate,
+                    tournament_wins AS tournaments_won,
                     (wins * 3 + tournament_wins * 10 - losses) AS rp
                 FROM team_stats
                 ORDER BY rp DESC, wins DESC
@@ -134,8 +139,12 @@ public static class LeaderboardEndpoints
                     pts.game,
                     pts.wins,
                     pts.losses,
-                    pts.tournament_wins,
-                    COALESCE(mc.mvp_awards, 0) AS mvp_awards,
+                    (pts.wins + pts.losses) AS matches_played,
+                    CASE WHEN (pts.wins + pts.losses) > 0
+                         THEN ROUND(pts.wins * 100.0 / (pts.wins + pts.losses), 1)
+                         ELSE 0 END AS win_rate,
+                    pts.tournament_wins AS tournaments_won,
+                    COALESCE(mc.mvp_awards, 0) AS mvps,
                     (pts.wins * 3 + pts.tournament_wins * 10 - pts.losses + COALESCE(mc.mvp_awards, 0) * 2) AS rp
                 FROM player_team_stats pts
                 LEFT JOIN mvp_counts mc ON mc.player_id = pts.player_id
