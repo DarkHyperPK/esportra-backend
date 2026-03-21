@@ -394,7 +394,7 @@ public static class MatchEndpoints
                     JOIN brkt_versions v ON v.id = bm.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -454,7 +454,7 @@ public static class MatchEndpoints
                     JOIN brkt_versions v ON v.id = bm.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -502,7 +502,7 @@ public static class MatchEndpoints
                     JOIN brkt_versions v ON v.id = bm.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -551,7 +551,7 @@ public static class MatchEndpoints
                     JOIN brkt_versions v ON v.id = bm.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -678,7 +678,7 @@ public static class MatchEndpoints
                     JOIN brkt_versions v ON v.id = bm.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -723,7 +723,7 @@ public static class MatchEndpoints
                     JOIN brkt_versions v ON v.id = bm.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,

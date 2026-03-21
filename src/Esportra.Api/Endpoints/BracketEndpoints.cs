@@ -149,7 +149,7 @@ public static class BracketEndpoints
                     SELECT 1 FROM brkt_versions v
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -189,7 +189,7 @@ public static class BracketEndpoints
                     SELECT 1 FROM brkt_versions v
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -223,7 +223,7 @@ public static class BracketEndpoints
                     SELECT 1 FROM brkt_versions v
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -262,7 +262,7 @@ public static class BracketEndpoints
                     SELECT 1 FROM brkt_versions v
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -364,7 +364,7 @@ public static class BracketEndpoints
                     SELECT 1 FROM brkt_versions v
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
@@ -404,7 +404,7 @@ public static class BracketEndpoints
                     SELECT 1 FROM tournament_stages s
                     JOIN tournaments t ON t.id = s.tournament_id
                     WHERE s.id = @stageId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = @userId AND role IN ('owner','admin')
+                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
                     ))
                 )
                 """,
