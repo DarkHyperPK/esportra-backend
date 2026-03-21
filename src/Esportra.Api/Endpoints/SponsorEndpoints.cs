@@ -408,52 +408,6 @@ public static class SponsorEndpoints
             return Results.Ok(rows.Select(MapSponsor).ToList());
         }).RequireAuthorization(Permissions.SponsorsView);
 
-        // ── GET /api/sponsors/{id}/stats ─────────────────────────────────────
-        app.MapGet("/api/sponsors/{id}/stats", async (
-            Guid                 id,
-            IDbConnectionFactory db,
-            CancellationToken    ct) =>
-        {
-            using var conn = db.CreateConnection();
-
-            // Try aggregated table first
-            var dailyData = await conn.QueryAsync<dynamic>(
-                "SELECT impressions, clicks FROM daily_sponsor_stats WHERE sponsor_id = @id",
-                new { id });
-
-            var list = dailyData.ToList();
-            if (list.Count > 0)
-            {
-                long totalImpressions = list.Sum(r => (long)r.impressions);
-                long totalClicks = list.Sum(r => (long)r.clicks);
-                return Results.Ok(new
-                {
-                    impressions = totalImpressions,
-                    clicks = totalClicks,
-                    ctr = totalImpressions > 0
-                        ? ((double)totalClicks / totalImpressions * 100).ToString("F1")
-                        : "0.0",
-                });
-            }
-
-            // Fallback to raw counts
-            var impressions = await conn.ExecuteScalarAsync<long>(
-                "SELECT COUNT(*) FROM sponsor_impressions WHERE sponsor_id = @id AND event_type = 'impression'",
-                new { id });
-            var clicks = await conn.ExecuteScalarAsync<long>(
-                "SELECT COUNT(*) FROM sponsor_impressions WHERE sponsor_id = @id AND event_type = 'click'",
-                new { id });
-
-            return Results.Ok(new
-            {
-                impressions,
-                clicks,
-                ctr = impressions > 0
-                    ? ((double)clicks / impressions * 100).ToString("F1")
-                    : "0.0",
-            });
-        }).RequireAuthorization(Permissions.SponsorsView);
-
         // ── POST /api/sponsors/impressions ───────────────────────────────────
         // Public — fire-and-forget tracking (trigger auto-aggregates to daily_sponsor_stats)
         app.MapPost("/api/sponsors/impressions", async (

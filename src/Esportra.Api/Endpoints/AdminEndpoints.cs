@@ -1146,7 +1146,7 @@ public static class AdminEndpoints
                 """,
                 new
                 {
-                    orgId      = (Guid?)null,
+                    orgId      = Guid.Empty,
                     actorId    = userCtx.UserIdGuid,
                     action     = req.ActionType,
                     targetType = req.TargetType,
