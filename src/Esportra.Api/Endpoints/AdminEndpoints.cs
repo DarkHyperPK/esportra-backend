@@ -110,14 +110,26 @@ public static class AdminEndpoints
             var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT
-                    COUNT(*) FILTER (WHERE event_type = 'view')         AS views,
-                    COUNT(*) FILTER (WHERE event_type = 'click')        AS clicks,
                     COUNT(*) FILTER (WHERE event_type = 'impression')   AS impressions,
+                    COUNT(*) FILTER (WHERE event_type = 'click')        AS clicks,
                     COUNT(DISTINCT visitor_id)                          AS unique_visitors
                 FROM sponsor_impressions
                 WHERE sponsor_id = @id
                 """, new { id });
-            return Results.Ok(stats ?? new { views = 0, clicks = 0, impressions = 0, unique_visitors = 0 });
+
+            long impressions = stats?.impressions ?? 0;
+            long clicks = stats?.clicks ?? 0;
+            var ctr = impressions > 0
+                ? $"{Math.Round((double)clicks / impressions * 100, 2)}%"
+                : "0%";
+
+            return Results.Ok(new
+            {
+                impressions,
+                clicks,
+                unique_visitors = (long)(stats?.unique_visitors ?? 0),
+                ctr,
+            });
         });
 
         // Replaces: invite-sponsor Edge Function

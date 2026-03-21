@@ -364,7 +364,7 @@ public static class SponsorEndpoints
                 """
                 SELECT id, name, tagline, description, website_url, logo_url, banner_image_url,
                        accent_color, tier, placement, cta_text, discount_text, is_active,
-                       priority, gallery_images, start_date, end_date, created_at
+                       priority, gallery_images, detail_deck_url, start_date, end_date, created_at
                 FROM sponsors
                 WHERE is_active = TRUE
                 ORDER BY priority DESC
@@ -402,37 +402,13 @@ public static class SponsorEndpoints
                 """
                 SELECT id, name, tagline, description, website_url, logo_url, banner_image_url,
                        accent_color, tier, placement, cta_text, discount_text, is_active,
-                       priority, gallery_images, start_date, end_date, created_at
+                       priority, gallery_images, detail_deck_url, start_date, end_date, created_at
                 FROM sponsors
                 ORDER BY priority DESC
                 """);
 
             return Results.Ok(rows.Select(MapSponsor).ToList());
         }).RequireAuthorization(Permissions.SponsorsView);
-
-        // ── POST /api/sponsors/impressions ───────────────────────────────────
-        // Public — fire-and-forget tracking (trigger auto-aggregates to daily_sponsor_stats)
-        app.MapPost("/api/sponsors/impressions", async (
-            [FromBody] TrackSponsorImpressionRequest req,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
-        {
-            if (!Guid.TryParse(req.SponsorId, out var sponsorId))
-                return Results.BadRequest(new { error = "Invalid sponsor ID." });
-
-            if (req.EventType is not ("impression" or "click"))
-                return Results.BadRequest(new { error = "Event type must be 'impression' or 'click'." });
-
-            using var conn = db.CreateConnection();
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO sponsor_impressions (sponsor_id, event_type)
-                VALUES (@sponsorId, @eventType)
-                """,
-                new { sponsorId, eventType = req.EventType });
-
-            return Results.Ok(new { success = true });
-        });
 
         // ── GET /api/system/branding ─────────────────────────────────────────
         // Public — returns platform logo + icon URLs
@@ -478,6 +454,9 @@ public static class SponsorEndpoints
         is_active = (bool?)r.is_active ?? true,
         priority = (int?)r.priority ?? 0,
         gallery_images = r.gallery_images as string[] ?? Array.Empty<string>(),
+        detail_deck_url = (string?)r.detail_deck_url,
+        start_date = r.start_date?.ToString("o"),
+        end_date = r.end_date?.ToString("o"),
         created_at = r.created_at?.ToString("o") ?? "",
     };
 }
