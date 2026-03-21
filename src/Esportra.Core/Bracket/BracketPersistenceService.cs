@@ -181,15 +181,8 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     public async Task ClearAsync(Guid versionId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
-
-        await conn.ExecuteAsync(@"
-            DELETE FROM public.brkt_match_events
-             WHERE match_id IN (SELECT id FROM public.brkt_matches WHERE version_id = @v)",
-            new { v = versionId });
-
-        await conn.ExecuteAsync("DELETE FROM public.brkt_layout WHERE version_id = @v", new { v = versionId });
-        await conn.ExecuteAsync("DELETE FROM public.brkt_advancements WHERE version_id = @v", new { v = versionId });
-        await conn.ExecuteAsync("DELETE FROM public.brkt_matches WHERE version_id = @v", new { v = versionId });
+        // All child tables (brkt_matches, brkt_layout, brkt_advancements, brkt_match_events,
+        // brkt_match_games, match_checkins, etc.) cascade from brkt_versions.
         await conn.ExecuteAsync("DELETE FROM public.brkt_versions WHERE id = @v", new { v = versionId });
     }
 
