@@ -486,6 +486,32 @@ public static class TournamentEndpoints
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Organizer");
 
+        // ── DELETE /api/tournaments/{id} — permanent delete (organizer only, must be soft-deleted first)
+        app.MapDelete("/api/tournaments/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            IDistributedCache    distCache,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT organizer_id, deleted_at FROM tournaments WHERE id = @id", new { id });
+            if (row is null) return Results.NotFound();
+            if ((Guid)row.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                return Results.Forbid();
+            if (row.deleted_at is null)
+                return Results.BadRequest(new { error = "Tournament must be soft-deleted (trashed) before permanent deletion." });
+
+            await conn.ExecuteAsync("DELETE FROM tournaments WHERE id = @id", new { id });
+            try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
+            return Results.Ok(new { deleted = true });
+        }).RequireAuthorization("Organizer");
+
         // ── GET /api/tournaments/me/history ─────────────────────────────────
         // Returns tournaments the current user has participated in.
         app.MapGet("/api/tournaments/me/history", async (
