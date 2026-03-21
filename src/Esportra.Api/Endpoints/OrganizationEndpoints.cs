@@ -546,13 +546,26 @@ public static class OrganizationEndpoints
         app.MapGet("/api/organizations/{orgId}/tournaments", async (
             Guid                 orgId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken    ct,
+            bool?                deleted = null,
+            bool?                exclude_completed = null) =>
         {
             using var conn = db.CreateConnection();
+
+            string filter;
+            if (deleted == true)
+                filter = "deleted_at IS NOT NULL";
+            else
+            {
+                filter = "deleted_at IS NULL";
+                if (exclude_completed == true)
+                    filter += " AND status != 'completed'";
+            }
+
             var rows = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT * FROM v_tournament_details
-                WHERE organization_id = @orgId AND deleted_at IS NULL
+                WHERE organization_id = @orgId AND {filter}
                 ORDER BY start_date DESC
                 """,
                 new { orgId });
