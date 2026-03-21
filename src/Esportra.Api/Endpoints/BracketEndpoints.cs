@@ -230,8 +230,15 @@ public static class BracketEndpoints
                 new { versionId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
-            await persistence.ClearAsync(versionId, ct);
-            return Results.Ok(new { message = "Bracket deleted." });
+            try
+            {
+                await persistence.ClearAsync(versionId, ct);
+                return Results.Ok(new { message = "Bracket deleted." });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { error = ex.Message, detail = ex.InnerException?.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Organizer");
 
         // ── PUT /api/brackets/{versionId} ─────────────────────────────────────
