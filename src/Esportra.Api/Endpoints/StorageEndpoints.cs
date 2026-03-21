@@ -147,5 +147,45 @@ public static class StorageEndpoints
 
         }).RequireAuthorization("Authenticated")
           .DisableAntiforgery();
+
+        // ── DELETE /api/storage/delete ────────────────────────────────────────
+        app.MapDelete("/api/storage/delete", async (
+            HttpContext         ctx,
+            IHttpClientFactory  httpFactory,
+            IConfiguration      config,
+            ILogger<Program>   logger) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var bucket = ctx.Request.Query["bucket"].FirstOrDefault();
+            var path   = ctx.Request.Query["path"].FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(path))
+                return Results.BadRequest(new { error = "Query parameters 'bucket' and 'path' are required." });
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
+                ?? throw new InvalidOperationException("Supabase:Url not configured");
+            var serviceKey = config["Supabase:ServiceKey"]
+                ?? throw new InvalidOperationException("Supabase:ServiceKey not configured");
+
+            var client = httpFactory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", serviceKey);
+            client.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+            var deleteUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{path}";
+            var response  = await client.DeleteAsync(deleteUrl);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                logger.LogWarning("Storage delete failed: {Url} {Status} {Body}",
+                    deleteUrl, response.StatusCode, errorBody);
+                // Non-fatal — file may already be gone
+            }
+
+            return Results.Ok(new { deleted = true });
+
+        }).RequireAuthorization("Authenticated");
     }
 }
