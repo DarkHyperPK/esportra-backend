@@ -101,25 +101,40 @@ public sealed class SupabaseAdminClient(
 
     public async Task<SupabaseUser?> GetUserByEmailAsync(string email, CancellationToken ct = default)
     {
-        // Query users by email via admin API filter
-        var req = BuildRequest(HttpMethod.Get, $"/users?email={Uri.EscapeDataString(email)}&page=1&per_page=1");
-        var res = await http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode) return null;
+        // GoTrue admin /users endpoint does NOT support email query filtering.
+        // We paginate and search manually, or use the per-page listing.
+        // For reliability, iterate pages until we find a match or exhaust the list.
+        int page = 1;
+        const int perPage = 50;
 
-        var body = await res.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
+        while (true)
+        {
+            var req = BuildRequest(HttpMethod.Get, $"/users?page={page}&per_page={perPage}");
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode) return null;
 
-        // Response is { users: [...] } or array
-        JsonElement? users = root.ValueKind == JsonValueKind.Array ? root
-            : root.TryGetProperty("users", out var u) ? u : null;
+            var body = await res.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
 
-        if (users is null || users.Value.GetArrayLength() == 0) return null;
+            JsonElement? users = root.ValueKind == JsonValueKind.Array ? root
+                : root.TryGetProperty("users", out var u) ? u : null;
 
-        var first = users.Value[0];
-        var id    = first.TryGetProperty("id",    out var idEl)    ? idEl.GetString()    : null;
-        var mail  = first.TryGetProperty("email", out var emailEl) ? emailEl.GetString() : null;
-        return id is not null ? new SupabaseUser(id, mail ?? "") : null;
+            if (users is null || users.Value.GetArrayLength() == 0) return null;
+
+            foreach (var user in users.Value.EnumerateArray())
+            {
+                var userEmail = user.TryGetProperty("email", out var emailEl) ? emailEl.GetString() : null;
+                if (string.Equals(userEmail, email, StringComparison.OrdinalIgnoreCase))
+                {
+                    var id = user.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                    return id is not null ? new SupabaseUser(id, userEmail ?? "") : null;
+                }
+            }
+
+            if (users.Value.GetArrayLength() < perPage) return null; // No more pages
+            page++;
+        }
     }
 
     public async Task<SupabaseUser> CreateUserAsync(string email, object? userMetadata = null, CancellationToken ct = default)
