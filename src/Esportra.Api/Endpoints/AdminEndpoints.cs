@@ -1368,6 +1368,127 @@ public static class AdminEndpoints
                 new { id, status = req.Status, notes = req.Notes });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
+
+        // ── POST /api/sponsors/applications/{id}/approve ──────────────────────
+        // One-click approval: creates sponsor from application + links user account
+        app.MapPost("/api/sponsors/applications/{id}/approve", async (
+            Guid                    id,
+            HttpContext             ctx,
+            IDbConnectionFactory    db,
+            ISupabaseAdminClient    supabase,
+            IEmailService           email,
+            IConfiguration          config,
+            CancellationToken       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // 1. Fetch application
+            var app2 = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM partner_applications WHERE id = @id", new { id });
+            if (app2 is null)
+                return Results.NotFound(new { error = "Application not found." });
+
+            var dict = (IDictionary<string, object?>)app2;
+            var status = dict["status"]?.ToString();
+            if (status == "approved")
+                return Results.BadRequest(new { error = "Application already approved." });
+
+            var companyName     = dict["company_name"]?.ToString() ?? "Unknown";
+            var companyWebsite  = dict["company_website"]?.ToString() ?? "";
+            var contactEmail    = dict["contact_email"]?.ToString();
+            var partnershipTier = dict["partnership_tier"]?.ToString() ?? "diamond";
+            var message         = dict["message"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(contactEmail))
+                return Results.BadRequest(new { error = "Application has no contact email." });
+
+            // 2. Create sponsor record
+            var sponsorId = await conn.QuerySingleAsync<Guid>(
+                """
+                INSERT INTO sponsors (name, website_url, tier, description, is_active, placement, priority, accent_color)
+                VALUES (@name, @website, @tier, @description, true, ARRAY['banner'], 0, '#f43f5e')
+                RETURNING id
+                """,
+                new { name = companyName, website = companyWebsite, tier = partnershipTier, description = message });
+
+            // 3. Link user account
+            var partnerUrl = config["PartnerUrl"] ?? "https://partner.esportra.com";
+            var existingUser = await supabase.GetUserByEmailAsync(contactEmail, ct);
+            bool isNewUser;
+            string userId;
+
+            if (existingUser is not null)
+            {
+                isNewUser = false;
+                userId = existingUser.Id;
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
+                    VALUES (@userId, @sponsorId, 'owner', '{"completed":false,"current_step":0,"steps":{}}')
+                    ON CONFLICT (user_id, sponsor_id) DO NOTHING
+                    """,
+                    new { userId = Guid.Parse(userId), sponsorId });
+
+                try
+                {
+                    await email.SendAsync(contactEmail, EmailType.PartnerWelcome, new
+                    {
+                        sponsorName = companyName,
+                        portalUrl   = partnerUrl,
+                    }, ct);
+                }
+                catch { /* Email is best-effort */ }
+            }
+            else
+            {
+                isNewUser = true;
+
+                var newUser = await supabase.CreateUserAsync(contactEmail,
+                    new { sponsor_id = sponsorId.ToString() }, ct);
+                userId = newUser.Id;
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
+                    VALUES (@userId, @sponsorId, 'owner', '{"completed":false,"current_step":0,"steps":{}}')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { userId = Guid.Parse(userId), sponsorId });
+
+                string? setupUrl = null;
+                try
+                {
+                    var link = await supabase.GenerateRecoveryLinkAsync(contactEmail, ct);
+                    setupUrl = $"{partnerUrl}/set-password?token_hash={link.TokenHash}&type=recovery";
+
+                    await email.SendAsync(contactEmail, EmailType.PartnerInvite, new
+                    {
+                        sponsorName = companyName,
+                        setupUrl,
+                    }, ct);
+                }
+                catch { /* Email is best-effort */ }
+            }
+
+            // 4. Mark application as approved
+            await conn.ExecuteAsync(
+                "UPDATE partner_applications SET status = 'approved', updated_at = NOW() WHERE id = @id",
+                new { id });
+
+            return Results.Ok(new
+            {
+                success    = true,
+                sponsorId,
+                isNewUser,
+                userId,
+                companyName,
+                contactEmail,
+            });
+        }).RequireAuthorization("Admin");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
