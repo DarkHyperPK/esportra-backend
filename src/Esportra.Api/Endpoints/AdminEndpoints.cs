@@ -367,17 +367,27 @@ public static class AdminEndpoints
                 visitorId = $"anon_{Convert.ToHexString(hash)[..16].ToLowerInvariant()}";
             }
 
-            // Build metadata from request headers
-            var ip2 = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+            // Build metadata from request headers + profile country
+            var clientIp = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
                        ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             var userAgent = ctx.Request.Headers.UserAgent.FirstOrDefault() ?? "";
             var referer = ctx.Request.Headers.Referer.FirstOrDefault() ?? "";
+
+            // Look up country from profile if authenticated
+            string country = "unknown";
+            if (userCtx is not null)
+            {
+                country = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT country_code FROM profiles WHERE id = @userId",
+                    new { userId = userCtx.UserIdGuid }) ?? "unknown";
+            }
+
             var metadata = System.Text.Json.JsonSerializer.Serialize(new
             {
-                ip = ip2,
+                ip = clientIp,
                 user_agent = userAgent,
                 referer,
-                country = "unknown",
+                country,
             });
 
             await conn.ExecuteAsync(
