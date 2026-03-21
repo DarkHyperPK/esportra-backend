@@ -145,6 +145,8 @@ public static class SponsorEndpoints
             if (req.LogoUrl is not null)         { sets.Add("logo_url = @logoUrl");               p.Add("logoUrl", req.LogoUrl); }
             if (req.BannerImageUrl is not null)  { sets.Add("banner_image_url = @bannerImageUrl"); p.Add("bannerImageUrl", req.BannerImageUrl); }
             if (req.GalleryImages is not null)   { sets.Add("gallery_images = @galleryImages");   p.Add("galleryImages", req.GalleryImages); }
+            if (req.DiscountText is not null)    { sets.Add("discount_text = @discountText");     p.Add("discountText", req.DiscountText); }
+            if (req.DetailDeckUrl is not null)   { sets.Add("detail_deck_url = @detailDeckUrl");  p.Add("detailDeckUrl", req.DetailDeckUrl == "" ? (string?)null : req.DetailDeckUrl); }
 
             if (sets.Count == 0)
                 return Results.BadRequest(new { error = "No fields to update." });

@@ -6,9 +6,11 @@ public sealed record SponsorUpdateRequest(
     string?   Description     = null,
     string?   WebsiteUrl      = null,
     string?   CtaText         = null,
+    string?   DiscountText    = null,
     string?   LogoUrl         = null,
     string?   BannerImageUrl  = null,
-    string[]? GalleryImages   = null);
+    string[]? GalleryImages   = null,
+    string?   DetailDeckUrl   = null);
 
 public sealed record OnboardingStepRequest(
     string                            StepName,
