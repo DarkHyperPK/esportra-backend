@@ -685,9 +685,10 @@ public static class MatchEndpoints
                 new { matchId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
+            var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
             var rows = await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET status = 'in_progress', party_code = @code WHERE id = @matchId",
-                new { matchId, code = req.PartyCode.Trim().ToUpperInvariant() });
+                new { matchId, code });
 
             if (rows == 0) return Results.NotFound();
 
@@ -1024,7 +1025,7 @@ public sealed record FinalizeRequest(
     Guid? WinnerId = null,
     Guid? LoserId  = null);
 
-public sealed record GoLiveRequest(string PartyCode);
+public sealed record GoLiveRequest(string? PartyCode);
 
 public sealed record SaveScoreRequest(
     int     Team1Score,
