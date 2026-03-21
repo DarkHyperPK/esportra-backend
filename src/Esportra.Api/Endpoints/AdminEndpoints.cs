@@ -352,19 +352,46 @@ public static class AdminEndpoints
             if (!exists)
                 return Results.Ok(new { success = true, tracked = false });
 
-            var visitorId = (ctx.Items["UserContext"] as UserContext)?.UserId;
+            // Visitor ID: authenticated user ID, or hash of IP+UA for anonymous
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            string? visitorId = userCtx?.UserId;
+            if (string.IsNullOrEmpty(visitorId))
+            {
+                var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var forwarded = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault();
+                if (!string.IsNullOrEmpty(forwarded))
+                    ip = forwarded.Split(',')[0].Trim();
+                var ua = ctx.Request.Headers.UserAgent.FirstOrDefault() ?? "";
+                var raw = $"{ip}:{ua}";
+                var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw));
+                visitorId = $"anon_{Convert.ToHexString(hash)[..16].ToLowerInvariant()}";
+            }
+
+            // Build metadata from request headers
+            var ip2 = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+                       ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var userAgent = ctx.Request.Headers.UserAgent.FirstOrDefault() ?? "";
+            var referer = ctx.Request.Headers.Referer.FirstOrDefault() ?? "";
+            var metadata = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                ip = ip2,
+                user_agent = userAgent,
+                referer,
+                country = "unknown",
+            });
 
             await conn.ExecuteAsync(
                 """
-                INSERT INTO sponsor_impressions (sponsor_id, event_type, page_url, visitor_id)
-                VALUES (@sponsorId, @eventType, @pageUrl, @visitorId)
+                INSERT INTO sponsor_impressions (sponsor_id, event_type, page_url, visitor_id, metadata)
+                VALUES (@sponsorId, @eventType, @pageUrl, @visitorId, @metadata::jsonb)
                 """,
                 new
                 {
                     sponsorId,
                     eventType = req.EventType,
                     pageUrl   = req.PageUrl,
-                    visitorId
+                    visitorId,
+                    metadata,
                 });
 
             return Results.Ok(new { success = true, tracked = true });
