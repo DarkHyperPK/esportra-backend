@@ -332,6 +332,14 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Verify sponsor exists before inserting (avoids FK violation)
+            var exists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM sponsors WHERE id = @sponsorId)",
+                new { sponsorId });
+
+            if (!exists)
+                return Results.Ok(new { success = true, tracked = false });
+
             var visitorId = (ctx.Items["UserContext"] as UserContext)?.UserId;
 
             await conn.ExecuteAsync(
@@ -347,7 +355,7 @@ public static class AdminEndpoints
                     visitorId
                 });
 
-            return Results.Ok(new { success = true });
+            return Results.Ok(new { success = true, tracked = true });
         });
 
         // ── GET /api/admin/stats ──────────────────────────────────────────────
