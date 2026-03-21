@@ -1,16 +1,18 @@
+using System.Text.Json.Serialization;
+
 namespace Esportra.Contracts.Requests;
 
 public sealed record SponsorUpdateRequest(
-    string?   Name            = null,
-    string?   Tagline         = null,
-    string?   Description     = null,
-    string?   WebsiteUrl      = null,
-    string?   CtaText         = null,
-    string?   DiscountText    = null,
-    string?   LogoUrl         = null,
-    string?   BannerImageUrl  = null,
-    string[]? GalleryImages   = null,
-    string?   DetailDeckUrl   = null);
+    [property: JsonPropertyName("name")]             string?   Name            = null,
+    [property: JsonPropertyName("tagline")]           string?   Tagline         = null,
+    [property: JsonPropertyName("description")]       string?   Description     = null,
+    [property: JsonPropertyName("website_url")]       string?   WebsiteUrl      = null,
+    [property: JsonPropertyName("cta_text")]           string?   CtaText         = null,
+    [property: JsonPropertyName("discount_text")]      string?   DiscountText    = null,
+    [property: JsonPropertyName("logo_url")]           string?   LogoUrl         = null,
+    [property: JsonPropertyName("banner_image_url")]   string?   BannerImageUrl  = null,
+    [property: JsonPropertyName("gallery_images")]     string[]? GalleryImages   = null,
+    [property: JsonPropertyName("detail_deck_url")]    string?   DetailDeckUrl   = null);
 
 public sealed record OnboardingStepRequest(
     string                            StepName,
@@ -22,5 +24,5 @@ public sealed record OnboardingCompleteRequest(
     string Ip);
 
 public sealed record TrackSponsorImpressionRequest(
-    string SponsorId,
-    string EventType);
+    [property: JsonPropertyName("sponsor_id")]  string SponsorId,
+    [property: JsonPropertyName("event_type")]  string EventType);

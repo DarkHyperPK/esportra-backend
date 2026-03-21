@@ -26,10 +26,9 @@ using StackExchange.Redis;
 Console.WriteLine("[STARTUP] Creating builder...");
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure JSON serialization: accept snake_case from frontend, output camelCase
+// Configure JSON serialization: camelCase output (default), case-insensitive input
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
-    options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
     options.SerializerOptions.PropertyNameCaseInsensitive = true;
 });
 
