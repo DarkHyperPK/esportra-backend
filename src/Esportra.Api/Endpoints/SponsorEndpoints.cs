@@ -81,7 +81,9 @@ public static class SponsorEndpoints
 
             var history = dailyStats.Select(r => new
             {
-                date = ((DateTime)r.stat_date).ToString("yyyy-MM-dd"),
+                date = r.stat_date is DateOnly d
+                    ? d.ToString("yyyy-MM-dd")
+                    : ((DateTime)r.stat_date).ToString("yyyy-MM-dd"),
                 impressions = (long)r.impressions,
                 uniqueImpressions = (long)r.unique_impressions,
                 clicks = (long)r.clicks,
