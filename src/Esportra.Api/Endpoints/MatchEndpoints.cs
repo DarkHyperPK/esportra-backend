@@ -1017,7 +1017,7 @@ public static class MatchEndpoints
 
 public sealed record WalkoverRequest(
     Guid   WinnerId,
-    Guid   LoserId,
+    Guid?  LoserId,
     int    Team1Score,
     int    Team2Score);
 

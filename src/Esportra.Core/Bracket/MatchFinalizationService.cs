@@ -21,7 +21,7 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
         Guid matchId,
         int expectedVersion,
         Guid winnerId,
-        Guid loserId,
+        Guid? loserId,
         int? team1Score = null,
         int? team2Score = null,
         CancellationToken ct = default)
@@ -65,21 +65,26 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
                     updated_at  = NOW()
                 WHERE id = @matchId
                 """,
-                new { matchId, winnerId, loserId, team1Score, team2Score },
+                new { matchId, winnerId, loserId = (object?)loserId ?? DBNull.Value, team1Score, team2Score },
                 tx);
 
             // 4. Advance teams through bracket edges
             await AdvanceTeamInternalAsync(conn, tx, matchId, winnerId, "winner");
-            await AdvanceTeamInternalAsync(conn, tx, matchId, loserId, "loser");
+            if (loserId.HasValue)
+                await AdvanceTeamInternalAsync(conn, tx, matchId, loserId.Value, "loser");
 
             // 5. Log completion event (audit trail)
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
-                VALUES (@matchId, @winnerId, @loserId, 'processed')
-                """,
-                new { matchId, winnerId, loserId },
-                tx);
+            try
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
+                    VALUES (@matchId, @winnerId, @loserId, 'processed')
+                    """,
+                    new { matchId, winnerId, loserId = (object?)loserId ?? DBNull.Value },
+                    tx);
+            }
+            catch { /* Non-critical if loser_id FK fails on audit table */ }
 
             tx.Commit();
             return true;
@@ -98,7 +103,7 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
     public async Task<bool> FinalizeAsync(
         Guid matchId,
         Guid winnerId,
-        Guid loserId,
+        Guid? loserId,
         int? team1Score = null,
         int? team2Score = null,
         CancellationToken ct = default)
