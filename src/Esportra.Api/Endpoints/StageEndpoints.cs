@@ -584,48 +584,46 @@ public static class StageEndpoints
         }
 
         // All matches complete — calculate advancement via standings
-        int swissGroups = 1;
+        // Determine group count from config (swiss_groups or group_count) or from actual match data
+        int configGroupCount = 1;
         if (configJson is not null)
         {
             try
             {
                 var config = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(configJson);
                 if (config?.TryGetValue("swiss_groups", out var sgVal) == true)
-                    int.TryParse(sgVal?.ToString(), out swissGroups);
+                    int.TryParse(sgVal?.ToString(), out configGroupCount);
+                // Round robin format uses group_count instead of swiss_groups
+                if (configGroupCount <= 1 && config?.TryGetValue("group_count", out var gcVal) == true)
+                    int.TryParse(gcVal?.ToString(), out configGroupCount);
             }
-            catch { /* Config is optional JSON; default to 1 swiss_groups on parse failure */ }
+            catch { /* Config is optional JSON; default to 1 on parse failure */ }
         }
+
+        // Discover actual groups from match data
+        var groupIds = matches
+            .Select(m => (string?)m.group_id)
+            .Where(g => g is not null)
+            .Distinct()
+            .OrderBy(g => g)
+            .ToList();
+
+        int actualGroupCount = groupIds.Count > 0 ? groupIds.Count : configGroupCount;
 
         var advancingTeams = new List<AdvancingTeam>();
 
-        if (swissGroups > 1)
+        if (actualGroupCount > 1 && groupIds.Count > 0)
         {
-            var groupIds = matches
-                .Select(m => (string?)m.group_id)
-                .Where(g => g is not null)
-                .Distinct()
-                .OrderBy(g => g)
-                .ToList();
+            // Per-group advancement: distribute slots fairly across all groups
+            int baseAdv = advancementCount / actualGroupCount;
+            int remainder = advancementCount % actualGroupCount;
 
-            if (groupIds.Count == 0)
+            for (int i = 0; i < groupIds.Count; i++)
             {
-                var s = await standings.CalculateStandingsAsync(stageId, ct: ct);
-                advancingTeams = s.Take(advancementCount)
-                    .Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank))
-                    .ToList();
-            }
-            else
-            {
-                int baseAdv = advancementCount / swissGroups;
-                int remainder = advancementCount % swissGroups;
-
-                for (int i = 0; i < groupIds.Count; i++)
-                {
-                    int countForGroup = baseAdv + (i < remainder ? 1 : 0);
-                    var s = await standings.CalculateStandingsAsync(stageId, groupIds[i], ct);
-                    advancingTeams.AddRange(s.Take(countForGroup)
-                        .Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank)));
-                }
+                int countForGroup = baseAdv + (i < remainder ? 1 : 0);
+                var s = await standings.CalculateStandingsAsync(stageId, groupIds[i], ct);
+                advancingTeams.AddRange(s.Take(countForGroup)
+                    .Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank)));
             }
         }
         else
