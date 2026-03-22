@@ -910,16 +910,38 @@ public static class MatchEndpoints
                                 new { stageId });
                             stageComplete = true;
 
-                            // Set tournament winner if elimination format
+                            // Set tournament winner if elimination format — use grand final winner
                             var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                                 "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
                                 new { stageId });
-                            if (stageInfo is not null && winnerId is not null &&
+                            if (stageInfo is not null &&
                                 ((string?)stageInfo.format == "single_elimination" || (string?)stageInfo.format == "double_elimination"))
                             {
-                                await conn.ExecuteAsync(
-                                    "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tid",
-                                    new { winnerId, tid = (Guid)stageInfo.tournament_id });
+                                var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                                    """
+                                    SELECT winner_id FROM brkt_matches
+                                    WHERE version_id = @versionId AND bracket_type = 'final'
+                                      AND status = 'completed' AND winner_id IS NOT NULL
+                                    ORDER BY round_index DESC, match_number DESC
+                                    LIMIT 1
+                                    """,
+                                    new { versionId });
+                                if (gfWinnerId is not null)
+                                {
+                                    try
+                                    {
+                                        using var txWinner = conn.BeginTransaction();
+                                        await conn.ExecuteAsync(
+                                            "SET LOCAL request.jwt.claim.role = 'service_role'",
+                                            transaction: txWinner);
+                                        await conn.ExecuteAsync(
+                                            "UPDATE tournaments SET winner_id = @gfWinnerId, status = 'completed'::tournament_status, end_date = NOW() WHERE id = @tid",
+                                            new { gfWinnerId, tid = (Guid)stageInfo.tournament_id },
+                                            transaction: txWinner);
+                                        txWinner.Commit();
+                                    }
+                                    catch { /* trigger may block — non-critical */ }
+                                }
                             }
                         }
                     }

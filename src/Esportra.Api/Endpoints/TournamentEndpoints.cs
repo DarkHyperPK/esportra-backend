@@ -536,6 +536,7 @@ public static class TournamentEndpoints
                           )
                           AND m.status = 'completed'
                           AND m.winner_id IS NOT NULL
+                          AND m.bracket_type = 'final'
                         ORDER BY m.round_index DESC, m.match_number DESC
                         LIMIT 1
                         """,
