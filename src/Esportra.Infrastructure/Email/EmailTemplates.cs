@@ -26,7 +26,7 @@ public static class EmailTemplates
                 <!-- Header -->
                 <tr>
                   <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-                    <img src="https://staging.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
+                    <img src="https://esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
                   </td>
                 </tr>
                 <!-- Body -->
@@ -259,14 +259,13 @@ public static class EmailTemplates
             <!-- License Details Card -->
             <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;border:1px solid #1f2937;border-radius:8px;overflow:hidden;">
               <tr><td style="background:linear-gradient(135deg,#065f46,#047857);padding:16px;text-align:center;">
-                <span style="font-size:28px;">✅</span>
-                <p style="margin:4px 0 0;color:#fff;font-weight:700;font-size:16px;">Licensed {FormatLicenseType(licenseType)}</p>
+                <p style="margin:0;color:#fff;font-weight:700;font-size:16px;">Licensed {FormatLicenseType(licenseType)}</p>
               </td></tr>
               <tr><td style="padding:0;">
                 <table width="100%" cellpadding="0" cellspacing="0" style="background:#0d1117;">
                   {(string.IsNullOrWhiteSpace(licenseId) ? "" : InfoRow("License ID", licenseId))}
                   {InfoRow("Type", FormatLicenseType(licenseType))}
-                  {InfoRow("Status", "✅ Active")}
+                  {InfoRow("Status", "Active")}
                   {InfoRow("Issued", DateTime.UtcNow.ToString("MMM dd, yyyy"), isLast: true)}
                 </table>
               </td></tr>
