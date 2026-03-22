@@ -178,6 +178,28 @@ public static class ProfileEndpoints
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/profiles/me/licenses ─────────────────────────────────────
+        app.MapGet("/api/profiles/me/licenses", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, license_id, license_type, status, issued_at, expires_at,
+                       notes, created_at
+                FROM licenses
+                WHERE user_id = @userId
+                ORDER BY issued_at DESC
+                """,
+                new { userId = userCtx.UserIdGuid });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/achievements ───────────────────────────────────────────
         // Achievements table not yet migrated — return empty array gracefully
         app.MapGet("/api/achievements", async (

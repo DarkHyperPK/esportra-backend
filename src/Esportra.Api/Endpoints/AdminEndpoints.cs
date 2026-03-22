@@ -1305,17 +1305,52 @@ public static class AdminEndpoints
                 """,
                 new { userId = req.UserId, role = req.Role, status = req.Status, isActive = req.IsActive });
 
-            // Send approval email when license is approved
+            // Create/update license record and send approval email
             if (string.Equals(req.Status, "approved", StringComparison.OrdinalIgnoreCase) && req.IsActive)
             {
                 try
                 {
+                    var issuedAt  = DateTime.UtcNow;
+                    var expiresAt = issuedAt.AddYears(1);
+
+                    // Check if license record already exists
+                    var existingLicenseId = await conn.QuerySingleOrDefaultAsync<string>(
+                        "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @licenseType LIMIT 1",
+                        new { userId = req.UserId, licenseType = req.Role });
+
+                    if (existingLicenseId is not null)
+                    {
+                        // Renew existing license
+                        await conn.ExecuteAsync(
+                            """
+                            UPDATE licenses SET status = 'active', issued_at = @issuedAt, expires_at = @expiresAt
+                            WHERE user_id = @userId AND license_type = @licenseType
+                            """,
+                            new { userId = req.UserId, licenseType = req.Role, issuedAt, expiresAt });
+                    }
+                    else
+                    {
+                        // Generate new license_id
+                        var prefix = req.Role switch
+                        {
+                            "organizer"   => "ESP-OR",
+                            "venue_owner" => "ESP-VO",
+                            "broadcaster" => "ESP-BR",
+                            _             => "ESP-XX"
+                        };
+                        existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
+                            VALUES (@userId, @licenseId, @licenseType, 'active', @issuedAt, @expiresAt)
+                            """,
+                            new { userId = req.UserId, licenseId = existingLicenseId, licenseType = req.Role, issuedAt, expiresAt });
+                    }
+
                     var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                         "SELECT email, username FROM profiles WHERE id = @id",
                         new { id = req.UserId });
-                    var licenseId = await conn.QuerySingleOrDefaultAsync<string>(
-                        "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @role LIMIT 1",
-                        new { userId = req.UserId, role = req.Role });
                     if (profile?.email is not null)
                     {
                         var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
@@ -1326,13 +1361,15 @@ public static class AdminEndpoints
                             {
                                 username     = (string?)profile.username ?? "there",
                                 licenseType  = req.Role,
-                                licenseId    = licenseId ?? "",
+                                licenseId    = existingLicenseId,
+                                issuedAt     = issuedAt.ToString("MMM dd, yyyy"),
+                                expiresAt    = expiresAt.ToString("MMM dd, yyyy"),
                                 dashboardUrl = $"{frontendUrl}/verification-status",
                             },
                             ct);
                     }
                 }
-                catch { /* email failure should not block approval */ }
+                catch { /* email/license failure should not block approval */ }
             }
 
             return Results.Ok(new { success = true });

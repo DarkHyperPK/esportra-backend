@@ -249,7 +249,7 @@ public static class EmailTemplates
     );
 
     public static (string Subject, string Html) LicenseApproved(
-        string username, string licenseType, string licenseId, string dashboardUrl) =>
+        string username, string licenseType, string licenseId, string issuedAt, string expiresAt, string dashboardUrl) =>
     (
         $"Your {FormatLicenseType(licenseType)} license has been approved!",
         Wrap("Your license has been approved", "License Approved", $"""
@@ -266,7 +266,8 @@ public static class EmailTemplates
                   {(string.IsNullOrWhiteSpace(licenseId) ? "" : InfoRow("License ID", licenseId))}
                   {InfoRow("Type", FormatLicenseType(licenseType))}
                   {InfoRow("Status", "Active")}
-                  {InfoRow("Issued", DateTime.UtcNow.ToString("MMM dd, yyyy"), isLast: true)}
+                  {InfoRow("Issued", string.IsNullOrWhiteSpace(issuedAt) ? DateTime.UtcNow.ToString("MMM dd, yyyy") : issuedAt)}
+                  {InfoRow("Expires", string.IsNullOrWhiteSpace(expiresAt) ? DateTime.UtcNow.AddYears(1).ToString("MMM dd, yyyy") : expiresAt, isLast: true)}
                 </table>
               </td></tr>
             </table>
