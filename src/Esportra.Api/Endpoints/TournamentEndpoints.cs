@@ -485,40 +485,56 @@ public static class TournamentEndpoints
                 });
 
             // Auto-set winner_id when tournament is marked completed
+            // Only pick winner from the grand final (last match of last stage)
+            // and only if ALL stages are completed
             if (req.Status == "completed" && updated is not null)
             {
-                var winnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                var hasIncompleteStages = await conn.QuerySingleOrDefaultAsync<bool>(
                     """
-                    SELECT m.winner_id
-                    FROM brkt_matches m
-                    JOIN brkt_versions v ON v.id = m.version_id
-                    JOIN tournament_stages s ON s.id = v.stage_id
-                    WHERE s.tournament_id = @id
-                      AND m.status = 'completed'
-                      AND m.winner_id IS NOT NULL
-                    ORDER BY s.stage_order DESC, m.round_index DESC, m.match_number DESC
-                    LIMIT 1
+                    SELECT EXISTS (
+                        SELECT 1 FROM tournament_stages
+                        WHERE tournament_id = @id AND status != 'completed'
+                    )
                     """,
                     new { id });
 
-                if (winnerId.HasValue)
+                if (!hasIncompleteStages)
                 {
-                    try
+                    var winnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                        """
+                        SELECT m.winner_id
+                        FROM brkt_matches m
+                        JOIN brkt_versions v ON v.id = m.version_id
+                        JOIN tournament_stages s ON s.id = v.stage_id
+                        WHERE s.tournament_id = @id
+                          AND s.stage_order = (
+                              SELECT MAX(stage_order) FROM tournament_stages WHERE tournament_id = @id
+                          )
+                          AND m.status = 'completed'
+                          AND m.winner_id IS NOT NULL
+                        ORDER BY m.round_index DESC, m.match_number DESC
+                        LIMIT 1
+                        """,
+                        new { id });
+
+                    if (winnerId.HasValue)
                     {
-                        // Use a transaction with service_role to bypass the trigger
-                        using var tx = conn.BeginTransaction();
-                        await conn.ExecuteAsync(
-                            "SET LOCAL request.jwt.claim.role = 'service_role'",
-                            transaction: tx);
-                        await conn.ExecuteAsync(
-                            "UPDATE tournaments SET winner_id = @winnerId WHERE id = @id",
-                            new { id, winnerId = winnerId.Value },
-                            transaction: tx);
-                        tx.Commit();
-                    }
-                    catch
-                    {
-                        // If trigger still blocks, don't fail the status change
+                        try
+                        {
+                            using var tx = conn.BeginTransaction();
+                            await conn.ExecuteAsync(
+                                "SET LOCAL request.jwt.claim.role = 'service_role'",
+                                transaction: tx);
+                            await conn.ExecuteAsync(
+                                "UPDATE tournaments SET winner_id = @winnerId WHERE id = @id",
+                                new { id, winnerId = winnerId.Value },
+                                transaction: tx);
+                            tx.Commit();
+                        }
+                        catch
+                        {
+                            // If trigger still blocks, don't fail the status change
+                        }
                     }
                 }
             }
