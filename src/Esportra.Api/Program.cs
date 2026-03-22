@@ -261,7 +261,6 @@ builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
 
 // ── Background jobs ───────────────────────────────────────────────────────────
-builder.Services.AddHostedService<AutomatedRemindersJob>();
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────

@@ -137,18 +137,6 @@ public static class EmailTemplates
         """)
     );
 
-    public static (string Subject, string Html) CheckinReminder(
-        string username, string tournamentName, string checkInUrl) =>
-    (
-        $"⚠️ Check-in now open: {tournamentName}",
-        Wrap($"Check in now for {tournamentName}", "Check-in Reminder", $"""
-            {H1("Check-in Window Open!")}
-            {P($"Hi {username}, the check-in window for <strong style='color:#f9fafb;'>{tournamentName}</strong> is now open.")}
-            {P("<strong style='color:#ef4444;'>You must check in or you'll be removed from the tournament.</strong>")}
-            {Btn(checkInUrl, "Check In Now")}
-        """)
-    );
-
     public static (string Subject, string Html) TeamInvite(
         string inviteeName, string teamName, string captainName, string acceptUrl) =>
     (
@@ -205,4 +193,39 @@ public static class EmailTemplates
             {Btn(resetUrl, "Reset Password")}
         """)
     );
+
+    public static (string Subject, string Html) LicenseApplicationReceived(
+        string username, string licenseType, string dashboardUrl) =>
+    (
+        "Your license application has been received",
+        Wrap("We received your license application", "License Application Received", $"""
+            {H1("Application Received! 📋")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, thank you for applying for a <strong style='color:#f9fafb;'>{FormatLicenseType(licenseType)}</strong> license on Esportra.")}
+            {P("Our team will review your application within 1–3 business days. You'll receive an email once a decision has been made.")}
+            {P("In the meantime, you can check the status of your application from your dashboard.")}
+            {Btn(dashboardUrl, "View Application Status")}
+        """)
+    );
+
+    public static (string Subject, string Html) LicenseApproved(
+        string username, string licenseType, string licenseId, string dashboardUrl) =>
+    (
+        $"Your {FormatLicenseType(licenseType)} license has been approved!",
+        Wrap("Your license has been approved", "License Approved", $"""
+            {H1("License Approved! 🎉")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, great news — your <strong style='color:#f9fafb;'>{FormatLicenseType(licenseType)}</strong> license has been approved.")}
+            {(string.IsNullOrWhiteSpace(licenseId) ? "" : P($"Your license ID is: <strong style='color:#f9fafb;'>{licenseId}</strong>"))}
+            {P("You now have access to all features associated with your new role. Get started from your dashboard.")}
+            {Btn(dashboardUrl, "Go to Dashboard")}
+        """)
+    );
+
+    private static string FormatLicenseType(string licenseType) =>
+        licenseType switch
+        {
+            "organizer"   => "Organizer",
+            "venue_owner" => "Venue Owner",
+            "broadcaster" => "Broadcaster",
+            _             => licenseType
+        };
 }

@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 
@@ -367,6 +368,8 @@ public static class ProfileEndpoints
             [FromBody] VerificationRequestBody req,
             HttpContext                        ctx,
             IDbConnectionFactory               db,
+            IEmailService                      email,
+            IConfiguration                     config,
             CancellationToken                  ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -380,6 +383,30 @@ public static class ProfileEndpoints
                 ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
                 """,
                 new { userId = userCtx.UserIdGuid, role = req.Role });
+
+            // Send confirmation email
+            try
+            {
+                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT email, username FROM profiles WHERE id = @id",
+                    new { id = userCtx.UserIdGuid });
+                if (profile?.email is not null)
+                {
+                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                    await email.SendAsync(
+                        (string)profile.email,
+                        EmailType.LicenseApplicationReceived,
+                        new
+                        {
+                            username     = (string?)profile.username ?? "there",
+                            licenseType  = req.Role,
+                            dashboardUrl = $"{frontendUrl}/verification-status",
+                        },
+                        ct);
+                }
+            }
+            catch { /* email failure should not block application */ }
+
             return Results.Ok(new { success = true, status = "pending" });
         }).RequireAuthorization("Authenticated");
 
@@ -387,6 +414,8 @@ public static class ProfileEndpoints
         app.MapPost("/api/profiles/me/verification-requests/organizer", async (
             HttpContext          ctx,
             IDbConnectionFactory db,
+            IEmailService        email,
+            IConfiguration       config,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -400,6 +429,29 @@ public static class ProfileEndpoints
                 ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
                 """,
                 new { userId = userCtx.UserIdGuid });
+
+            try
+            {
+                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT email, username FROM profiles WHERE id = @id",
+                    new { id = userCtx.UserIdGuid });
+                if (profile?.email is not null)
+                {
+                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                    await email.SendAsync(
+                        (string)profile.email,
+                        EmailType.LicenseApplicationReceived,
+                        new
+                        {
+                            username     = (string?)profile.username ?? "there",
+                            licenseType  = "organizer",
+                            dashboardUrl = $"{frontendUrl}/verification-status",
+                        },
+                        ct);
+                }
+            }
+            catch { /* email failure should not block application */ }
+
             return Results.Ok(new { success = true, status = "pending", role = "organizer" });
         }).RequireAuthorization("Authenticated");
 
@@ -407,6 +459,8 @@ public static class ProfileEndpoints
         app.MapPost("/api/profiles/me/verification-requests/venue_owner", async (
             HttpContext          ctx,
             IDbConnectionFactory db,
+            IEmailService        email,
+            IConfiguration       config,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -420,6 +474,29 @@ public static class ProfileEndpoints
                 ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
                 """,
                 new { userId = userCtx.UserIdGuid });
+
+            try
+            {
+                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT email, username FROM profiles WHERE id = @id",
+                    new { id = userCtx.UserIdGuid });
+                if (profile?.email is not null)
+                {
+                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                    await email.SendAsync(
+                        (string)profile.email,
+                        EmailType.LicenseApplicationReceived,
+                        new
+                        {
+                            username     = (string?)profile.username ?? "there",
+                            licenseType  = "venue_owner",
+                            dashboardUrl = $"{frontendUrl}/verification-status",
+                        },
+                        ct);
+                }
+            }
+            catch { /* email failure should not block application */ }
+
             return Results.Ok(new { success = true, status = "pending", role = "venue_owner" });
         }).RequireAuthorization("Authenticated");
 

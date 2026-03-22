@@ -88,10 +88,6 @@ public sealed class ResendEmailService(
                     Get("endDate"), Get("game"),
                     Get("teamName"), Get("registrationType")),
 
-            EmailType.CheckinReminder or EmailType.MatchCheckinReminder =>
-                EmailTemplates.CheckinReminder(
-                    Get("username"), Get("tournamentName"), Get("checkInUrl")),
-
             EmailType.TeamInvite =>
                 EmailTemplates.TeamInvite(
                     Get("inviteeName"), Get("teamName"),
@@ -110,6 +106,14 @@ public sealed class ResendEmailService(
 
             EmailType.PasswordReset =>
                 EmailTemplates.PasswordReset(Get("resetUrl")),
+
+            EmailType.LicenseApplicationReceived =>
+                EmailTemplates.LicenseApplicationReceived(
+                    Get("username"), Get("licenseType"), Get("dashboardUrl")),
+
+            EmailType.LicenseApproved =>
+                EmailTemplates.LicenseApproved(
+                    Get("username"), Get("licenseType"), Get("licenseId"), Get("dashboardUrl")),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };

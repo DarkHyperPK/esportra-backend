@@ -4,6 +4,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
+using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -394,6 +395,8 @@ public static class TeamEndpoints
             [FromBody] TeamInviteRequest req,
             HttpContext                  ctx,
             IDbConnectionFactory        db,
+            IEmailService               email,
+            IConfiguration              config,
             CancellationToken           ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -447,6 +450,39 @@ public static class TeamEndpoints
                         'You have been invited to join a team.', '/teams', @data::jsonb, FALSE)
                 """,
                 new { userId = reqUserIdGuid, data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = ((Guid)invite.id).ToString() }) });
+
+            // Send team invite email
+            try
+            {
+                var emailInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT p.email, p.username AS invitee_name,
+                           t.name AS team_name,
+                           cap.username AS captain_name
+                    FROM profiles p
+                    CROSS JOIN teams t
+                    LEFT JOIN profiles cap ON cap.id = @captainId
+                    WHERE p.id = @inviteeId AND t.id = @teamId
+                    """,
+                    new { inviteeId = reqUserIdGuid, teamId = id, captainId = userCtx.UserIdGuid });
+
+                if (emailInfo?.email is not null)
+                {
+                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                    await email.SendAsync(
+                        (string)emailInfo.email,
+                        EmailType.TeamInvite,
+                        new
+                        {
+                            inviteeName = (string?)emailInfo.invitee_name ?? "Player",
+                            teamName    = (string?)emailInfo.team_name ?? "a team",
+                            captainName = (string?)emailInfo.captain_name ?? "A captain",
+                            acceptUrl   = $"{frontendUrl}/teams",
+                        },
+                        ct);
+                }
+            }
+            catch { /* email failure should not block invite creation */ }
 
             return Results.Ok(invite);
         }).RequireAuthorization("Authenticated");

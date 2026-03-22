@@ -48,7 +48,7 @@ public static class AuthEndpoints
             try
             {
                 var link = await supabase.GenerateRecoveryLinkAsync(req.Email, ct);
-                var resetUrl = $"{redirectBase}/reset-password?token_hash={link.TokenHash}&type=recovery";
+                var resetUrl = $"{redirectBase}/auth/reset-password?token_hash={link.TokenHash}&type=recovery";
 
                 await email.SendAsync(req.Email, EmailType.PasswordReset, new { resetUrl }, ct);
                 return Results.Ok(new { success = true });

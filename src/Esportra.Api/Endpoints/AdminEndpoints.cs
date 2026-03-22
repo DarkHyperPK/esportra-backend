@@ -620,7 +620,7 @@ public static class AdminEndpoints
 
             // Allow self-service transactional emails for authenticated users
             var selfServiceTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "TournamentRegistration", "CheckinReminder", "MatchCheckinReminder", "Welcome" };
+                { "TournamentRegistration", "Welcome" };
             bool isSelfService = selfServiceTypes.Contains(req.Type ?? "");
 
             if (!isSelfService &&
@@ -1287,6 +1287,8 @@ public static class AdminEndpoints
             [FromBody] CreateVerifiedRoleRequest req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
+            IEmailService                       email,
+            IConfiguration                      config,
             CancellationToken                   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1302,6 +1304,37 @@ public static class AdminEndpoints
                 SET status = @status, is_active = @isActive, verified_at = NOW()
                 """,
                 new { userId = req.UserId, role = req.Role, status = req.Status, isActive = req.IsActive });
+
+            // Send approval email when license is approved
+            if (string.Equals(req.Status, "approved", StringComparison.OrdinalIgnoreCase) && req.IsActive)
+            {
+                try
+                {
+                    var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT email, username FROM profiles WHERE id = @id",
+                        new { id = req.UserId });
+                    var licenseId = await conn.QuerySingleOrDefaultAsync<string>(
+                        "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @role LIMIT 1",
+                        new { userId = req.UserId, role = req.Role });
+                    if (profile?.email is not null)
+                    {
+                        var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                        await email.SendAsync(
+                            (string)profile.email,
+                            EmailType.LicenseApproved,
+                            new
+                            {
+                                username     = (string?)profile.username ?? "there",
+                                licenseType  = req.Role,
+                                licenseId    = licenseId ?? "",
+                                dashboardUrl = $"{frontendUrl}/verification-status",
+                            },
+                            ct);
+                    }
+                }
+                catch { /* email failure should not block approval */ }
+            }
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 

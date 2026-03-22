@@ -9,11 +9,11 @@ public enum EmailType
 {
     Welcome,
     TournamentRegistration,
-    CheckinReminder,
-    MatchCheckinReminder,
     TeamInvite,
     StaffInvite,
     PartnerWelcome,
     PartnerInvite,
     PasswordReset,
+    LicenseApplicationReceived,
+    LicenseApproved,
 }
