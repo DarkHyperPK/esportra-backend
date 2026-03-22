@@ -492,11 +492,11 @@ public static class TournamentEndpoints
                     SELECT m.winner_id
                     FROM brkt_matches m
                     JOIN brkt_versions v ON v.id = m.version_id
-                    JOIN bracket_stages s ON s.id = v.stage_id
+                    JOIN tournament_stages s ON s.id = v.stage_id
                     WHERE s.tournament_id = @id
                       AND m.status = 'completed'
                       AND m.winner_id IS NOT NULL
-                    ORDER BY s.stage_order DESC, m.round DESC, m.position DESC
+                    ORDER BY s.stage_order DESC, m.round_index DESC, m.match_number DESC
                     LIMIT 1
                     """,
                     new { id });
