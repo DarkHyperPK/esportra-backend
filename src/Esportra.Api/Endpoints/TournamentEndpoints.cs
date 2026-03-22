@@ -61,7 +61,8 @@ public static class TournamentEndpoints
         string?   OrganizerName,
         string?   OrganizationSlug,
         string?   OrganizerUsername,
-        string?   OrganizerFullName
+        string?   OrganizerFullName,
+        string?   WinnerTeamName = null
     );
 
     private const string TournamentListSql = """
@@ -77,10 +78,12 @@ public static class TournamentEndpoints
                o.name   AS organizer_name,
                o.slug   AS organization_slug,
                p.username      AS organizer_username,
-               p.full_name     AS organizer_full_name
+               p.full_name     AS organizer_full_name,
+               wt.name  AS winner_team_name
         FROM tournaments t
         LEFT JOIN organizations o ON o.id = t.organization_id
         LEFT JOIN profiles      p ON p.id = t.organizer_id
+        LEFT JOIN teams        wt ON wt.id = t.winner_id
         WHERE t.is_public = TRUE
           AND t.deleted_at IS NULL
           AND (@status IS NULL OR t.status::text = @status)
@@ -131,10 +134,12 @@ public static class TournamentEndpoints
                            o.name   AS organizer_name,
                            o.slug   AS organization_slug,
                            p.username      AS organizer_username,
-                           p.full_name     AS organizer_full_name
+                           p.full_name     AS organizer_full_name,
+                           wt.name  AS winner_team_name
                     FROM tournaments t
                     LEFT JOIN organizations o ON o.id = t.organization_id
                     LEFT JOIN profiles      p ON p.id = t.organizer_id
+                    LEFT JOIN teams        wt ON wt.id = t.winner_id
                     WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
                     ORDER BY t.start_date ASC
                     """,
@@ -184,10 +189,12 @@ public static class TournamentEndpoints
                                o.name AS organizer_name,
                                o.slug AS organization_slug,
                                p.username   AS organizer_username,
-                               p.full_name  AS organizer_full_name
+                               p.full_name  AS organizer_full_name,
+                               wt.name AS winner_team_name
                         FROM tournaments t
                         LEFT JOIN organizations o ON o.id = t.organization_id
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
+                        LEFT JOIN teams        wt ON wt.id = t.winner_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND t.status::text IN ('published', 'open', 'check_in')

@@ -34,7 +34,7 @@ public static class LeaderboardEndpoints
                 ? "WHERE " + string.Join(" AND ", conditions)
                 : "";
 
-            // RP formula: (wins * 3) + (tournament_wins * 10) - (losses * 1)
+            // RP formula: (wins * 50) + (tournament_wins * 500) - (losses * 10)
             var teams = await conn.QueryAsync<dynamic>(
                 $"""
                 WITH team_stats AS (
@@ -66,7 +66,7 @@ public static class LeaderboardEndpoints
                          THEN ROUND(wins * 100.0 / (wins + losses), 1)
                          ELSE 0 END AS win_rate,
                     tournament_wins AS tournaments_won,
-                    (wins * 3 + tournament_wins * 10 - losses) AS rp
+                    (wins * 50 + tournament_wins * 500 - losses * 10) AS rp
                 FROM team_stats
                 ORDER BY rp DESC, wins DESC
                 LIMIT @limit OFFSET @offset
@@ -145,7 +145,7 @@ public static class LeaderboardEndpoints
                          ELSE 0 END AS win_rate,
                     pts.tournament_wins AS tournaments_won,
                     COALESCE(mc.mvp_awards, 0) AS mvps,
-                    (pts.wins * 3 + pts.tournament_wins * 10 - pts.losses + COALESCE(mc.mvp_awards, 0) * 2) AS rp
+                    (pts.wins * 50 + pts.tournament_wins * 500 - pts.losses * 10 + COALESCE(mc.mvp_awards, 0) * 25) AS rp
                 FROM player_team_stats pts
                 LEFT JOIN mvp_counts mc ON mc.player_id = pts.player_id
                 ORDER BY rp DESC, wins DESC
