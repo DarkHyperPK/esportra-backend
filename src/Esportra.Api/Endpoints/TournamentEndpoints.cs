@@ -483,6 +483,24 @@ public static class TournamentEndpoints
                     deletedAt            = req.DeletedAt,
                     clearDeletedAt       = req.ClearDeletedAt,
                 });
+
+            // Clear winner_id when reopening a completed tournament
+            if (req.Status is not null && req.Status != "completed")
+            {
+                try
+                {
+                    using var txClear = conn.BeginTransaction();
+                    await conn.ExecuteAsync(
+                        "SET LOCAL request.jwt.claim.role = 'service_role'",
+                        transaction: txClear);
+                    await conn.ExecuteAsync(
+                        "UPDATE tournaments SET winner_id = NULL WHERE id = @id AND winner_id IS NOT NULL",
+                        new { id },
+                        transaction: txClear);
+                    txClear.Commit();
+                }
+                catch { /* best effort */ }
+            }
 
             // Auto-set winner_id when tournament is marked completed
             // Only pick winner from the grand final (last match of last stage)
