@@ -489,16 +489,22 @@ public static class TournamentEndpoints
             // and only if ALL stages are completed
             if (req.Status == "completed" && updated is not null)
             {
-                var hasIncompleteStages = await conn.QuerySingleOrDefaultAsync<bool>(
+                // Check that stages exist and ALL are completed
+                // Use count comparison to handle NULL status correctly
+                var stageCounts = await conn.QuerySingleAsync<dynamic>(
                     """
-                    SELECT EXISTS (
-                        SELECT 1 FROM tournament_stages
-                        WHERE tournament_id = @id AND status != 'completed'
-                    )
+                    SELECT
+                        COUNT(*)::int AS total,
+                        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
+                    FROM tournament_stages
+                    WHERE tournament_id = @id
                     """,
                     new { id });
 
-                if (!hasIncompleteStages)
+                int stageTotal = (int)stageCounts.total;
+                int stageCompleted = (int)stageCounts.completed;
+
+                if (stageTotal > 0 && stageTotal == stageCompleted)
                 {
                     var winnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                         """
