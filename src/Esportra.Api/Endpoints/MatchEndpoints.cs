@@ -686,6 +686,14 @@ public static class MatchEndpoints
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
             var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
+
+            // Check scheduled_time — can't go live before scheduled time (15min grace)
+            var scheduledTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+            if (scheduledTime.HasValue && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15))
+                return Results.BadRequest(new { error = $"Match is scheduled for {scheduledTime.Value:u}. Cannot go live more than 15 minutes early." });
+
             var rows = await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET status = 'in_progress', party_code = @code WHERE id = @matchId",
                 new { matchId, code });
