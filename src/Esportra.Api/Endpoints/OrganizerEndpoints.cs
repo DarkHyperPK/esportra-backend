@@ -121,7 +121,15 @@ public static class OrganizerEndpoints
                 JOIN tournaments t ON t.id = ts.tournament_id
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
                 LEFT JOIN teams t2 ON t2.id = m.team2_id
-                WHERE t.organizer_id = @organizerId
+                WHERE (
+                    t.organizer_id = @organizerId
+                    OR EXISTS (
+                        SELECT 1 FROM organization_staff os
+                        WHERE os.user_id = @organizerId
+                          AND os.organization_id = t.organization_id
+                          AND os.status = 'active'
+                    )
+                )
                   AND (
                     (m.scheduled_time IS NOT NULL AND m.scheduled_time >= @startDt AND m.scheduled_time < @endDt)
                     OR (m.scheduled_time IS NULL AND t.start_date >= @startDt AND t.start_date < @endDt)
