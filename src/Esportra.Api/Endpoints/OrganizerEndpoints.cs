@@ -110,7 +110,7 @@ public static class OrganizerEndpoints
             var matches = await conn.QueryAsync<dynamic>(
                 """
                 SELECT m.id, m.scheduled_time, m.status,
-                       m.round AS round_index, m.position AS match_number,
+                       m.round_index, m.match_number,
                        t1.name AS team1_name, t2.name AS team2_name,
                        t.id AS tournament_id, t.name AS tournament_name,
                        t.game AS tournament_game, t.slug AS tournament_slug,
@@ -126,7 +126,7 @@ public static class OrganizerEndpoints
                     (m.scheduled_time IS NOT NULL AND m.scheduled_time >= @startDt AND m.scheduled_time < @endDt)
                     OR (m.scheduled_time IS NULL AND t.start_date >= @startDt AND t.start_date < @endDt)
                   )
-                ORDER BY m.scheduled_time ASC NULLS LAST, m.round ASC, m.position ASC
+                ORDER BY m.scheduled_time ASC NULLS LAST, m.round_index ASC, m.match_number ASC
                 LIMIT 100
                 """, new { organizerId = userCtx.UserIdGuid, startDt, endDt });
             return Results.Ok(matches);
