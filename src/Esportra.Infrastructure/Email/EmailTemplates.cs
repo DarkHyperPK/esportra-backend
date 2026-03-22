@@ -47,11 +47,42 @@ public static class EmailTemplates
     private static string Btn(string href, string label) =>
         $"""<a href="{href}" style="display:inline-block;background:linear-gradient(135deg,#e11d48,#be123c);color:#fff;font-weight:600;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;margin-top:16px;">{label}</a>""";
 
+    private static string BtnSecondary(string href, string label) =>
+        $"""<a href="{href}" style="display:inline-block;background:transparent;color:#e11d48;font-weight:600;font-size:14px;padding:10px 24px;border-radius:8px;text-decoration:none;margin-top:8px;border:1px solid #e11d48;">{label}</a>""";
+
     private static string H1(string text) =>
         $"""<h1 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#f9fafb;">{text}</h1>""";
 
     private static string P(string text) =>
         $"""<p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#d1d5db;">{text}</p>""";
+
+    private static string Divider() =>
+        """<hr style="border:none;border-top:1px solid #1f2937;margin:24px 0;" />""";
+
+    private static string FeatureItem(string emoji, string title, string desc) =>
+        $"""
+        <tr>
+          <td style="padding:8px 12px;vertical-align:top;width:36px;">
+            <span style="font-size:20px;">{emoji}</span>
+          </td>
+          <td style="padding:8px 12px;">
+            <strong style="color:#f9fafb;font-size:14px;">{title}</strong>
+            <br/><span style="color:#9ca3af;font-size:13px;">{desc}</span>
+          </td>
+        </tr>
+        """;
+
+    private static string InfoRow(string label, string value, bool isLast = false) =>
+        $"""
+        <tr>
+          <td style="padding:12px 16px;{(isLast ? "" : " border-bottom:1px solid #1f2937;")}">
+            <span style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;">{label}</span>
+          </td>
+          <td style="padding:12px 16px;{(isLast ? "" : " border-bottom:1px solid #1f2937;")} text-align:right;">
+            <strong style="color:#f9fafb;font-size:14px;">{value}</strong>
+          </td>
+        </tr>
+        """;
 
     // ── Templates ─────────────────────────────────────────────────────────────
 
@@ -201,8 +232,18 @@ public static class EmailTemplates
         Wrap("We received your license application", "License Application Received", $"""
             {H1("Application Received! 📋")}
             {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, thank you for applying for a <strong style='color:#f9fafb;'>{FormatLicenseType(licenseType)}</strong> license on Esportra.")}
-            {P("Our team will review your application within 1–3 business days. You'll receive an email once a decision has been made.")}
-            {P("In the meantime, you can check the status of your application from your dashboard.")}
+
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;border:1px solid #1f2937;border-radius:8px;overflow:hidden;">
+              <tr style="background:#1a1a2e;">
+                <td style="padding:16px;text-align:center;">
+                  <span style="font-size:32px;">⏳</span>
+                  <p style="margin:8px 0 0;color:#fbbf24;font-weight:600;font-size:14px;">Under Review</p>
+                  <p style="margin:4px 0 0;color:#9ca3af;font-size:13px;">Our team reviews all applications within 1–3 business days.</p>
+                </td>
+              </tr>
+            </table>
+
+            {P("You'll receive an email as soon as a decision has been made. In the meantime, you can track your application status from your dashboard.")}
             {Btn(dashboardUrl, "View Application Status")}
         """)
     );
@@ -214,11 +255,89 @@ public static class EmailTemplates
         Wrap("Your license has been approved", "License Approved", $"""
             {H1("License Approved! 🎉")}
             {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, great news — your <strong style='color:#f9fafb;'>{FormatLicenseType(licenseType)}</strong> license has been approved.")}
-            {(string.IsNullOrWhiteSpace(licenseId) ? "" : P($"Your license ID is: <strong style='color:#f9fafb;'>{licenseId}</strong>"))}
-            {P("You now have access to all features associated with your new role. Get started from your dashboard.")}
-            {Btn(dashboardUrl, "Go to Dashboard")}
+
+            <!-- License Details Card -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;border:1px solid #1f2937;border-radius:8px;overflow:hidden;">
+              <tr><td style="background:linear-gradient(135deg,#065f46,#047857);padding:16px;text-align:center;">
+                <span style="font-size:28px;">✅</span>
+                <p style="margin:4px 0 0;color:#fff;font-weight:700;font-size:16px;">Licensed {FormatLicenseType(licenseType)}</p>
+              </td></tr>
+              <tr><td style="padding:0;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background:#0d1117;">
+                  {(string.IsNullOrWhiteSpace(licenseId) ? "" : InfoRow("License ID", licenseId))}
+                  {InfoRow("Type", FormatLicenseType(licenseType))}
+                  {InfoRow("Status", "✅ Active")}
+                  {InfoRow("Issued", DateTime.UtcNow.ToString("MMM dd, yyyy"), isLast: true)}
+                </table>
+              </td></tr>
+            </table>
+
+            {Divider()}
+
+            <!-- What You Can Do Now -->
+            <h2 style="margin:0 0 16px;font-size:18px;font-weight:600;color:#f9fafb;">What you can do now</h2>
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+              {GetFeatureItems(licenseType)}
+            </table>
+
+            {Divider()}
+
+            <!-- Quick Start -->
+            <h2 style="margin:0 0 12px;font-size:18px;font-weight:600;color:#f9fafb;">Get started</h2>
+            {P(GetQuickStartText(licenseType))}
+
+            <div style="text-align:center;margin-top:20px;">
+              {Btn(GetPrimaryCta(licenseType, dashboardUrl).Url, GetPrimaryCta(licenseType, dashboardUrl).Label)}
+              <br/>
+              {BtnSecondary(dashboardUrl + "/settings", "Complete Your Profile")}
+            </div>
+
+            {Divider()}
+
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;text-align:center;">
+              Need help getting started? Visit our <a href="https://esportra.com/help" style="color:#e11d48;text-decoration:underline;">Help Center</a> or reach out to <a href="mailto:support@esportra.com" style="color:#e11d48;text-decoration:underline;">support@esportra.com</a>
+            </p>
         """)
     );
+
+    private static string GetFeatureItems(string licenseType) => licenseType switch
+    {
+        "organizer" => $"""
+            {FeatureItem("🏆", "Create Tournaments", "Set up single/double elimination, Swiss, or custom bracket formats")}
+            {FeatureItem("📊", "Manage Brackets", "Run matches, handle disputes, and track results in real-time")}
+            {FeatureItem("👥", "Build Your Staff", "Invite moderators and admins to help manage your events")}
+            {FeatureItem("📈", "Analytics Dashboard", "Track participation, engagement, and growth metrics")}
+            """,
+        "venue_owner" => $"""
+            {FeatureItem("🏟️", "List Your Venue", "Showcase your gaming space with photos, amenities, and pricing")}
+            {FeatureItem("📅", "Manage Bookings", "Accept reservations and manage your venue calendar")}
+            {FeatureItem("🖥️", "Station Management", "Set up and monitor gaming stations in real-time")}
+            {FeatureItem("💰", "Revenue Tracking", "Track bookings, revenue, and occupancy analytics")}
+            """,
+        "broadcaster" => $"""
+            {FeatureItem("🎙️", "Stream Tournaments", "Go live on tournaments with integrated broadcasting tools")}
+            {FeatureItem("📺", "Multi-Match Views", "Switch between matches and provide real-time commentary")}
+            {FeatureItem("🎬", "VOD Management", "Record and manage video-on-demand content")}
+            {FeatureItem("📊", "Viewer Analytics", "Track viewership, engagement, and stream performance")}
+            """,
+        _ => ""
+    };
+
+    private static string GetQuickStartText(string licenseType) => licenseType switch
+    {
+        "organizer"   => "Create your first tournament and start building your competitive community. You have access to all bracket formats, scheduling tools, and match management features.",
+        "venue_owner" => "List your venue and start accepting bookings. Add photos, set your pricing, configure your gaming stations, and go live.",
+        "broadcaster" => "Connect your streaming setup and start broadcasting tournaments. You have access to multi-match views and real-time commentary tools.",
+        _             => "Head to your dashboard to explore all the features now available to you."
+    };
+
+    private static (string Url, string Label) GetPrimaryCta(string licenseType, string dashboardUrl) => licenseType switch
+    {
+        "organizer"   => ($"{dashboardUrl.Replace("/verification-status", "")}/organizer/tournaments/new", "Create Your First Tournament"),
+        "venue_owner" => ($"{dashboardUrl.Replace("/verification-status", "")}/venues/new", "List Your Venue"),
+        "broadcaster" => (dashboardUrl, "Go to Dashboard"),
+        _             => (dashboardUrl, "Go to Dashboard")
+    };
 
     private static string FormatLicenseType(string licenseType) =>
         licenseType switch
