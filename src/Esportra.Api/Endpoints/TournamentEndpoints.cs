@@ -159,7 +159,7 @@ public static class TournamentEndpoints
         });
 
         // ── GET /api/tournaments/upcoming ─────────────────────────────────────
-        // Returns public, non-deleted tournaments with status open or check_in.
+        // Returns public, non-deleted tournaments with status published, open, or check_in.
         app.MapGet("/api/tournaments/upcoming", async (
             IDbConnectionFactory db,
             HybridCache          cache,
@@ -190,7 +190,7 @@ public static class TournamentEndpoints
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
-                          AND t.status::text IN ('open', 'check_in')
+                          AND t.status::text IN ('published', 'open', 'check_in')
                         ORDER BY t.start_date ASC
                         LIMIT 100
                         """)).AsList();
