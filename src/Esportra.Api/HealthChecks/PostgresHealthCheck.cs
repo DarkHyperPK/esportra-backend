@@ -12,7 +12,6 @@ public sealed class PostgresHealthCheck(IDbConnectionFactory db) : IHealthCheck
         try
         {
             using var conn = db.CreateConnection();
-            conn.Open();
             // Lightweight round-trip to confirm Postgres is responding
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT 1";

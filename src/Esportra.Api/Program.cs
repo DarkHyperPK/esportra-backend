@@ -361,7 +361,6 @@ app.MapGet("/health/pg-diag", async (IDbConnectionFactory db, IConfiguration con
         try
         {
             using var conn = db.CreateConnection();
-            conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT version()";
             results["pg_version"] = cmd.ExecuteScalar()?.ToString();
@@ -484,7 +483,6 @@ app.Lifetime.ApplicationStarted.Register(() =>
     try
     {
         using var conn = app.Services.GetRequiredService<IDbConnectionFactory>().CreateConnection();
-        conn.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT 1";
         cmd.ExecuteScalar();
