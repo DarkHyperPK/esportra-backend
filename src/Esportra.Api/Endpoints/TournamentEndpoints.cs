@@ -490,7 +490,8 @@ public static class TournamentEndpoints
                     deletedAt            = req.DeletedAt,
                     clearDeletedAt       = req.ClearDeletedAt,
                 });
-
+
+
             // Clear winner_id when reopening a completed tournament
             if (req.Status is not null && req.Status != "completed")
             {
@@ -1088,14 +1089,18 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{id}/participants ───────────────────────────
         app.MapGet("/api/tournaments/{id}/participants", async (
             Guid                 id,
+            string?              status,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
 
+            // Build optional status filter
+            var statusFilter = !string.IsNullOrEmpty(status) ? "AND tp.status::text = @status" : "";
+
             // Fetch participants with team member roster details
             var flat = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
                        tp.participant_type::text AS participant_type,
                        tp.status::text AS status, tp.created_at,
@@ -1112,10 +1117,10 @@ public static class TournamentEndpoints
                 LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = true
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
-                WHERE tp.tournament_id = @id
+                WHERE tp.tournament_id = @id {statusFilter}
                 ORDER BY tp.created_at ASC
                 LIMIT 500
-                """, new { id });
+                """, new { id, status });
 
             // Group by participant to nest members
             var grouped = flat
