@@ -60,34 +60,33 @@ public sealed class RoleEnrichmentMiddleware(
             "SELECT role FROM public.user_roles WHERE user_id = @userId",
             new { userId = userGuid })).ToArray();
 
-        // Query admin roles assigned to this user (handles both profiles.admin_roles array
-        // and the normalized admin_user_roles join table).
-        // Uses ar.name (always exists) — ar.key is added by a later migration and may not exist yet.
+        // Query admin roles from the normalized admin_user_roles table (single source of truth).
         string[] adminRoles;
+        string[] permissions;
         try
         {
             adminRoles = (await Dapper.SqlMapper.QueryAsync<string>(conn, """
-                SELECT DISTINCT ar.name
+                SELECT DISTINCT ar.key
                 FROM public.admin_user_roles aur
                 JOIN public.admin_roles ar ON ar.id = aur.role_id
                 WHERE aur.user_id = @userId
-                UNION
-                SELECT UNNEST(p.admin_roles)
-                FROM public.profiles p
-                WHERE p.id = @userId AND p.admin_roles IS NOT NULL
+                """, new { userId = userGuid })).ToArray();
+
+            // Resolve permissions from DB via role → permission mappings
+            permissions = (await Dapper.SqlMapper.QueryAsync<string>(conn, """
+                SELECT DISTINCT ap.name
+                FROM public.admin_user_roles aur
+                JOIN public.admin_role_permissions arp ON arp.role_id = aur.role_id
+                JOIN public.admin_permissions ap ON ap.id = arp.permission_id
+                WHERE aur.user_id = @userId
                 """, new { userId = userGuid })).ToArray();
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "[RoleEnrichment] Admin roles query failed for {UserId}, defaulting to empty", userId);
             adminRoles = [];
+            permissions = [];
         }
-
-        // Resolve permissions from admin role keys
-        var permissions = adminRoles
-            .SelectMany(r => AdminRoles.RolePermissions.TryGetValue(r, out var perms) ? perms : [])
-            .Distinct()
-            .ToArray();
 
         var email = context.User.FindFirstValue(ClaimTypes.Email)
                  ?? context.User.FindFirstValue("email")
