@@ -14,7 +14,7 @@ public static class AuthEndpoints
     private static readonly string[] AllowedRedirectHosts =
     [
         "esportra.com", "www.esportra.com", "staging.esportra.com",
-        "partner.esportra.com", "localhost",
+        "frontend-staging.esportra.com", "partner.esportra.com", "localhost",
     ];
 
     public static void MapAuthEndpoints(this WebApplication app)
