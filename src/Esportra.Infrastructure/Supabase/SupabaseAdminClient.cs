@@ -59,7 +59,7 @@ public sealed class SupabaseAdminClient(
         {
             type         = "recovery",
             email        = email,
-            redirect_to  = "https://esportra.com", // not used — we use token_hash
+            redirect_to  = config["FrontendUrl"]?.TrimEnd('/') ?? "https://esportra.com",
         });
 
         var res = await http.SendAsync(req, ct);

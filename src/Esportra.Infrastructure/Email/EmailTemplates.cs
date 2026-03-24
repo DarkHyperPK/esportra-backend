@@ -8,6 +8,19 @@ namespace Esportra.Infrastructure.Email;
 /// </summary>
 public static class EmailTemplates
 {
+    // ── URL configuration — set via Init() on startup ────────────────────────
+    private static string _frontendUrl = "https://esportra.com";
+    private static string _supabaseUrl = "https://api.esportra.com";
+
+    /// <summary>
+    /// Call once at startup to inject environment-aware URLs into all email templates.
+    /// </summary>
+    public static void Init(string frontendUrl, string supabaseUrl)
+    {
+        _frontendUrl = frontendUrl.TrimEnd('/');
+        _supabaseUrl = supabaseUrl.TrimEnd('/');
+    }
+
     // ── Base wrapper ──────────────────────────────────────────────────────────
 
     private static string Wrap(string preheader, string subject, string body) => $"""
@@ -26,7 +39,7 @@ public static class EmailTemplates
                 <!-- Header -->
                 <tr>
                   <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-                    <img src="https://api.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
+                    <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
                   </td>
                 </tr>
                 <!-- Body -->
@@ -92,7 +105,7 @@ public static class EmailTemplates
         Wrap("Your competitive journey starts here.", "Welcome to Esportra", $"""
             {H1($"Welcome, {username}!")}
             {P("You've joined the premier esports tournament platform. Start by joining or creating a team, then register for upcoming tournaments.")}
-            {Btn("https://esportra.com/tournaments", "Browse Tournaments")}
+            {Btn($"{_frontendUrl}/tournaments", "Browse Tournaments")}
         """)
     );
 
@@ -163,7 +176,7 @@ public static class EmailTemplates
               """)}
             </table>
             {P("Keep an eye on your notifications for check-in reminders and match schedules.")}
-            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? "https://esportra.com" : tournamentUrl)}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
+            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : tournamentUrl)}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
             {Btn(tournamentUrl, "View Tournament")}
         """)
     );
@@ -295,7 +308,7 @@ public static class EmailTemplates
             {Divider()}
 
             <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;text-align:center;">
-              Need help getting started? Visit our <a href="https://esportra.com/help" style="color:#e11d48;text-decoration:underline;">Help Center</a> or reach out to <a href="mailto:support@esportra.com" style="color:#e11d48;text-decoration:underline;">support@esportra.com</a>
+              Need help getting started? Visit our <a href="{_frontendUrl}/help" style="color:#e11d48;text-decoration:underline;">Help Center</a> or reach out to <a href="mailto:support@esportra.com" style="color:#e11d48;text-decoration:underline;">support@esportra.com</a>
             </p>
         """)
     );

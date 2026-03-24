@@ -283,6 +283,11 @@ Console.WriteLine("[STARTUP] App built successfully.");
 }
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Initialize email templates with environment-aware URLs ────────────────────
+Esportra.Infrastructure.Email.EmailTemplates.Init(
+    builder.Configuration["FrontendUrl"] ?? "https://esportra.com",
+    builder.Configuration["Supabase:Url"] ?? "https://api.esportra.com");
+
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
