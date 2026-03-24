@@ -583,10 +583,17 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersBan)) return Results.Forbid();
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
-                "SELECT admin_suspend_user(@p_user_id, @p_reason, @p_admin_id)",
-                new { p_user_id = userId, p_reason = req.Reason, p_admin_id = userCtx.UserIdGuid });
+                """
+                UPDATE profiles
+                SET is_suspended = true,
+                    suspension_reason = @reason,
+                    updated_at = NOW()
+                WHERE id = @userId
+                """,
+                new { userId, reason = req.Reason });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -599,10 +606,19 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersBan)) return Results.Forbid();
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
-                "SELECT admin_unsuspend_user(@p_user_id, @p_admin_id)",
-                new { p_user_id = userId, p_admin_id = userCtx.UserIdGuid });
+                """
+                UPDATE profiles
+                SET is_suspended = false,
+                    suspension_reason = null,
+                    suspension_type = null,
+                    suspension_until = null,
+                    updated_at = NOW()
+                WHERE id = @userId
+                """,
+                new { userId });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
