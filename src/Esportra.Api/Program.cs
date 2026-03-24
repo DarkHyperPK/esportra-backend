@@ -387,6 +387,7 @@ app.MapGet("/health/pg-diag", async (IDbConnectionFactory db, IConfiguration con
 }).AllowAnonymous();
 
 app.UseCors("EsportraPolicy");
+app.UseStaticFiles();  // Serve wwwroot/ (email templates, etc.)
 
 // Global exception handler — placed right after CORS so error responses keep
 // Access-Control-Allow-Origin headers instead of being swallowed as "CORS blocked".
