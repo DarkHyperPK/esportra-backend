@@ -854,14 +854,16 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            using var txn = conn.BeginTransaction();
             await conn.ExecuteAsync(
-                "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId });
+                "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId }, txn);
             foreach (var role in (req.Roles ?? []))
             {
                 await conn.ExecuteAsync(
                     "INSERT INTO public.user_roles (user_id, role) VALUES (@id, @role) ON CONFLICT DO NOTHING",
-                    new { id = userId, role });
+                    new { id = userId, role }, txn);
             }
+            txn.Commit();
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -879,22 +881,25 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            using var txn = conn.BeginTransaction();
 
             if (req.IsAdmin.HasValue)
                 await conn.ExecuteAsync(
                     "UPDATE profiles SET is_admin = @isAdmin WHERE id = @userId",
-                    new { userId, isAdmin = req.IsAdmin.Value });
+                    new { userId, isAdmin = req.IsAdmin.Value }, txn);
 
             if (req.AdminRoles is not null)
             {
                 await conn.ExecuteAsync(
                     "DELETE FROM admin_user_roles WHERE user_id = @userId",
-                    new { userId });
+                    new { userId }, txn);
                 foreach (var roleId in req.AdminRoles)
                     await conn.ExecuteAsync(
                         "INSERT INTO admin_user_roles (user_id, role_id) VALUES (@userId, @roleId) ON CONFLICT DO NOTHING",
-                        new { userId, roleId });
+                        new { userId, roleId }, txn);
             }
+
+            txn.Commit();
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
@@ -1415,15 +1420,23 @@ public static class AdminEndpoints
         // ── GET /api/users/{userId}/role ───────────────────────────────────────
         app.MapGet("/api/users/{userId}/role", async (
             Guid                 userId,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            // Only the user themselves or an admin can query roles
+            if (userCtx.UserIdGuid != userId && !userCtx.Roles.Contains("admin"))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
             var roles = (await conn.QueryAsync<string>(
                 "SELECT role FROM user_roles WHERE user_id = @userId AND is_active = TRUE",
                 new { userId })).ToList();
             return Results.Ok(new { userId, roles });
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/users/{userId}/role ───────────────────────────────────────
         app.MapPut("/api/users/{userId}/role", async (
@@ -1643,31 +1656,42 @@ public static class AdminEndpoints
         CancellationToken ct)
     {
         // Delete in dependency order to avoid FK constraint errors.
-        // Child/junction tables first, then parent tables, then auth.
-        await conn.ExecuteAsync(
-            "DELETE FROM public.match_result_reports WHERE reported_by = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.match_messages WHERE sender_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.notifications WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.tournament_staff WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.organization_staff WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.sponsor_accounts WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.tournament_participants WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.team_members WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.tournaments WHERE organizer_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId });
-        await conn.ExecuteAsync(
-            "DELETE FROM public.profiles WHERE id = @id", new { id = userId });
+        // Wrap in transaction so a mid-way failure doesn't leave partial data.
+        using var txn = conn.BeginTransaction();
+        try
+        {
+            await conn.ExecuteAsync(
+                "DELETE FROM public.match_result_reports WHERE reported_by = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.match_messages WHERE sender_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.notifications WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.tournament_staff WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.organization_staff WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.sponsor_accounts WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.tournament_participants WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.team_members WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.tournaments WHERE organizer_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId }, txn);
+            await conn.ExecuteAsync(
+                "DELETE FROM public.profiles WHERE id = @id", new { id = userId }, txn);
 
-        // Finally delete from Supabase Auth
+            txn.Commit();
+        }
+        catch
+        {
+            txn.Rollback();
+            throw;
+        }
+
+        // Finally delete from Supabase Auth (outside transaction — can't rollback external service)
         await supabase.DeleteUserAsync(userId.ToString(), ct);
         return Results.Ok(new { success = true });
     }

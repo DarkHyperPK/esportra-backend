@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 
 namespace Esportra.Infrastructure.Email;
@@ -20,6 +21,9 @@ public static class EmailTemplates
         _frontendUrl = frontendUrl.TrimEnd('/');
         _supabaseUrl = supabaseUrl.TrimEnd('/');
     }
+
+    /// <summary>HTML-encode user-provided values to prevent injection.</summary>
+    private static string E(string? value) => WebUtility.HtmlEncode(value ?? "");
 
     // ── Base wrapper ──────────────────────────────────────────────────────────
 
@@ -103,7 +107,7 @@ public static class EmailTemplates
     (
         "Welcome to Esportra!",
         Wrap("Your competitive journey starts here.", "Welcome to Esportra", $"""
-            {H1($"Welcome, {username}!")}
+            {H1($"Welcome, {E(username)}!")}
             {P("You've joined the premier esports tournament platform. Start by joining or creating a team, then register for upcoming tournaments.")}
             {Btn($"{_frontendUrl}/tournaments", "Browse Tournaments")}
         """)
@@ -113,17 +117,17 @@ public static class EmailTemplates
         string username, string tournamentName, string startDate, string tournamentUrl,
         string endDate = "", string game = "", string teamName = "", string registrationType = "") =>
     (
-        $"You're registered for {tournamentName}",
-        Wrap($"You're in for {tournamentName}", "Tournament Registration", $"""
+        $"You're registered for {E(tournamentName)}",
+        Wrap($"You're in for {E(tournamentName)}", "Tournament Registration", $"""
             {H1("Registration Confirmed! 🎮")}
-            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, you've successfully registered for <strong style='color:#f9fafb;'>{tournamentName}</strong>.")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : E(username))}, you've successfully registered for <strong style='color:#f9fafb;'>{E(tournamentName)}</strong>.")}
             <table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0 24px; border:1px solid #1f2937; border-radius:8px; overflow:hidden;">
               <tr style="background:#1a1a2e;">
                 <td style="padding:12px 16px; border-bottom:1px solid #1f2937;">
                   <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Tournament</span>
                 </td>
                 <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
-                  <strong style="color:#f9fafb; font-size:14px;">{tournamentName}</strong>
+                  <strong style="color:#f9fafb; font-size:14px;">{E(tournamentName)}</strong>
                 </td>
               </tr>
               {(string.IsNullOrWhiteSpace(game) ? "" : $"""
@@ -132,7 +136,7 @@ public static class EmailTemplates
                   <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Game</span>
                 </td>
                 <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
-                  <strong style="color:#f9fafb; font-size:14px;">{game}</strong>
+                  <strong style="color:#f9fafb; font-size:14px;">{E(game)}</strong>
                 </td>
               </tr>
               """)}
@@ -142,7 +146,7 @@ public static class EmailTemplates
                   <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Team</span>
                 </td>
                 <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
-                  <strong style="color:#f9fafb; font-size:14px;">{teamName}</strong>
+                  <strong style="color:#f9fafb; font-size:14px;">{E(teamName)}</strong>
                 </td>
               </tr>
               """)}
@@ -152,7 +156,7 @@ public static class EmailTemplates
                   <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Type</span>
                 </td>
                 <td style="padding:12px 16px; border-bottom:1px solid #1f2937; text-align:right;">
-                  <strong style="color:#f9fafb; font-size:14px;">{registrationType.ToUpper()}</strong>
+                  <strong style="color:#f9fafb; font-size:14px;">{E(registrationType).ToUpper()}</strong>
                 </td>
               </tr>
               """)}
@@ -184,10 +188,10 @@ public static class EmailTemplates
     public static (string Subject, string Html) TeamInvite(
         string inviteeName, string teamName, string captainName, string acceptUrl) =>
     (
-        $"You've been invited to join {teamName}",
-        Wrap($"Team invite from {captainName}", "Team Invitation", $"""
+        $"You've been invited to join {E(teamName)}",
+        Wrap($"Team invite from {E(captainName)}", "Team Invitation", $"""
             {H1("Team Invitation")}
-            {P($"Hi {inviteeName}, <strong style='color:#f9fafb;'>{captainName}</strong> has invited you to join <strong style='color:#f9fafb;'>{teamName}</strong>.")}
+            {P($"Hi {E(inviteeName)}, <strong style='color:#f9fafb;'>{E(captainName)}</strong> has invited you to join <strong style='color:#f9fafb;'>{E(teamName)}</strong>.")}
             {Btn(acceptUrl, "Accept Invitation")}
         """)
     );
@@ -195,11 +199,11 @@ public static class EmailTemplates
     public static (string Subject, string Html) StaffInvite(
         string inviteeName, string orgName, string role, string permissions, string acceptUrl) =>
     (
-        $"Staff invitation: {orgName}",
-        Wrap($"You've been invited to staff {orgName}", "Staff Invitation", $"""
+        $"Staff invitation: {E(orgName)}",
+        Wrap($"You've been invited to staff {E(orgName)}", "Staff Invitation", $"""
             {H1("Staff Invitation")}
-            {P($"Hi {inviteeName}, you've been invited to join <strong style='color:#f9fafb;'>{orgName}</strong> as <strong style='color:#f9fafb;'>{role}</strong>.")}
-            {P($"<strong style='color:#f9fafb;'>Permissions:</strong> {permissions}")}
+            {P($"Hi {E(inviteeName)}, you've been invited to join <strong style='color:#f9fafb;'>{E(orgName)}</strong> as <strong style='color:#f9fafb;'>{E(role)}</strong>.")}
+            {P($"<strong style='color:#f9fafb;'>Permissions:</strong> {E(permissions)}")}
             {Btn(acceptUrl, "Accept Invitation")}
         """)
     );
@@ -207,9 +211,9 @@ public static class EmailTemplates
     public static (string Subject, string Html) PartnerInvite(
         string sponsorName, string setupUrl) =>
     (
-        $"Partner Portal access: {sponsorName}",
+        $"Partner Portal access: {E(sponsorName)}",
         Wrap("Set up your partner account", "Partner Portal Access", $"""
-            {H1($"Welcome to the {sponsorName} Partner Portal")}
+            {H1($"Welcome to the {E(sponsorName)} Partner Portal")}
             {P("You've been invited to manage your sponsor account on Esportra.")}
             {P("Click below to set up your password and access the portal.")}
             {Btn(setupUrl, "Set Up Account")}
@@ -219,9 +223,9 @@ public static class EmailTemplates
     public static (string Subject, string Html) PartnerWelcome(
         string sponsorName, string portalUrl) =>
     (
-        $"Partner Portal access: {sponsorName}",
+        $"Partner Portal access: {E(sponsorName)}",
         Wrap("Your partner account is ready", "Partner Portal Access", $"""
-            {H1($"Welcome back, {sponsorName} partner!")}
+            {H1($"Welcome back, {E(sponsorName)} partner!")}
             {P("Your account has been linked to the Esportra Partner Portal.")}
             {Btn(portalUrl, "Go to Partner Portal")}
         """)
@@ -244,7 +248,7 @@ public static class EmailTemplates
         "Your license application has been received",
         Wrap("We received your license application", "License Application Received", $"""
             {H1("Application Received! 📋")}
-            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, thank you for applying for a <strong style='color:#f9fafb;'>{FormatLicenseType(licenseType)}</strong> license on Esportra.")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : E(username))}, thank you for applying for a <strong style='color:#f9fafb;'>{E(FormatLicenseType(licenseType))}</strong> license on Esportra.")}
 
             <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;border:1px solid #1f2937;border-radius:8px;overflow:hidden;">
               <tr style="background:#1a1a2e;">
@@ -267,7 +271,7 @@ public static class EmailTemplates
         $"Your {FormatLicenseType(licenseType)} license has been approved!",
         Wrap("Your license has been approved", "License Approved", $"""
             {H1("License Approved! 🎉")}
-            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : username)}, great news — your <strong style='color:#f9fafb;'>{FormatLicenseType(licenseType)}</strong> license has been approved.")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : E(username))}, great news — your <strong style='color:#f9fafb;'>{E(FormatLicenseType(licenseType))}</strong> license has been approved.")}
 
             <!-- License Details Card -->
             <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;border:1px solid #1f2937;border-radius:8px;overflow:hidden;">

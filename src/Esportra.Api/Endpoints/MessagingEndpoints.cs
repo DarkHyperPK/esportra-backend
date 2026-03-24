@@ -108,6 +108,12 @@ public static class MessagingEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Verify caller is a participant of this conversation
+            var isMember = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM conversation_participants WHERE conversation_id = @id AND user_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isMember) return Results.Forbid();
+
             var messages = await conn.QueryAsync<dynamic>(
                 """
                 SELECT m.*, jsonb_build_object(

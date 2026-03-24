@@ -11,6 +11,12 @@ public sealed class RiotApiClient(HttpClient http, IConfiguration config)
 {
     private readonly string _apiKey = config["Riot:ApiKey"] ?? string.Empty;
 
+    private static readonly string[] AllowedRegions =
+    [
+        "na", "eu", "ap", "kr", "br", "latam",
+        "americas", "europe", "asia", "esports",
+    ];
+
     private static readonly string[] AllowedPrefixes =
     [
         "/riot/account/v1/accounts/",
@@ -28,6 +34,9 @@ public sealed class RiotApiClient(HttpClient http, IConfiguration config)
     public async Task<(int StatusCode, string Body)> ProxyAsync(
         string region, string endpoint, CancellationToken ct = default)
     {
+        if (!AllowedRegions.Contains(region, StringComparer.OrdinalIgnoreCase))
+            return (403, """{"error":"Region not allowlisted"}""");
+
         if (!AllowedPrefixes.Any(p => endpoint.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
             return (403, """{"error":"Endpoint not allowlisted"}""");
 

@@ -743,8 +743,8 @@ public static class TournamentEndpoints
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
             Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
             var   participantType = teamIdGuid is not null ? "team" : "solo";
-            // Use requested status if valid, otherwise default based on entry fee
-            var   regStatus       = req.Status is "pending" or "approved" ? req.Status : "approved";
+            // Server determines registration status — never trust user-supplied value
+            var   regStatus       = "pending";
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -968,6 +968,13 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns this tournament
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
             var removed = await conn.ExecuteAsync(
                 """
                 UPDATE tournament_participants
@@ -993,6 +1000,12 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns this tournament
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
 
             // Get participant info
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1621,11 +1634,27 @@ public static class TournamentEndpoints
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             var req = await System.Text.Json.JsonSerializer.DeserializeAsync<UpdateDisputeRequest>(
                 ctx.Request.Body, s_snakeCase, ct);
             if (req is null) return Results.BadRequest("Invalid body");
 
             using var conn = db.CreateConnection();
+
+            // Verify caller is the tournament organizer for this dispute
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_disputes d
+                    JOIN tournaments t ON t.id = d.tournament_id
+                    WHERE d.id = @disputeId AND t.organizer_id = @userId
+                )
+                """,
+                new { disputeId, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
             var setClauses = new List<string>();
             var parameters = new DynamicParameters();
             parameters.Add("disputeId", disputeId);
@@ -1719,6 +1748,18 @@ public static class TournamentEndpoints
             try
             {
             using var conn = db.CreateConnection();
+
+            // Verify caller is the tournament organizer for this dispute
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_disputes d
+                    JOIN tournaments t ON t.id = d.tournament_id
+                    WHERE d.id = @disputeId AND t.organizer_id = @userId
+                )
+                """,
+                new { disputeId, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
 
             // Update dispute status
             await conn.ExecuteAsync(
@@ -2257,11 +2298,18 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns this tournament
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@id, @mapId) ON CONFLICT DO NOTHING",
                 new { id, mapId = req.MapId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Organizer");
 
         // ── DELETE /api/tournaments/{id}/map-pool/{mapId} ─────────────────────
         app.MapDelete("/api/tournaments/{id}/map-pool/{mapId}", async (
@@ -2275,11 +2323,18 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller owns this tournament
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_map_pools WHERE tournament_id = @id AND map_id = @mapId",
                 new { id, mapId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Organizer");
 
         // ── GET /api/tournaments/{id}/match-reports ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-reports", async (

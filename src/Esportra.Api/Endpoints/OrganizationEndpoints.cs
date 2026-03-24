@@ -37,6 +37,20 @@ public static class OrganizationEndpoints
         return org;
     }
 
+    /// <summary>Returns true if the user is the org owner or an active staff member.</summary>
+    private static async Task<bool> IsOrgMember(IDbConnection conn, Guid orgId, Guid userId)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId
+                UNION ALL
+                SELECT 1 FROM organization_staff WHERE organization_id = @orgId AND user_id = @userId AND status = 'active'
+            )
+            """,
+            new { orgId, userId });
+    }
+
     public static void MapOrganizationEndpoints(this WebApplication app)
     {
         // ── GET /api/organizations/{orgId}/staff ───────────────────────────────
@@ -119,6 +133,9 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
 
             // 1. Resolve user by email
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -229,6 +246,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 """
                 UPDATE organization_staff
@@ -255,6 +276,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "DELETE FROM organization_staff WHERE id = @staffId AND organization_id = @orgId",
                 new { staffId, orgId });
@@ -366,6 +391,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             if (req.TournamentIds.Count > 0)
             {
                 await conn.ExecuteAsync(
@@ -394,6 +423,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "DELETE FROM staff_tournament_assignments WHERE id = @assignmentId",
                 new { assignmentId });
@@ -625,6 +658,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 """
                 INSERT INTO organization_media (organization_id, url, type, caption, album_id)
@@ -647,6 +684,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "DELETE FROM organization_media WHERE id = @mediaId AND organization_id = @orgId",
                 new { mediaId, orgId });
@@ -665,6 +706,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             var album = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 INSERT INTO organization_albums (organization_id, title, description)
@@ -687,6 +732,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             // CASCADE delete handles media
             await conn.ExecuteAsync(
                 "DELETE FROM organization_albums WHERE id = @albumId",
@@ -706,6 +755,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "UPDATE organizations SET logo_url = @url WHERE id = @orgId",
                 new { orgId, url = req.Url });
@@ -724,6 +777,10 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "UPDATE organizations SET banner_url = @url WHERE id = @orgId",
                 new { orgId, url = req.Url });
@@ -741,6 +798,13 @@ public static class OrganizationEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Only the owner can delete the organization
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+                new { orgId, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
             var result = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT * FROM delete_organization_safely(@p_org_id)",
                 new { p_org_id = orgId });

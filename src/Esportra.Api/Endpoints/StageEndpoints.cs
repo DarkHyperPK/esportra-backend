@@ -32,6 +32,7 @@ public static class StageEndpoints
                 "SELECT organizer_id FROM tournaments WHERE id = @tournamentId",
                 new { tournamentId });
             if (tournament is null) return Results.NotFound();
+            if ((Guid)tournament.organizer_id != userCtx.UserIdGuid) return Results.Forbid();
 
             // Get existing stage IDs as Guid for proper uuid comparison
             var existingGuids = (await conn.QueryAsync<Guid>(
@@ -129,6 +130,12 @@ public static class StageEndpoints
             {
                 using var conn = db.CreateConnection();
 
+                // Verify ownership
+                var isOwner = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
+                    new { tournamentId, userId = userCtx.UserIdGuid });
+                if (!isOwner) return Results.Forbid();
+
                 await conn.ExecuteAsync(
                     "DELETE FROM tournament_map_pools WHERE tournament_id = @tournamentId",
                     new { tournamentId });
@@ -173,6 +180,12 @@ public static class StageEndpoints
                 new { stageId });
             if (stage is null) return Results.NotFound(new { error = "Stage not found" });
 
+            // Verify ownership
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
+                new { tid = (Guid)stage.tournament_id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET status = @status, updated_at = NOW() WHERE id = @stageId",
                 new { stageId, status = req.Status });
@@ -193,6 +206,17 @@ public static class StageEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify ownership via stage → tournament
+            var tournamentOwnerId = await conn.ExecuteScalarAsync<Guid?>(
+                """
+                SELECT t.organizer_id FROM tournament_stages s
+                JOIN tournaments t ON t.id = s.tournament_id
+                WHERE s.id = @stageId
+                """,
+                new { stageId });
+            if (tournamentOwnerId is null || tournamentOwnerId != userCtx.UserIdGuid) return Results.Forbid();
+
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET stage_order = @order, updated_at = NOW() WHERE id = @stageId",
                 new { stageId, order = req.StageOrder });
@@ -213,6 +237,12 @@ public static class StageEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify ownership
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
+                new { tournamentId, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
 
             if (req.DeleteIds is not { Length: > 0 })
                 return Results.BadRequest(new { error = "No stage IDs provided." });
