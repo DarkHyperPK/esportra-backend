@@ -159,7 +159,7 @@ public static class MessagingEndpoints
                 if (existingConvId is not null)
                 {
                     var existing = await conn.QuerySingleAsync<dynamic>(
-                        "SELECT * FROM conversations WHERE id = @id", new { id = Guid.Parse(existingConvId) });
+                        "SELECT id, type, title, created_by, created_at, updated_at FROM conversations WHERE id = @id", new { id = Guid.Parse(existingConvId) });
                     return Results.Ok(existing);
                 }
             }
@@ -168,7 +168,7 @@ public static class MessagingEndpoints
                 """
                 INSERT INTO conversations (type, title, created_by)
                 VALUES (@type, @title, @createdBy)
-                RETURNING *
+                RETURNING id, type, title, created_by, created_at
                 """,
                 new { type = req.Type, title = req.Title, createdBy = userCtx.UserIdGuid });
 

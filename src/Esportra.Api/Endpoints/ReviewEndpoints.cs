@@ -178,7 +178,7 @@ public static class ReviewEndpoints
                 """
                 INSERT INTO reviews (reviewer_id, reviewee_id, venue_id, tournament_id, rating, title, comment, review_type)
                 VALUES (@reviewerId, @revieweeId, @venueId, @tournamentId, @rating, @title, @comment, @reviewType)
-                RETURNING *
+                RETURNING id, reviewer_id, reviewee_id, venue_id, tournament_id, rating, title, comment, review_type, created_at
                 """,
                 new
                 {
@@ -221,7 +221,7 @@ public static class ReviewEndpoints
                     comment    = COALESCE(@comment, comment),
                     updated_at = NOW()
                 WHERE id = @id
-                RETURNING *
+                RETURNING id, reviewer_id, reviewee_id, venue_id, tournament_id, rating, title, comment, review_type, created_at, updated_at
                 """,
                 new { id, rating = req.Rating, title = req.Title, comment = req.Comment });
 

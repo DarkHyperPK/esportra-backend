@@ -100,7 +100,7 @@ public static class ProfileEndpoints
             parameters.Add("updated_at", DateTime.UtcNow);
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING *",
+                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, created_at, updated_at",
                 parameters);
 
             if (row is null) return Results.NotFound();
@@ -150,7 +150,7 @@ public static class ProfileEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT id, username, full_name, email, avatar_url, is_verified
+                SELECT id, username, full_name, avatar_url, is_verified
                 FROM profiles
                 {where}
                 ORDER BY username
@@ -233,7 +233,7 @@ public static class ProfileEndpoints
                 INSERT INTO user_achievements (user_id, achievement_id)
                 VALUES (@userId, @achievementId)
                 ON CONFLICT (user_id, achievement_id) DO NOTHING
-                RETURNING *, (SELECT row_to_json(a) FROM achievements a WHERE a.id = achievement_id) AS achievement
+                RETURNING id, user_id, achievement_id, created_at, (SELECT row_to_json(a) FROM achievements a WHERE a.id = achievement_id) AS achievement
                 """,
                 new { userId = userCtx.UserIdGuid, achievementId });
 

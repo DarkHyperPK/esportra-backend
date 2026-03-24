@@ -125,7 +125,9 @@ public static class MatchSystemEndpoints
                    comment        = EXCLUDED.comment,
                    status         = 'pending',
                    updated_at     = now()
-                RETURNING *
+                RETURNING id, match_id, game_number, reported_by_team_id, team1_score, team2_score,
+                         winner_team_id, riot_match_id, map_id, map_name, match_data,
+                         screenshot_urls, comment, status, created_at, updated_at
                 """,
                 new
                 {
@@ -216,7 +218,7 @@ public static class MatchSystemEndpoints
             {
                 logger.LogError(ex, "Failed to submit match report for match {MatchId}", id);
                 return Results.Problem(
-                    detail: ex.Message,
+                    detail: "Report submission failed. Please try again.",
                     statusCode: 500,
                     title: "Report submission failed");
             }
@@ -502,7 +504,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to accept report {ReportId} for match {MatchId}", rid, id);
-                return Results.Problem(detail: ex.Message, statusCode: 500, title: "Accept failed");
+                return Results.Problem(detail: "Failed to accept report. Please try again.", statusCode: 500, title: "Accept failed");
             }
         }).RequireAuthorization("Authenticated");
 
@@ -583,7 +585,8 @@ public static class MatchSystemEndpoints
                         (@tournamentId, @matchId, @userId, @teamId,
                          'Match Result Disputed', @reason, 'result_dispute', 'open',
                          'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
-                    RETURNING *
+                    RETURNING id, tournament_id, match_id, raised_by_user_id, team_id,
+                             title, description, dispute_reason, status, reference_number, created_at
                     """,
                     new
                     {
@@ -634,7 +637,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 tx.Rollback();
-                return Results.Problem($"Failed to file dispute: {ex.Message}");
+                return Results.Problem("Failed to file dispute. Please try again.");
             }
         }).RequireAuthorization("Authenticated");
 
@@ -984,7 +987,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to create time proposal for match {MatchId}", matchId);
-                return Results.Json(new { error = "Failed to create time proposal.", detail = ex.Message }, statusCode: 500);
+                return Results.Json(new { error = "Failed to create time proposal." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -1167,7 +1170,7 @@ public static class MatchSystemEndpoints
                     (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
                 VALUES
                     (@matchId, @teamId, @userId, @reason, @evidenceUrls, 'pending')
-                RETURNING *
+                RETURNING id, match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status, created_at
                 """,
                 new
                 {

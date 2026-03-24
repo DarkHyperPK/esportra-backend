@@ -291,7 +291,7 @@ public static class MatchEndpoints
             catch (Exception ex)
             {
                 log.LogError(ex, "Scan failed for match {MatchId}", req.MatchId);
-                return Results.Json(new { error = ex.Message, type = ex.GetType().Name }, statusCode: 500);
+                return Results.Json(new { error = "Match scan failed. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -351,9 +351,9 @@ public static class MatchEndpoints
                 if (!success)
                     return Results.Conflict(new { error = "Match state has changed — retry." });
             }
-            catch (InvalidOperationException ex)
+            catch (InvalidOperationException)
             {
-                return Results.Conflict(new { error = ex.Message });
+                return Results.Conflict(new { error = "Match state has changed — retry." });
             }
 
             // 5. Mark report as processed
@@ -468,9 +468,9 @@ public static class MatchEndpoints
 
                 if (!success) return Results.Conflict(new { error = "Match state has changed." });
             }
-            catch (InvalidOperationException ex)
+            catch (InvalidOperationException)
             {
-                return Results.Conflict(new { error = ex.Message });
+                return Results.Conflict(new { error = "Match state has changed — retry." });
             }
 
             await matchHub.Clients

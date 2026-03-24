@@ -78,7 +78,7 @@ public static class VetoEndpoints
             catch (InvalidOperationException ex)
             {
                 logger.LogWarning(ex, "Veto init failed for match {MatchId}", matchId);
-                return Results.BadRequest(new { error = ex.Message });
+                return Results.BadRequest(new { error = "Veto initialization failed." });
             }
             catch (Exception ex)
             {
@@ -86,7 +86,7 @@ public static class VetoEndpoints
                 // On conflict (duplicate), try to return existing
                 var fallback = await veto.GetAsync(matchId, ct);
                 if (fallback is not null) return Results.Ok(fallback);
-                return Results.Json(new { error = "Failed to initialize veto: " + ex.Message }, statusCode: 500);
+                return Results.Json(new { error = "Failed to initialize veto." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -110,15 +110,16 @@ public static class VetoEndpoints
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
                 return Results.Ok(result);
             }
-            catch (UnauthorizedAccessException ex)
+            catch (UnauthorizedAccessException)
             {
-                return Results.Json(new { error = ex.Message }, statusCode: 403);
+                return Results.Json(new { error = "Not authorized for this veto action." }, statusCode: 403);
             }
             catch (InvalidOperationException ex)
             {
+                // Domain exceptions from VetoDbService use CONFLICT prefix for state conflicts
                 return ex.Message.StartsWith("CONFLICT")
-                    ? Results.Conflict(new { error = ex.Message })
-                    : Results.BadRequest(new { error = ex.Message });
+                    ? Results.Conflict(new { error = "Veto state conflict — please refresh." })
+                    : Results.BadRequest(new { error = "Invalid veto action." });
             }
         }).RequireAuthorization("Authenticated");
 
@@ -146,15 +147,15 @@ public static class VetoEndpoints
 
                 return Results.Ok(result);
             }
-            catch (UnauthorizedAccessException ex)
+            catch (UnauthorizedAccessException)
             {
-                return Results.Json(new { error = ex.Message }, statusCode: 403);
+                return Results.Json(new { error = "Not authorized for this veto action." }, statusCode: 403);
             }
             catch (InvalidOperationException ex)
             {
                 return ex.Message.StartsWith("CONFLICT")
-                    ? Results.Conflict(new { error = ex.Message })
-                    : Results.BadRequest(new { error = ex.Message });
+                    ? Results.Conflict(new { error = "Veto state conflict — please refresh." })
+                    : Results.BadRequest(new { error = "Invalid veto action." });
             }
         }).RequireAuthorization("Authenticated");
 
@@ -182,15 +183,15 @@ public static class VetoEndpoints
 
                 return Results.Ok(result);
             }
-            catch (UnauthorizedAccessException ex)
+            catch (UnauthorizedAccessException)
             {
-                return Results.Json(new { error = ex.Message }, statusCode: 403);
+                return Results.Json(new { error = "Not authorized for this veto action." }, statusCode: 403);
             }
             catch (InvalidOperationException ex)
             {
                 return ex.Message.StartsWith("CONFLICT")
-                    ? Results.Conflict(new { error = ex.Message })
-                    : Results.BadRequest(new { error = ex.Message });
+                    ? Results.Conflict(new { error = "Veto state conflict — please refresh." })
+                    : Results.BadRequest(new { error = "Invalid veto action." });
             }
         }).RequireAuthorization("Authenticated");
 

@@ -172,7 +172,7 @@ public static class NotificationEndpoints
             }
             catch (Exception ex)
             {
-                return Results.Json(new { error = "Failed to create notification", detail = ex.Message }, statusCode: 500);
+                return Results.Json(new { error = "Failed to create notification." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 

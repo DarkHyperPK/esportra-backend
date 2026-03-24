@@ -40,7 +40,10 @@ public static class PartnerEndpoints
                     (@companyName, @companyWebsite, @companySize, @industry,
                      @contactName, @contactEmail, @contactPhone, @contactTitle,
                      @partnershipTier, @partnershipGoals::text[], @budgetRange, @message, @howHeard)
-                RETURNING *
+                RETURNING id, company_name, company_website, company_size, industry,
+                         contact_name, contact_email, contact_phone, contact_title,
+                         partnership_tier, partnership_goals, budget_range, message, how_heard,
+                         status, created_at
                 """,
                 new
                 {

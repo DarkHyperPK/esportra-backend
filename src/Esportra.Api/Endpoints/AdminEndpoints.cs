@@ -498,7 +498,9 @@ public static class AdminEndpoints
                     (@name, @tagline, @description, @websiteUrl, @logoUrl, @bannerImageUrl,
                      @accentColor, @tier, @placement::text[], @ctaText, @discountText,
                      @isActive, @priority, @galleryImages::text[])
-                RETURNING *
+                RETURNING id, name, tagline, description, website_url, logo_url, banner_image_url,
+                         accent_color, tier, placement, cta_text, discount_text,
+                         is_active, priority, gallery_images, created_at
                 """,
                 new
                 {
@@ -654,7 +656,7 @@ public static class AdminEndpoints
             }
             catch (Exception ex)
             {
-                return Results.Json(new { error = ex.Message }, statusCode: 502);
+                return Results.Json(new { error = "Failed to send email. Please try again." }, statusCode: 502);
             }
         }).RequireAuthorization("Authenticated");
 

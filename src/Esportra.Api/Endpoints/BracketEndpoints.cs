@@ -235,9 +235,9 @@ public static class BracketEndpoints
                 await persistence.ClearAsync(versionId, ct);
                 return Results.Ok(new { message = "Bracket deleted." });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return Results.Json(new { error = ex.Message, detail = ex.InnerException?.Message }, statusCode: 500);
+                return Results.Json(new { error = "Failed to delete bracket." }, statusCode: 500);
             }
         }).RequireAuthorization("Organizer");
 

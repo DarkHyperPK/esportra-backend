@@ -163,7 +163,8 @@ public static class TeamEndpoints
                                       owner_id, is_active, country_code)
                     VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
                             @ownerId, TRUE, @countryCode)
-                    RETURNING *
+                    RETURNING id, name, tag, game, game_format, logo_url, description,
+                             owner_id, is_active, country_code, created_at
                     """,
                     new
                     {
@@ -237,7 +238,8 @@ public static class TeamEndpoints
                     country_code = COALESCE(@countryCode, country_code),
                     updated_at  = NOW()
                 WHERE id = @id
-                RETURNING *
+                RETURNING id, name, tag, game, game_format, logo_url, banner_url, website_url,
+                         description, owner_id, is_active, country_code, created_at, updated_at
                 """,
                 new
                 {
@@ -427,7 +429,7 @@ public static class TeamEndpoints
                     UPDATE team_invitations
                     SET status = 'pending', message = @message, created_at = NOW(), responded_at = NULL
                     WHERE id = @id
-                    RETURNING *
+                    RETURNING id, team_id, invited_user_id, invited_by_user_id, invited_by, status, message, created_at
                     """,
                     new { id = existingInviteId.Value, message = req.Message });
             }
@@ -437,7 +439,7 @@ public static class TeamEndpoints
                     """
                     INSERT INTO team_invitations (team_id, invited_user_id, invited_by_user_id, invited_by, status, message)
                     VALUES (@teamId, @userId, @invitedBy, @invitedBy, 'pending', @message)
-                    RETURNING *
+                    RETURNING id, team_id, invited_user_id, invited_by_user_id, invited_by, status, message, created_at
                     """,
                     new { teamId = id, userId = reqUserIdGuid, invitedBy = userCtx.UserIdGuid, message = req.Message });
             }
@@ -608,7 +610,7 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             var users = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, username, full_name, avatar_url, is_verified, email
+                SELECT id, username, full_name, avatar_url, is_verified
                 FROM profiles
                 WHERE is_verified = TRUE
                   AND (@q IS NULL OR username ILIKE '%' || @q || '%' OR full_name ILIKE '%' || @q || '%')

@@ -332,7 +332,11 @@ public static class TournamentEndpoints
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
                         @rewards, @streamUrl, @settings::jsonb, @organizerId
                     )
-                    RETURNING *
+                    RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
+                             entry_fee, prize_pool, start_date, end_date, registration_deadline,
+                             status, banner_url, logo_url, organization_id, venue_id, is_public,
+                             check_in_required, check_in_deadline, auto_remove_unchecked,
+                             rewards, stream_url, settings, organizer_id, created_at
                     """,
                     new
                     {
@@ -462,7 +466,11 @@ public static class TournamentEndpoints
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
                 WHERE id = @id
-                RETURNING *
+                RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
+                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
+                         status, banner_url, logo_url, organization_id, venue_id, is_public,
+                         check_in_required, check_in_deadline, auto_remove_unchecked,
+                         rewards, stream_url, settings, organizer_id, created_at, updated_at
                 """,
                 new
                 {
@@ -756,7 +764,9 @@ public static class TournamentEndpoints
                         @teamMembers::jsonb, @teamContactEmail, @rosterId, @rosterName,
                         @regStatus::registration_status, @participantType::registration_type,
                         @entryFeeAmount, @entryFeePaid)
-                RETURNING *
+                RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
+                         team_members, team_contact_email, roster_id, roster_name,
+                         status, participant_type, entry_fee_amount, entry_fee_paid, created_at
                 """,
                 new
                 {
@@ -1041,7 +1051,7 @@ public static class TournamentEndpoints
             }
             catch (Exception ex)
             {
-                deleteError = ex.Message;
+                deleteError = "Failed to remove participant.";
             }
 
             return Results.Ok(new { success = true, deleteError });
@@ -1896,7 +1906,7 @@ public static class TournamentEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to resolve dispute {DisputeId}", disputeId);
-                return Results.Problem($"Failed to resolve dispute: {ex.Message}", statusCode: 500);
+                return Results.Problem("Failed to resolve dispute. Please try again.", statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -2579,7 +2589,8 @@ public static class TournamentEndpoints
                     (@tournamentId, @matchId, @teamId, @userId, @title,
                      @description, @evidenceUrl, @reason, 'open',
                      'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
-                RETURNING *
+                RETURNING id, tournament_id, match_id, team_id, raised_by_user_id, title,
+                         description, evidence_url, dispute_reason, status, reference_number, created_at
                 """,
                 new
                 {

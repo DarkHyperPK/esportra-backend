@@ -131,7 +131,10 @@ public static class VenueEndpoints
                      @stations, @hours, @games, @amenities, @images, @cardImage, @pcSpecs::jsonb,
                      @slug, @venueId, @ownerId, @contactEmail, @contactPhone,
                      @pricePerHour, @status, @submittedAt::timestamptz)
-                RETURNING *
+                RETURNING id, name, description, address, city, state, country, postal_code,
+                         stations, hours, games, amenities, images, card_image, pc_specs,
+                         slug, venue_id, owner_id, contact_email, contact_phone,
+                         price_per_hour, status, submitted_at, created_at
                 """,
                 new
                 {
@@ -228,7 +231,7 @@ public static class VenueEndpoints
 
             setClauses.Add("updated_at = NOW()");
 
-            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING *";
+            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING id, name, description, address, city, state, country, postal_code, stations, hours, games, amenities, images, card_image, pc_specs, slug, venue_id, owner_id, contact_email, contact_phone, price_per_hour, status, created_at, updated_at";
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -292,7 +295,7 @@ public static class VenueEndpoints
 
             setClauses.Add("updated_at = NOW()");
 
-            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id AND deleted_at IS NULL RETURNING *";
+            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id AND deleted_at IS NULL RETURNING id, name, description, address, city, state, country, postal_code, stations, hours, games, amenities, images, card_image, pc_specs, slug, venue_id, owner_id, contact_email, contact_phone, price_per_hour, status, created_at, updated_at";
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -408,7 +411,9 @@ public static class VenueEndpoints
                         (@venueId, @userId, @date::date, @startTime::time, @endTime::time,
                          @hours, @stations, @total, 'pending',
                          @specialRequests, @contactPhone, @contactEmail)
-                    RETURNING *
+                    RETURNING id, venue_id, user_id, booking_date, start_time, end_time,
+                             duration_hours, stations_booked, total_amount, status,
+                             special_requests, contact_phone, contact_email, created_at
                     """,
                     new
                     {

@@ -298,6 +298,7 @@ if (app.Environment.IsDevelopment())
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    ForwardLimit = 1, // Only trust the immediate proxy (Coolify/Traefik)
     // Trust all proxies inside Docker network (Coolify sets up a Docker network).
     KnownNetworks  = { },
     KnownProxies   = { },

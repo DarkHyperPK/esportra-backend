@@ -714,7 +714,7 @@ public static class OrganizationEndpoints
                 """
                 INSERT INTO organization_albums (organization_id, title, description)
                 VALUES (@orgId, @title, @description)
-                RETURNING *
+                RETURNING id, organization_id, title, description, created_at
                 """,
                 new { orgId, title = req.Title, description = req.Description });
             return Results.Ok(album);
@@ -935,7 +935,7 @@ public static class OrganizationEndpoints
                 """
                 INSERT INTO organizations (owner_id, name, slug, description, logo_url, banner_url, social_links)
                 VALUES (@ownerId, @name, @slug, @description, @logoUrl, @bannerUrl, @socialLinks::jsonb)
-                RETURNING *
+                RETURNING id, owner_id, name, slug, description, logo_url, banner_url, social_links, created_at
                 """,
                 new
                 {
@@ -977,7 +977,7 @@ public static class OrganizationEndpoints
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to deserialize organization update body");
-                return Results.BadRequest(new { error = "Invalid request body", details = ex.Message });
+                return Results.BadRequest(new { error = "Invalid request body." });
             }
             if (req is null) return Results.BadRequest(new { error = "Empty request body" });
 
@@ -1001,7 +1001,7 @@ public static class OrganizationEndpoints
                     social_links = CASE WHEN @socialLinks IS NOT NULL THEN @socialLinks::jsonb ELSE social_links END,
                     updated_at   = NOW()
                 WHERE id = @orgId
-                RETURNING *
+                RETURNING id, owner_id, name, slug, description, logo_url, banner_url, social_links, created_at, updated_at
                 """,
                 new
                 {
@@ -1021,7 +1021,7 @@ public static class OrganizationEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to update organization {OrgId}", orgId);
-                return Results.Problem($"Failed to update organization: {ex.Message}", statusCode: 500);
+                return Results.Problem("Failed to update organization. Please try again.", statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
