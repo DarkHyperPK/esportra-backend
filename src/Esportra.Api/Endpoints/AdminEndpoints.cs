@@ -1681,7 +1681,7 @@ public static class AdminEndpoints
             await conn.ExecuteAsync(
                 "DELETE FROM public.notifications WHERE user_id = @id", new { id = userId }, txn);
             await conn.ExecuteAsync(
-                "DELETE FROM public.tournament_staff WHERE user_id = @id", new { id = userId }, txn);
+                "DELETE FROM public.staff_tournament_assignments WHERE organization_staff_id IN (SELECT id FROM organization_staff WHERE user_id = @id)", new { id = userId }, txn);
             await conn.ExecuteAsync(
                 "DELETE FROM public.organization_staff WHERE user_id = @id", new { id = userId }, txn);
             await conn.ExecuteAsync(

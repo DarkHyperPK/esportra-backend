@@ -278,8 +278,10 @@ public static class TournamentEndpoints
                     WHERE organization_id = (SELECT organization_id FROM tournaments WHERE id = @tid)
                       AND user_id = @userId AND status = 'active'
                     UNION
-                    SELECT unnest(permissions) FROM tournament_staff
-                    WHERE tournament_id = @tid AND user_id = @userId AND status = 'active'
+                    SELECT unnest(permissions) FROM organization_staff os
+                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                    WHERE sta.tournament_id = @tid
+                      AND os.user_id = @userId AND os.status = 'active'
                     """,
                     new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
             }
@@ -1262,13 +1264,15 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Only organizer or existing staff can view staff list
+            // Only organizer or existing org staff can view staff list
             var hasAccess = await conn.QuerySingleOrDefaultAsync<bool>(
                 """
                 SELECT EXISTS(
                     SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId
                     UNION ALL
-                    SELECT 1 FROM tournament_staff WHERE tournament_id = @tid AND user_id = @userId AND status = 'active'
+                    SELECT 1 FROM organization_staff os
+                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                    WHERE sta.tournament_id = @tid AND os.user_id = @userId AND os.status = 'active'
                 )
                 """,
                 new { tid = tournamentId, userId = userCtx.UserIdGuid });
@@ -1276,17 +1280,20 @@ public static class TournamentEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT ts.*,
+                SELECT os.id, sta.tournament_id, os.user_id, os.role,
+                       os.permissions, os.status, os.created_at, os.updated_at,
+                       os.accepted_at,
                        jsonb_build_object(
                            'full_name', p.full_name,
                            'username', p.username,
                            'email', p.email,
                            'avatar_url', p.avatar_url
                        ) AS profiles
-                FROM tournament_staff ts
-                LEFT JOIN profiles p ON p.id = ts.user_id
-                WHERE ts.tournament_id = @tournamentId
-                ORDER BY ts.created_at ASC
+                FROM organization_staff os
+                JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                LEFT JOIN profiles p ON p.id = os.user_id
+                WHERE sta.tournament_id = @tournamentId AND os.status = 'active'
+                ORDER BY os.created_at ASC
                 LIMIT 200
                 """,
                 new { tournamentId });
@@ -1320,39 +1327,56 @@ public static class TournamentEndpoints
 
             string userId = profile.id;
 
-            // Check for existing staff record
-            var existing = await conn.QuerySingleOrDefaultAsync<string?>(
-                "SELECT id FROM tournament_staff WHERE tournament_id = @tid AND user_id = @userId",
-                new { tid = tournamentId, userId });
+            // Get the organization_id for this tournament
+            var orgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT organization_id FROM tournaments WHERE id = @tid",
+                new { tid = tournamentId });
+            if (orgId is null) return Results.BadRequest(new { error = "Tournament has no organization." });
 
             var permissionsJson = JsonSerializer.Serialize(req.Permissions ?? Array.Empty<string>());
 
-            if (existing is not null)
+            // Upsert organization_staff record
+            var orgStaffId = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT id FROM organization_staff WHERE organization_id = @orgId AND user_id = @userId",
+                new { orgId, userId });
+
+            if (orgStaffId is not null)
             {
-                // Re-invite: update existing record
+                // Update existing org staff with new role/permissions
                 await conn.ExecuteAsync(
                     """
-                    UPDATE tournament_staff
-                    SET role = @role, permissions = @permissions::jsonb,
-                        assigned_by = @assignedBy, status = 'pending',
-                        accepted_at = NULL, responded_at = NULL, updated_at = NOW()
-                    WHERE id = @id
+                    UPDATE organization_staff
+                    SET role = @role, permissions = @permissions::text[],
+                        assigned_by = @assignedBy, status = 'active', updated_at = NOW()
+                    WHERE id = @id::uuid
                     """,
-                    new { id = existing, role = req.Role, permissions = permissionsJson,
+                    new { id = orgStaffId, role = req.Role,
+                          permissions = req.Permissions ?? Array.Empty<string>(),
                           assignedBy = userCtx.UserIdGuid });
             }
             else
             {
-                await conn.ExecuteAsync(
+                orgStaffId = (await conn.QuerySingleAsync<Guid>(
                     """
-                    INSERT INTO tournament_staff
-                        (tournament_id, user_id, role, permissions, assigned_by, status)
+                    INSERT INTO organization_staff
+                        (organization_id, user_id, role, permissions, assigned_by, status, accepted_at)
                     VALUES
-                        (@tournamentId, @userId, @role, @permissions::jsonb, @assignedBy, 'pending')
+                        (@orgId, @userId::uuid, @role, @permissions::text[], @assignedBy, 'active', NOW())
+                    RETURNING id
                     """,
-                    new { tournamentId, userId, role = req.Role, permissions = permissionsJson,
-                          assignedBy = userCtx.UserIdGuid });
+                    new { orgId, userId, role = req.Role,
+                          permissions = req.Permissions ?? Array.Empty<string>(),
+                          assignedBy = userCtx.UserIdGuid })).ToString();
             }
+
+            // Upsert tournament assignment
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO staff_tournament_assignments (organization_staff_id, tournament_id, assigned_by)
+                VALUES (@orgStaffId::uuid, @tournamentId, @assignedBy)
+                ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
+                """,
+                new { orgStaffId, tournamentId, assignedBy = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
@@ -1370,26 +1394,26 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is organizer of the tournament that owns this staff record
+            // Verify caller is organizer of a tournament this org staff is assigned to
             var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
                 """
                 SELECT EXISTS(
-                    SELECT 1 FROM tournament_staff ts
-                    JOIN tournaments t ON t.id = ts.tournament_id
-                    WHERE ts.id = @staffId AND t.organizer_id = @userId
+                    SELECT 1 FROM organization_staff os
+                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                    JOIN tournaments t ON t.id = sta.tournament_id
+                    WHERE os.id = @staffId AND t.organizer_id = @userId
                 )
                 """,
                 new { staffId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
-            var permissionsJson = JsonSerializer.Serialize(req.Permissions ?? Array.Empty<string>());
             await conn.ExecuteAsync(
                 """
-                UPDATE tournament_staff
-                SET role = @role, permissions = @permissions::jsonb, updated_at = NOW()
+                UPDATE organization_staff
+                SET role = @role, permissions = @permissions::text[], updated_at = NOW()
                 WHERE id = @staffId
                 """,
-                new { staffId, role = req.Role, permissions = permissionsJson });
+                new { staffId, role = req.Role, permissions = req.Permissions ?? Array.Empty<string>() });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
@@ -1409,16 +1433,21 @@ public static class TournamentEndpoints
             var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
                 """
                 SELECT EXISTS(
-                    SELECT 1 FROM tournament_staff ts
-                    JOIN tournaments t ON t.id = ts.tournament_id
-                    WHERE ts.id = @staffId AND t.organizer_id = @userId
+                    SELECT 1 FROM organization_staff os
+                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                    JOIN tournaments t ON t.id = sta.tournament_id
+                    WHERE os.id = @staffId AND t.organizer_id = @userId
                 )
                 """,
                 new { staffId, userId = userCtx.UserIdGuid });
             if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
 
+            // Remove tournament assignments then the org staff record
             await conn.ExecuteAsync(
-                "DELETE FROM tournament_staff WHERE id = @staffId",
+                "DELETE FROM staff_tournament_assignments WHERE organization_staff_id = @staffId",
+                new { staffId });
+            await conn.ExecuteAsync(
+                "DELETE FROM organization_staff WHERE id = @staffId",
                 new { staffId });
 
             return Results.Ok(new { success = true });
@@ -1436,7 +1465,9 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT ts.*,
+                SELECT os.id, os.organization_id, os.user_id, os.role,
+                       os.permissions, os.status, os.assigned_by,
+                       os.created_at, os.updated_at, os.accepted_at,
                        jsonb_build_object(
                            'id', t.id, 'name', t.name, 'game', t.game,
                            'start_date', t.start_date
@@ -1446,11 +1477,12 @@ public static class TournamentEndpoints
                            'username', p.username,
                            'email', p.email
                        ) AS organizer_profile
-                FROM tournament_staff ts
-                JOIN tournaments t ON t.id = ts.tournament_id
-                LEFT JOIN profiles p ON p.id = ts.assigned_by
-                WHERE ts.user_id = @userId AND ts.status = 'pending'
-                ORDER BY ts.created_at DESC
+                FROM organization_staff os
+                JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                JOIN tournaments t ON t.id = sta.tournament_id
+                LEFT JOIN profiles p ON p.id = os.assigned_by
+                WHERE os.user_id = @userId AND os.status = 'pending'
+                ORDER BY os.created_at DESC
                 """,
                 new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
@@ -1468,7 +1500,10 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT ts.*,
+                SELECT os.id, sta.tournament_id, os.user_id, os.role,
+                       os.permissions, os.status, os.assigned_by,
+                       os.created_at, os.updated_at, os.accepted_at,
+                       sta.id AS organization_staff_id,
                        jsonb_build_object(
                            'id', t.id, 'name', t.name, 'slug', t.slug,
                            'game', t.game, 'start_date', t.start_date,
@@ -1479,11 +1514,12 @@ public static class TournamentEndpoints
                            'username', p.username,
                            'email', p.email
                        ) AS organizer_profile
-                FROM tournament_staff ts
-                JOIN tournaments t ON t.id = ts.tournament_id
-                LEFT JOIN profiles p ON p.id = ts.assigned_by
-                WHERE ts.user_id = @userId AND ts.status = 'active'
-                ORDER BY ts.updated_at DESC
+                FROM organization_staff os
+                JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                JOIN tournaments t ON t.id = sta.tournament_id
+                LEFT JOIN profiles p ON p.id = os.assigned_by
+                WHERE os.user_id = @userId AND os.status = 'active'
+                ORDER BY os.updated_at DESC
                 """,
                 new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
@@ -1504,7 +1540,7 @@ public static class TournamentEndpoints
 
             // Only the invited user can respond
             var inviteUserId = await conn.QuerySingleOrDefaultAsync<string?>(
-                "SELECT user_id FROM tournament_staff WHERE id = @inviteId AND status = 'pending'",
+                "SELECT user_id FROM organization_staff WHERE id = @inviteId AND status = 'pending'",
                 new { inviteId });
             if (inviteUserId is null) return Results.NotFound(new { error = "Invite not found or already responded." });
             if (inviteUserId != userCtx.UserId) return Results.Forbid();
@@ -1512,14 +1548,14 @@ public static class TournamentEndpoints
             var now = DateTime.UtcNow;
             await conn.ExecuteAsync(
                 """
-                UPDATE tournament_staff
+                UPDATE organization_staff
                 SET status = @status::text, accepted_at = @acceptedAt, responded_at = @respondedAt
                 WHERE id = @inviteId AND status = 'pending'
                 """,
                 new
                 {
                     inviteId,
-                    status     = req.Accept ? "active" : "revoked",
+                    status     = req.Accept ? "active" : "declined",
                     acceptedAt = req.Accept ? now : (DateTime?)null,
                     respondedAt = now,
                 });
@@ -1617,9 +1653,10 @@ public static class TournamentEndpoints
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
                 WHERE (t.organizer_id = @userId
                    OR EXISTS (
-                       SELECT 1 FROM tournament_staff ts
-                       WHERE ts.tournament_id = td.tournament_id
-                         AND ts.user_id = @userId AND ts.status = 'active'
+                       SELECT 1 FROM organization_staff os
+                       JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                       WHERE sta.tournament_id = td.tournament_id
+                         AND os.user_id = @userId AND os.status = 'active'
                    ))
                   AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
                 ORDER BY td.created_at DESC
@@ -2061,8 +2098,9 @@ public static class TournamentEndpoints
                     SELECT EXISTS(
                         SELECT 1 FROM tournaments t
                         WHERE t.id = @tid AND (t.organizer_id = @uid OR EXISTS (
-                            SELECT 1 FROM tournament_staff ts
-                            WHERE ts.tournament_id = @tid AND ts.user_id = @uid AND ts.status = 'active'
+                            SELECT 1 FROM organization_staff os
+                            JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                            WHERE sta.tournament_id = @tid AND os.user_id = @uid AND os.status = 'active'
                         ))
                     )
                     """, new { tid = tournamentId, uid = userCtx.UserIdGuid });

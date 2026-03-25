@@ -1370,8 +1370,9 @@ public static class MatchSystemEndpoints
                 SELECT EXISTS(
                     SELECT 1 FROM tournaments t
                     WHERE t.id = @tid AND (t.organizer_id = @uid OR EXISTS (
-                        SELECT 1 FROM tournament_staff ts
-                        WHERE ts.tournament_id = @tid AND ts.user_id = @uid AND ts.status = 'active'
+                        SELECT 1 FROM organization_staff os
+                        JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                        WHERE sta.tournament_id = @tid AND os.user_id = @uid AND os.status = 'active'
                     ))
                 )
                 """, new { tid = tournamentId, uid = userCtx.UserIdGuid });
