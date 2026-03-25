@@ -274,11 +274,8 @@ public static class TournamentEndpoints
             {
                 staffPermissions = (await conn.QueryAsync<string>(
                     """
-                    SELECT unnest(permissions) FROM organization_staff
-                    WHERE organization_id = (SELECT organization_id FROM tournaments WHERE id = @tid)
-                      AND user_id = @userId AND status = 'active'
-                    UNION
-                    SELECT unnest(permissions) FROM organization_staff os
+                    SELECT DISTINCT unnest(os.permissions)
+                    FROM organization_staff os
                     JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
                     WHERE sta.tournament_id = @tid
                       AND os.user_id = @userId AND os.status = 'active'
