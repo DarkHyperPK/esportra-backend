@@ -34,6 +34,8 @@ public static class TeamEndpoints
             IDbConnectionFactory db     = null!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             using var conn = db.CreateConnection();
 
             if (!string.IsNullOrWhiteSpace(ids))

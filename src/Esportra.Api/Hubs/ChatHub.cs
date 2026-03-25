@@ -118,9 +118,21 @@ public sealed class ChatHub : Hub
         var userId = Context.UserIdentifier;
         if (userId is null) return;
 
+        // Cache username to avoid DB hit on every keystroke
+        if (Context.Items.TryGetValue("username", out var cached))
+        {
+            await Clients.OthersInGroup(ChatGroup(matchId))
+                .SendAsync(
+                    isTyping ? ChatHubEvents.TypingStart : ChatHubEvents.TypingStop,
+                    userId,
+                    cached as string ?? "Unknown");
+            return;
+        }
+
         using var conn = _db.CreateConnection();
         var username = await conn.QuerySingleOrDefaultAsync<string>(
             "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
+        Context.Items["username"] = username ?? "Unknown";
 
         await Clients.OthersInGroup(ChatGroup(matchId))
             .SendAsync(

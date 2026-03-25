@@ -70,8 +70,8 @@ public static class AuthEndpoints
             ISupabaseAdminClient           supabase,
             CancellationToken              ct) =>
         {
-            if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 6)
-                return Results.BadRequest(new { error = "Password must be at least 6 characters." });
+            if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 8)
+                return Results.BadRequest(new { error = "Password must be at least 8 characters." });
 
             string? userId;
             string? userEmail;

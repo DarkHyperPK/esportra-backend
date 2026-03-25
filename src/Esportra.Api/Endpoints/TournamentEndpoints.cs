@@ -110,6 +110,8 @@ public static class TournamentEndpoints
             HybridCache          cache  = null!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             // Bulk fetch by IDs — bypass cache for direct lookup
             if (!string.IsNullOrWhiteSpace(ids))
             {
@@ -722,30 +724,33 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            using var txn = conn.BeginTransaction();
 
-            // Guard: tournament must be open and not at capacity
+            // Lock tournament row to prevent race condition on capacity check
             var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT status, max_teams FROM tournaments WHERE id = @id", new { id });
-            if (tourn is null)    return Results.NotFound();
+                "SELECT status, max_teams FROM tournaments WHERE id = @id FOR UPDATE",
+                new { id }, txn);
+            if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
             if ((string)tourn.status != "open")
-                return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
+            {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament is not accepting registrations." }); }
 
             // Check capacity (0 or null = unlimited)
             int? maxTeams = (int?)tourn.max_teams;
             if (maxTeams.HasValue && maxTeams.Value > 0)
             {
                 var currentCount = await conn.QuerySingleAsync<int>(
-                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id", new { id });
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id",
+                    new { id }, txn);
                 if (currentCount >= maxTeams.Value)
-                    return Results.BadRequest(new { error = "Tournament has reached maximum capacity." });
+                {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
             }
 
-            // Check existing registration (no unique constraint, so check manually)
+            // Check existing registration
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId",
-                new { id, userId = userCtx.UserIdGuid });
+                new { id, userId = userCtx.UserIdGuid }, txn);
             if (existing is not null)
-                return Results.Conflict(new { error = "You are already registered for this tournament." });
+            {   txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
 
             Guid? teamIdGuid      = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
@@ -783,8 +788,9 @@ public static class TournamentEndpoints
                     participantType,
                     entryFeeAmount   = req.EntryFeeAmount ?? 0m,
                     entryFeePaid     = req.EntryFeePaid ?? true,
-                });
+                }, txn);
 
+            txn.Commit();
             return Results.Ok(row);
         }).RequireAuthorization("Authenticated");
 
@@ -1731,9 +1737,13 @@ public static class TournamentEndpoints
                 "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
                 new { disputeId });
 
-            await matchHub.Clients.All.SendAsync(
-                MatchHubEvents.DisputeCommentAdded,
-                new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
+            // Scope broadcast to match group
+            var matchId1 = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT match_id FROM tournament_disputes WHERE id = @disputeId", new { disputeId });
+            if (matchId1 is not null)
+                await matchHub.Clients.Group(MatchHub.MatchGroup(matchId1.Value.ToString()))
+                    .SendAsync(MatchHubEvents.DisputeCommentAdded,
+                        new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -2115,9 +2125,13 @@ public static class TournamentEndpoints
                 "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
                 new { disputeId });
 
-            await matchHub.Clients.All.SendAsync(
-                MatchHubEvents.DisputeCommentAdded,
-                new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
+            // Scope broadcast to match group
+            var matchId2 = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT match_id FROM tournament_disputes WHERE id = @disputeId", new { disputeId });
+            if (matchId2 is not null)
+                await matchHub.Clients.Group(MatchHub.MatchGroup(matchId2.Value.ToString()))
+                    .SendAsync(MatchHubEvents.DisputeCommentAdded,
+                        new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

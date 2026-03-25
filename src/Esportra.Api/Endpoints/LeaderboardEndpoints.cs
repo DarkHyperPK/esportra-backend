@@ -22,6 +22,8 @@ public static class LeaderboardEndpoints
             [FromQuery] int      offset  = 0,
             CancellationToken    ct      = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             using var conn = db.CreateConnection();
 
             var conditions = new List<string>();
@@ -85,6 +87,8 @@ public static class LeaderboardEndpoints
             [FromQuery] int      offset  = 0,
             CancellationToken    ct      = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             using var conn = db.CreateConnection();
 
             var conditions = new List<string>();

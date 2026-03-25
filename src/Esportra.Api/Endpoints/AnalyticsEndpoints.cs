@@ -52,6 +52,7 @@ public static class AnalyticsEndpoints
             [FromQuery] int limit = 500,
             CancellationToken ct = default) =>
         {
+            limit = Math.Clamp(limit, 1, 1000);
             using var conn = db.CreateConnection();
 
             var filter = eventType is not null ? "AND event_type = @eventType" : "";

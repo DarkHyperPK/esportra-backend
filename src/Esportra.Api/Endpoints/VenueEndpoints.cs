@@ -35,6 +35,8 @@ public static class VenueEndpoints
             HttpContext          ctx    = null!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             // If owned=true, resolve owner from JWT
             Guid? effectiveOwnerId = owner_id;
             if (owned == true && effectiveOwnerId is null)
@@ -245,6 +247,8 @@ public static class VenueEndpoints
             IDbConnectionFactory db     = null!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """

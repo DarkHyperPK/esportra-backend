@@ -930,15 +930,10 @@ public static class MatchEndpoints
                                 {
                                     try
                                     {
-                                        using var txWinner = conn.BeginTransaction();
+                                        // Use SECURITY DEFINER function to bypass organizer-only trigger
                                         await conn.ExecuteAsync(
-                                            "SET LOCAL request.jwt.claim.role = 'service_role'",
-                                            transaction: txWinner);
-                                        await conn.ExecuteAsync(
-                                            "UPDATE tournaments SET winner_id = @gfWinnerId, status = 'completed'::tournament_status, end_date = NOW() WHERE id = @tid",
-                                            new { gfWinnerId, tid = (Guid)stageInfo.tournament_id },
-                                            transaction: txWinner);
-                                        txWinner.Commit();
+                                            "SELECT admin_set_tournament_winner(@tid, @wid)",
+                                            new { tid = (Guid)stageInfo.tournament_id, wid = gfWinnerId });
                                     }
                                     catch { /* trigger may block — non-critical */ }
                                 }

@@ -53,14 +53,17 @@ public sealed class ConversationHub : Hub
         var userId = Context.UserIdentifier;
         if (userId is null) return;
 
-        foreach (var convId in conversationIds)
+        // Cap to prevent DoS via unbounded array
+        var capped = conversationIds.Length > 50 ? conversationIds[..50] : conversationIds;
+
+        foreach (var convId in capped)
         {
             if (await IsConversationParticipantAsync(userId, convId))
             {
                 await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(convId));
             }
         }
-        _logger.LogDebug("Client {Conn} joined {Count} conversations", Context.ConnectionId, conversationIds.Length);
+        _logger.LogDebug("Client {Conn} joined {Count} conversations", Context.ConnectionId, capped.Length);
     }
 
     /// <summary>Broadcast typing indicator to other members of the conversation.</summary>
@@ -69,9 +72,21 @@ public sealed class ConversationHub : Hub
         var userId = Context.UserIdentifier;
         if (userId is null) return;
 
+        // Cache username to avoid DB hit on every keystroke
+        if (Context.Items.TryGetValue("username", out var cached))
+        {
+            var un = cached as string ?? "Unknown";
+            await Clients.OthersInGroup(ConversationGroup(conversationId))
+                .SendAsync(
+                    isTyping ? ConversationHubEvents.TypingStart : ConversationHubEvents.TypingStop,
+                    new { userId, username = un });
+            return;
+        }
+
         using var conn = _db.CreateConnection();
         var username = await conn.QuerySingleOrDefaultAsync<string>(
             "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
+        Context.Items["username"] = username ?? "Unknown";
 
         await Clients.OthersInGroup(ConversationGroup(conversationId))
             .SendAsync(

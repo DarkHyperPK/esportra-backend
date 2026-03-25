@@ -276,6 +276,7 @@ public static class ProfileEndpoints
             IDbConnectionFactory db    = default!,
             CancellationToken    ct    = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
             using var conn = db.CreateConnection();
 
             // Bulk fetch by IDs

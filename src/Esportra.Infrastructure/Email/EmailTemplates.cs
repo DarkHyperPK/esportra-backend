@@ -62,10 +62,10 @@ public static class EmailTemplates
         """;
 
     private static string Btn(string href, string label) =>
-        $"""<a href="{href}" style="display:inline-block;background:linear-gradient(135deg,#e11d48,#be123c);color:#fff;font-weight:600;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;margin-top:16px;">{label}</a>""";
+        $"""<a href="{E(href)}" style="display:inline-block;background:linear-gradient(135deg,#e11d48,#be123c);color:#fff;font-weight:600;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;margin-top:16px;">{label}</a>""";
 
     private static string BtnSecondary(string href, string label) =>
-        $"""<a href="{href}" style="display:inline-block;background:transparent;color:#e11d48;font-weight:600;font-size:14px;padding:10px 24px;border-radius:8px;text-decoration:none;margin-top:8px;border:1px solid #e11d48;">{label}</a>""";
+        $"""<a href="{E(href)}" style="display:inline-block;background:transparent;color:#e11d48;font-weight:600;font-size:14px;padding:10px 24px;border-radius:8px;text-decoration:none;margin-top:8px;border:1px solid #e11d48;">{label}</a>""";
 
     private static string H1(string text) =>
         $"""<h1 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#f9fafb;">{text}</h1>""";
@@ -165,7 +165,7 @@ public static class EmailTemplates
                   <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">Start Date</span>
                 </td>
                 <td style="padding:12px 16px;{(string.IsNullOrWhiteSpace(endDate) ? "" : " border-bottom:1px solid #1f2937;")} text-align:right;">
-                  <strong style="color:#f9fafb; font-size:14px;">{(string.IsNullOrWhiteSpace(startDate) ? "TBA" : startDate)}</strong>
+                  <strong style="color:#f9fafb; font-size:14px;">{(string.IsNullOrWhiteSpace(startDate) ? "TBA" : E(startDate))}</strong>
                 </td>
               </tr>
               {(string.IsNullOrWhiteSpace(endDate) ? "" : $"""
@@ -174,14 +174,14 @@ public static class EmailTemplates
                   <span style="font-size:12px; color:#9ca3af; text-transform:uppercase; letter-spacing:1px;">End Date</span>
                 </td>
                 <td style="padding:12px 16px; text-align:right;">
-                  <strong style="color:#f9fafb; font-size:14px;">{endDate}</strong>
+                  <strong style="color:#f9fafb; font-size:14px;">{E(endDate)}</strong>
                 </td>
               </tr>
               """)}
             </table>
             {P("Keep an eye on your notifications for check-in reminders and match schedules.")}
-            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : tournamentUrl)}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
-            {Btn(tournamentUrl, "View Tournament")}
+            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : Uri.EscapeUriString(tournamentUrl))}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
+            {Btn(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : Uri.EscapeUriString(tournamentUrl), "View Tournament")}
         """)
     );
 

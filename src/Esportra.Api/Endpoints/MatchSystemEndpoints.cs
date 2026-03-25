@@ -655,13 +655,14 @@ public static class MatchSystemEndpoints
                 FROM match_messages
                 WHERE match_id = @id
                 ORDER BY created_at ASC
+                LIMIT 500
                 """,
                 new { id });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{id}/messages/system ────────────────────────────
-        // System messages: inserted server-side and broadcast via ChatHub.
+        // System messages: only organizers/admins can send these.
         app.MapPost("/api/matches/{id}/messages/system", async (
             Guid                               id,
             [FromBody] SystemMessageRequest    req,
@@ -671,8 +672,31 @@ public static class MatchSystemEndpoints
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Verify caller is tournament organizer or admin
+            var isAdmin = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM admin_user_roles WHERE user_id = @uid)",
+                new { uid = userCtx.UserIdGuid });
+            if (!isAdmin)
+            {
+                var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM brkt_matches bm
+                        JOIN brkt_versions bv ON bm.version_id = bv.id
+                        JOIN tournament_stages ts ON bv.stage_id = ts.id
+                        JOIN tournaments t ON ts.tournament_id = t.id
+                        WHERE bm.id = @matchId AND t.organizer_id = @uid
+                    )
+                    """,
+                    new { matchId = id, uid = userCtx.UserIdGuid });
+                if (!isOrganizer)
+                    return Results.Json(new { error = "Only tournament organizers or admins can send system messages." }, statusCode: 403);
+            }
+
             var msg = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO match_messages

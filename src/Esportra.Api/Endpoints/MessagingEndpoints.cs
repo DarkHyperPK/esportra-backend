@@ -103,6 +103,8 @@ public static class MessagingEndpoints
             [FromQuery] int       offset = 0,
             CancellationToken     ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 

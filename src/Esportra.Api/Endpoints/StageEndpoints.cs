@@ -107,7 +107,7 @@ public static class StageEndpoints
             }
 
             var updated = await conn.QueryAsync<dynamic>(
-                "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order",
+                "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order LIMIT 50",
                 new { tournamentId });
 
             return Results.Ok(updated);

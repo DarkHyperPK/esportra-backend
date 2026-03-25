@@ -29,6 +29,8 @@ public static class NotificationEndpoints
             IDbConnectionFactory db     = null!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -125,7 +127,7 @@ public static class NotificationEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/notifications ─────────────────────────────────────────
-        // Create a notification for a specific user (used by veto, scheduling, etc.)
+        // Create a notification for a specific user (organizer/admin only)
         app.MapPost("/api/notifications", async (
             [FromBody] CreateNotificationRequest req,
             HttpContext                          ctx,
@@ -140,6 +142,17 @@ public static class NotificationEndpoints
                 return Results.BadRequest(new { error = "Invalid userId" });
 
             using var conn = db.CreateConnection();
+
+            // Only admins or organizers can send notifications to other users
+            var callerRole = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT role::text FROM profiles WHERE id = @id",
+                new { id = userCtx.UserIdGuid });
+            var isAdmin = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM admin_user_roles WHERE user_id = @id)",
+                new { id = userCtx.UserIdGuid });
+
+            if (!isAdmin && callerRole != "organizer")
+                return Results.Json(new { error = "Only organizers or admins can send notifications." }, statusCode: 403);
 
             var dataJson = req.Data is not null
                 ? JsonSerializer.Serialize(req.Data)

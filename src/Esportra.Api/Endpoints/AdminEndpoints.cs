@@ -95,6 +95,7 @@ public static class AdminEndpoints
                 WHERE (@active IS NULL OR is_active = @active)
                   AND (@placement IS NULL OR @placement = ANY(placement))
                 ORDER BY priority DESC, created_at DESC
+                LIMIT 200
                 """,
                 new { active, placement });
             return Results.Ok(sponsors);
@@ -238,6 +239,8 @@ public static class AdminEndpoints
             [FromQuery] string?  role   = null,
             CancellationToken    ct = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -953,6 +956,7 @@ public static class AdminEndpoints
             IDbConnectionFactory db     = default!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -1006,6 +1010,7 @@ public static class AdminEndpoints
             IDbConnectionFactory db     = default!,
             CancellationToken    ct     = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -1131,9 +1136,13 @@ public static class AdminEndpoints
                 """,
                 new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", isInternal = req.IsInternal, attachmentUrl = req.AttachmentUrl });
 
-            await matchHub.Clients.All.SendAsync(
-                MatchHubEvents.DisputeCommentAdded,
-                new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
+            // Scope broadcast to the match group instead of all clients
+            var matchId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT match_id FROM tournament_disputes WHERE id = @disputeId", new { disputeId });
+            if (matchId is not null)
+                await matchHub.Clients.Group(MatchHub.MatchGroup(matchId.Value.ToString()))
+                    .SendAsync(MatchHubEvents.DisputeCommentAdded,
+                        new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
@@ -1151,6 +1160,7 @@ public static class AdminEndpoints
             IDbConnectionFactory db           = default!,
             CancellationToken    ct           = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -1272,6 +1282,7 @@ public static class AdminEndpoints
                 JOIN profiles p ON p.id = vr.user_id
                 WHERE (@status IS NULL OR vr.status = @status)
                 ORDER BY vr.created_at DESC
+                LIMIT 200
                 """,
                 new { status });
             return Results.Ok(rows);
@@ -1471,6 +1482,7 @@ public static class AdminEndpoints
             IDbConnectionFactory db    = default!,
             CancellationToken    ct    = default) =>
         {
+            limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
