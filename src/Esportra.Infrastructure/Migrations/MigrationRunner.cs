@@ -31,6 +31,7 @@ public sealed class MigrationRunner
                 Assembly.GetExecutingAssembly(),
                 s => s.Contains(".Migrations.Scripts."))
             .WithTransactionPerScript()
+            .WithVariablesDisabled()
             .LogTo(new DbUpLogger(_logger))
             .Build();
 
