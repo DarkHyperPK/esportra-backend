@@ -638,7 +638,7 @@ public static class AdminEndpoints
 
             // Allow self-service transactional emails for authenticated users
             var selfServiceTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "TournamentRegistration", "Welcome" };
+                { "TournamentRegistration", "Welcome", "TeamInvite" };
             bool isSelfService = selfServiceTypes.Contains(req.Type ?? "");
 
             if (!isSelfService &&

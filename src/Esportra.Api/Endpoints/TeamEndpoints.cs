@@ -409,12 +409,26 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
-            // Check not already a member
+            // Check not already a member of this team
             var alreadyMember = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @id AND user_id = @userId AND is_active = TRUE)",
                 new { id, userId = reqUserIdGuid });
             if (alreadyMember)
-                return Results.Conflict(new { error = "User is already a team member." });
+                return Results.Conflict(new { error = "User is already a member of this team." });
+
+            // Check if user is already on another team for the same game
+            var existingTeamName = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT t.name FROM team_members tm
+                JOIN teams t ON t.id = tm.team_id
+                WHERE tm.user_id = @userId AND tm.is_active = TRUE
+                  AND t.game = (SELECT game FROM teams WHERE id = @teamId)
+                  AND t.id != @teamId
+                LIMIT 1
+                """,
+                new { userId = reqUserIdGuid, teamId = id });
+            if (existingTeamName is not null)
+                return Results.Conflict(new { error = $"Player is already on another team ({existingTeamName}) for this game." });
 
             // Check for existing invite (any status) and upsert
             var existingInviteId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -707,7 +721,7 @@ public static class TeamEndpoints
             var invites = await conn.QueryAsync<dynamic>(
                 """
                 SELECT ti.id, ti.invited_email, ti.invited_user_id, ti.roster_id, ti.created_at,
-                       p.username, p.avatar_url
+                       jsonb_build_object('username', p.username, 'avatar_url', p.avatar_url) AS profiles
                 FROM team_invitations ti
                 LEFT JOIN profiles p ON p.id = ti.invited_user_id
                 WHERE ti.team_id = @id AND ti.status = 'pending'

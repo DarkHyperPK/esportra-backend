@@ -100,7 +100,7 @@ public static class ProfileEndpoints
             parameters.Add("updated_at", DateTime.UtcNow);
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, created_at, updated_at",
+                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, faceit_nickname, created_at, updated_at",
                 parameters);
 
             if (row is null) return Results.NotFound();
