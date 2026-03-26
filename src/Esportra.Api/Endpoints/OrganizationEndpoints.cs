@@ -177,7 +177,7 @@ public static class OrganizationEndpoints
                 staffIdGuid = (Guid)inserted.id;
             }
 
-            // 3. Assign tournaments (bulk upsert) and activate staff immediately
+            // 3. Assign tournaments (bulk upsert) — staff still needs to accept before active
             if (req.TournamentIds is { Count: > 0 })
             {
                 await conn.ExecuteAsync(
@@ -187,15 +187,6 @@ public static class OrganizationEndpoints
                     ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
                     """,
                     req.TournamentIds.Select(tid => new { staffId = staffIdGuid, tournamentId = Guid.Parse(tid), assignedBy = userCtx.UserIdGuid }));
-
-                // Organizer is explicitly assigning tournaments — activate immediately (no accept needed)
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE organization_staff
-                    SET status = 'active', accepted_at = COALESCE(accepted_at, NOW()), updated_at = NOW()
-                    WHERE id = @staffId AND status = 'pending'
-                    """,
-                    new { staffId = staffIdGuid });
             }
 
             // 4. Insert in-app notification
@@ -413,15 +404,6 @@ public static class OrganizationEndpoints
                     ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
                     """,
                     req.TournamentIds.Select(tid => new { staffId, tournamentId = Guid.Parse(tid), assignedBy = userCtx.UserIdGuid }));
-
-                // Activate the staff member — organizer explicitly assigning tournaments means they're confirmed
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE organization_staff
-                    SET status = 'active', accepted_at = COALESCE(accepted_at, NOW()), updated_at = NOW()
-                    WHERE id = @staffId AND status IN ('pending', 'declined')
-                    """,
-                    new { staffId });
             }
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.assign_tournament", "staff", staffId,

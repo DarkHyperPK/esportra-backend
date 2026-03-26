@@ -1350,12 +1350,13 @@ public static class TournamentEndpoints
 
             if (orgStaffId is not null)
             {
-                // Update existing org staff with new role/permissions
+                // Update existing org staff — keep current status if already active, reset to pending otherwise
                 await conn.ExecuteAsync(
                     """
                     UPDATE organization_staff
                     SET role = @role, permissions = @permissions::text[],
-                        assigned_by = @assignedBy, status = 'active', updated_at = NOW()
+                        assigned_by = @assignedBy, updated_at = NOW(),
+                        status = CASE WHEN status = 'active' THEN 'active' ELSE 'pending' END
                     WHERE id = @id::uuid
                     """,
                     new { id = orgStaffId, role = req.Role,
@@ -1367,9 +1368,9 @@ public static class TournamentEndpoints
                 orgStaffId = (await conn.QuerySingleAsync<Guid>(
                     """
                     INSERT INTO organization_staff
-                        (organization_id, user_id, role, permissions, assigned_by, status, accepted_at)
+                        (organization_id, user_id, role, permissions, assigned_by, status)
                     VALUES
-                        (@orgId, @userId::uuid, @role, @permissions::text[], @assignedBy, 'active', NOW())
+                        (@orgId, @userId::uuid, @role, @permissions::text[], @assignedBy, 'pending')
                     RETURNING id
                     """,
                     new { orgId, userId, role = req.Role,
