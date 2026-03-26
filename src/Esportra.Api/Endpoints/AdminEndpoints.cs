@@ -561,8 +561,7 @@ public static class AdminEndpoints
                     discount_text    = COALESCE(((@j)::jsonb->>'discount_text')::text,     discount_text),
                     is_active        = COALESCE(((@j)::jsonb->>'is_active')::boolean,      is_active),
                     priority         = COALESCE(((@j)::jsonb->>'priority')::int,            priority),
-                    gallery_images   = COALESCE((SELECT array_agg(e::text) FROM jsonb_array_elements_text(((@j)::jsonb->'gallery_images')) e), gallery_images),
-                    placement_assets = COALESCE(((@j)::jsonb->'placement_assets')::jsonb,  placement_assets)
+                    gallery_images   = COALESCE((SELECT array_agg(e::text) FROM jsonb_array_elements_text(((@j)::jsonb->'gallery_images')) e), gallery_images)
                 WHERE id = @id
                 """,
                 new { id, j = json });
