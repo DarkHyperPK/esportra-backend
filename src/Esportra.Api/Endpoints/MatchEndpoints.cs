@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
@@ -386,20 +387,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is the organizer of the tournament owning this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var winnerId = req?.WinnerId ?? Guid.Empty;
             var loserId  = req?.LoserId  ?? Guid.Empty;
@@ -446,20 +437,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is the organizer of the tournament owning this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             try
             {
@@ -494,20 +475,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller owns the tournament containing this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var rows = await conn.ExecuteAsync(
                 """
@@ -543,20 +514,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is the organizer of the tournament owning this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             // 1. Delete associated game results
             await conn.ExecuteAsync("DELETE FROM brkt_match_games WHERE match_id = @matchId", new { matchId });
@@ -670,20 +631,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller owns the tournament containing this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
 
@@ -723,20 +674,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller owns the tournament containing this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             if (req.Team1Score == req.Team2Score)
                 return Results.BadRequest(new { error = "Scores cannot be equal." });

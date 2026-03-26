@@ -835,6 +835,7 @@ public static class OrganizationEndpoints
         // Replaces ManageBracketPage's supabase query
         app.MapGet("/api/tournaments/by-slug/{slug}", async (
             string               slug,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
@@ -865,6 +866,27 @@ public static class OrganizationEndpoints
                 try { dict["organization"] = JsonSerializer.Deserialize<JsonElement>(s); }
                 catch { /* leave as-is */ }
             }
+
+            // Resolve staff permissions for the calling user
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            string[]? staffPermissions = null;
+            if (userCtx is not null && row is IDictionary<string, object?> d)
+            {
+                var tournamentId = (Guid)d["id"];
+                staffPermissions = (await conn.QueryAsync<string>(
+                    """
+                    SELECT DISTINCT unnest(os.permissions)
+                    FROM organization_staff os
+                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                    WHERE sta.tournament_id = @tid
+                      AND os.user_id = @userId AND os.status = 'active'
+                    """,
+                    new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
+
+                if (staffPermissions.Length > 0)
+                    d["staffPermissions"] = staffPermissions;
+            }
+
             return Results.Ok(row);
         });
 

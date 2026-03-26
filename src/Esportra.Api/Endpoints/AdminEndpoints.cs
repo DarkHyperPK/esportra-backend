@@ -682,6 +682,7 @@ public static class AdminEndpoints
                 FROM user_roles ur
                 JOIN profiles p ON p.id = ur.user_id
                 ORDER BY p.username ASC
+                LIMIT 500
                 """);
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
@@ -749,6 +750,7 @@ public static class AdminEndpoints
                     JOIN admin_roles ar ON ar.id = aur.role_id
                     WHERE aur.user_id = @userId
                     ORDER BY ar.name ASC
+                    LIMIT 50
                     """,
                     new { userId })
                 : await conn.QueryAsync<dynamic>(
@@ -759,6 +761,7 @@ public static class AdminEndpoints
                     JOIN profiles p ON p.id = aur.user_id
                     JOIN admin_roles ar ON ar.id = aur.role_id
                     ORDER BY p.username ASC
+                    LIMIT 500
                     """);
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
@@ -821,6 +824,7 @@ public static class AdminEndpoints
                 SELECT id, name, key FROM admin_roles
                 WHERE (@q IS NULL OR name ILIKE '%' || @q || '%' OR key ILIKE '%' || @q || '%')
                 ORDER BY name ASC
+                LIMIT 100
                 """,
                 new { q });
             return Results.Ok(rows);
@@ -926,6 +930,7 @@ public static class AdminEndpoints
                 FROM verified_roles vr
                 JOIN profiles p ON p.id = vr.user_id
                 ORDER BY vr.verified_at DESC
+                LIMIT 500
                 """);
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
@@ -1426,6 +1431,7 @@ public static class AdminEndpoints
                 FROM sponsor_accounts sa
                 JOIN profiles p ON p.id = sa.user_id
                 ORDER BY sa.created_at DESC
+                LIMIT 500
                 """);
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");

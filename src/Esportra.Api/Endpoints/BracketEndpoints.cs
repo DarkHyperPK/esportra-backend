@@ -91,24 +91,15 @@ public static class BracketEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            // Verify user is organizer of the tournament that owns this stage
+            // Verify user is organizer or staff with bracket:edit on the tournament
             using var conn = db.CreateConnection();
             var stageId = graph.Version.StageId;
             if (stageId is not null)
             {
-                var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM tournaments t
-                        JOIN tournament_stages ts ON ts.tournament_id = t.id
-                        WHERE ts.id = @stageId
-                        AND (t.organizer_id = @userId OR t.organization_id IN (
-                            SELECT id FROM organizations WHERE owner_id = @userId
-                        ))
-                    )
-                    """, new { stageId, userId = userCtx.UserIdGuid });
-
-                if (!isOrganizer) return Results.Forbid();
+                var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                    conn, userCtx.UserIdGuid, stageId.Value, StaffAuthHelper.PermBracketEdit);
+                if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                    return Results.Forbid();
             }
 
             var errors = GraphValidator.Validate(graph);
@@ -143,18 +134,9 @@ public static class BracketEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_versions v
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { versionId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnBracketVersionAsync(
+                conn, userCtx.UserIdGuid, versionId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             int count = await persistence.AutoAdvanceByesAsync(versionId, ct);
 
@@ -183,18 +165,9 @@ public static class BracketEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_versions v
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { versionId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnBracketVersionAsync(
+                conn, userCtx.UserIdGuid, versionId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             await persistence.ResetAsync(versionId, ct);
 
@@ -217,18 +190,9 @@ public static class BracketEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_versions v
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { versionId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnBracketVersionAsync(
+                conn, userCtx.UserIdGuid, versionId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             try
             {
@@ -255,19 +219,9 @@ public static class BracketEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is the organizer of the tournament owning this version
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_versions v
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { versionId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnBracketVersionAsync(
+                conn, userCtx.UserIdGuid, versionId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var body = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object?>>(ct);
             if (body is null) return Results.BadRequest("Invalid body");
@@ -358,18 +312,9 @@ public static class BracketEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_versions v
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE v.id = @versionId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { versionId = req.VersionId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnBracketVersionAsync(
+                conn, userCtx.UserIdGuid, req.VersionId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var (ok, msg) = await swissSvc.GenerateNextRoundAsync(req.StageId, req.VersionId, req.CurrentRound, ct);
             if (!ok) return Results.BadRequest(new { error = msg });
@@ -397,19 +342,9 @@ public static class BracketEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller owns the tournament containing this stage
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournament_stages s
-                    JOIN tournaments t ON t.id = s.tournament_id
-                    WHERE s.id = @stageId AND (t.organizer_id = @userId OR t.organization_id IN (
-                        SELECT organization_id FROM organization_staff WHERE user_id = @userId AND role = 'admin' AND status = 'active'
-                    ))
-                )
-                """,
-                new { stageId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             // Find the version_id for this stage
             var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -460,18 +395,10 @@ public static class BracketEndpoints
             if (versionId is null)
                 return Results.NotFound(new { error = $"Match {req.MatchId} not found." });
 
-            // Verify caller is the tournament organizer
-            var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT t.organizer_id
-                FROM brkt_versions bv
-                JOIN tournament_stages ts ON ts.id = bv.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE bv.id = @versionId
-                """,
-                new { versionId });
-
-            if (organizerId != userCtx.UserIdGuid)
+            // Verify caller has bracket:edit access
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, req.MatchId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             var advancements = (await conn.QueryAsync("""

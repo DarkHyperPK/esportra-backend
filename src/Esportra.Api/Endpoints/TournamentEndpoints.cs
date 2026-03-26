@@ -267,7 +267,18 @@ public static class TournamentEndpoints
 
             // Permission check for organizer/staff
             var userCtx = ctx.Items["UserContext"] as UserContext;
-            bool isOrganizer = userCtx is not null && userCtx.UserIdGuid == organizerId;
+            bool isOrganizer = false;
+            if (userCtx is not null)
+            {
+                isOrganizer = userCtx.UserIdGuid == organizerId;
+                // Also check if user owns the organization
+                if (!isOrganizer && tournament.organization_id is not null)
+                {
+                    isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                        "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+                        new { orgId = (Guid)tournament.organization_id, userId = userCtx.UserIdGuid });
+                }
+            }
 
             string[]? staffPermissions = null;
             if (userCtx is not null && !isOrganizer)

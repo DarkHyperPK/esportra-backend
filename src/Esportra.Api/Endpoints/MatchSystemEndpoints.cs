@@ -822,17 +822,10 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is organizer of the tournament that owns this stage
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournament_stages ts
-                    JOIN tournaments t ON t.id = ts.tournament_id
-                    WHERE ts.id = @stageId AND t.organizer_id = @userId
-                )
-                """,
-                new { stageId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission on this stage
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             // Store raw JSON body as-is to preserve frontend key casing (snake_case)
             var json = await new StreamReader(ctx.Request.Body).ReadToEndAsync(ct);
@@ -879,16 +872,9 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournament_stages ts
-                    JOIN tournaments t ON t.id = ts.tournament_id
-                    WHERE ts.id = @stageId AND t.organizer_id = @userId
-                )
-                """,
-                new { stageId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             if (req.Updates.Count == 0)
                 return Results.BadRequest(new { error = "No updates provided." });
@@ -923,18 +909,10 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is organizer of the tournament that owns this match
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM brkt_matches bm
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE bm.id = @matchId AND t.organizer_id = @userId
-                )
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has permission on this match
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET scheduled_time = @scheduledTime WHERE id = @matchId",
@@ -1222,19 +1200,16 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is tournament organizer or admin
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM match_disputes md
-                    JOIN brkt_matches bm ON bm.id = md.match_id
-                    JOIN brkt_versions v ON v.id = bm.version_id
-                    JOIN tournaments t ON t.id = v.tournament_id
-                    WHERE md.id = @disputeId AND t.organizer_id = @userId
-                )
-                """,
-                new { disputeId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            // Verify caller has disputes:assist permission
+            // Look up match_id from the dispute, then check via match
+            var disputeMatchId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT match_id FROM match_disputes WHERE id = @disputeId",
+                new { disputeId });
+            if (disputeMatchId is null) return Results.NotFound(new { error = "Dispute not found." });
+
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, disputeMatchId.Value, StaffAuthHelper.PermDisputesAssist);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             // Update dispute
             await conn.ExecuteAsync(
