@@ -25,6 +25,8 @@ public static class SponsorEndpoints
             HybridCache          cache,
             CancellationToken    ct) =>
         {
+            try
+            {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -111,6 +113,13 @@ public static class SponsorEndpoints
                 },
                 history,
             });
+            }
+            catch (Exception ex)
+            {
+                var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogError(ex, "GET /api/sponsors/me failed");
+                return Results.Json(new { error = "Failed to load sponsor data", detail = ex.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/sponsors/me ─────────────────────────────────────────────
@@ -154,9 +163,18 @@ public static class SponsorEndpoints
                 return Results.BadRequest(new { error = "No fields to update." });
 
             var sql = $"UPDATE sponsors SET {string.Join(", ", sets)} WHERE id = @id RETURNING id, name, tagline, description, website_url, logo_url, banner_image_url, accent_color, tier, placement, cta_text, discount_text, is_active, priority, gallery_images, detail_deck_url, created_at, updated_at";
-            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, p);
 
-            return row is null ? Results.NotFound() : Results.Ok(MapSponsor(row));
+            try
+            {
+                var row = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, p);
+                return row is null ? Results.NotFound() : Results.Ok(MapSponsor(row));
+            }
+            catch (Exception ex)
+            {
+                var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogError(ex, "PUT /api/sponsors/me failed for sponsor {SponsorId}", sponsorId);
+                return Results.Json(new { error = "Update failed", detail = ex.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/sponsors/me/demographics ────────────────────────────────
