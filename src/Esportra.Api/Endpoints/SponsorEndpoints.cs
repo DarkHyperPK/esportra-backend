@@ -162,7 +162,7 @@ public static class SponsorEndpoints
             if (sets.Count == 0)
                 return Results.BadRequest(new { error = "No fields to update." });
 
-            var sql = $"UPDATE sponsors SET {string.Join(", ", sets)} WHERE id = @id RETURNING id, name, tagline, description, website_url, logo_url, banner_image_url, accent_color, tier, placement, cta_text, discount_text, is_active, priority, gallery_images, detail_deck_url, created_at, updated_at";
+            var sql = $"UPDATE sponsors SET {string.Join(", ", sets)} WHERE id = @id RETURNING id, name, tagline, description, website_url, logo_url, banner_image_url, accent_color, tier, placement, cta_text, discount_text, is_active, priority, gallery_images, detail_deck_url, created_at";
 
             try
             {
