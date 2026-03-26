@@ -439,26 +439,30 @@ public static class SponsorEndpoints
     }
 
     /// <summary>Maps a dynamic DB row to a consistent sponsor shape.</summary>
-    private static object MapSponsor(dynamic r) => new
+    private static object MapSponsor(dynamic r)
     {
-        id = r.id.ToString(),
-        name = (string)r.name,
-        tagline = (string?)r.tagline,
-        description = (string?)r.description,
-        website_url = (string)r.website_url,
-        logo_url = (string?)r.logo_url,
-        banner_image_url = (string?)r.banner_image_url,
-        accent_color = (string?)r.accent_color ?? "#8b5cf6",
-        tier = (string?)r.tier ?? "standard",
-        placement = r.placement as string[] ?? Array.Empty<string>(),
-        cta_text = (string?)r.cta_text ?? "Learn More",
-        discount_text = (string?)r.discount_text,
-        is_active = (bool?)r.is_active ?? true,
-        priority = (int?)r.priority ?? 0,
-        gallery_images = r.gallery_images as string[] ?? Array.Empty<string>(),
-        detail_deck_url = (string?)r.detail_deck_url,
-        start_date = r.start_date?.ToString("o"),
-        end_date = r.end_date?.ToString("o"),
-        created_at = r.created_at?.ToString("o") ?? "",
-    };
+        var dict = (IDictionary<string, object>)r;
+        return new
+        {
+            id = r.id.ToString(),
+            name = (string?)r.name ?? "",
+            tagline = (string?)r.tagline,
+            description = (string?)r.description,
+            website_url = (string?)r.website_url ?? "",
+            logo_url = (string?)r.logo_url,
+            banner_image_url = (string?)r.banner_image_url,
+            accent_color = (string?)r.accent_color ?? "#8b5cf6",
+            tier = (string?)r.tier ?? "standard",
+            placement = r.placement as string[] ?? Array.Empty<string>(),
+            cta_text = (string?)r.cta_text ?? "Learn More",
+            discount_text = (string?)r.discount_text,
+            is_active = (bool?)r.is_active ?? true,
+            priority = (int?)r.priority ?? 0,
+            gallery_images = r.gallery_images as string[] ?? Array.Empty<string>(),
+            detail_deck_url = (string?)r.detail_deck_url,
+            start_date = dict.TryGetValue("start_date", out var sd) ? sd?.ToString() : null,
+            end_date = dict.TryGetValue("end_date", out var ed) ? ed?.ToString() : null,
+            created_at = r.created_at?.ToString("o") ?? "",
+        };
+    }
 }
