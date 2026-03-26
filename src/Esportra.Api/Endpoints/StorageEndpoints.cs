@@ -40,9 +40,11 @@ public static class StorageEndpoints
             var serviceKey = config["Supabase:ServiceKey"]
                 ?? throw new InvalidOperationException("Supabase:ServiceKey not configured");
 
-            // Build unique filename
+            // Build filename: keep original name, prefix with timestamp for uniqueness
+            var sanitized = Path.GetFileNameWithoutExtension(file.FileName)
+                .Replace(' ', '-').Replace('/', '-').Replace('\\', '-');
             var ext = Path.GetExtension(file.FileName);
-            var uniqueName = $"{userCtx.UserIdGuid}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
+            var uniqueName = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{sanitized}{ext}";
             var storagePath = string.IsNullOrWhiteSpace(folder)
                 ? uniqueName
                 : $"{folder.Trim('/')}/{uniqueName}";
