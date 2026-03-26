@@ -393,10 +393,14 @@ public static class AdminEndpoints
                 country,
             });
 
+            Guid? tournamentId = null;
+            if (!string.IsNullOrEmpty(req.TournamentId) && Guid.TryParse(req.TournamentId, out var tid))
+                tournamentId = tid;
+
             await conn.ExecuteAsync(
                 """
-                INSERT INTO sponsor_impressions (sponsor_id, event_type, page_url, visitor_id, metadata)
-                VALUES (@sponsorId, @eventType, @pageUrl, @visitorId, @metadata::jsonb)
+                INSERT INTO sponsor_impressions (sponsor_id, event_type, page_url, visitor_id, metadata, tournament_id)
+                VALUES (@sponsorId, @eventType, @pageUrl, @visitorId, @metadata::jsonb, @tournamentId)
                 """,
                 new
                 {
@@ -405,6 +409,7 @@ public static class AdminEndpoints
                     pageUrl   = req.PageUrl,
                     visitorId,
                     metadata,
+                    tournamentId,
                 });
 
             return Results.Ok(new { success = true, tracked = true });

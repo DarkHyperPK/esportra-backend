@@ -18,7 +18,8 @@ public sealed record SuspendUserRequest(string Reason);
 public sealed record SponsorTrackRequest(
     string  SponsorId,
     string  EventType,
-    string? PageUrl = null);
+    string? PageUrl = null,
+    string? TournamentId = null);
 
 public sealed record CreateAuditLogRequest(
     string  AdminId,
