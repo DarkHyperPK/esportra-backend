@@ -48,6 +48,18 @@ public static class NotificationEndpoints
                 """,
                 new { userId = userCtx.UserIdGuid, limit, offset });
 
+            // Dapper returns jsonb as string — parse to proper objects for JSON serialization
+            var parsed = notifications.Select(n =>
+            {
+                if (n is IDictionary<string, object?> dict
+                    && dict.TryGetValue("data", out var val) && val is string s && s.Length > 0)
+                {
+                    try { dict["data"] = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(s); }
+                    catch { /* leave as-is */ }
+                }
+                return n;
+            }).ToList();
+
             // Fetch pending team invites (synthetic notifications)
             var invites = await conn.QueryAsync<dynamic>(
                 """
@@ -58,7 +70,7 @@ public static class NotificationEndpoints
                 """,
                 new { userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { notifications, invites });
+            return Results.Ok(new { notifications = parsed, invites });
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/notifications/{id}/read ────────────────────────────────
