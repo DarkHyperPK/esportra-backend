@@ -361,7 +361,7 @@ public static class OrganizationEndpoints
                 """
                 UPDATE organization_staff
                 SET status = @status::text, accepted_at = @acceptedAt, responded_at = @now
-                WHERE id = @inviteId
+                WHERE id = @inviteId AND status = 'pending'
                 """,
                 new
                 {
