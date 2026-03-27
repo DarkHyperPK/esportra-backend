@@ -1606,25 +1606,32 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            await conn.ExecuteAsync(
-                "UPDATE licenses SET status = 'revoked' WHERE user_id = @userId AND license_type = @licenseType",
-                new { userId, licenseType });
+            try
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE licenses SET status = 'revoked' WHERE user_id = @userId AND license_type = @licenseType",
+                    new { userId, licenseType });
 
-            await conn.ExecuteAsync(
-                "UPDATE verified_roles SET is_active = FALSE, status = 'revoked' WHERE user_id = @userId AND role = @licenseType",
-                new { userId, licenseType });
+                await conn.ExecuteAsync(
+                    "UPDATE verified_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
+                    new { userId, licenseType });
 
-            await conn.ExecuteAsync(
-                "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
-                new { userId, licenseType });
+                await conn.ExecuteAsync(
+                    "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
+                    new { userId, licenseType });
 
-            // Reset profiles.role to 'casual' if the revoked type matches their current role
-            await conn.ExecuteAsync(
-                "UPDATE profiles SET role = 'casual' WHERE id = @userId AND role::text = @licenseType",
-                new { userId, licenseType });
+                // Reset profiles.role to 'casual' if the revoked type matches their current role
+                await conn.ExecuteAsync(
+                    "UPDATE profiles SET role = 'casual'::app_role WHERE id = @userId AND role::text = @licenseType",
+                    new { userId, licenseType });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { success = false, error = ex.Message }, statusCode: 500);
+            }
 
             // Evict cached UserContext so the role change takes effect immediately
-            await cache.RemoveAsync($"user-ctx:{userId}");
+            try { await cache.RemoveAsync($"user-ctx:{userId}"); } catch { /* best effort */ }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
@@ -1644,36 +1651,43 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            var expiresAt = DateTime.UtcNow.AddYears(1);
-            await conn.ExecuteAsync(
-                "UPDATE licenses SET status = 'active', expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
-                new { userId, licenseType, expiresAt });
-
-            // Upsert verified_roles: update first, insert if missing
-            var vrUpdated = await conn.ExecuteAsync(
-                "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role = @licenseType",
-                new { userId, licenseType });
-            if (vrUpdated == 0)
+            try
+            {
+                var expiresAt = DateTime.UtcNow.AddYears(1);
                 await conn.ExecuteAsync(
-                    "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @licenseType, 'approved', TRUE, NOW())",
-                    new { userId, licenseType });
+                    "UPDATE licenses SET status = 'active', expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
+                    new { userId, licenseType, expiresAt });
 
-            // Upsert user_roles: update first, insert if missing
-            var urUpdated = await conn.ExecuteAsync(
-                "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @licenseType",
-                new { userId, licenseType });
-            if (urUpdated == 0)
+                // Upsert verified_roles: update first, insert if missing
+                var vrUpdated = await conn.ExecuteAsync(
+                    "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role = @licenseType",
+                    new { userId, licenseType });
+                if (vrUpdated == 0)
+                    await conn.ExecuteAsync(
+                        "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @licenseType, 'approved', TRUE, NOW())",
+                        new { userId, licenseType });
+
+                // Upsert user_roles: update first, insert if missing
+                var urUpdated = await conn.ExecuteAsync(
+                    "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @licenseType",
+                    new { userId, licenseType });
+                if (urUpdated == 0)
+                    await conn.ExecuteAsync(
+                        "INSERT INTO user_roles (user_id, role, is_active) VALUES (@userId, @licenseType, TRUE)",
+                        new { userId, licenseType });
+
+                // Restore profiles.role if currently casual
                 await conn.ExecuteAsync(
-                    "INSERT INTO user_roles (user_id, role, is_active) VALUES (@userId, @licenseType, TRUE)",
+                    "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'::app_role",
                     new { userId, licenseType });
-
-            // Restore profiles.role if currently casual
-            await conn.ExecuteAsync(
-                "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'",
-                new { userId, licenseType });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { success = false, error = ex.Message }, statusCode: 500);
+            }
 
             // Evict cached UserContext so the role change takes effect immediately
-            await cache.RemoveAsync($"user-ctx:{userId}");
+            try { await cache.RemoveAsync($"user-ctx:{userId}"); } catch { /* best effort */ }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
