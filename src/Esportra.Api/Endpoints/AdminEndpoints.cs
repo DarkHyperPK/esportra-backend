@@ -1437,37 +1437,28 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
             var where = new List<string>();
-            if (!string.IsNullOrWhiteSpace(status)) where.Add("l.status = @status");
-            if (!string.IsNullOrWhiteSpace(type))   where.Add("l.license_type = @type");
-            if (!string.IsNullOrWhiteSpace(q))       where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)");
+            var p = new Dapper.DynamicParameters();
+
+            if (!string.IsNullOrWhiteSpace(status)) { where.Add("l.status = @status"); p.Add("status", status); }
+            if (!string.IsNullOrWhiteSpace(type))   { where.Add("l.license_type = @type"); p.Add("type", type); }
+            if (!string.IsNullOrWhiteSpace(q))       { where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)"); p.Add("q", $"%{q}%"); }
+
+            var lim = Math.Min(limit ?? 50, 200);
+            var off = offset ?? 0;
+            p.Add("lim", lim);
+            p.Add("off", off);
 
             var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-            var sql = $"""
-                SELECT l.id, l.user_id, l.license_id, l.license_type, l.status,
-                       l.issued_at, l.expires_at, l.notes, l.created_at,
-                       p.username, p.email, p.avatar_url, p.first_name, p.last_name
-                FROM licenses l
-                JOIN profiles p ON p.id = l.user_id
-                {whereClause}
-                ORDER BY l.created_at DESC
-                LIMIT @lim OFFSET @off
-                """;
-            var rows = await conn.QueryAsync<dynamic>(sql, new
-            {
-                status,
-                type,
-                q = string.IsNullOrWhiteSpace(q) ? null : $"%{q}%",
-                lim = Math.Min(limit ?? 50, 200),
-                off = offset ?? 0
-            });
+            var sql = $"SELECT l.id, l.user_id, l.license_id, l.license_type, l.status, l.issued_at, l.expires_at, l.notes, l.created_at, p.username, p.email, p.avatar_url, p.first_name, p.last_name FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause} ORDER BY l.created_at DESC LIMIT @lim OFFSET @off";
+            var rows = await conn.QueryAsync<dynamic>(sql, p);
+
+            var countP = new Dapper.DynamicParameters();
+            if (!string.IsNullOrWhiteSpace(status)) countP.Add("status", status);
+            if (!string.IsNullOrWhiteSpace(type))   countP.Add("type", type);
+            if (!string.IsNullOrWhiteSpace(q))       countP.Add("q", $"%{q}%");
 
             var countSql = $"SELECT COUNT(*) FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause}";
-            var total = await conn.ExecuteScalarAsync<int>(countSql, new
-            {
-                status,
-                type,
-                q = string.IsNullOrWhiteSpace(q) ? null : $"%{q}%"
-            });
+            var total = await conn.ExecuteScalarAsync<int>(countSql, countP);
 
             return Results.Ok(new { items = rows, total });
         }).RequireAuthorization("Admin");
