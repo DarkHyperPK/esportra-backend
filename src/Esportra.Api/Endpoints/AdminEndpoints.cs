@@ -1615,6 +1615,11 @@ public static class AdminEndpoints
                 "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
                 new { userId, licenseType });
 
+            // Reset profiles.role to 'casual' if the revoked type matches their current role
+            await conn.ExecuteAsync(
+                "UPDATE profiles SET role = 'casual' WHERE id = @userId AND role::text = @licenseType",
+                new { userId, licenseType });
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -1651,6 +1656,11 @@ public static class AdminEndpoints
                 VALUES (@userId, @licenseType, TRUE)
                 ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
                 """,
+                new { userId, licenseType });
+
+            // Restore profiles.role if currently casual
+            await conn.ExecuteAsync(
+                "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'",
                 new { userId, licenseType });
 
             return Results.Ok(new { success = true });
