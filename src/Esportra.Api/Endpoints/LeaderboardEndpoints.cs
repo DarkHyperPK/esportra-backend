@@ -170,11 +170,11 @@ public static class LeaderboardEndpoints
 
             var games = (await conn.QueryAsync<string>(
                 """
-                SELECT DISTINCT t.game
+                SELECT DISTINCT ON (LOWER(t.game)) t.game
                 FROM teams t
                 INNER JOIN brkt_matches m ON (m.team1_id = t.id OR m.team2_id = t.id) AND m.status = 'completed'
                 WHERE t.game IS NOT NULL
-                ORDER BY t.game
+                ORDER BY LOWER(t.game), t.game
                 """)).AsList();
 
             var countries = (await conn.QueryAsync<string>(
