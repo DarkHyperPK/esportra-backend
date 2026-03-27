@@ -1419,6 +1419,142 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
+        // ── POST /api/admin/licenses ──────────────────────────────────────────
+        // Manually assign a license to a user (super admin)
+        app.MapPost("/api/admin/licenses", async (
+            [FromBody] AdminCreateLicenseRequest req,
+            HttpContext                          ctx,
+            IDbConnectionFactory                db,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            // Check if license already exists for this user+type
+            var existingId = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @licenseType LIMIT 1",
+                new { userId = req.UserId, licenseType = req.LicenseType });
+
+            string licenseId;
+            var issuedAt  = DateTime.UtcNow;
+            var expiresAt = issuedAt.AddYears(1);
+
+            if (existingId is not null)
+            {
+                licenseId = existingId;
+                await conn.ExecuteAsync(
+                    "UPDATE licenses SET status = 'active', issued_at = @issuedAt, expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
+                    new { userId = req.UserId, licenseType = req.LicenseType, issuedAt, expiresAt });
+            }
+            else
+            {
+                var prefix = req.LicenseType switch
+                {
+                    "organizer"   => "ESP-OR",
+                    "venue_owner" => "ESP-VO",
+                    "broadcaster" => "ESP-BR",
+                    _             => "ESP-XX"
+                };
+                licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
+                    VALUES (@userId, @licenseId, @licenseType, 'active', @issuedAt, @expiresAt)
+                    """,
+                    new { userId = req.UserId, licenseId, licenseType = req.LicenseType, issuedAt, expiresAt });
+            }
+
+            // Also ensure verified_roles and user_roles are in sync
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
+                VALUES (@userId, @role, 'approved', TRUE, NOW())
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
+                """,
+                new { userId = req.UserId, role = req.LicenseType });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_roles (user_id, role, is_active)
+                VALUES (@userId, @role, TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                """,
+                new { userId = req.UserId, role = req.LicenseType });
+
+            return Results.Ok(new { success = true, license_id = licenseId });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/licenses/{userId}/{licenseType}/revoke ─────────────
+        app.MapPut("/api/admin/licenses/{userId}/{licenseType}/revoke", async (
+            Guid                 userId,
+            string               licenseType,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            await conn.ExecuteAsync(
+                "UPDATE licenses SET status = 'revoked' WHERE user_id = @userId AND license_type = @licenseType",
+                new { userId, licenseType });
+
+            await conn.ExecuteAsync(
+                "UPDATE verified_roles SET is_active = FALSE, status = 'revoked' WHERE user_id = @userId AND role = @licenseType",
+                new { userId, licenseType });
+
+            await conn.ExecuteAsync(
+                "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
+                new { userId, licenseType });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/licenses/{userId}/{licenseType}/reinstate ──────────
+        app.MapPut("/api/admin/licenses/{userId}/{licenseType}/reinstate", async (
+            Guid                 userId,
+            string               licenseType,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var expiresAt = DateTime.UtcNow.AddYears(1);
+            await conn.ExecuteAsync(
+                "UPDATE licenses SET status = 'active', expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
+                new { userId, licenseType, expiresAt });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
+                VALUES (@userId, @licenseType, 'approved', TRUE, NOW())
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
+                """,
+                new { userId, licenseType });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_roles (user_id, role, is_active)
+                VALUES (@userId, @licenseType, TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                """,
+                new { userId, licenseType });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
         // ── GET /api/admin/company-profiles ───────────────────────────────────
         app.MapGet("/api/admin/company-profiles", async (
             HttpContext          ctx,
@@ -1741,7 +1877,12 @@ public static class AdminEndpoints
 }
 
 // ── Admin request records ─────────────────────────────────────────────────────
-public sealed record AssignRoleRequest(Guid UserId, string Role);
+public sealed record AssignRoleRequest(
+    [property: JsonPropertyName("user_id")] Guid UserId,
+    string Role);
+public sealed record AdminCreateLicenseRequest(
+    [property: JsonPropertyName("user_id")] Guid UserId,
+    [property: JsonPropertyName("license_type")] string LicenseType);
 public sealed record UpdateRoleRequest(string[]? Roles = null);
 public sealed record SetRoleRequest(string Role);
 public sealed record AdminUpdateDisputeRequest(string? Status = null, string? ResolutionNotes = null, Guid? AssignedToUserId = null);
