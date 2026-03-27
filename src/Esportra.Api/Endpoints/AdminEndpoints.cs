@@ -23,7 +23,7 @@ public static class AdminEndpoints
     {
         // ── POST /api/admin/users/{userId}/action ─────────────────────────────
         // Replaces: manage-users Edge Function
-        // Actions: "delete-user", "update-role"
+        // Actions: "delete-user", "update-role", "assign_role", "revoke_role"
         app.MapPost("/api/admin/users/{userId}/action", async (
             Guid                     userId,
             [FromBody] ManageUserRequest req,
@@ -32,7 +32,6 @@ public static class AdminEndpoints
             HttpContext              ctx,
             CancellationToken        ct) =>
         {
-            // Verify caller has users:delete or users:edit permission
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -49,6 +48,8 @@ public static class AdminEndpoints
             {
                 "delete-user" => await DeleteUserAsync(userId, conn, supabase, ct),
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
+                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, ct),
+                "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, ct),
                 _ => Results.BadRequest(new { error = $"Unknown action: {req.Action}" })
             };
         }).RequireAuthorization("Authenticated");
@@ -1419,6 +1420,106 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
+        // ── GET /api/admin/licenses ───────────────────────────────────────────
+        // List all licenses with user info, supports ?status=, ?type=, ?q= search
+        app.MapGet("/api/admin/licenses", async (
+            string?              status,
+            string?              type,
+            string?              q,
+            int?                 limit,
+            int?                 offset,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var where = new List<string>();
+            if (!string.IsNullOrWhiteSpace(status)) where.Add("l.status = @status");
+            if (!string.IsNullOrWhiteSpace(type))   where.Add("l.license_type = @type");
+            if (!string.IsNullOrWhiteSpace(q))       where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)");
+
+            var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+            var sql = $"""
+                SELECT l.id, l.user_id, l.license_id, l.license_type, l.status,
+                       l.issued_at, l.expires_at, l.notes, l.created_at,
+                       p.username, p.email, p.avatar_url, p.first_name, p.last_name
+                FROM licenses l
+                JOIN profiles p ON p.id = l.user_id
+                {whereClause}
+                ORDER BY l.created_at DESC
+                LIMIT @lim OFFSET @off
+                """;
+            var rows = await conn.QueryAsync<dynamic>(sql, new
+            {
+                status,
+                type,
+                q = string.IsNullOrWhiteSpace(q) ? null : $"%{q}%",
+                lim = Math.Min(limit ?? 50, 200),
+                off = offset ?? 0
+            });
+
+            var countSql = $"SELECT COUNT(*) FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause}";
+            var total = await conn.ExecuteScalarAsync<int>(countSql, new
+            {
+                status,
+                type,
+                q = string.IsNullOrWhiteSpace(q) ? null : $"%{q}%"
+            });
+
+            return Results.Ok(new { items = rows, total });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/users/{userId}/detail ──────────────────────────────
+        // Full user profile: profile + licenses + roles + verified_roles + orgs
+        app.MapGet("/api/admin/users/{userId}/detail", async (
+            Guid                 userId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, username, email, first_name, last_name, avatar_url, is_admin, admin_roles, created_at FROM profiles WHERE id = @userId",
+                new { userId });
+            if (profile is null) return Results.NotFound(new { error = "User not found" });
+
+            var licenses = await conn.QueryAsync<dynamic>(
+                "SELECT id, license_id, license_type, status, issued_at, expires_at, notes FROM licenses WHERE user_id = @userId ORDER BY issued_at DESC",
+                new { userId });
+            var userRoles = await conn.QueryAsync<dynamic>(
+                "SELECT role, is_active FROM user_roles WHERE user_id = @userId",
+                new { userId });
+            var verifiedRoles = await conn.QueryAsync<dynamic>(
+                "SELECT role, status, is_active, verified_at FROM verified_roles WHERE user_id = @userId",
+                new { userId });
+            var organizations = await conn.QueryAsync<dynamic>(
+                "SELECT id, name, slug, logo_url FROM organizations WHERE owner_id = @userId",
+                new { userId });
+            var venues = await conn.QueryAsync<dynamic>(
+                "SELECT id, name, city, country, status FROM venues WHERE owner_id = @userId",
+                new { userId });
+            var tournaments = await conn.QueryAsync<dynamic>(
+                "SELECT id, title, game, status FROM tournaments WHERE organizer_id = @userId ORDER BY created_at DESC LIMIT 20",
+                new { userId });
+
+            return Results.Ok(new
+            {
+                profile,
+                licenses,
+                user_roles = userRoles,
+                verified_roles = verifiedRoles,
+                organizations,
+                venues,
+                tournaments
+            });
+        }).RequireAuthorization("Admin");
+
         // ── POST /api/admin/licenses ──────────────────────────────────────────
         // Manually assign a license to a user (super admin)
         app.MapPost("/api/admin/licenses", async (
@@ -1871,6 +1972,81 @@ public static class AdminEndpoints
         await conn.ExecuteAsync(
             "INSERT INTO public.user_roles (user_id, role) VALUES (@id, @role)",
             new { id = userId, role });
+
+        return Results.Ok(new { success = true, role });
+    }
+
+    private static async Task<IResult> AssignRoleToUserAsync(
+        Guid userId,
+        ManageUserRequest req,
+        System.Data.IDbConnection conn,
+        CancellationToken ct)
+    {
+        var role = req.RoleKey ?? req.Role;
+        if (string.IsNullOrWhiteSpace(role))
+            return Results.BadRequest(new { error = "Role is required for assign_role action." });
+
+        var isAdmin = string.Equals(req.RoleType, "admin", StringComparison.OrdinalIgnoreCase);
+
+        if (isAdmin)
+        {
+            // Resolve admin role id from admin_roles table by key
+            var roleId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM admin_roles WHERE key = @role LIMIT 1", new { role });
+            if (roleId is null)
+                return Results.BadRequest(new { error = $"Admin role '{role}' not found." });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO admin_user_roles (user_id, role_id)
+                VALUES (@userId, @roleId)
+                ON CONFLICT DO NOTHING
+                """,
+                new { userId, roleId });
+        }
+        else
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_roles (user_id, role, is_active)
+                VALUES (@userId, @role, TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                """,
+                new { userId, role });
+        }
+
+        return Results.Ok(new { success = true, role });
+    }
+
+    private static async Task<IResult> RevokeRoleFromUserAsync(
+        Guid userId,
+        ManageUserRequest req,
+        System.Data.IDbConnection conn,
+        CancellationToken ct)
+    {
+        var role = req.RoleKey ?? req.Role;
+        if (string.IsNullOrWhiteSpace(role))
+            return Results.BadRequest(new { error = "Role is required for revoke_role action." });
+
+        var isAdmin = string.Equals(req.RoleType, "admin", StringComparison.OrdinalIgnoreCase);
+
+        if (isAdmin)
+        {
+            var roleId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM admin_roles WHERE key = @role LIMIT 1", new { role });
+            if (roleId is not null)
+            {
+                await conn.ExecuteAsync(
+                    "DELETE FROM admin_user_roles WHERE user_id = @userId AND role_id = @roleId",
+                    new { userId, roleId });
+            }
+        }
+        else
+        {
+            await conn.ExecuteAsync(
+                "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @role",
+                new { userId, role });
+        }
 
         return Results.Ok(new { success = true, role });
     }
