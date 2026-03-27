@@ -1452,7 +1452,7 @@ public static class AdminEndpoints
                 p.Add("off", off);
 
                 var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-                var sql = $"SELECT l.id, l.user_id, l.license_id, l.license_type, l.status, l.issued_at, l.expires_at, l.notes, l.created_at, p.username, p.email, p.avatar_url, p.first_name, p.last_name FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause} ORDER BY l.created_at DESC LIMIT @lim OFFSET @off";
+                var sql = $"SELECT l.id, l.user_id, l.license_id, l.license_type, l.status, l.issued_at, l.expires_at, l.notes, l.created_at, p.username, p.email, p.avatar_url, p.full_name FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause} ORDER BY l.created_at DESC LIMIT @lim OFFSET @off";
                 var rows = await conn.QueryAsync<dynamic>(sql, p);
 
                 var countP = new Dapper.DynamicParameters();
@@ -1485,7 +1485,7 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, username, email, first_name, last_name, avatar_url, is_admin, admin_roles, created_at FROM profiles WHERE id = @userId",
+                "SELECT id, username, email, full_name, avatar_url, is_admin, admin_roles, created_at FROM profiles WHERE id = @userId",
                 new { userId });
             if (profile is null) return Results.NotFound(new { error = "User not found" });
 
