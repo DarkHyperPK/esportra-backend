@@ -62,7 +62,9 @@ public static class TournamentEndpoints
         string?   OrganizationSlug,
         string?   OrganizerUsername,
         string?   OrganizerFullName,
-        string?   WinnerTeamName = null
+        string?   WinnerTeamName = null,
+        string?   VenueCity = null,
+        string?   VenueCountry = null
     );
 
     private const string TournamentListSql = """
@@ -79,17 +81,25 @@ public static class TournamentEndpoints
                o.slug   AS organization_slug,
                p.username      AS organizer_username,
                p.full_name     AS organizer_full_name,
-               wt.name  AS winner_team_name
+               wt.name  AS winner_team_name,
+               v.city   AS venue_city,
+               v.country AS venue_country
         FROM tournaments t
         LEFT JOIN organizations o ON o.id = t.organization_id
         LEFT JOIN profiles      p ON p.id = t.organizer_id
         LEFT JOIN teams        wt ON wt.id = t.winner_id
+        LEFT JOIN venues        v ON v.id  = t.venue_id
         WHERE t.is_public = TRUE
           AND t.deleted_at IS NULL
           AND (@status IS NULL OR t.status::text = @status)
           AND (@game   IS NULL OR t.game   ILIKE '%' || @game || '%')
           AND (@q      IS NULL OR t.name   ILIKE '%' || @q   || '%')
           AND (@organizerGuid IS NULL OR t.organizer_id = @organizerGuid)
+          AND (@isOnline IS NULL
+               OR (@isOnline = TRUE  AND t.venue_id IS NULL)
+               OR (@isOnline = FALSE AND t.venue_id IS NOT NULL))
+          AND (@city    IS NULL OR v.city    ILIKE '%' || @city    || '%')
+          AND (@country IS NULL OR v.country ILIKE '%' || @country || '%')
         ORDER BY t.start_date ASC
         LIMIT @limit OFFSET @offset
         """;
@@ -104,6 +114,9 @@ public static class TournamentEndpoints
             string?              q,
             string?              organizer_id,
             string?              ids,
+            bool?                is_online,
+            string?              city,
+            string?              country,
             int                  limit  = 50,
             int                  offset = 0,
             IDbConnectionFactory db     = null!,
@@ -137,11 +150,14 @@ public static class TournamentEndpoints
                            o.slug   AS organization_slug,
                            p.username      AS organizer_username,
                            p.full_name     AS organizer_full_name,
-                           wt.name  AS winner_team_name
+                           wt.name  AS winner_team_name,
+                           v.city   AS venue_city,
+                           v.country AS venue_country
                     FROM tournaments t
                     LEFT JOIN organizations o ON o.id = t.organization_id
                     LEFT JOIN profiles      p ON p.id = t.organizer_id
                     LEFT JOIN teams        wt ON wt.id = t.winner_id
+                    LEFT JOIN venues        v ON v.id  = t.venue_id
                     WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
                     ORDER BY t.start_date ASC
                     """,
@@ -149,7 +165,7 @@ public static class TournamentEndpoints
                 return Results.Json(rows2, s_snakeCase);
             }
 
-            var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{limit}:{offset}";
+            var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{is_online}:{city}:{country}:{limit}:{offset}";
             Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
             var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
                 cacheKey,
@@ -158,11 +174,48 @@ public static class TournamentEndpoints
                     using var conn = db.CreateConnection();
                     return (await conn.QueryAsync<TournamentListRow>(
                         TournamentListSql,
-                        new { status, game, q, organizerGuid, limit, offset })).AsList();
+                        new { status, game, q, organizerGuid, isOnline = is_online, city, country, limit, offset })).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 cancellationToken: ct);
             return Results.Json(rows, s_snakeCase);
+        });
+
+        // ── GET /api/tournaments/filters — distinct values from actual content ─
+        app.MapGet("/api/tournaments/filters", async (
+            IDbConnectionFactory db,
+            HybridCache          cache,
+            CancellationToken    ct) =>
+        {
+            var result = await cache.GetOrCreateAsync("tournament-filters", async _ =>
+            {
+                using var conn = db.CreateConnection();
+                var games = (await conn.QueryAsync<string>(
+                    """
+                    SELECT DISTINCT game FROM tournaments
+                    WHERE is_public = TRUE AND deleted_at IS NULL
+                      AND game IS NOT NULL AND game <> ''
+                    ORDER BY game
+                    """)).AsList();
+                var cities = (await conn.QueryAsync<string>(
+                    """
+                    SELECT DISTINCT v.city FROM tournaments t
+                    JOIN venues v ON v.id = t.venue_id
+                    WHERE t.is_public = TRUE AND t.deleted_at IS NULL
+                      AND v.city IS NOT NULL AND v.city <> ''
+                    ORDER BY v.city
+                    """)).AsList();
+                var countries = (await conn.QueryAsync<string>(
+                    """
+                    SELECT DISTINCT v.country FROM tournaments t
+                    JOIN venues v ON v.id = t.venue_id
+                    WHERE t.is_public = TRUE AND t.deleted_at IS NULL
+                      AND v.country IS NOT NULL AND v.country <> ''
+                    ORDER BY v.country
+                    """)).AsList();
+                return new { games, cities, countries };
+            }, new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) }, cancellationToken: ct);
+            return Results.Ok(result);
         });
 
         // ── GET /api/tournaments/upcoming ─────────────────────────────────────

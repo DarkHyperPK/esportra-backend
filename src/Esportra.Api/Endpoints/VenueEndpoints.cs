@@ -23,10 +23,11 @@ public static class VenueEndpoints
     public static void MapVenueEndpoints(this WebApplication app)
     {
         // ── GET /api/venues — list / search —————————————————————————————————
-        // Supports: ?q=, ?city=, ?owner_id=, ?owned=true, ?limit=, ?offset=
+        // Supports: ?q=, ?city=, ?country=, ?owner_id=, ?owned=true, ?limit=, ?offset=
         app.MapGet("/api/venues", async (
             string?              q,
             string?              city,
+            string?              country,
             Guid?                owner_id,
             bool?                owned,
             int                  limit  = 20,
@@ -59,11 +60,40 @@ public static class VenueEndpoints
                   AND (@ownerId IS NOT NULL OR status = 'published')
                   AND (@q IS NULL OR name ILIKE '%' || @q || '%' OR description ILIKE '%' || @q || '%')
                   AND (@city IS NULL OR city ILIKE '%' || @city || '%')
+                  AND (@country IS NULL OR country ILIKE '%' || @country || '%')
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { ownerId = effectiveOwnerId, q, city, limit, offset });
+                new { ownerId = effectiveOwnerId, q, city, country, limit, offset });
             return Results.Ok(rows);
+        });
+
+        // ── GET /api/venues/filters — distinct cities/countries with content ─
+        app.MapGet("/api/venues/filters", async (
+            IDbConnectionFactory db,
+            HybridCache          cache,
+            CancellationToken    ct) =>
+        {
+            var result = await cache.GetOrCreateAsync("venue-filters", async _ =>
+            {
+                using var conn = db.CreateConnection();
+                var cities = (await conn.QueryAsync<string>(
+                    """
+                    SELECT DISTINCT city FROM venues
+                    WHERE status = 'published' AND deleted_at IS NULL
+                      AND city IS NOT NULL AND city <> ''
+                    ORDER BY city
+                    """)).AsList();
+                var countries = (await conn.QueryAsync<string>(
+                    """
+                    SELECT DISTINCT country FROM venues
+                    WHERE status = 'published' AND deleted_at IS NULL
+                      AND country IS NOT NULL AND country <> ''
+                    ORDER BY country
+                    """)).AsList();
+                return new { cities, countries };
+            }, new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) }, cancellationToken: ct);
+            return Results.Ok(result);
         });
 
         // ── GET /api/venues/nearby — Haversine RPC ————————————————————————
