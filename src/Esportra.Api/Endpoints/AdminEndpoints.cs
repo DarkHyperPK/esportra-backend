@@ -1430,37 +1430,46 @@ public static class AdminEndpoints
             int?                 offset,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            ILogger<Program>     logger,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
-            var where = new List<string>();
-            var p = new Dapper.DynamicParameters();
+            try
+            {
+                using var conn = db.CreateConnection();
+                var where = new List<string>();
+                var p = new Dapper.DynamicParameters();
 
-            if (!string.IsNullOrWhiteSpace(status)) { where.Add("l.status = @status"); p.Add("status", status); }
-            if (!string.IsNullOrWhiteSpace(type))   { where.Add("l.license_type = @type"); p.Add("type", type); }
-            if (!string.IsNullOrWhiteSpace(q))       { where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)"); p.Add("q", $"%{q}%"); }
+                if (!string.IsNullOrWhiteSpace(status)) { where.Add("l.status = @status"); p.Add("status", status); }
+                if (!string.IsNullOrWhiteSpace(type))   { where.Add("l.license_type = @type"); p.Add("type", type); }
+                if (!string.IsNullOrWhiteSpace(q))       { where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)"); p.Add("q", $"%{q}%"); }
 
-            var lim = Math.Min(limit ?? 50, 200);
-            var off = offset ?? 0;
-            p.Add("lim", lim);
-            p.Add("off", off);
+                var lim = Math.Min(limit ?? 50, 200);
+                var off = offset ?? 0;
+                p.Add("lim", lim);
+                p.Add("off", off);
 
-            var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-            var sql = $"SELECT l.id, l.user_id, l.license_id, l.license_type, l.status, l.issued_at, l.expires_at, l.notes, l.created_at, p.username, p.email, p.avatar_url, p.first_name, p.last_name FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause} ORDER BY l.created_at DESC LIMIT @lim OFFSET @off";
-            var rows = await conn.QueryAsync<dynamic>(sql, p);
+                var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+                var sql = $"SELECT l.id, l.user_id, l.license_id, l.license_type, l.status, l.issued_at, l.expires_at, l.notes, l.created_at, p.username, p.email, p.avatar_url, p.first_name, p.last_name FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause} ORDER BY l.created_at DESC LIMIT @lim OFFSET @off";
+                var rows = await conn.QueryAsync<dynamic>(sql, p);
 
-            var countP = new Dapper.DynamicParameters();
-            if (!string.IsNullOrWhiteSpace(status)) countP.Add("status", status);
-            if (!string.IsNullOrWhiteSpace(type))   countP.Add("type", type);
-            if (!string.IsNullOrWhiteSpace(q))       countP.Add("q", $"%{q}%");
+                var countP = new Dapper.DynamicParameters();
+                if (!string.IsNullOrWhiteSpace(status)) countP.Add("status", status);
+                if (!string.IsNullOrWhiteSpace(type))   countP.Add("type", type);
+                if (!string.IsNullOrWhiteSpace(q))       countP.Add("q", $"%{q}%");
 
-            var countSql = $"SELECT COUNT(*) FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause}";
-            var total = await conn.ExecuteScalarAsync<int>(countSql, countP);
+                var countSql = $"SELECT COUNT(*) FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause}";
+                var total = await conn.ExecuteScalarAsync<int>(countSql, countP);
 
-            return Results.Ok(new { items = rows, total });
+                return Results.Ok(new { items = rows, total });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "GET /api/admin/licenses failed");
+                return Results.Json(new { error = ex.Message, detail = ex.InnerException?.Message }, statusCode: 500);
+            }
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/users/{userId}/detail ──────────────────────────────
