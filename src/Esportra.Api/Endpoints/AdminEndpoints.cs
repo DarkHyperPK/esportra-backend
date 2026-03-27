@@ -1505,7 +1505,7 @@ public static class AdminEndpoints
                 "SELECT id, name, city, country, status FROM venues WHERE owner_id = @userId",
                 new { userId });
             var tournaments = await conn.QueryAsync<dynamic>(
-                "SELECT id, title, game, status FROM tournaments WHERE organizer_id = @userId ORDER BY created_at DESC LIMIT 20",
+                "SELECT id, name, game, status::text AS status FROM tournaments WHERE organizer_id = @userId ORDER BY created_at DESC LIMIT 20",
                 new { userId });
 
             return Results.Ok(new
