@@ -325,6 +325,7 @@ app.MapGet("/health", () => Results.Ok(new
     status    = "healthy",
     timestamp = DateTime.UtcNow,
     version   = "1.0.0-phase4",
+    build     = "20260328-rbac-fix",
 }));
 
 app.UseCors("EsportraPolicy");
