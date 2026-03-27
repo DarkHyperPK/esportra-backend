@@ -40,15 +40,16 @@ public static class GameEndpoints
 
             if (cached is not null)
             {
-                var cachedDoc = JsonDocument.Parse(cached);
-                return Results.Ok(new { isCached = true, data = cachedDoc.RootElement });
+                return Results.Text(
+                    $$"""{"isCached":true,"data":{{cached}}}""",
+                    "application/json");
             }
 
             // Cache miss — call RAWG
             var rawJson = await rawg.SearchGamesAsync(q, ct);
-            using var doc = JsonDocument.Parse(rawJson);
 
             // Try to cache the first result
+            using var doc = JsonDocument.Parse(rawJson);
             var results = doc.RootElement.TryGetProperty("results", out var r) ? r : default;
             if (results.ValueKind == JsonValueKind.Array && results.GetArrayLength() > 0)
             {
@@ -74,7 +75,9 @@ public static class GameEndpoints
                 }
             }
 
-            return Results.Ok(new { isCached = false, data = doc.RootElement });
+            return Results.Text(
+                $$"""{"isCached":false,"data":{{rawJson}}}""",
+                "application/json");
         }); // Public — game search doesn't require auth
 
         // ── GET /api/games/maps?game={game} ──────────────────────────────────
@@ -126,8 +129,7 @@ public static class GameEndpoints
             CancellationToken ct) =>
         {
             var json = await rawg.GetScreenshotsAsync(id, ct);
-            var doc  = JsonDocument.Parse(json);
-            return Results.Ok(doc.RootElement);
+            return Results.Text(json, "application/json");
         }); // Public
     }
 }
