@@ -1656,6 +1656,94 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
+        // ── POST /api/admin/licenses/backfill ─────────────────────────────────
+        app.MapPost("/api/admin/licenses/backfill", async (
+            [FromBody] AdminBackfillLicensesRequest req,
+            HttpContext                             ctx,
+            IDbConnectionFactory                   db,
+            CancellationToken                      ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+
+            var licenseType = req.LicenseType ?? "organizer";
+            var prefix = licenseType switch
+            {
+                "organizer"   => "ESP-OR",
+                "venue_owner" => "ESP-VO",
+                "broadcaster" => "ESP-BR",
+                _             => "ESP-XX"
+            };
+
+            using var conn = db.CreateConnection();
+
+            // Find users with the role who don't have an active license of that type
+            var unlicensed = await conn.QueryAsync<Guid>(
+                """
+                SELECT DISTINCT p.id
+                FROM profiles p
+                LEFT JOIN licenses l ON l.user_id = p.id AND l.license_type = @licenseType AND l.status = 'active'
+                WHERE l.id IS NULL
+                  AND (
+                    p.role = @licenseType
+                    OR EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = @licenseType AND ur.is_active = TRUE)
+                  )
+                """,
+                new { licenseType });
+
+            var userIds = unlicensed.ToList();
+            var issuedAt  = DateTime.UtcNow;
+            var expiresAt = issuedAt.AddYears(1);
+            var issued = 0;
+
+            foreach (var userId in userIds)
+            {
+                var licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+
+                // Check if a revoked/suspended license already exists for this user+type
+                var existingId = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @licenseType LIMIT 1",
+                    new { userId, licenseType });
+
+                if (existingId is not null)
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE licenses SET status = 'active', issued_at = @issuedAt, expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
+                        new { userId, licenseType, issuedAt, expiresAt });
+                }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
+                        VALUES (@userId, @licenseId, @licenseType, 'active', @issuedAt, @expiresAt)
+                        """,
+                        new { userId, licenseId, licenseType, issuedAt, expiresAt });
+                }
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
+                    VALUES (@userId, @role, 'approved', TRUE, NOW())
+                    ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
+                    """,
+                    new { userId, role = licenseType });
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO user_roles (user_id, role, is_active)
+                    VALUES (@userId, @role, TRUE)
+                    ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                    """,
+                    new { userId, role = licenseType });
+
+                issued++;
+            }
+
+            return Results.Ok(new { issued });
+        }).RequireAuthorization("Admin");
+
         // ── GET /api/admin/company-profiles ───────────────────────────────────
         app.MapGet("/api/admin/company-profiles", async (
             HttpContext          ctx,
@@ -2059,6 +2147,8 @@ public sealed record AssignRoleRequest(
 public sealed record AdminCreateLicenseRequest(
     [property: JsonPropertyName("user_id")] Guid UserId,
     [property: JsonPropertyName("license_type")] string LicenseType);
+public sealed record AdminBackfillLicensesRequest(
+    [property: JsonPropertyName("license_type")] string? LicenseType = "organizer");
 public sealed record UpdateRoleRequest(string[]? Roles = null);
 public sealed record SetRoleRequest(string Role);
 public sealed record AdminUpdateDisputeRequest(string? Status = null, string? ResolutionNotes = null, Guid? AssignedToUserId = null);
