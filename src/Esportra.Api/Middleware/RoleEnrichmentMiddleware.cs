@@ -55,9 +55,9 @@ public sealed class RoleEnrichmentMiddleware(
             return new UserContext { UserId = userId, Email = string.Empty };
         }
 
-        // Query platform roles
+        // Query platform roles (only active — revoked licenses set is_active = FALSE)
         var roles = (await Dapper.SqlMapper.QueryAsync<string>(conn,
-            "SELECT role FROM public.user_roles WHERE user_id = @userId",
+            "SELECT role FROM public.user_roles WHERE user_id = @userId AND is_active = TRUE",
             new { userId = userGuid })).ToArray();
 
         // Query admin roles from the normalized admin_user_roles table (single source of truth).

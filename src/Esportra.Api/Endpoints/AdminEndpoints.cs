@@ -9,6 +9,7 @@ using Esportra.Infrastructure.Email;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
 
 namespace Esportra.Api.Endpoints;
@@ -1569,22 +1570,23 @@ public static class AdminEndpoints
                     new { userId = req.UserId, licenseId, licenseType = req.LicenseType, issuedAt, expiresAt });
             }
 
-            // Also ensure verified_roles and user_roles are in sync
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
-                VALUES (@userId, @role, 'approved', TRUE, NOW())
-                ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
-                """,
+            // Upsert verified_roles: update first, insert if missing
+            var vrRows = await conn.ExecuteAsync(
+                "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role = @role",
                 new { userId = req.UserId, role = req.LicenseType });
+            if (vrRows == 0)
+                await conn.ExecuteAsync(
+                    "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @role, 'approved', TRUE, NOW())",
+                    new { userId = req.UserId, role = req.LicenseType });
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO user_roles (user_id, role, is_active)
-                VALUES (@userId, @role, TRUE)
-                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
-                """,
+            // Upsert user_roles: update first, insert if missing
+            var urRows = await conn.ExecuteAsync(
+                "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @role",
                 new { userId = req.UserId, role = req.LicenseType });
+            if (urRows == 0)
+                await conn.ExecuteAsync(
+                    "INSERT INTO user_roles (user_id, role, is_active) VALUES (@userId, @role, TRUE)",
+                    new { userId = req.UserId, role = req.LicenseType });
 
             return Results.Ok(new { success = true, license_id = licenseId });
         }).RequireAuthorization("Admin");
@@ -1595,6 +1597,7 @@ public static class AdminEndpoints
             string               licenseType,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            HybridCache          cache,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1620,6 +1623,9 @@ public static class AdminEndpoints
                 "UPDATE profiles SET role = 'casual' WHERE id = @userId AND role::text = @licenseType",
                 new { userId, licenseType });
 
+            // Evict cached UserContext so the role change takes effect immediately
+            await cache.RemoveAsync($"user-ctx:{userId}");
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -1629,6 +1635,7 @@ public static class AdminEndpoints
             string               licenseType,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            HybridCache          cache,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1642,26 +1649,31 @@ public static class AdminEndpoints
                 "UPDATE licenses SET status = 'active', expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
                 new { userId, licenseType, expiresAt });
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
-                VALUES (@userId, @licenseType, 'approved', TRUE, NOW())
-                ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
-                """,
+            // Upsert verified_roles: update first, insert if missing
+            var vrUpdated = await conn.ExecuteAsync(
+                "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role = @licenseType",
                 new { userId, licenseType });
+            if (vrUpdated == 0)
+                await conn.ExecuteAsync(
+                    "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @licenseType, 'approved', TRUE, NOW())",
+                    new { userId, licenseType });
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO user_roles (user_id, role, is_active)
-                VALUES (@userId, @licenseType, TRUE)
-                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
-                """,
+            // Upsert user_roles: update first, insert if missing
+            var urUpdated = await conn.ExecuteAsync(
+                "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @licenseType",
                 new { userId, licenseType });
+            if (urUpdated == 0)
+                await conn.ExecuteAsync(
+                    "INSERT INTO user_roles (user_id, role, is_active) VALUES (@userId, @licenseType, TRUE)",
+                    new { userId, licenseType });
 
             // Restore profiles.role if currently casual
             await conn.ExecuteAsync(
                 "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'",
                 new { userId, licenseType });
+
+            // Evict cached UserContext so the role change takes effect immediately
+            await cache.RemoveAsync($"user-ctx:{userId}");
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
