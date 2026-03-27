@@ -1658,16 +1658,17 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/licenses/backfill ─────────────────────────────────
         app.MapPost("/api/admin/licenses/backfill", async (
-            [FromBody] AdminBackfillLicensesRequest req,
-            HttpContext                             ctx,
-            IDbConnectionFactory                   db,
-            CancellationToken                      ct) =>
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
 
-            var licenseType = req.LicenseType ?? "organizer";
+            AdminBackfillLicensesRequest? req = null;
+            try { req = await ctx.Request.ReadFromJsonAsync<AdminBackfillLicensesRequest>(ct); } catch { }
+            var licenseType = req?.LicenseType ?? "organizer";
             var prefix = licenseType switch
             {
                 "organizer"   => "ESP-OR",
@@ -1679,6 +1680,7 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
 
             // Find users with the role who don't have an active license of that type
+            // p.role is a custom enum (app_role) — cast to text for comparison
             var unlicensed = await conn.QueryAsync<Guid>(
                 """
                 SELECT DISTINCT p.id
@@ -1686,7 +1688,7 @@ public static class AdminEndpoints
                 LEFT JOIN licenses l ON l.user_id = p.id AND l.license_type = @licenseType AND l.status = 'active'
                 WHERE l.id IS NULL
                   AND (
-                    p.role = @licenseType
+                    p.role::text = @licenseType
                     OR EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = @licenseType AND ur.is_active = TRUE)
                   )
                 """,
