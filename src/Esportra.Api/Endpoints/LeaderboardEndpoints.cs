@@ -159,5 +159,42 @@ public static class LeaderboardEndpoints
 
             return Results.Ok(players);
         });
+
+        // ── GET /api/leaderboards/filters ────────────────────────────────────
+        // Returns only games / country codes that have actual leaderboard entries.
+        app.MapGet("/api/leaderboards/filters", async (
+            IDbConnectionFactory db,
+            CancellationToken ct = default) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var games = (await conn.QueryAsync<string>(
+                """
+                SELECT DISTINCT t.game
+                FROM teams t
+                INNER JOIN brkt_matches m ON (m.team1_id = t.id OR m.team2_id = t.id) AND m.status = 'completed'
+                WHERE t.game IS NOT NULL
+                ORDER BY t.game
+                """)).AsList();
+
+            var countries = (await conn.QueryAsync<string>(
+                """
+                SELECT DISTINCT country_code
+                FROM (
+                    SELECT t.country_code FROM teams t
+                    INNER JOIN brkt_matches m ON (m.team1_id = t.id OR m.team2_id = t.id) AND m.status = 'completed'
+                    WHERE t.country_code IS NOT NULL AND t.country_code <> ''
+                    UNION
+                    SELECT p.country_code FROM profiles p
+                    INNER JOIN team_members tm ON tm.user_id = p.id AND tm.is_active = TRUE
+                    INNER JOIN teams t ON t.id = tm.team_id
+                    INNER JOIN brkt_matches m ON (m.team1_id = t.id OR m.team2_id = t.id) AND m.status = 'completed'
+                    WHERE p.country_code IS NOT NULL AND p.country_code <> ''
+                ) AS active_countries
+                ORDER BY country_code
+                """)).AsList();
+
+            return Results.Ok(new { games, countries });
+        });
     }
 }
