@@ -126,6 +126,7 @@ public static class ProfileEndpoints
         // ── GET /api/profiles/search ─────────────────────────────────────────
         app.MapGet("/api/profiles/search", async (
             [FromQuery] string?  q,
+            [FromQuery] string?  email,
             [FromQuery] bool?    verified,
             IDbConnectionFactory db) =>
         {
@@ -139,6 +140,11 @@ public static class ProfileEndpoints
                 conditions.Add("(username ILIKE '%' || @q || '%' OR email ILIKE '%' || @q || '%')");
                 p.Add("q", q);
             }
+            if (!string.IsNullOrWhiteSpace(email))
+            {
+                conditions.Add("LOWER(email) = LOWER(@email)");
+                p.Add("email", email.Trim());
+            }
             if (verified == true)
             {
                 conditions.Add("is_verified = TRUE");
@@ -150,7 +156,7 @@ public static class ProfileEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT id, username, full_name, avatar_url, is_verified
+                SELECT id, username, email, full_name, avatar_url, is_verified
                 FROM profiles
                 {where}
                 ORDER BY username
