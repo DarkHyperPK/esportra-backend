@@ -409,6 +409,64 @@ public static class ProfileEndpoints
                 return Results.BadRequest("Role is required");
 
             using var conn = db.CreateConnection();
+
+            // Insert into verification_requests (the table admin reads from)
+            var organizerJson = req.Organizer_Data is not null
+                ? System.Text.Json.JsonSerializer.Serialize(req.Organizer_Data)
+                : null;
+            var venueJson = req.Venue_Data is not null
+                ? System.Text.Json.JsonSerializer.Serialize(req.Venue_Data)
+                : null;
+
+            var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT email, username FROM profiles WHERE id = @id",
+                new { id = userCtx.UserIdGuid });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verification_requests
+                    (user_id, requested_role, first_name, last_name, email,
+                     date_of_birth, business_name, business_type, business_description,
+                     experience_description, cnic_front_url, cnic_back_url,
+                     website_url, phone, organizer_data, venue_data, status)
+                VALUES
+                    (@userId, @role::app_role, @firstName, @lastName, @email,
+                     @dob::date, @businessName, @businessType, @businessDesc,
+                     @experienceDesc, @cnicFront, @cnicBack,
+                     @website, @phone, @organizerData::jsonb, @venueData::jsonb, 'pending')
+                ON CONFLICT (user_id, requested_role) WHERE status = 'pending'
+                DO UPDATE SET
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name,
+                    business_name = EXCLUDED.business_name,
+                    business_description = EXCLUDED.business_description,
+                    cnic_front_url = EXCLUDED.cnic_front_url,
+                    cnic_back_url = EXCLUDED.cnic_back_url,
+                    organizer_data = EXCLUDED.organizer_data,
+                    venue_data = EXCLUDED.venue_data,
+                    updated_at = NOW()
+                """,
+                new
+                {
+                    userId = userCtx.UserIdGuid,
+                    role,
+                    firstName = req.First_Name ?? "",
+                    lastName = req.Last_Name ?? "",
+                    email = req.Email ?? (string?)profile?.email ?? "",
+                    dob = req.Date_Of_Birth ?? "2000-01-01",
+                    businessName = req.Business_Name ?? "",
+                    businessType = req.Business_Type ?? "",
+                    businessDesc = req.Business_Description ?? "N/A",
+                    experienceDesc = req.Experience_Description ?? "N/A",
+                    cnicFront = req.Cnic_Front_Url ?? "",
+                    cnicBack = req.Cnic_Back_Url ?? "",
+                    website = req.Website,
+                    phone = req.Contact_Phone,
+                    organizerData = organizerJson,
+                    venueData = venueJson,
+                });
+
+            // Also upsert verified_roles for status tracking
             await conn.ExecuteAsync(
                 """
                 INSERT INTO verified_roles (user_id, role, status, is_active)
@@ -420,9 +478,6 @@ public static class ProfileEndpoints
             // Send confirmation email
             try
             {
-                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT email, username FROM profiles WHERE id = @id",
-                    new { id = userCtx.UserIdGuid });
                 if (profile?.email is not null)
                 {
                     var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
@@ -650,7 +705,21 @@ public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
 public sealed record VerificationRequestBody(
     string? Role = null,
-    string? Requested_Role = null)
+    string? Requested_Role = null,
+    string? First_Name = null,
+    string? Last_Name = null,
+    string? Email = null,
+    string? Date_Of_Birth = null,
+    string? Business_Name = null,
+    string? Business_Type = null,
+    string? Business_Description = null,
+    string? Experience_Description = null,
+    string? Cnic_Front_Url = null,
+    string? Cnic_Back_Url = null,
+    string? Website = null,
+    string? Contact_Phone = null,
+    object? Organizer_Data = null,
+    object? Venue_Data = null)
 {
     public string EffectiveRole => Role ?? Requested_Role ?? "";
 }
