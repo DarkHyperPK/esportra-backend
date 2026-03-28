@@ -317,6 +317,18 @@ public static class EmailTemplates
         """)
     );
 
+    public static (string Subject, string Html) LicenseRejected(
+        string username, string licenseType, string dashboardUrl) =>
+    (
+        $"Your {FormatLicenseType(licenseType)} license application was not approved",
+        Wrap("Your license application was reviewed", "License Application Update", $"""
+            {H1("Application Update")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(username) ? "there" : E(username))}, we reviewed your <strong style='color:#f9fafb;'>{E(FormatLicenseType(licenseType))}</strong> application.")} 
+            {P("At this time, your application was not approved. You can review your details and submit a new application from your verification status page.")}
+            {Btn(dashboardUrl, "View Verification Status")}
+        """)
+    );
+
     private static string GetFeatureItems(string licenseType) => licenseType switch
     {
         "organizer" => $"""

@@ -16,4 +16,5 @@ public enum EmailType
     PasswordReset,
     LicenseApplicationReceived,
     LicenseApproved,
+    LicenseRejected,
 }

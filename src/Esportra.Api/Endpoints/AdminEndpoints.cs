@@ -1306,13 +1306,22 @@ public static class AdminEndpoints
             [FromBody] UpdateVerificationRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            IEmailService                     email,
+            IConfiguration                    config,
             CancellationToken                 ct)
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (req.Status is not ("approved" or "rejected"))
+                return Results.BadRequest(new { error = "Status must be approved or rejected." });
 
             using var conn = db.CreateConnection();
+            var vr = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT user_id, requested_role FROM verification_requests WHERE id = @requestId",
+                new { requestId });
+            if (vr is null) return Results.NotFound(new { error = "Verification request not found" });
+
             await conn.ExecuteAsync(
                 """
                 UPDATE verification_requests
@@ -1321,6 +1330,124 @@ public static class AdminEndpoints
                 WHERE id = @requestId
                 """,
                 new { requestId, status = req.Status });
+
+            // Keep role/license sync here so UI only needs approve/reject.
+            var role = ((string)vr.requested_role).Trim().ToLowerInvariant();
+            var userId = (Guid)vr.user_id;
+            if (req.Status == "approved")
+            {
+                var expiresAt = DateTime.UtcNow.AddYears(1);
+                await conn.ExecuteAsync(
+                    "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @role",
+                    new { userId, role });
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO user_roles (user_id, role, is_active)
+                    SELECT @userId, @role, TRUE
+                    WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id = @userId AND role = @role)
+                    """,
+                    new { userId, role });
+
+                if (role is "organizer" or "venue_owner")
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role::text = @role",
+                        new { userId, role });
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
+                        SELECT @userId, @role::app_role, 'approved', TRUE, NOW()
+                        WHERE NOT EXISTS (SELECT 1 FROM verified_roles WHERE user_id = @userId AND role::text = @role)
+                        """,
+                        new { userId, role });
+                    await conn.ExecuteAsync(
+                        "UPDATE profiles SET role = @role::app_role WHERE id = @userId AND role = 'casual'::app_role",
+                        new { userId, role });
+                }
+
+                var existingLicenseId = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @licenseType LIMIT 1",
+                    new { userId, licenseType = role });
+                var issuedAt = DateTime.UtcNow;
+                if (existingLicenseId is not null)
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE licenses SET status = 'active', issued_at = @issuedAt, expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
+                        new { userId, licenseType = role, issuedAt, expiresAt });
+                }
+                else
+                {
+                    var prefix = role switch
+                    {
+                        "organizer" => "ESP-OR",
+                        "venue_owner" => "ESP-VO",
+                        "broadcaster" => "ESP-BR",
+                        _ => "ESP-XX"
+                    };
+                    existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
+                        VALUES (@userId, @licenseId, @licenseType, 'active', @issuedAt, @expiresAt)
+                        """,
+                        new { userId, licenseId = existingLicenseId, licenseType = role, issuedAt, expiresAt });
+                }
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @role",
+                    new { userId, role });
+                if (role is "organizer" or "venue_owner")
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE verified_roles SET status = 'rejected', is_active = FALSE WHERE user_id = @userId AND role::text = @role",
+                        new { userId, role });
+                    await conn.ExecuteAsync(
+                        "UPDATE profiles SET role = 'casual'::app_role WHERE id = @userId AND role::text = @role",
+                        new { userId, role });
+                }
+            }
+
+            var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT email, username FROM profiles WHERE id = @id",
+                new { id = userId });
+            if (profile?.email is not null)
+            {
+                var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                if (req.Status == "approved")
+                {
+                    var lic = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT license_id, issued_at, expires_at FROM licenses WHERE user_id = @userId AND license_type = @licenseType ORDER BY issued_at DESC NULLS LAST LIMIT 1",
+                        new { userId, licenseType = role });
+                    await email.SendAsync(
+                        (string)profile.email,
+                        EmailType.LicenseApproved,
+                        new
+                        {
+                            username = (string?)profile.username ?? "there",
+                            licenseType = role,
+                            licenseId = (string?)lic?.license_id ?? string.Empty,
+                            issuedAt = ((DateTime?)lic?.issued_at ?? DateTime.UtcNow).ToString("MMM dd, yyyy"),
+                            expiresAt = ((DateTime?)lic?.expires_at ?? DateTime.UtcNow.AddYears(1)).ToString("MMM dd, yyyy"),
+                            dashboardUrl = $"{frontendUrl}/verification-status",
+                        },
+                        ct);
+                }
+                else
+                {
+                    await email.SendAsync(
+                        (string)profile.email,
+                        EmailType.LicenseRejected,
+                        new
+                        {
+                            username = (string?)profile.username ?? "there",
+                            licenseType = role,
+                            dashboardUrl = $"{frontendUrl}/verification-status",
+                        },
+                        ct);
+                }
+            }
             return Results.Ok(new { success = true });
         }
         app.MapPatch("/api/admin/verification-requests/{requestId}", AdminUpdateVerificationRequest)

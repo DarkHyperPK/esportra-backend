@@ -116,6 +116,10 @@ public sealed class ResendEmailService(
                     Get("username"), Get("licenseType"), Get("licenseId"),
                     Get("issuedAt"), Get("expiresAt"), Get("dashboardUrl")),
 
+            EmailType.LicenseRejected =>
+                EmailTemplates.LicenseRejected(
+                    Get("username"), Get("licenseType"), Get("dashboardUrl")),
+
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
     }
