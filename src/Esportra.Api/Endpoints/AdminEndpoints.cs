@@ -1532,13 +1532,17 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            var licenseType = (req.LicenseType ?? string.Empty).Trim().ToLowerInvariant();
+            if (licenseType is not ("organizer" or "venue_owner" or "broadcaster"))
+                return Results.BadRequest(new { error = "Invalid license_type" });
+            var syncsVerifiedRoles = licenseType is "organizer" or "venue_owner";
 
             using var conn = db.CreateConnection();
 
             // Check if license already exists for this user+type
             var existingId = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT license_id FROM licenses WHERE user_id = @userId AND license_type = @licenseType LIMIT 1",
-                new { userId = req.UserId, licenseType = req.LicenseType });
+                new { userId = req.UserId, licenseType });
 
             string licenseId;
             var issuedAt  = DateTime.UtcNow;
@@ -1549,11 +1553,11 @@ public static class AdminEndpoints
                 licenseId = existingId;
                 await conn.ExecuteAsync(
                     "UPDATE licenses SET status = 'active', issued_at = @issuedAt, expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
-                    new { userId = req.UserId, licenseType = req.LicenseType, issuedAt, expiresAt });
+                    new { userId = req.UserId, licenseType, issuedAt, expiresAt });
             }
             else
             {
-                var prefix = req.LicenseType switch
+                var prefix = licenseType switch
                 {
                     "organizer"   => "ESP-OR",
                     "venue_owner" => "ESP-VO",
@@ -1567,26 +1571,29 @@ public static class AdminEndpoints
                     INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
                     VALUES (@userId, @licenseId, @licenseType, 'active', @issuedAt, @expiresAt)
                     """,
-                    new { userId = req.UserId, licenseId, licenseType = req.LicenseType, issuedAt, expiresAt });
+                    new { userId = req.UserId, licenseId, licenseType, issuedAt, expiresAt });
             }
 
-            // Upsert verified_roles: update first, insert if missing
-            var vrRows = await conn.ExecuteAsync(
-                "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role = @role",
-                new { userId = req.UserId, role = req.LicenseType });
-            if (vrRows == 0)
-                await conn.ExecuteAsync(
-                    "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @role, 'approved', TRUE, NOW())",
-                    new { userId = req.UserId, role = req.LicenseType });
+            // verified_roles.role is app_role enum (broadcaster is not in this enum)
+            if (syncsVerifiedRoles)
+            {
+                var vrRows = await conn.ExecuteAsync(
+                    "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role::text = @role",
+                    new { userId = req.UserId, role = licenseType });
+                if (vrRows == 0)
+                    await conn.ExecuteAsync(
+                        "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @role::app_role, 'approved', TRUE, NOW())",
+                        new { userId = req.UserId, role = licenseType });
+            }
 
             // Upsert user_roles: update first, insert if missing
             var urRows = await conn.ExecuteAsync(
                 "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @role",
-                new { userId = req.UserId, role = req.LicenseType });
+                new { userId = req.UserId, role = licenseType });
             if (urRows == 0)
                 await conn.ExecuteAsync(
                     "INSERT INTO user_roles (user_id, role, is_active) VALUES (@userId, @role, TRUE)",
-                    new { userId = req.UserId, role = req.LicenseType });
+                    new { userId = req.UserId, role = licenseType });
 
             return Results.Ok(new { success = true, license_id = licenseId });
         }).RequireAuthorization("Admin");
@@ -1603,6 +1610,10 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
+                return Results.BadRequest(new { success = false, error = "Invalid license_type" });
+            var syncsVerifiedRoles = normalizedType is "organizer" or "venue_owner";
 
             using var conn = db.CreateConnection();
 
@@ -1610,20 +1621,22 @@ public static class AdminEndpoints
             {
                 await conn.ExecuteAsync(
                     "UPDATE licenses SET status = 'revoked' WHERE user_id = @userId AND license_type = @licenseType",
-                    new { userId, licenseType });
+                    new { userId, licenseType = normalizedType });
 
-                await conn.ExecuteAsync(
-                    "UPDATE verified_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
-                    new { userId, licenseType });
+                if (syncsVerifiedRoles)
+                    await conn.ExecuteAsync(
+                        "UPDATE verified_roles SET is_active = FALSE WHERE user_id = @userId AND role::text = @licenseType",
+                        new { userId, licenseType = normalizedType });
 
                 await conn.ExecuteAsync(
                     "UPDATE user_roles SET is_active = FALSE WHERE user_id = @userId AND role = @licenseType",
-                    new { userId, licenseType });
+                    new { userId, licenseType = normalizedType });
 
                 // Reset profiles.role to 'casual' if the revoked type matches their current role
-                await conn.ExecuteAsync(
-                    "UPDATE profiles SET role = 'casual'::app_role WHERE id = @userId AND role::text = @licenseType",
-                    new { userId, licenseType });
+                if (syncsVerifiedRoles)
+                    await conn.ExecuteAsync(
+                        "UPDATE profiles SET role = 'casual'::app_role WHERE id = @userId AND role::text = @licenseType",
+                        new { userId, licenseType = normalizedType });
             }
             catch (Exception ex)
             {
@@ -1648,6 +1661,10 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
+                return Results.BadRequest(new { success = false, error = "Invalid license_type" });
+            var syncsVerifiedRoles = normalizedType is "organizer" or "venue_owner";
 
             using var conn = db.CreateConnection();
 
@@ -1656,30 +1673,33 @@ public static class AdminEndpoints
                 var expiresAt = DateTime.UtcNow.AddYears(1);
                 await conn.ExecuteAsync(
                     "UPDATE licenses SET status = 'active', expires_at = @expiresAt WHERE user_id = @userId AND license_type = @licenseType",
-                    new { userId, licenseType, expiresAt });
+                    new { userId, licenseType = normalizedType, expiresAt });
 
-                // Upsert verified_roles: update first, insert if missing
-                var vrUpdated = await conn.ExecuteAsync(
-                    "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role = @licenseType",
-                    new { userId, licenseType });
-                if (vrUpdated == 0)
-                    await conn.ExecuteAsync(
-                        "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @licenseType, 'approved', TRUE, NOW())",
-                        new { userId, licenseType });
+                if (syncsVerifiedRoles)
+                {
+                    var vrUpdated = await conn.ExecuteAsync(
+                        "UPDATE verified_roles SET status = 'approved', is_active = TRUE, verified_at = NOW() WHERE user_id = @userId AND role::text = @licenseType",
+                        new { userId, licenseType = normalizedType });
+                    if (vrUpdated == 0)
+                        await conn.ExecuteAsync(
+                            "INSERT INTO verified_roles (user_id, role, status, is_active, verified_at) VALUES (@userId, @licenseType::app_role, 'approved', TRUE, NOW())",
+                            new { userId, licenseType = normalizedType });
+                }
 
                 // Upsert user_roles: update first, insert if missing
                 var urUpdated = await conn.ExecuteAsync(
                     "UPDATE user_roles SET is_active = TRUE WHERE user_id = @userId AND role = @licenseType",
-                    new { userId, licenseType });
+                    new { userId, licenseType = normalizedType });
                 if (urUpdated == 0)
                     await conn.ExecuteAsync(
                         "INSERT INTO user_roles (user_id, role, is_active) VALUES (@userId, @licenseType, TRUE)",
-                        new { userId, licenseType });
+                        new { userId, licenseType = normalizedType });
 
                 // Restore profiles.role if currently casual
-                await conn.ExecuteAsync(
-                    "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'::app_role",
-                    new { userId, licenseType });
+                if (syncsVerifiedRoles)
+                    await conn.ExecuteAsync(
+                        "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'::app_role",
+                        new { userId, licenseType = normalizedType });
             }
             catch (Exception ex)
             {
@@ -1704,7 +1724,10 @@ public static class AdminEndpoints
 
             AdminBackfillLicensesRequest? req = null;
             try { req = await ctx.Request.ReadFromJsonAsync<AdminBackfillLicensesRequest>(ct); } catch { }
-            var licenseType = req?.LicenseType ?? "organizer";
+            var licenseType = (req?.LicenseType ?? "organizer").Trim().ToLowerInvariant();
+            if (licenseType is not ("organizer" or "venue_owner" or "broadcaster"))
+                return Results.BadRequest(new { success = false, error = "Invalid license_type" });
+            var syncsVerifiedRoles = licenseType is "organizer" or "venue_owner";
             var prefix = licenseType switch
             {
                 "organizer"   => "ESP-OR",
@@ -1760,13 +1783,14 @@ public static class AdminEndpoints
                         new { userId, licenseId, licenseType, issuedAt, expiresAt });
                 }
 
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
-                    VALUES (@userId, @role, 'approved', TRUE, NOW())
-                    ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
-                    """,
-                    new { userId, role = licenseType });
+                if (syncsVerifiedRoles)
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO verified_roles (user_id, role, status, is_active, verified_at)
+                        VALUES (@userId, @role::app_role, 'approved', TRUE, NOW())
+                        ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE, verified_at = NOW()
+                        """,
+                        new { userId, role = licenseType });
 
                 await conn.ExecuteAsync(
                     """
