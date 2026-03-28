@@ -396,10 +396,7 @@ public static class ProfileEndpoints
         app.MapPost("/api/profiles/me/verification-requests", async (
             [FromBody] VerificationRequestBody req,
             HttpContext                        ctx,
-            IDbConnectionFactory               db,
-            IEmailService                      email,
-            IConfiguration                     config,
-            CancellationToken                  ct) =>
+            IDbConnectionFactory               db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -465,35 +462,6 @@ public static class ProfileEndpoints
                     organizerData = organizerJson,
                     venueData = venueJson,
                 });
-
-            // Also upsert verified_roles for status tracking
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO verified_roles (user_id, role, status, is_active)
-                VALUES (@userId, @role::app_role, 'pending', FALSE)
-                ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
-                """,
-                new { userId = userCtx.UserIdGuid, role });
-
-            // Send confirmation email
-            try
-            {
-                if (profile?.email is not null)
-                {
-                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
-                    await email.SendAsync(
-                        (string)profile.email,
-                        EmailType.LicenseApplicationReceived,
-                        new
-                        {
-                            username     = (string?)profile.username ?? "there",
-                            licenseType  = role,
-                            dashboardUrl = $"{frontendUrl}/verification-status",
-                        },
-                        ct);
-                }
-            }
-            catch { /* email failure should not block application */ }
 
             return Results.Ok(new { success = true, status = "pending" });
         }).RequireAuthorization("Authenticated");
