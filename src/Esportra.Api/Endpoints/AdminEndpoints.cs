@@ -1933,6 +1933,46 @@ public static class AdminEndpoints
             return Results.Ok(new { issued });
         }).RequireAuthorization("Admin");
 
+        // ── DELETE /api/admin/verification-requests/{requestId} ───────────────
+        app.MapDelete("/api/admin/verification-requests/{requestId}", async (
+            Guid                 requestId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var deleted = await conn.ExecuteAsync(
+                "DELETE FROM verification_requests WHERE id = @id",
+                new { id = requestId });
+
+            return deleted > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Verification request not found" });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/licenses/{licenseId} ────────────────────────────
+        app.MapDelete("/api/admin/licenses/{licenseId}", async (
+            Guid                 licenseId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var deleted = await conn.ExecuteAsync(
+                "DELETE FROM licenses WHERE id = @id",
+                new { id = licenseId });
+
+            return deleted > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "License not found" });
+        }).RequireAuthorization("Admin");
+
         // ── GET /api/admin/company-profiles ───────────────────────────────────
         app.MapGet("/api/admin/company-profiles", async (
             HttpContext          ctx,
