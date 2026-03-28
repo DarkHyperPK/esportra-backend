@@ -404,14 +404,18 @@ public static class ProfileEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var role = req.EffectiveRole;
+            if (string.IsNullOrWhiteSpace(role))
+                return Results.BadRequest("Role is required");
+
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 """
                 INSERT INTO verified_roles (user_id, role, status, is_active)
-                VALUES (@userId, @role, 'pending', FALSE)
+                VALUES (@userId, @role::app_role, 'pending', FALSE)
                 ON CONFLICT (user_id, role) DO UPDATE SET status = 'pending'
                 """,
-                new { userId = userCtx.UserIdGuid, role = req.Role });
+                new { userId = userCtx.UserIdGuid, role });
 
             // Send confirmation email
             try
@@ -428,7 +432,7 @@ public static class ProfileEndpoints
                         new
                         {
                             username     = (string?)profile.username ?? "there",
-                            licenseType  = req.Role,
+                            licenseType  = role,
                             dashboardUrl = $"{frontendUrl}/verification-status",
                         },
                         ct);
@@ -644,4 +648,9 @@ public static class ProfileEndpoints
 
 public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
-public sealed record VerificationRequestBody(string Role);
+public sealed record VerificationRequestBody(
+    string? Role = null,
+    string? Requested_Role = null)
+{
+    public string EffectiveRole => Role ?? Requested_Role ?? "";
+}
