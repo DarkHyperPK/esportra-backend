@@ -396,7 +396,10 @@ public static class ProfileEndpoints
         app.MapPost("/api/profiles/me/verification-requests", async (
             [FromBody] VerificationRequestBody req,
             HttpContext                        ctx,
-            IDbConnectionFactory               db) =>
+            IDbConnectionFactory               db,
+            IEmailService                      email,
+            IConfiguration                     config,
+            CancellationToken                  ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -462,6 +465,27 @@ public static class ProfileEndpoints
                     organizerData = organizerJson,
                     venueData = venueJson,
                 });
+
+            // Email: application submitted & under review
+            try
+            {
+                var userEmail = req.Email ?? (string?)profile?.email;
+                if (userEmail is not null)
+                {
+                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                    await email.SendAsync(
+                        userEmail,
+                        EmailType.LicenseApplicationReceived,
+                        new
+                        {
+                            username    = (string?)profile?.username ?? req.First_Name ?? "there",
+                            licenseType = role,
+                            dashboardUrl = $"{frontendUrl}/verification",
+                        },
+                        ct);
+                }
+            }
+            catch { /* email failure should not block submission */ }
 
             return Results.Ok(new { success = true, status = "pending" });
         }).RequireAuthorization("Authenticated");
