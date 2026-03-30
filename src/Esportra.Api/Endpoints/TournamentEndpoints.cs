@@ -389,19 +389,19 @@ public static class TournamentEndpoints
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
-                        rewards, stream_url, settings, organizer_id
+                        rewards, stream_url, settings, organizer_id, rules
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
-                        @rewards, @streamUrl, @settings::jsonb, @organizerId
+                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules
                     )
                     RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
                              status, banner_url, logo_url, organization_id, venue_id, is_public,
                              check_in_required, check_in_deadline, auto_remove_unchecked,
-                             rewards, stream_url, settings, organizer_id, created_at
+                             rewards, stream_url, settings, organizer_id, created_at, rules
                     """,
                     new
                     {
@@ -432,6 +432,7 @@ public static class TournamentEndpoints
                             ? JsonSerializer.Serialize(req.Settings)
                             : "{}",
                         organizerId          = userCtx.UserIdGuid,
+                        rules                = req.Rules,
                     },
                     tx);
 
@@ -527,6 +528,7 @@ public static class TournamentEndpoints
                     check_in_deadline    = COALESCE(@checkInDeadline, check_in_deadline),
                     rewards              = COALESCE(@rewards, rewards),
                     stream_url           = COALESCE(@streamUrl, stream_url),
+                    rules                = COALESCE(@rules, rules),
                     settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
@@ -535,7 +537,7 @@ public static class TournamentEndpoints
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
                          status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
-                         rewards, stream_url, settings, organizer_id, created_at, updated_at
+                         rewards, stream_url, rules, settings, organizer_id, created_at, updated_at
                 """,
                 new
                 {
@@ -557,6 +559,7 @@ public static class TournamentEndpoints
                     checkInDeadline      = req.CheckInDeadline,
                     rewards              = req.Rewards,
                     streamUrl            = req.StreamUrl,
+                    rules                = req.Rules,
                     settings             = req.Settings is not null
                                              ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
                                              : null,
@@ -2820,6 +2823,7 @@ public sealed record CreateTournamentRequest(
     string?    StreamUrl            = null,
     object?    Settings             = null,
     List<StageRequest>?  Stages     = null,
+    string?       Rules             = null,
     List<string>? MapPoolIds        = null);
 
 public sealed record StageRequest(
@@ -2848,6 +2852,7 @@ public sealed record UpdateTournamentRequest(
     DateTime? CheckInDeadline      = null,
     string?   Rewards              = null,
     string?   StreamUrl            = null,
+    string?   Rules                = null,
     DateTime? DeletedAt            = null,
     bool      ClearDeletedAt       = false,
     object?   Settings             = null);
