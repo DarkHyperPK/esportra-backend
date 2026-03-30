@@ -225,9 +225,8 @@ builder.Services.AddCors(opts =>
               .AllowCredentials());
 });
 
-// ── Email service (Resend) ────────────────────────────────────────────────────
-builder.Services.AddHttpClient<ResendEmailService>();
-builder.Services.AddScoped<IEmailService, ResendEmailService>();
+// ── Email service (SMTP via MailKit) ─────────────────────────────────────────
+builder.Services.AddScoped<IEmailService, SmtpEmailService>();
 
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
