@@ -3,7 +3,7 @@ using System.Dynamic;
 using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
-using Esportra.Infrastructure.Email;
+
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Esportra.Api.Hubs;
@@ -125,7 +125,6 @@ public static class OrganizationEndpoints
             [FromBody] InviteStaffRequest   req,
             HttpContext                     ctx,
             IDbConnectionFactory           db,
-            IEmailService                  email,
             IHubContext<NotificationHub>   notifHub,
             CancellationToken              ct) =>
         {
@@ -212,23 +211,7 @@ public static class OrganizationEndpoints
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.invite", "staff", staffIdGuid,
                 new { invitedEmail = req.UserEmail, req.Role, req.Permissions });
 
-            // 6. Send email (best-effort)
-            try
-            {
-                await email.SendAsync(
-                    (string)profile.email,
-                    EmailType.StaffInvite,
-                    new
-                    {
-                        OrgName     = req.OrgName ?? "Organization",
-                        OrgLogo     = req.OrgLogo,
-                        Role        = FriendlyRole(req.Role),
-                        Permissions = req.Permissions,
-                        InvitedBy   = req.InviterName ?? "An organizer",
-                    },
-                    ct);
-            }
-            catch { /* Email failure must not block the API response */ }
+            // 6. Staff invite notification is handled in-app only (via SignalR NotificationHub above)
 
             return Results.Ok(new { staffId = staffIdGuid });
         }).RequireAuthorization("Organizer");

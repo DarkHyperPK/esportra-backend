@@ -4,7 +4,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
-using Esportra.Infrastructure.Email;
+
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -399,7 +399,6 @@ public static class TeamEndpoints
             [FromBody] TeamInviteRequest req,
             HttpContext                  ctx,
             IDbConnectionFactory        db,
-            IEmailService               email,
             IConfiguration              config,
             CancellationToken           ct) =>
         {
@@ -486,18 +485,7 @@ public static class TeamEndpoints
 
                 if (emailInfo?.email is not null)
                 {
-                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
-                    await email.SendAsync(
-                        (string)emailInfo.email,
-                        EmailType.TeamInvite,
-                        new
-                        {
-                            inviteeName = (string?)emailInfo.invitee_name ?? "Player",
-                            teamName    = (string?)emailInfo.team_name ?? "a team",
-                            captainName = (string?)emailInfo.captain_name ?? "A captain",
-                            acceptUrl   = $"{frontendUrl}/teams",
-                        },
-                        ct);
+                    // Team invite notification is handled in-app only
                 }
             }
             catch { /* email failure should not block invite creation */ }
