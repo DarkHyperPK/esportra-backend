@@ -389,19 +389,19 @@ public static class TournamentEndpoints
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
-                        rewards, stream_url, settings, organizer_id, rules
+                        rewards, stream_url, settings, organizer_id, rules, payment_instructions
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
-                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules
+                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions
                     )
                     RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
                              status, banner_url, logo_url, organization_id, venue_id, is_public,
                              check_in_required, check_in_deadline, auto_remove_unchecked,
-                             rewards, stream_url, settings, organizer_id, created_at, rules
+                             rewards, stream_url, settings, organizer_id, created_at, rules, payment_instructions
                     """,
                     new
                     {
@@ -433,6 +433,7 @@ public static class TournamentEndpoints
                             : "{}",
                         organizerId          = userCtx.UserIdGuid,
                         rules                = req.Rules,
+                        paymentInstructions  = req.PaymentInstructions,
                     },
                     tx);
 
@@ -529,6 +530,7 @@ public static class TournamentEndpoints
                     rewards              = COALESCE(@rewards, rewards),
                     stream_url           = COALESCE(@streamUrl, stream_url),
                     rules                = COALESCE(@rules, rules),
+                    payment_instructions = COALESCE(@paymentInstructions, payment_instructions),
                     settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
@@ -537,7 +539,7 @@ public static class TournamentEndpoints
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
                          status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
-                         rewards, stream_url, rules, settings, organizer_id, created_at, updated_at
+                         rewards, stream_url, rules, payment_instructions, settings, organizer_id, created_at, updated_at
                 """,
                 new
                 {
@@ -560,6 +562,7 @@ public static class TournamentEndpoints
                     rewards              = req.Rewards,
                     streamUrl            = req.StreamUrl,
                     rules                = req.Rules,
+                    paymentInstructions  = req.PaymentInstructions,
                     settings             = req.Settings is not null
                                              ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
                                              : null,
@@ -794,7 +797,7 @@ public static class TournamentEndpoints
 
             // Lock tournament row to prevent race condition on capacity check
             var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT status, max_teams FROM tournaments WHERE id = @id FOR UPDATE",
+                "SELECT status, max_teams, entry_fee, payment_instructions FROM tournaments WHERE id = @id FOR UPDATE",
                 new { id }, txn);
             if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
             if ((string)tourn.status != "open")
@@ -822,22 +825,32 @@ public static class TournamentEndpoints
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
             Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
             var   participantType = teamIdGuid is not null ? "team" : "solo";
+
+            // Determine if this is a paid tournament
+            decimal tournEntryFee = (decimal)(tourn.entry_fee ?? 0m);
+            bool isPaid = tournEntryFee > 0;
+
             // Server determines registration status — never trust user-supplied value
             var   regStatus       = "pending";
+            var   paymentStatus   = isPaid ? "pending" : "not_required";
+            var   entryFeePaid    = !isPaid; // free = already paid; paid = not yet
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO tournament_participants
                     (tournament_id, user_id, team_id, team_captain_id, team_name,
                      team_members, team_contact_email, roster_id, roster_name,
-                     status, participant_type, entry_fee_amount, entry_fee_paid)
+                     status, participant_type, entry_fee_amount, entry_fee_paid,
+                     payment_status, payment_receipt_url)
                 VALUES (@tournamentId, @userId, @teamId, @teamCaptainId, @teamName,
                         @teamMembers::jsonb, @teamContactEmail, @rosterId, @rosterName,
                         @regStatus::registration_status, @participantType::registration_type,
-                        @entryFeeAmount, @entryFeePaid)
+                        @entryFeeAmount, @entryFeePaid,
+                        @paymentStatus, @paymentReceiptUrl)
                 RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
                          team_members, team_contact_email, roster_id, roster_name,
-                         status, participant_type, entry_fee_amount, entry_fee_paid, created_at
+                         status, participant_type, entry_fee_amount, entry_fee_paid,
+                         payment_status, payment_receipt_url, created_at
                 """,
                 new
                 {
@@ -852,8 +865,10 @@ public static class TournamentEndpoints
                     rosterName       = req.RosterName,
                     regStatus,
                     participantType,
-                    entryFeeAmount   = req.EntryFeeAmount ?? 0m,
-                    entryFeePaid     = req.EntryFeePaid ?? true,
+                    entryFeeAmount   = tournEntryFee,
+                    entryFeePaid     = entryFeePaid,
+                    paymentStatus    = paymentStatus,
+                    paymentReceiptUrl = req.PaymentReceiptUrl,
                 }, txn);
 
             txn.Commit();
@@ -884,7 +899,174 @@ public static class TournamentEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
-        // ── POST /api/tournaments/{id}/check-in ────────────────────────────────
+        // ── POST /api/tournaments/{id}/participants/{participantId}/approve-payment ──
+        app.MapPost("/api/tournaments/{id}/participants/{participantId}/approve-payment", async (
+            Guid                 id,
+            Guid                 participantId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify requester is the tournament organizer
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOrganizer) return Results.Forbid();
+
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET payment_status = 'approved', entry_fee_paid = true, status = 'registered'
+                WHERE id = @participantId AND tournament_id = @id AND payment_status = 'pending'
+                """,
+                new { participantId, id });
+
+            if (affected == 0) return Results.NotFound(new { error = "Participant not found or not pending payment." });
+
+            // Create in-app notification for the player
+            var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT tp.user_id, t.name AS tournament_name FROM tournament_participants tp JOIN tournaments t ON t.id = tp.tournament_id WHERE tp.id = @participantId",
+                new { participantId });
+            if (participant is not null)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, data)
+                    VALUES (@userId, 'tournament', 'Payment Approved',
+                            @message, @data::jsonb)
+                    """,
+                    new {
+                        userId  = (Guid)participant.user_id,
+                        message = $"Your payment for {(string)participant.tournament_name} has been approved. You are now registered!",
+                        data    = $"{{\"tournament_id\":\"{id}\"}}"
+                    });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/{id}/participants/{participantId}/reject-payment ──
+        app.MapPost("/api/tournaments/{id}/participants/{participantId}/reject-payment", async (
+            Guid                                    id,
+            Guid                                    participantId,
+            [FromBody] PaymentRejectionRequest       req,
+            HttpContext                              ctx,
+            IDbConnectionFactory                    db,
+            CancellationToken                       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify requester is the tournament organizer
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOrganizer) return Results.Forbid();
+
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET payment_status = 'rejected', payment_rejection_reason = @reason
+                WHERE id = @participantId AND tournament_id = @id AND payment_status = 'pending'
+                """,
+                new { participantId, id, reason = req.Reason });
+
+            if (affected == 0) return Results.NotFound(new { error = "Participant not found or not pending payment." });
+
+            // Create in-app notification for the player
+            var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT tp.user_id, t.name AS tournament_name FROM tournament_participants tp JOIN tournaments t ON t.id = tp.tournament_id WHERE tp.id = @participantId",
+                new { participantId });
+            if (participant is not null)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, data)
+                    VALUES (@userId, 'tournament', 'Payment Rejected',
+                            @message, @data::jsonb)
+                    """,
+                    new {
+                        userId  = (Guid)participant.user_id,
+                        message = $"Your payment for {(string)participant.tournament_name} was rejected. Reason: {req.Reason ?? "No reason provided."}",
+                        data    = $"{{\"tournament_id\":\"{id}\"}}"
+                    });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/{id}/upload-receipt ────────────────────────────
+        app.MapPost("/api/tournaments/{id}/upload-receipt", async (
+            Guid                                    id,
+            HttpContext                              ctx,
+            IDbConnectionFactory                    db,
+            IConfiguration                          config,
+            CancellationToken                       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var form = await ctx.Request.ReadFormAsync(ct);
+            var file = form.Files.GetFile("receipt");
+            if (file is null || file.Length == 0) return Results.BadRequest(new { error = "No file uploaded." });
+            if (file.Length > 5 * 1024 * 1024) return Results.BadRequest(new { error = "File must be under 5MB." });
+
+            var allowed = new[] { "image/jpeg", "image/png", "image/webp", "application/pdf" };
+            if (!allowed.Contains(file.ContentType))
+                return Results.BadRequest(new { error = "Only JPEG, PNG, WebP, or PDF files are accepted." });
+
+            using var conn = db.CreateConnection();
+
+            // Verify user is registered
+            var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId)",
+                new { tournamentId = id, userId = userCtx.UserIdGuid });
+            if (participant is null) return Results.NotFound(new { error = "You are not registered for this tournament." });
+
+            // Upload to Supabase storage
+            var supabaseUrl = config["Supabase:Url"] ?? config["SupabaseUrl"];
+            var serviceKey  = config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            var ext         = Path.GetExtension(file.FileName) ?? ".jpg";
+            var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
+            var bucket      = "tournaments.payment.receipts";
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
+            http.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+            using var stream  = file.OpenReadStream();
+            using var content = new StreamContent(stream);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
+
+            var uploadUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
+            var resp = await http.PutAsync(uploadUrl, content, ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var err = await resp.Content.ReadAsStringAsync(ct);
+                return Results.Problem($"Storage upload failed: {err}");
+            }
+
+            var publicUrl = $"{supabaseUrl}/storage/v1/object/public/{bucket}/{storagePath}";
+
+            // Update participant record
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET payment_receipt_url = @url, payment_status = 'pending'
+                WHERE id = @participantId
+                """,
+                new { url = publicUrl, participantId = (Guid)participant.id });
+
+            return Results.Ok(new { receiptUrl = publicUrl });
+        }).RequireAuthorization("Authenticated").DisableAntiforgery();
         app.MapPost("/api/tournaments/{id}/check-in", async (
             Guid                 id,
             HttpContext          ctx,
@@ -2824,7 +3006,8 @@ public sealed record CreateTournamentRequest(
     object?    Settings             = null,
     List<StageRequest>?  Stages     = null,
     string?       Rules             = null,
-    List<string>? MapPoolIds        = null);
+    List<string>? MapPoolIds        = null,
+    string?    PaymentInstructions  = null);
 
 public sealed record StageRequest(
     string  Name,
@@ -2855,7 +3038,8 @@ public sealed record UpdateTournamentRequest(
     string?   Rules                = null,
     DateTime? DeletedAt            = null,
     bool      ClearDeletedAt       = false,
-    object?   Settings             = null);
+    object?   Settings             = null,
+    string?   PaymentInstructions  = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId            = null,
@@ -2868,8 +3052,10 @@ public sealed record RegisterTournamentRequest(
     string? TeamContactEmail  = null,
     string? Status            = null,
     decimal? EntryFeeAmount   = null,
-    bool?   EntryFeePaid      = null);
+    bool?   EntryFeePaid      = null,
+    string? PaymentReceiptUrl = null);
 public sealed record UpdateBannerRequest(string Url);
+public sealed record PaymentRejectionRequest(string? Reason = null);
 
 // ── Organizer Dispute request records ────────────────────────────────────────
 
