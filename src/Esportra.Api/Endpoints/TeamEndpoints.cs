@@ -547,9 +547,9 @@ public static class TeamEndpoints
 
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO team_members (team_id, user_id, role, is_active)
-                    VALUES (@teamId, @userId, 'member', TRUE)
-                    ON CONFLICT (team_id, user_id) DO UPDATE SET is_active = TRUE, role = 'member'
+                    INSERT INTO team_members (team_id, user_id, role, is_active, joined_at)
+                    VALUES (@teamId, @userId, 'member', TRUE, NOW())
+                    ON CONFLICT (team_id, user_id) DO UPDATE SET is_active = TRUE, role = 'member', joined_at = NOW()
                     """,
                     new { teamId = invite.team_id, userId = userCtx.UserIdGuid }, tx);
 
