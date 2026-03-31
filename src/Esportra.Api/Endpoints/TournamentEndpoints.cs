@@ -1028,7 +1028,7 @@ public static class TournamentEndpoints
 
             // Verify user is registered
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId)",
+                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId) AND status NOT IN ('cancelled', 'rejected')",
                 new { tournamentId = id, userId = userCtx.UserIdGuid });
             if (participant is null) return Results.NotFound(new { error = "You are not registered for this tournament." });
 
