@@ -153,3 +153,19 @@ Body: {"expiresIn": 3600}
 - CS2 integration — not without explicit instruction
 - Faceit Organizer API — read-only key, blocked
 - .NET API migration phases 1+ — phase 0 complete
+
+---
+
+## Implementation Protocol (New Features Only)
+
+For **new features** (not bug fixes or small changes), follow the 7-phase protocol:
+
+1. **Discovery** — Ask about scope, users/roles, behavior, data, dependencies
+2. **Interaction Mapping** — For each actor: actions, preconditions, system response, UI feedback
+3. **Edge Cases** — Timing, data integrity, permissions, state conflicts, network, scale
+4. **Implementation Plan** — DB changes, backend logic, types, hooks, components, build order
+5. **Backend Build** — Migration → RLS → triggers → RPCs → storage → test as non-admin
+6. **Frontend Build** — Hook → types → component → loading/error/empty states → toast → cache invalidation
+7. **Verification** — Persistence (refresh → data still there), role access, error recovery, build passes
+
+Phases 1–4 are thinking. Phases 5–7 are building. Do not skip phases for new features.
