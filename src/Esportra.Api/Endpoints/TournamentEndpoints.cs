@@ -76,7 +76,7 @@ public static class TournamentEndpoints
                t.organizer_id, t.venue_id, t.description,
                t.created_at, t.updated_at,
                (SELECT COUNT(*) FROM tournament_participants tp
-                WHERE tp.tournament_id = t.id) AS current_participants,
+                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                o.name   AS organizer_name,
                o.slug   AS organization_slug,
                p.username      AS organizer_username,
@@ -145,7 +145,7 @@ public static class TournamentEndpoints
                            t.organizer_id, t.venue_id, t.description,
                            t.created_at, t.updated_at,
                            (SELECT COUNT(*) FROM tournament_participants tp
-                            WHERE tp.tournament_id = t.id) AS current_participants,
+                            WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                            o.name   AS organizer_name,
                            o.slug   AS organization_slug,
                            p.username      AS organizer_username,
@@ -240,7 +240,7 @@ public static class TournamentEndpoints
                                t.organizer_id, t.venue_id, t.description,
                                t.created_at, t.updated_at,
                                (SELECT COUNT(*) FROM tournament_participants tp
-                                WHERE tp.tournament_id = t.id) AS current_participants,
+                                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                                o.name AS organizer_name,
                                o.slug AS organization_slug,
                                p.username   AS organizer_username,
@@ -276,7 +276,7 @@ public static class TournamentEndpoints
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT t.*,
-                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id) AS current_participants,
+                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                        (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status = 'checked_in') AS checked_in_count,
                        o.name       AS organization_name, o.slug AS organization_slug,
                        o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
@@ -810,7 +810,7 @@ public static class TournamentEndpoints
             if (maxTeams.HasValue && maxTeams.Value > 0)
             {
                 var currentCount = await conn.QuerySingleAsync<int>(
-                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id",
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled')",
                     new { id }, txn);
                 if (currentCount >= maxTeams.Value)
                 {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
