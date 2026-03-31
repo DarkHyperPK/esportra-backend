@@ -302,7 +302,7 @@ public static class TournamentEndpoints
             var organizerId  = (Guid)tournament.organizer_id;
 
             // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
-            var participants = await conn.QueryAsync<dynamic>(
+            var allParticipants = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
                        p.username AS gamer_tag
@@ -346,6 +346,14 @@ public static class TournamentEndpoints
                     """,
                     new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
             }
+
+            // Organizers see all participants (for payment management); others see only active
+            var participants = isOrganizer
+                ? allParticipants
+                : allParticipants.Where(p => {
+                    string status = (string)p.status;
+                    return status != "rejected" && status != "cancelled";
+                });
 
             return Results.Ok(new
             {
