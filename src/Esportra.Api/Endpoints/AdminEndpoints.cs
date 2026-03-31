@@ -1159,7 +1159,149 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
-        // ── GET /api/admin/audit-logs ──────────────────────────────────────────
+        // ── DELETE /api/admin/tournaments/{tournamentId}/bans/{banId} ──────────
+        app.MapDelete("/api/admin/tournaments/{tournamentId}/bans/{banId}", async (
+            Guid                 tournamentId,
+            Guid                 banId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var ban = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                UPDATE tournament_bans
+                SET is_active = FALSE, lifted_by = @liftedBy, lifted_at = NOW()
+                WHERE id = @banId AND tournament_id = @tournamentId AND is_active = TRUE
+                RETURNING participant_id
+                """, new { banId, tournamentId, liftedBy = userCtx.UserIdGuid });
+
+            if (ban is null)
+                return Results.NotFound(new { error = "Ban not found or already lifted." });
+
+            // Restore participant if disqualified and no other active bans
+            if (ban.participant_id is not null)
+            {
+                var otherBans = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_bans WHERE participant_id = @pid AND is_active = TRUE",
+                    new { pid = (Guid)ban.participant_id });
+
+                if (otherBans == 0)
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE tournament_participants SET status = 'approved' WHERE id = @pid AND status = 'disqualified'",
+                        new { pid = (Guid)ban.participant_id });
+                }
+            }
+
+            return Results.Ok(new { success = true, participantRestored = ban.participant_id is not null });
+        }).RequireAuthorization("Admin");
+
+        // ── PATCH /api/admin/tournaments/{tournamentId}/participants/{pid}/restore ──
+        app.MapPatch("/api/admin/tournaments/{tournamentId}/participants/{pid}/restore", async (
+            Guid                 tournamentId,
+            Guid                 pid,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify participant belongs to this tournament
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'approved'
+                WHERE id = @pid AND tournament_id = @tournamentId
+                  AND status IN ('disqualified', 'rejected', 'cancelled')
+                """, new { pid, tournamentId });
+
+            return affected > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Participant not found or already active." });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/disputes/{disputeId}/lift-ban ─────────────────────
+        app.MapPost("/api/admin/disputes/{disputeId}/lift-ban", async (
+            Guid                 disputeId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Get dispute details
+            var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT tournament_id, raised_by_user_id, team_id, dispute_reason FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+
+            if (dispute is null)
+                return Results.NotFound(new { error = "Dispute not found." });
+
+            if ((string)dispute.dispute_reason != "ban_appeal")
+                return Results.BadRequest(new { error = "This action is only available for ban appeal disputes." });
+
+            // Find the active ban matching this dispute
+            Guid? tournamentId = dispute.tournament_id;
+            Guid? userId = dispute.raised_by_user_id;
+            Guid? teamId = dispute.team_id;
+
+            if (tournamentId is null)
+                return Results.BadRequest(new { error = "Dispute has no associated tournament." });
+
+            var ban = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT id, participant_id FROM tournament_bans
+                WHERE tournament_id = @tournamentId AND is_active = TRUE
+                  AND (user_id = @userId OR team_id = @teamId)
+                LIMIT 1
+                """, new { tournamentId, userId, teamId });
+
+            if (ban is null)
+                return Results.NotFound(new { error = "No active ban found for this dispute." });
+
+            // Lift the ban
+            await conn.ExecuteAsync(
+                "UPDATE tournament_bans SET is_active = FALSE, lifted_by = @liftedBy, lifted_at = NOW() WHERE id = @banId",
+                new { banId = (Guid)ban.id, liftedBy = userCtx.UserIdGuid });
+
+            // Restore participant if disqualified
+            bool restored = false;
+            if (ban.participant_id is not null)
+            {
+                var otherBans = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_bans WHERE participant_id = @pid AND is_active = TRUE",
+                    new { pid = (Guid)ban.participant_id });
+
+                if (otherBans == 0)
+                {
+                    var rows = await conn.ExecuteAsync(
+                        "UPDATE tournament_participants SET status = 'approved' WHERE id = @pid AND status = 'disqualified'",
+                        new { pid = (Guid)ban.participant_id });
+                    restored = rows > 0;
+                }
+            }
+
+            // Auto-resolve the dispute
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_disputes
+                SET status = 'resolved', resolution_notes = 'Ban lifted by admin.', updated_at = NOW()
+                WHERE id = @disputeId AND status != 'resolved'
+                """, new { disputeId });
+
+            return Results.Ok(new { success = true, banLifted = true, participantRestored = restored });
+        }).RequireAuthorization("Admin");
         app.MapGet("/api/admin/audit-logs", async (
             Guid?                organizationId,
             [FromQuery] string?  search      = null,

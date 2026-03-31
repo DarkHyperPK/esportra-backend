@@ -824,9 +824,9 @@ public static class TournamentEndpoints
                 {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
             }
 
-            // Check existing registration (exclude cancelled)
+            // Check existing registration (exclude cancelled/rejected/disqualified)
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
+                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                 new { id, userId = userCtx.UserIdGuid }, txn);
             if (existing is not null)
             {   txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
@@ -2562,7 +2562,9 @@ public static class TournamentEndpoints
                 """
                 SELECT id, ban_reason, banned_at
                 FROM public.tournament_bans
-                WHERE tournament_id = @id AND user_id = @userId AND is_active = TRUE
+                WHERE tournament_id = @id AND is_active = TRUE
+                  AND (user_id = @userId
+                       OR team_id IN (SELECT team_id FROM team_members WHERE user_id = @userId AND is_active = TRUE))
                 LIMIT 1
                 """, new { id, userId = userCtx.UserIdGuid });
             return Results.Ok(new { isBanned = ban is not null, ban });
@@ -2604,10 +2606,36 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await conn.ExecuteAsync(
-                "UPDATE tournament_bans SET is_active = FALSE WHERE id = @banId AND tournament_id = @id",
-                new { banId, id });
-            return Results.Ok(new { success = true });
+
+            // Lift ban and record who did it
+            var ban = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                UPDATE tournament_bans
+                SET is_active = FALSE, lifted_by = @liftedBy, lifted_at = NOW()
+                WHERE id = @banId AND tournament_id = @id AND is_active = TRUE
+                RETURNING participant_id
+                """, new { banId, id, liftedBy = userCtx.UserIdGuid });
+
+            if (ban is null)
+                return Results.NotFound(new { error = "Ban not found or already lifted." });
+
+            // Restore participant status if they were disqualified
+            if (ban.participant_id is not null)
+            {
+                // Only restore if no other active bans exist for this participant
+                var otherBans = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_bans WHERE participant_id = @pid AND is_active = TRUE",
+                    new { pid = (Guid)ban.participant_id });
+
+                if (otherBans == 0)
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE tournament_participants SET status = 'approved' WHERE id = @pid AND status = 'disqualified'",
+                        new { pid = (Guid)ban.participant_id });
+                }
+            }
+
+            return Results.Ok(new { success = true, participantRestored = ban.participant_id is not null });
         }).RequireAuthorization("Organizer");
 
         // ── GET /api/tournaments/{id}/participants/me ─────────────────────────
