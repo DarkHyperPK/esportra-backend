@@ -1170,14 +1170,14 @@ public static class TournamentEndpoints
                     new { id, teamIds = userTeamIds });
             }
 
-            // 4. Get user's registration (solo or via team) – exclude cancelled
+            // 4. Get user's registration (solo or via team) – exclude cancelled/rejected
             var registration = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT tp.*, t.name AS team_name, t.logo_url AS team_logo
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
                 WHERE tp.tournament_id = @id
-                  AND tp.status != 'cancelled'
+                  AND tp.status NOT IN ('cancelled', 'rejected')
                   AND (tp.user_id = @userId OR tp.team_captain_id = @userId
                        OR (tp.team_id = ANY(@teamIds) AND tp.participant_type = 'team'))
                 LIMIT 1
