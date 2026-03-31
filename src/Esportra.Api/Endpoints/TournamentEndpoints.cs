@@ -1339,11 +1339,11 @@ public static class TournamentEndpoints
             if (participant is null)
                 return Results.NotFound(new { error = "Participant not found" });
 
-            // Determine ban target
-            string? banUserId = null, banTeamId = null;
-            if (participant.team_id is not null) banTeamId = participant.team_id;
-            else if (participant.user_id is not null) banUserId = participant.user_id;
-            else banUserId = req.UserId;
+            // Determine ban target (must be Guid for uuid columns)
+            Guid? banUserId = null, banTeamId = null;
+            if (participant.team_id is not null) banTeamId = (Guid)participant.team_id;
+            else if (participant.user_id is not null) banUserId = (Guid)participant.user_id;
+            else if (req.UserId is not null) banUserId = Guid.Parse(req.UserId);
 
             if (banUserId is null && banTeamId is null)
                 return Results.BadRequest(new { error = "Cannot determine ban target" });
@@ -1356,20 +1356,12 @@ public static class TournamentEndpoints
                 """,
                 new { tournamentId = id, participantId = req.ParticipantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserIdGuid });
 
-            // Delete registration
-            string? deleteError = null;
-            try
-            {
-                await conn.ExecuteAsync(
-                    "DELETE FROM tournament_participants WHERE id = @pid",
-                    new { pid = req.ParticipantId });
-            }
-            catch (Exception ex)
-            {
-                deleteError = "Failed to remove participant.";
-            }
+            // Mark participant as disqualified (soft delete)
+            await conn.ExecuteAsync(
+                "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected')",
+                new { pid = req.ParticipantId });
 
-            return Results.Ok(new { success = true, deleteError });
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
         // ── GET /api/tournaments/{id}/participants/{pid} — single participant ───
