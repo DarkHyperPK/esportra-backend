@@ -3057,7 +3057,7 @@ public sealed record RegisterTournamentRequest(
     decimal? EntryFeeAmount   = null,
     bool?   EntryFeePaid      = null,
     string? PaymentReceiptUrl = null);
-public sealed record UpdateBannerRequest(string Url);
+public sealed record UpdateBannerRequest(string? Url);
 public sealed record PaymentRejectionRequest(string? Reason = null);
 
 // ── Organizer Dispute request records ────────────────────────────────────────
