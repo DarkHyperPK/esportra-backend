@@ -975,7 +975,7 @@ public static class TournamentEndpoints
             var affected = await conn.ExecuteAsync(
                 """
                 UPDATE tournament_participants
-                SET payment_status = 'rejected', payment_rejection_reason = @reason
+                SET payment_status = 'rejected', payment_rejection_reason = @reason, status = 'rejected'
                 WHERE id = @participantId AND tournament_id = @id AND payment_status = 'pending'
                 """,
                 new { participantId, id, reason = req.Reason });
