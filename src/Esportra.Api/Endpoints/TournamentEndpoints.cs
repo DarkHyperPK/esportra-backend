@@ -1326,6 +1326,8 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
+            var participantId = Guid.Parse(req.ParticipantId);
+
             // Verify caller owns this tournament
             var isOwner = await conn.ExecuteScalarAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
@@ -1335,7 +1337,7 @@ public static class TournamentEndpoints
             // Get participant info
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT user_id, team_id FROM tournament_participants WHERE id = @pid",
-                new { pid = req.ParticipantId });
+                new { pid = participantId });
             if (participant is null)
                 return Results.NotFound(new { error = "Participant not found" });
 
@@ -1354,12 +1356,12 @@ public static class TournamentEndpoints
                 INSERT INTO tournament_bans (tournament_id, participant_id, user_id, team_id, ban_reason, banned_by, banned_at, is_active)
                 VALUES (@tournamentId, @participantId, @userId, @teamId, @banReason, @bannedBy, NOW(), TRUE)
                 """,
-                new { tournamentId = id, participantId = req.ParticipantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserIdGuid });
+                new { tournamentId = id, participantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserIdGuid });
 
             // Mark participant as disqualified (soft delete)
             await conn.ExecuteAsync(
                 "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected')",
-                new { pid = req.ParticipantId });
+                new { pid = participantId });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
