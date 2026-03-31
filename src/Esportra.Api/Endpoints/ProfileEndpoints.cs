@@ -335,29 +335,33 @@ public static class ProfileEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
-
-            if (!string.IsNullOrWhiteSpace(userIds))
+            try
             {
-                var idList = userIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Where(s => Guid.TryParse(s, out _))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-                if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
-                var paramNames = string.Join(", ", idList.Select((_, i) => $"@p{i}::uuid"));
-                var parameters = new DynamicParameters();
-                for (int i = 0; i < idList.Length; i++)
-                    parameters.Add($"p{i}", Guid.Parse(idList[i]));
-                var accounts = await conn.QueryAsync<dynamic>(
-                    $"SELECT * FROM riot_accounts WHERE user_id IN ({paramNames}) ORDER BY created_at DESC",
-                    parameters);
-                return Results.Ok(accounts);
-            }
+                using var conn = db.CreateConnection();
 
-            var myAccounts = await conn.QueryAsync<dynamic>(
-                "SELECT * FROM riot_accounts WHERE user_id = @userId ORDER BY created_at DESC",
-                new { userId = userCtx.UserIdGuid });
-            return Results.Ok(myAccounts);
+                if (!string.IsNullOrWhiteSpace(userIds))
+                {
+                    var idList = userIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Where(s => Guid.TryParse(s, out _))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Select(Guid.Parse)
+                        .ToArray();
+                    if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
+                    var accounts = await conn.QueryAsync<dynamic>(
+                        "SELECT * FROM riot_accounts WHERE user_id = ANY(@ids) ORDER BY created_at DESC",
+                        new { ids = idList });
+                    return Results.Ok(accounts);
+                }
+
+                var myAccounts = await conn.QueryAsync<dynamic>(
+                    "SELECT * FROM riot_accounts WHERE user_id = @userId ORDER BY created_at DESC",
+                    new { userId = userCtx.UserIdGuid });
+                return Results.Ok(myAccounts);
+            }
+            catch (Exception ex)
+            {
+                return Results.Ok(Array.Empty<object>());
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/me/verification ─────────────────────────────────

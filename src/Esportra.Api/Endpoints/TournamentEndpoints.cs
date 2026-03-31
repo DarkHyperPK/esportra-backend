@@ -1036,8 +1036,8 @@ public static class TournamentEndpoints
             var supabaseUrl = config["Supabase:Url"] ?? config["SupabaseUrl"];
             var serviceKey  = config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
             var ext         = Path.GetExtension(file.FileName) ?? ".jpg";
-            var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
-            var bucket      = "tournaments.payment.receipts";
+            var storagePath = $"payment-receipts/{id}/{userCtx.UserIdGuid}{ext}";
+            var bucket      = "tournaments.media";
 
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
@@ -1048,7 +1048,12 @@ public static class TournamentEndpoints
             content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
 
             var uploadUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
-            var resp = await http.PutAsync(uploadUrl, content, ct);
+            var resp = await http.PostAsync(uploadUrl, content, ct);
+
+            // If POST fails (already exists), try PUT (upsert)
+            if (!resp.IsSuccessStatusCode)
+                resp = await http.PutAsync(uploadUrl, new StreamContent(file.OpenReadStream())
+                { Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType) } }, ct);
 
             if (!resp.IsSuccessStatusCode)
             {
