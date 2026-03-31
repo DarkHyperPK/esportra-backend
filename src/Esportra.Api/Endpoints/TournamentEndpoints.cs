@@ -735,14 +735,14 @@ public static class TournamentEndpoints
                         SELECT DISTINCT tp.id, tp.tournament_id
                         FROM tournament_participants tp
                         WHERE (tp.user_id = @userId OR tp.team_id = ANY(@teamIds))
-                          AND tp.status != 'cancelled'
+                          AND tp.status NOT IN ('cancelled', 'rejected')
                         """,
                         new { userId = userCtx.UserIdGuid, teamIds });
                 }
                 else
                 {
                     rows = await conn.QueryAsync(
-                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status != 'cancelled'",
+                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
                         new { userId = userCtx.UserIdGuid });
                 }
 
@@ -765,7 +765,7 @@ public static class TournamentEndpoints
                     """
                     SELECT DISTINCT tournament_id FROM tournament_participants
                     WHERE tournament_id = ANY(@ids)
-                      AND status != 'cancelled'
+                      AND status NOT IN ('cancelled', 'rejected')
                       AND (user_id = @userId OR team_id = ANY(@teamIds))
                     """,
                     new { ids = idList, userId = userCtx.UserIdGuid, teamIds });
@@ -773,7 +773,7 @@ public static class TournamentEndpoints
             else
             {
                 registeredIdGuids = await conn.QueryAsync<Guid>(
-                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status != 'cancelled'",
+                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
                     new { ids = idList, userId = userCtx.UserIdGuid });
             }
 
@@ -894,11 +894,19 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_participants WHERE tournament_id = @id AND (user_id = @userId OR team_captain_id = @userId)",
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'cancelled'
+                WHERE tournament_id = @id
+                  AND (user_id = @userId OR team_captain_id = @userId)
+                  AND status NOT IN ('rejected', 'cancelled')
+                """,
                 new { id, userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { success = true });
+            return affected > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "No active registration found to withdraw." });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/participants/{participantId}/approve-payment ──
@@ -1180,6 +1188,7 @@ public static class TournamentEndpoints
                   AND tp.status NOT IN ('cancelled', 'rejected')
                   AND (tp.user_id = @userId OR tp.team_captain_id = @userId
                        OR (tp.team_id = ANY(@teamIds) AND tp.participant_type = 'team'))
+                ORDER BY CASE WHEN tp.user_id = @userId THEN 0 ELSE 1 END, tp.created_at DESC
                 LIMIT 1
                 """,
                 new { id, userId = userCtx.UserIdGuid, teamIds = userTeamIds });
@@ -2181,7 +2190,7 @@ public static class TournamentEndpoints
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                            VALUES (@userId, 'match_result_enforced', 'Match Result Enforced',
+                            VALUES (@userId, 'result_accepted', 'Match Result Enforced',
                                     @message, '/user/matches', @data::jsonb, FALSE)
                             """,
                             new
@@ -2191,7 +2200,7 @@ public static class TournamentEndpoints
                                 data    = System.Text.Json.JsonSerializer.Serialize(new { match_id = matchId, dispute_id = disputeId }),
                             });
                         await notifHub.Clients.Group($"user:{captainId}")
-                            .SendAsync("NewNotification", new { type = "match_result_enforced" }, ct);
+                            .SendAsync("NewNotification", new { type = "result_accepted" }, ct);
                     }
                 }
             }

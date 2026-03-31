@@ -69,7 +69,7 @@ Body: {"expiresIn": 3600}
 - **Dapper** for all SQL queries (not EF Core)
 - Use `QueryAsync<dynamic>` for flexible result shapes
 - **UUID arrays**: Use `= ANY(@ids)` with `Guid[]`, NOT `@p0::uuid` with DynamicParameters
-- **Registration status**: Backend is source of truth — `"pending"` for paid, `"registered"` for free
+- **Registration status**: Backend is source of truth — `"pending"` for paid, `"approved"` for free
 - **Every table gets RLS** — default deny, explicit allow
 - **Admin RPCs**: Use `SECURITY DEFINER` with internal role checks
 
@@ -98,7 +98,7 @@ Body: {"expiresIn": 3600}
 | `teams.logos` | ✅ | Team logos |
 | `tournaments.banners` | ✅ | Tournament cover images |
 | `tournaments.media` | ✅ | Tournament photos/videos |
-| `tournaments.payment.receipts` | ❌ | Payment receipts (private) |
+| `tournaments.payment.receipts` | ✅ | Payment receipts |
 | `tournaments.disputes.evidence` | ✅ | Dispute evidence |
 | `tournaments.results` | ✅ | Match result screenshots |
 | `match-evidence` | ✅ | Match evidence uploads |
