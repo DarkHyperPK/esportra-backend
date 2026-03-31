@@ -131,5 +131,55 @@ public static class GameEndpoints
             var json = await rawg.GetScreenshotsAsync(id, ct);
             return Results.Text(json, "application/json");
         }); // Public
+
+        // ── GET /api/games/igdb-banner?game={game} ──────────────────────────
+        // Returns IGDB artwork/banner URL for a game (7-day DB cache)
+        app.MapGet("/api/games/igdb-banner", async (
+            string               game,
+            IDbConnectionFactory db,
+            IgdbApiClient        igdb,
+            CancellationToken    ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(game))
+                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+
+            using var conn = db.CreateConnection();
+
+            // Check cache
+            string? cached = null;
+            try
+            {
+                cached = await conn.QuerySingleOrDefaultAsync<string>("""
+                    SELECT igdb_banner FROM public.games_metadata
+                    WHERE LOWER(game_name) = LOWER(@name)
+                      AND igdb_banner IS NOT NULL
+                      AND last_updated > NOW() - INTERVAL '7 days'
+                    """, new { name = game });
+            }
+            catch { /* column may not exist yet */ }
+
+            if (cached is not null)
+                return Results.Ok(new { banner = cached, cover = (string?)null, isCached = true });
+
+            // Fetch from IGDB
+            var images = await igdb.GetGameImagesAsync(game, ct);
+            if (images is null)
+                return Results.Ok(new { banner = (string?)null, cover = (string?)null, isCached = false });
+
+            // Cache the banner URL
+            try
+            {
+                await conn.ExecuteAsync("""
+                    INSERT INTO public.games_metadata (game_name, igdb_banner, last_updated)
+                    VALUES (@name, @banner, NOW())
+                    ON CONFLICT (game_name) DO UPDATE SET
+                        igdb_banner = EXCLUDED.igdb_banner,
+                        last_updated = EXCLUDED.last_updated
+                    """, new { name = game, banner = images.Banner });
+            }
+            catch { /* cache write failure is non-critical */ }
+
+            return Results.Ok(new { banner = images.Banner, cover = images.Cover, isCached = false });
+        }); // Public
     }
 }

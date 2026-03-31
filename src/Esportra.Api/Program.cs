@@ -236,6 +236,7 @@ builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
 builder.Services.AddHttpClient<RiotApiClient>();
 builder.Services.AddHttpClient<FaceitApiClient>();
 builder.Services.AddHttpClient<RawgApiClient>();
+builder.Services.AddHttpClient<IgdbApiClient>();
 
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()
