@@ -735,14 +735,14 @@ public static class TournamentEndpoints
                         SELECT DISTINCT tp.id, tp.tournament_id
                         FROM tournament_participants tp
                         WHERE (tp.user_id = @userId OR tp.team_id = ANY(@teamIds))
-                          AND tp.status NOT IN ('cancelled', 'payment_rejected')
+                          AND tp.status != 'cancelled'
                         """,
                         new { userId = userCtx.UserIdGuid, teamIds });
                 }
                 else
                 {
                     rows = await conn.QueryAsync(
-                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status NOT IN ('cancelled', 'payment_rejected')",
+                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status != 'cancelled'",
                         new { userId = userCtx.UserIdGuid });
                 }
 
@@ -765,7 +765,7 @@ public static class TournamentEndpoints
                     """
                     SELECT DISTINCT tournament_id FROM tournament_participants
                     WHERE tournament_id = ANY(@ids)
-                      AND status NOT IN ('cancelled', 'payment_rejected')
+                      AND status != 'cancelled'
                       AND (user_id = @userId OR team_id = ANY(@teamIds))
                     """,
                     new { ids = idList, userId = userCtx.UserIdGuid, teamIds });
@@ -773,7 +773,7 @@ public static class TournamentEndpoints
             else
             {
                 registeredIdGuids = await conn.QueryAsync<Guid>(
-                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status NOT IN ('cancelled', 'payment_rejected')",
+                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status != 'cancelled'",
                     new { ids = idList, userId = userCtx.UserIdGuid });
             }
 
@@ -818,7 +818,7 @@ public static class TournamentEndpoints
 
             // Check existing registration (exclude cancelled)
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'payment_rejected')",
+                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status != 'cancelled'",
                 new { id, userId = userCtx.UserIdGuid }, txn);
             if (existing is not null)
             {   txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
@@ -1138,7 +1138,7 @@ public static class TournamentEndpoints
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
                 WHERE tp.tournament_id = @id
-                  AND tp.status NOT IN ('cancelled', 'payment_rejected')
+                  AND tp.status != 'cancelled'
                   AND (tp.user_id = @userId OR tp.team_captain_id = @userId
                        OR (tp.team_id = ANY(@teamIds) AND tp.participant_type = 'team'))
                 LIMIT 1
