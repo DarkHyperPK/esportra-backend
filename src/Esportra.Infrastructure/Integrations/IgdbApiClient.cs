@@ -24,16 +24,44 @@ public sealed class IgdbApiClient
         _clientSecret = config["Igdb:ClientSecret"] ?? string.Empty;
     }
 
+    // Known IGDB game IDs for exact matches (avoids fuzzy search returning wrong game)
+    private static readonly Dictionary<string, int> KnownGameIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Valorant"] = 126459,        // Riot Games Valorant
+        ["CS2"] = 252882,             // Counter-Strike 2
+        ["Counter-Strike 2"] = 252882,
+        ["Fortnite"] = 1905,
+        ["League of Legends"] = 115,
+        ["Dota 2"] = 11198,
+        ["Apex Legends"] = 114795,
+        ["Overwatch 2"] = 152035,
+        ["Rocket League"] = 7542,
+        ["Rainbow Six Siege"] = 7360,
+        ["PUBG"] = 25076,
+    };
+
     /// <summary>Search for a game and return all artwork, screenshot, and video assets.</summary>
     public async Task<IgdbGameAssets?> GetGameAssetsAsync(string gameName, CancellationToken ct = default)
     {
         await EnsureTokenAsync(ct);
 
-        var body = $"""
-            search "{EscapeIgdb(gameName)}";
-            fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
-            limit 1;
-            """;
+        string body;
+        if (KnownGameIds.TryGetValue(gameName.Trim(), out var knownId))
+        {
+            body = $"""
+                where id = {knownId};
+                fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
+                limit 1;
+                """;
+        }
+        else
+        {
+            body = $"""
+                search "{EscapeIgdb(gameName)}";
+                fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
+                limit 1;
+                """;
+        }
 
         var request = new HttpRequestMessage(HttpMethod.Post, "https://api.igdb.com/v4/games")
         {
