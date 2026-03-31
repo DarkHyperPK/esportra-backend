@@ -1076,7 +1076,7 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
 
         // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
-        // Proxies the private receipt image through the backend (avoids signed URL redirect issues)
+        // Returns a short-lived signed URL so the browser fetches the image directly from storage
         app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
             Guid                 id,
             Guid                 participantId,
@@ -1090,7 +1090,6 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Only tournament organizer can view receipts
             var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
                 new { id, userId = userCtx.UserIdGuid });
@@ -1101,7 +1100,6 @@ public static class TournamentEndpoints
                 new { participantId, id });
             if (string.IsNullOrWhiteSpace(receiptRef)) return Results.NotFound(new { error = "No receipt found." });
 
-            // Parse bucket/path from stored reference (format: "bucket/path/to/file.ext")
             var slashIdx = receiptRef.IndexOf('/');
             if (slashIdx < 0) return Results.Problem("Invalid receipt reference.");
             var bucket = receiptRef[..slashIdx];
@@ -1112,23 +1110,23 @@ public static class TournamentEndpoints
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Problem("Storage configuration missing.");
 
-            // Fetch the file directly from Supabase storage and stream it to the client
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
             http.DefaultRequestHeaders.Add("apikey", serviceKey);
 
-            var downloadUrl = $"{supabaseUrl}/storage/v1/object/authenticated/{bucket}/{path}";
-            var fileResp = await http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            var signResp = await http.PostAsync(
+                $"{supabaseUrl}/storage/v1/object/sign/{bucket}/{path}",
+                new StringContent("{\"expiresIn\":3600}", System.Text.Encoding.UTF8, "application/json"), ct);
 
-            if (!fileResp.IsSuccessStatusCode)
+            if (!signResp.IsSuccessStatusCode)
             {
-                var err = await fileResp.Content.ReadAsStringAsync(ct);
-                return Results.Problem($"Failed to fetch receipt: {err}");
+                var err = await signResp.Content.ReadAsStringAsync(ct);
+                return Results.Problem($"Failed to generate signed URL: {err}");
             }
 
-            var contentType = fileResp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
-            var fileStream = await fileResp.Content.ReadAsStreamAsync(ct);
-            return Results.Stream(fileStream, contentType);
+            var body = await signResp.Content.ReadAsStringAsync(ct);
+            var signedPath = System.Text.Json.JsonDocument.Parse(body).RootElement.GetProperty("signedURL").GetString();
+            return Results.Ok(new { url = $"{supabaseUrl}{signedPath}" });
         }).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/check-in", async (
