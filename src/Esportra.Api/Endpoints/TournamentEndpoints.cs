@@ -833,7 +833,7 @@ public static class TournamentEndpoints
             bool isPaid = tournEntryFee > 0;
 
             // Server determines registration status — never trust user-supplied value
-            var   regStatus       = isPaid ? "pending" : "registered";
+            var   regStatus       = isPaid ? "pending" : "approved";
             var   paymentStatus   = isPaid ? "pending" : "not_required";
             var   entryFeePaid    = !isPaid; // free = already paid; paid = not yet
 
@@ -1125,7 +1125,7 @@ public static class TournamentEndpoints
                 SET status = 'checked_in', checked_in_at = NOW()
                 WHERE tournament_id = @id
                   AND (user_id = @userId OR team_captain_id = @userId)
-                  AND status = 'registered'
+                  AND status = 'approved'
                 """,
                 new { id, userId = userCtx.UserIdGuid });
 
@@ -1287,7 +1287,7 @@ public static class TournamentEndpoints
                 SET status = 'cancelled'
                 WHERE tournament_id = @id
                   AND checked_in_at IS NULL
-                  AND status IN ('pending', 'approved', 'registered')
+                  AND status IN ('pending', 'approved')
                 """,
                 new { id });
 
