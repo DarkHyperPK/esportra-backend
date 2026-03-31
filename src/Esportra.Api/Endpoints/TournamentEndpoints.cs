@@ -1033,8 +1033,11 @@ public static class TournamentEndpoints
             if (participant is null) return Results.NotFound(new { error = "You are not registered for this tournament." });
 
             // Upload to Supabase storage
-            var supabaseUrl = config["Supabase:Url"] ?? config["SupabaseUrl"];
-            var serviceKey  = config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
+            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
+                return Results.Problem("Storage configuration missing.");
+
             var ext         = Path.GetExtension(file.FileName) ?? ".jpg";
             var storagePath = $"payment-receipts/{id}/{userCtx.UserIdGuid}{ext}";
             var bucket      = "tournaments.media";
@@ -1042,6 +1045,7 @@ public static class TournamentEndpoints
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
             http.DefaultRequestHeaders.Add("apikey", serviceKey);
+            http.DefaultRequestHeaders.Add("x-upsert", "true");
 
             using var stream  = file.OpenReadStream();
             using var content = new StreamContent(stream);
@@ -1049,11 +1053,6 @@ public static class TournamentEndpoints
 
             var uploadUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
             var resp = await http.PostAsync(uploadUrl, content, ct);
-
-            // If POST fails (already exists), try PUT (upsert)
-            if (!resp.IsSuccessStatusCode)
-                resp = await http.PutAsync(uploadUrl, new StreamContent(file.OpenReadStream())
-                { Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType) } }, ct);
 
             if (!resp.IsSuccessStatusCode)
             {
