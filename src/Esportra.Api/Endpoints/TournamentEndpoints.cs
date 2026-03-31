@@ -932,7 +932,8 @@ public static class TournamentEndpoints
                 """
                 UPDATE tournament_participants
                 SET payment_status = 'approved', entry_fee_paid = true, status = 'approved'
-                WHERE id = @participantId AND tournament_id = @id AND payment_status = 'pending'
+                WHERE id = @participantId AND tournament_id = @id
+                  AND status = 'pending' AND payment_status = 'pending'
                 """,
                 new { participantId, id });
 
@@ -984,7 +985,8 @@ public static class TournamentEndpoints
                 """
                 UPDATE tournament_participants
                 SET payment_status = 'rejected', payment_rejection_reason = @reason, status = 'rejected'
-                WHERE id = @participantId AND tournament_id = @id AND payment_status = 'pending'
+                WHERE id = @participantId AND tournament_id = @id
+                  AND status = 'pending' AND payment_status = 'pending'
                 """,
                 new { participantId, id, reason = req.Reason });
 
