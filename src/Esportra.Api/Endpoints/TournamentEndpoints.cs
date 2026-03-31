@@ -833,7 +833,7 @@ public static class TournamentEndpoints
             bool isPaid = tournEntryFee > 0;
 
             // Server determines registration status — never trust user-supplied value
-            var   regStatus       = "pending";
+            var   regStatus       = isPaid ? "pending" : "registered";
             var   paymentStatus   = isPaid ? "pending" : "not_required";
             var   entryFeePaid    = !isPaid; // free = already paid; paid = not yet
 
