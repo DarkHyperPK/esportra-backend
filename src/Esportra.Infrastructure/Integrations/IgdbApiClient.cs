@@ -6,7 +6,7 @@ using Microsoft.Extensions.Configuration;
 namespace Esportra.Infrastructure.Integrations;
 
 /// <summary>
-/// Fetches game artwork/cover images from IGDB (via Twitch OAuth).
+/// Fetches game artwork/cover/video assets from IGDB (via Twitch OAuth).
 /// Config: Igdb:ClientId, Igdb:ClientSecret
 /// </summary>
 public sealed class IgdbApiClient
@@ -24,15 +24,14 @@ public sealed class IgdbApiClient
         _clientSecret = config["Igdb:ClientSecret"] ?? string.Empty;
     }
 
-    /// <summary>Search for a game and return its artwork/cover URLs.</summary>
-    public async Task<IgdbGameImages?> GetGameImagesAsync(string gameName, CancellationToken ct = default)
+    /// <summary>Search for a game and return all artwork, screenshot, and video assets.</summary>
+    public async Task<IgdbGameAssets?> GetGameAssetsAsync(string gameName, CancellationToken ct = default)
     {
         await EnsureTokenAsync(ct);
 
-        // Search for the game and get artworks + cover in one call
         var body = $"""
             search "{EscapeIgdb(gameName)}";
-            fields name, artworks.image_id, cover.image_id, screenshots.image_id;
+            fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
             limit 1;
             """;
 
@@ -53,34 +52,59 @@ public sealed class IgdbApiClient
         if (root.GetArrayLength() == 0) return null;
 
         var game = root[0];
-        string? banner = null;
+        var banners = new List<string>();
         string? cover = null;
+        var videos = new List<IgdbVideo>();
 
-        // Prefer artworks for banners (wider, more cinematic)
-        if (game.TryGetProperty("artworks", out var artworks) && artworks.GetArrayLength() > 0)
+        // Artworks — cinematic, wide images (best for banners)
+        if (game.TryGetProperty("artworks", out var artworks))
         {
-            var imageId = artworks[0].GetProperty("image_id").GetString();
-            banner = $"https://images.igdb.com/igdb/image/upload/t_1080p/{imageId}.jpg";
+            foreach (var art in artworks.EnumerateArray())
+            {
+                var imageId = art.GetProperty("image_id").GetString();
+                if (imageId is not null)
+                    banners.Add($"https://images.igdb.com/igdb/image/upload/t_1080p/{imageId}.jpg");
+            }
         }
 
-        // Fallback to screenshots
-        if (banner is null && game.TryGetProperty("screenshots", out var screenshots) && screenshots.GetArrayLength() > 0)
+        // Screenshots — in-game captures (fallback / extra carousel images)
+        if (game.TryGetProperty("screenshots", out var screenshots))
         {
-            var imageId = screenshots[0].GetProperty("image_id").GetString();
-            banner = $"https://images.igdb.com/igdb/image/upload/t_1080p/{imageId}.jpg";
+            foreach (var ss in screenshots.EnumerateArray())
+            {
+                var imageId = ss.GetProperty("image_id").GetString();
+                if (imageId is not null)
+                    banners.Add($"https://images.igdb.com/igdb/image/upload/t_1080p/{imageId}.jpg");
+            }
         }
 
         // Cover
         if (game.TryGetProperty("cover", out var coverProp))
         {
             var imageId = coverProp.GetProperty("image_id").GetString();
-            cover = $"https://images.igdb.com/igdb/image/upload/t_cover_big/{imageId}.jpg";
+            if (imageId is not null)
+                cover = $"https://images.igdb.com/igdb/image/upload/t_cover_big/{imageId}.jpg";
         }
 
-        // If no artwork or screenshots, use cover as banner too
-        banner ??= cover;
+        // Videos — YouTube trailer IDs
+        if (game.TryGetProperty("videos", out var vids))
+        {
+            foreach (var v in vids.EnumerateArray())
+            {
+                var videoId = v.GetProperty("video_id").GetString();
+                var name = v.TryGetProperty("name", out var n) ? n.GetString() : null;
+                if (videoId is not null)
+                    videos.Add(new IgdbVideo(videoId, name));
+            }
+        }
 
-        return banner is null ? null : new IgdbGameImages(banner, cover);
+        if (banners.Count == 0 && cover is null) return null;
+
+        return new IgdbGameAssets(
+            banners.Count > 0 ? banners : (cover is not null ? [cover] : []),
+            cover,
+            videos
+        );
     }
 
     private async Task EnsureTokenAsync(CancellationToken ct)
@@ -94,10 +118,11 @@ public sealed class IgdbApiClient
 
         _accessToken = doc.RootElement.GetProperty("access_token").GetString();
         var expiresIn = doc.RootElement.GetProperty("expires_in").GetInt32();
-        _tokenExpiry = DateTime.UtcNow.AddSeconds(expiresIn - 60); // Refresh 1 min early
+        _tokenExpiry = DateTime.UtcNow.AddSeconds(expiresIn - 60);
     }
 
     private static string EscapeIgdb(string s) => s.Replace("\"", "\\\"");
 }
 
-public sealed record IgdbGameImages(string Banner, string? Cover);
+public sealed record IgdbVideo(string VideoId, string? Name);
+public sealed record IgdbGameAssets(List<string> Banners, string? Cover, List<IgdbVideo> Videos);

@@ -132,8 +132,66 @@ public static class GameEndpoints
             return Results.Text(json, "application/json");
         }); // Public
 
+        // ── GET /api/games/igdb-assets?game={game} ─────────────────────────
+        // Returns IGDB artworks, screenshots, cover, and videos for a game (7-day DB cache)
+        app.MapGet("/api/games/igdb-assets", async (
+            string               game,
+            IDbConnectionFactory db,
+            IgdbApiClient        igdb,
+            CancellationToken    ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(game))
+                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+
+            using var conn = db.CreateConnection();
+
+            // Check cache
+            string? cachedJson = null;
+            try
+            {
+                cachedJson = await conn.QuerySingleOrDefaultAsync<string>("""
+                    SELECT igdb_assets FROM public.games_metadata
+                    WHERE LOWER(game_name) = LOWER(@name)
+                      AND igdb_assets IS NOT NULL
+                      AND last_updated > NOW() - INTERVAL '7 days'
+                    """, new { name = game });
+            }
+            catch { /* column may not exist yet */ }
+
+            if (cachedJson is not null)
+                return Results.Text(cachedJson, "application/json");
+
+            // Fetch from IGDB
+            var assets = await igdb.GetGameAssetsAsync(game, ct);
+            if (assets is null)
+                return Results.Ok(new { banners = Array.Empty<string>(), cover = (string?)null, videos = Array.Empty<object>() });
+
+            var response = new
+            {
+                banners = assets.Banners,
+                cover = assets.Cover,
+                videos = assets.Videos.Select(v => new { videoId = v.VideoId, name = v.Name })
+            };
+
+            // Cache the full response as JSON
+            var responseJson = JsonSerializer.Serialize(response);
+            try
+            {
+                await conn.ExecuteAsync("""
+                    INSERT INTO public.games_metadata (game_name, igdb_assets, last_updated)
+                    VALUES (@name, @json::jsonb, NOW())
+                    ON CONFLICT (game_name) DO UPDATE SET
+                        igdb_assets = EXCLUDED.igdb_assets,
+                        last_updated = EXCLUDED.last_updated
+                    """, new { name = game, json = responseJson });
+            }
+            catch { /* cache write failure is non-critical */ }
+
+            return Results.Ok(response);
+        }); // Public
+
         // ── GET /api/games/igdb-banner?game={game} ──────────────────────────
-        // Returns IGDB artwork/banner URL for a game (7-day DB cache)
+        // Legacy: returns first IGDB banner for backward compat
         app.MapGet("/api/games/igdb-banner", async (
             string               game,
             IDbConnectionFactory db,
@@ -146,40 +204,45 @@ public static class GameEndpoints
             using var conn = db.CreateConnection();
 
             // Check cache
-            string? cached = null;
+            string? cachedJson = null;
             try
             {
-                cached = await conn.QuerySingleOrDefaultAsync<string>("""
-                    SELECT igdb_banner FROM public.games_metadata
+                cachedJson = await conn.QuerySingleOrDefaultAsync<string>("""
+                    SELECT igdb_assets FROM public.games_metadata
                     WHERE LOWER(game_name) = LOWER(@name)
-                      AND igdb_banner IS NOT NULL
+                      AND igdb_assets IS NOT NULL
                       AND last_updated > NOW() - INTERVAL '7 days'
                     """, new { name = game });
             }
             catch { /* column may not exist yet */ }
 
-            if (cached is not null)
-                return Results.Ok(new { banner = cached, cover = (string?)null, isCached = true });
+            if (cachedJson is not null)
+            {
+                using var doc = JsonDocument.Parse(cachedJson);
+                var banners = doc.RootElement.GetProperty("banners");
+                var banner = banners.GetArrayLength() > 0 ? banners[0].GetString() : null;
+                return Results.Ok(new { banner, cover = (string?)null, isCached = true });
+            }
 
-            // Fetch from IGDB
-            var images = await igdb.GetGameImagesAsync(game, ct);
-            if (images is null)
+            var assets = await igdb.GetGameAssetsAsync(game, ct);
+            if (assets is null)
                 return Results.Ok(new { banner = (string?)null, cover = (string?)null, isCached = false });
 
-            // Cache the banner URL
+            // Cache via full assets
+            var response = new { banners = assets.Banners, cover = assets.Cover, videos = assets.Videos.Select(v => new { videoId = v.VideoId, name = v.Name }) };
             try
             {
                 await conn.ExecuteAsync("""
-                    INSERT INTO public.games_metadata (game_name, igdb_banner, last_updated)
-                    VALUES (@name, @banner, NOW())
+                    INSERT INTO public.games_metadata (game_name, igdb_assets, last_updated)
+                    VALUES (@name, @json::jsonb, NOW())
                     ON CONFLICT (game_name) DO UPDATE SET
-                        igdb_banner = EXCLUDED.igdb_banner,
+                        igdb_assets = EXCLUDED.igdb_assets,
                         last_updated = EXCLUDED.last_updated
-                    """, new { name = game, banner = images.Banner });
+                    """, new { name = game, json = JsonSerializer.Serialize(response) });
             }
-            catch { /* cache write failure is non-critical */ }
+            catch { /* non-critical */ }
 
-            return Results.Ok(new { banner = images.Banner, cover = images.Cover, isCached = false });
+            return Results.Ok(new { banner = assets.Banners.Count > 0 ? assets.Banners[0] : null, cover = assets.Cover, isCached = false });
         }); // Public
     }
 }
