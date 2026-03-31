@@ -79,18 +79,18 @@ public static class IntegrationEndpoints
             var error = ctx.Request.Query["error"].FirstOrDefault();
 
             if (!string.IsNullOrEmpty(error))
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason={Uri.EscapeDataString(error)}");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason={Uri.EscapeDataString(error)}");
 
             if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(state))
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=missing_params");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=missing_params");
 
             // Decrypt & validate state
             var payload = stateProtector.Unprotect(state);
             if (payload is null || payload.Provider != "riot")
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=invalid_state");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=invalid_state");
 
             if (!Guid.TryParse(payload.UserId, out var userGuid))
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=invalid_user");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=invalid_user");
 
             var clientId     = config["Riot:OAuthClientId"]     ?? string.Empty;
             var clientSecret = config["Riot:OAuthClientSecret"] ?? string.Empty;
@@ -110,7 +110,7 @@ public static class IntegrationEndpoints
 
             var tokenRes = await http.SendAsync(tokenReq, ct);
             if (!tokenRes.IsSuccessStatusCode)
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=token_exchange_failed");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=token_exchange_failed");
 
             var tokenBody = await tokenRes.Content.ReadAsStringAsync(ct);
             using var tokenDoc = JsonDocument.Parse(tokenBody);
@@ -129,7 +129,7 @@ public static class IntegrationEndpoints
 
             var infoRes = await http.SendAsync(infoReq, ct);
             if (!infoRes.IsSuccessStatusCode)
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=account_info_failed");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=account_info_failed");
 
             var infoBody = await infoRes.Content.ReadAsStringAsync(ct);
             using var infoDoc = JsonDocument.Parse(infoBody);
@@ -144,7 +144,7 @@ public static class IntegrationEndpoints
                 "SELECT user_id FROM public.riot_accounts WHERE puuid = @puuid AND user_id != @userId",
                 new { puuid, userId = userGuid });
             if (existingUserId is not null)
-                return Results.Redirect($"{frontendUrl}/settings?riot_linked=error&reason=already_linked_to_another_user");
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=already_linked_to_another_user");
 
             // Upsert riot_accounts
             await conn.ExecuteAsync("""
@@ -165,7 +165,7 @@ public static class IntegrationEndpoints
                 "UPDATE public.profiles SET riot_tag = @riotTag WHERE id = @userId",
                 new { riotTag = $"{gameName}#{tagLine}", userId = userGuid });
 
-            return Results.Redirect($"{frontendUrl}/settings?riot_linked=success");
+            return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=success");
         }); // Public — Riot redirect has no JWT
 
         // ── GET /api/integrations/riot ────────────────────────────────────────
