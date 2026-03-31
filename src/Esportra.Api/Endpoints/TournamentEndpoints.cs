@@ -923,7 +923,7 @@ public static class TournamentEndpoints
             var affected = await conn.ExecuteAsync(
                 """
                 UPDATE tournament_participants
-                SET payment_status = 'approved', entry_fee_paid = true, status = 'registered'
+                SET payment_status = 'approved', entry_fee_paid = true, status = 'approved'
                 WHERE id = @participantId AND tournament_id = @id AND payment_status = 'pending'
                 """,
                 new { participantId, id });
@@ -939,7 +939,7 @@ public static class TournamentEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament', 'Payment Approved',
+                    VALUES (@userId, 'tournament_announcement', 'Payment Approved',
                             @message, @data::jsonb)
                     """,
                     new {
@@ -991,7 +991,7 @@ public static class TournamentEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament', 'Payment Rejected',
+                    VALUES (@userId, 'tournament_announcement', 'Payment Rejected',
                             @message, @data::jsonb)
                     """,
                     new {
