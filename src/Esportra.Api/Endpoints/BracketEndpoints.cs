@@ -42,6 +42,9 @@ public static class BracketEndpoints
             };
 
             var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
+            if (teams.Count < 2)
+                return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
+
             var config = new BracketConfig(
                 DailyStartTime:      req.DailyStartTime,
                 TournamentStartDate: req.TournamentStartDate,

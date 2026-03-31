@@ -1433,8 +1433,10 @@ public static class TournamentEndpoints
         {
             using var conn = db.CreateConnection();
 
-            // Build optional status filter
-            var statusFilter = !string.IsNullOrEmpty(status) ? "AND tp.status::text = @status" : "";
+            // Build optional status filter — exclude rejected/cancelled by default
+            var statusFilter = !string.IsNullOrEmpty(status)
+                ? "AND tp.status::text = @status"
+                : "AND tp.status NOT IN ('rejected', 'cancelled')";
 
             // Fetch participants with team member roster details
             var flat = await conn.QueryAsync<dynamic>(
