@@ -818,7 +818,7 @@ public static class TournamentEndpoints
 
             // Check existing registration (exclude cancelled)
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status != 'cancelled'",
+                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
                 new { id, userId = userCtx.UserIdGuid }, txn);
             if (existing is not null)
             {   txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
