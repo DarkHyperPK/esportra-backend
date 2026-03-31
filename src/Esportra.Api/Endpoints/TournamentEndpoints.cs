@@ -1039,8 +1039,8 @@ public static class TournamentEndpoints
                 return Results.Problem("Storage configuration missing.");
 
             var ext         = Path.GetExtension(file.FileName) ?? ".jpg";
-            var storagePath = $"payment-receipts/{id}/{userCtx.UserIdGuid}{ext}";
-            var bucket      = "tournaments.media";
+            var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
+            var bucket      = "tournaments.payment.receipts";
 
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
@@ -1060,7 +1060,8 @@ public static class TournamentEndpoints
                 return Results.Problem($"Storage upload failed: {err}");
             }
 
-            var publicUrl = $"{supabaseUrl}/storage/v1/object/public/{bucket}/{storagePath}";
+            // Store the storage path (not a public URL — bucket is private)
+            var receiptRef = $"{bucket}/{storagePath}";
 
             // Update participant record
             await conn.ExecuteAsync(
@@ -1069,10 +1070,70 @@ public static class TournamentEndpoints
                 SET payment_receipt_url = @url, payment_status = 'pending'
                 WHERE id = @participantId
                 """,
-                new { url = publicUrl, participantId = (Guid)participant.id });
+                new { url = receiptRef, participantId = (Guid)participant.id });
 
-            return Results.Ok(new { receiptUrl = publicUrl });
+            return Results.Ok(new { receiptUrl = receiptRef });
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
+
+        // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
+        app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
+            Guid                 id,
+            Guid                 participantId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            IConfiguration       config,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Only tournament organizer can view receipts
+            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOrganizer) return Results.Forbid();
+
+            var receiptRef = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT payment_receipt_url FROM tournament_participants WHERE id = @participantId AND tournament_id = @id",
+                new { participantId, id });
+            if (string.IsNullOrWhiteSpace(receiptRef)) return Results.NotFound(new { error = "No receipt found." });
+
+            // Parse bucket/path from stored reference
+            var slashIdx = receiptRef.IndexOf('/');
+            if (slashIdx < 0) return Results.Problem("Invalid receipt reference.");
+            var bucket = receiptRef[..slashIdx];
+            var path   = receiptRef[(slashIdx + 1)..];
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
+            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"];
+            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
+                return Results.Problem("Storage configuration missing.");
+
+            // Create a signed URL (1 hour expiry)
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
+            http.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+            var signUrl = $"{supabaseUrl}/storage/v1/object/sign/{bucket}/{path}";
+            var signResp = await http.PostAsync(signUrl,
+                new StringContent("{\"expiresIn\":3600}", System.Text.Encoding.UTF8, "application/json"), ct);
+
+            if (!signResp.IsSuccessStatusCode)
+            {
+                var err = await signResp.Content.ReadAsStringAsync(ct);
+                return Results.Problem($"Failed to generate signed URL: {err}");
+            }
+
+            var body = await signResp.Content.ReadAsStringAsync(ct);
+            // Response: { "signedURL": "/storage/v1/object/sign/..." }
+            var signedPath = System.Text.Json.JsonDocument.Parse(body).RootElement.GetProperty("signedURL").GetString();
+            var signedUrl = $"{supabaseUrl}{signedPath}";
+
+            return Results.Ok(new { url = signedUrl });
+        }).RequireAuthorization("Authenticated");
+
         app.MapPost("/api/tournaments/{id}/check-in", async (
             Guid                 id,
             HttpContext          ctx,
