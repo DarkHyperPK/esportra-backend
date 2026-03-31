@@ -13,16 +13,16 @@ ALTER TABLE tournament_participants
 ALTER TABLE tournaments
     ADD COLUMN IF NOT EXISTS payment_instructions text;
 
--- ── 3. Storage bucket (private — receipts are sensitive) ───────────────────
+-- ── 3. Storage bucket (public — served via public URL, access controlled by backend API) ──
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
     'tournaments.payment.receipts',
     'tournaments.payment.receipts',
-    false,
+    true,
     5242880,  -- 5 MB
     ARRAY['image/jpeg','image/png','image/webp','application/pdf']
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET public = true;
 
 -- ── 4. Update service-role storage policies to include the new bucket ──────
 
@@ -92,8 +92,7 @@ BEGIN
 
     CREATE POLICY storage_private_select ON storage.objects FOR SELECT USING (
         bucket_id = ANY (ARRAY[
-            'users.documents.kyc','system.temp',
-            'tournaments.payment.receipts'
+            'users.documents.kyc','system.temp'
         ])
     );
 END;

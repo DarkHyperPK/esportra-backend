@@ -1076,7 +1076,7 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
 
         // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
-        // Returns a short-lived signed URL so the browser fetches the image directly from storage
+        // Returns the public receipt URL — only organizers can call this endpoint
         app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
             Guid                 id,
             Guid                 participantId,
@@ -1100,33 +1100,12 @@ public static class TournamentEndpoints
                 new { participantId, id });
             if (string.IsNullOrWhiteSpace(receiptRef)) return Results.NotFound(new { error = "No receipt found." });
 
-            var slashIdx = receiptRef.IndexOf('/');
-            if (slashIdx < 0) return Results.Problem("Invalid receipt reference.");
-            var bucket = receiptRef[..slashIdx];
-            var path   = receiptRef[(slashIdx + 1)..];
-
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"];
-            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
+            if (string.IsNullOrWhiteSpace(supabaseUrl))
                 return Results.Problem("Storage configuration missing.");
 
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
-            http.DefaultRequestHeaders.Add("apikey", serviceKey);
-
-            var signResp = await http.PostAsync(
-                $"{supabaseUrl}/storage/v1/object/sign/{bucket}/{path}",
-                new StringContent("{\"expiresIn\":3600}", System.Text.Encoding.UTF8, "application/json"), ct);
-
-            if (!signResp.IsSuccessStatusCode)
-            {
-                var err = await signResp.Content.ReadAsStringAsync(ct);
-                return Results.Problem($"Failed to generate signed URL: {err}");
-            }
-
-            var body = await signResp.Content.ReadAsStringAsync(ct);
-            var signedPath = System.Text.Json.JsonDocument.Parse(body).RootElement.GetProperty("signedURL").GetString();
-            return Results.Ok(new { url = $"{supabaseUrl}{signedPath}" });
+            var publicUrl = $"{supabaseUrl}/storage/v1/object/public/{receiptRef}";
+            return Results.Ok(new { url = publicUrl });
         }).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/check-in", async (
