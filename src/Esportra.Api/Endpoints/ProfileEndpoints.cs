@@ -358,7 +358,7 @@ public static class ProfileEndpoints
                     new { userId = userCtx.UserIdGuid });
                 return Results.Ok(myAccounts);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return Results.Ok(Array.Empty<object>());
             }

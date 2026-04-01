@@ -838,7 +838,7 @@ public static class OrganizationEndpoints
             string[]? staffPermissions = null;
             if (userCtx is not null && row is IDictionary<string, object?> d)
             {
-                var tournamentId = (Guid)d["id"];
+                var tournamentId = d["id"] is Guid g ? g : Guid.Parse(d["id"]!.ToString()!);
                 staffPermissions = (await conn.QueryAsync<string>(
                     """
                     SELECT DISTINCT unnest(os.permissions)

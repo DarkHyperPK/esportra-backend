@@ -257,7 +257,6 @@ public static class AdminEndpoints
                 conditions.Add("(p.is_suspended IS NULL OR p.is_suspended = FALSE)");
 
             // Role filtering via JOIN
-            var roleJoin = "";
             if (!string.IsNullOrWhiteSpace(role))
             {
                 if (role == "admin")
@@ -664,7 +663,7 @@ public static class AdminEndpoints
                 await email.SendAsync(req.Email, emailType, req.Data, ct);
                 return Results.Ok(new { success = true });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return Results.Json(new { error = "Failed to send email. Please try again." }, statusCode: 502);
             }

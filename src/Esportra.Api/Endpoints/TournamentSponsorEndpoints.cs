@@ -114,6 +114,9 @@ public static class TournamentSponsorEndpoints
                     assignedBy = userCtx.UserIdGuid,
                 });
 
+            if (row is null)
+                return Results.Json(new { error = "Failed to assign sponsor." }, statusCode: 500);
+
             return Results.Ok(new
             {
                 id = row.id.ToString(),

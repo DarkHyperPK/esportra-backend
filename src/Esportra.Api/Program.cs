@@ -119,7 +119,7 @@ try
 
     try
     {
-        var addresses = System.Net.Dns.GetHostAddresses(pgHost);
+        var addresses = System.Net.Dns.GetHostAddresses(pgHost!);
         Console.WriteLine($"[STARTUP] Postgres DNS resolved: {string.Join(", ", addresses.Select(a => a.ToString()))}");
     }
     catch (Exception dnsEx)

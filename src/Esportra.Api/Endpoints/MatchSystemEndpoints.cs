@@ -639,7 +639,7 @@ public static class MatchSystemEndpoints
 
                 return Results.Ok(new { success = true, matchId = id, reportId = rid, disputeId = (Guid)dispute.id });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 tx.Rollback();
                 return Results.Problem("Failed to file dispute. Please try again.");

@@ -195,13 +195,13 @@ public static class NotificationEndpoints
 
                 return Results.Ok(new { id, success = true });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return Results.Json(new { error = "Failed to create notification." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
-        // ── POST /api/notifications/bulk-delete ─────────────────────────────
+        // ── POST /api/notifications/bulk-delete─────────────────────────────
         app.MapPost("/api/notifications/bulk-delete", async (
             [FromBody] BulkDeleteNotificationsRequest req,
             HttpContext          ctx,

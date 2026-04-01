@@ -180,8 +180,8 @@ public static class EmailTemplates
               """)}
             </table>
             {P("Keep an eye on your notifications for check-in reminders and match schedules.")}
-            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : Uri.EscapeUriString(tournamentUrl))}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
-            {Btn(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : Uri.EscapeUriString(tournamentUrl), "View Tournament")}
+            {P($"<a href='{(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : Uri.EscapeDataString(tournamentUrl))}' style='color:#e11d48; text-decoration:underline;'>Visit Esportra</a> to see more details about the tournament.")}
+            {Btn(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : Uri.EscapeDataString(tournamentUrl), "View Tournament")}
         """)
     );
 
