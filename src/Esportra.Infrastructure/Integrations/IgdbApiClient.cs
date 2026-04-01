@@ -36,7 +36,6 @@ public sealed class IgdbApiClient
         ["Apex Legends"] = 114795,
         ["Overwatch 2"] = 152035,
         ["Rocket League"] = 7542,
-        ["Rainbow Six Siege"] = 7360,
         ["PUBG"] = 25076,
     };
 
