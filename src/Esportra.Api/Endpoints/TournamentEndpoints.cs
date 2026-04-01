@@ -3047,7 +3047,7 @@ public static class TournamentEndpoints
                 new
                 {
                     adminIds  = adminIds.ToArray(),
-                    type      = type ?? "new_dispute",
+                    type      = type ?? "dispute_filed",
                     title     = title ?? "🚨 New Dispute Filed",
                     message   = message ?? "A new dispute requires admin review and resolution.",
                     link      = link ?? "",
