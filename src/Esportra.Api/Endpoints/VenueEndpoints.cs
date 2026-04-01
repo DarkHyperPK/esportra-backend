@@ -157,16 +157,16 @@ public static class VenueEndpoints
                     (name, description, address, city, state, country, postal_code,
                      stations, hours, games, amenities, images, card_image, pc_specs,
                      slug, venue_id, owner_id, contact_email, contact_phone,
-                     price_per_hour, latitude, longitude, status, submitted_at)
+                     price_per_hour, currency, latitude, longitude, status, submitted_at)
                 VALUES
                     (@name, @description, @address, @city, @state, @country, @postalCode,
                      @stations, @hours, @games, @amenities, @images, @cardImage, @pcSpecs::jsonb,
                      @slug, @venueId, @ownerId, @contactEmail, @contactPhone,
-                     @pricePerHour, @latitude, @longitude, @status, @submittedAt::timestamptz)
+                     @pricePerHour, @currency, @latitude, @longitude, @status, @submittedAt::timestamptz)
                 RETURNING id, name, description, address, city, state, country, postal_code,
                          stations, hours, games, amenities, images, card_image, pc_specs,
                          slug, venue_id, owner_id, contact_email, contact_phone,
-                         price_per_hour, latitude, longitude, status, submitted_at, created_at
+                         price_per_hour, currency, latitude, longitude, status, submitted_at, created_at
                 """,
                 new
                 {
@@ -192,6 +192,7 @@ public static class VenueEndpoints
                     contactEmail = req.ContactEmail,
                     contactPhone = req.ContactPhone,
                     pricePerHour = req.PricePerHour,
+                    currency     = req.Currency ?? "USD",
                     latitude     = req.Latitude,
                     longitude    = req.Longitude,
                     status       = req.Status ?? "draft",
@@ -243,6 +244,7 @@ public static class VenueEndpoints
             if (req.Images is not null)       { setClauses.Add("images = @images");               parameters.Add("images", req.Images); }
             if (req.CardImage is not null)    { setClauses.Add("card_image = @cardImage");        parameters.Add("cardImage", req.CardImage); }
             if (req.PricePerHour.HasValue)    { setClauses.Add("price_per_hour = @pricePerHour"); parameters.Add("pricePerHour", req.PricePerHour.Value); }
+            if (req.Currency is not null)     { setClauses.Add("currency = @currency");           parameters.Add("currency", req.Currency); }
             if (req.Amenities is not null)    { setClauses.Add("amenities = @amenities");         parameters.Add("amenities", req.Amenities); }
             if (req.PcSpecs is not null)      { setClauses.Add("pc_specs = @pcSpecs::jsonb");     parameters.Add("pcSpecs", JsonSerializer.Serialize(req.PcSpecs)); }
             if (req.PostalCode is not null)   { setClauses.Add("postal_code = @postalCode");      parameters.Add("postalCode", req.PostalCode); }
@@ -268,7 +270,7 @@ public static class VenueEndpoints
 
             setClauses.Add("updated_at = NOW()");
 
-            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING id, name, description, address, city, state, country, postal_code, stations, hours, games, amenities, images, card_image, pc_specs, slug, venue_id, owner_id, contact_email, contact_phone, price_per_hour, latitude, longitude, status, created_at, updated_at";
+            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING id, name, description, address, city, state, country, postal_code, stations, hours, games, amenities, images, card_image, pc_specs, slug, venue_id, owner_id, contact_email, contact_phone, price_per_hour, currency, latitude, longitude, status, created_at, updated_at";
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -617,6 +619,7 @@ public sealed record CreateVenueRequest(
     string?   ContactEmail    = null,
     string?   ContactPhone    = null,
     decimal   PricePerHour    = 0,
+    string?   Currency        = null,
     double?   Latitude        = null,
     double?   Longitude       = null,
     string?   Status          = null,
@@ -638,6 +641,7 @@ public sealed record UpdateVenueRequest(
     string[]? Images          = null,
     string?   CardImage       = null,
     decimal?  PricePerHour    = null,
+    string?   Currency        = null,
     string[]? Amenities       = null,
     object?   PcSpecs         = null,
     double?   Latitude        = null,
