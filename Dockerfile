@@ -13,7 +13,7 @@ COPY ["src/Esportra.Contracts/Esportra.Contracts.csproj", "src/Esportra.Contract
 RUN dotnet restore "src/Esportra.Api/Esportra.Api.csproj"
 
 COPY . .
-RUN dotnet build "src/Esportra.Api/Esportra.Api.csproj" -c Release -o /app/build
+RUN dotnet build "src/Esportra.Api/Esportra.Api.csproj" -c Release
 
 FROM build AS publish
 RUN dotnet publish "src/Esportra.Api/Esportra.Api.csproj" -c Release -o /app/publish --no-build
