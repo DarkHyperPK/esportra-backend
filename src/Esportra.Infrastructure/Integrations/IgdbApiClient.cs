@@ -25,18 +25,10 @@ public sealed class IgdbApiClient
     }
 
     // Known IGDB game IDs for exact matches (avoids fuzzy search returning wrong game)
+    // IGDB fuzzy search handles all our supported games correctly by name.
+    // Do NOT hardcode game IDs — they can silently point to wrong games.
     private static readonly Dictionary<string, int> KnownGameIds = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Valorant"] = 126459,        // Riot Games Valorant
-        ["CS2"] = 252882,             // Counter-Strike 2
-        ["Counter-Strike 2"] = 252882,
-        ["Fortnite"] = 1905,
-        ["League of Legends"] = 115,
-        ["Dota 2"] = 126793,
-        ["Apex Legends"] = 114795,
-        ["Overwatch 2"] = 152035,
-        ["Rocket League"] = 7542,
-        ["PUBG"] = 25076,
     };
 
     /// <summary>Search for a game and return all artwork, screenshot, and video assets.</summary>
