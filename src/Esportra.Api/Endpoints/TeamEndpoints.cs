@@ -460,13 +460,20 @@ public static class TeamEndpoints
             }
 
             // Notification to invitee
+            var inviteTeamName = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT name FROM teams WHERE id = @id", new { id });
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                VALUES (@userId, 'team_invite', 'Team Invitation',
-                        'You have been invited to join a team.', '/teams', @data::jsonb, FALSE)
+                VALUES (@userId, 'team_invite', @title,
+                        @msg, '/teams', @data::jsonb, FALSE)
                 """,
-                new { userId = reqUserIdGuid, data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = ((Guid)invite.id).ToString() }) });
+                new {
+                    userId = reqUserIdGuid,
+                    title = $"🤝 You're Invited to {inviteTeamName ?? "a Team"}!",
+                    msg = $"You've been recruited to join {inviteTeamName ?? "a team"}. Accept the invite and jump into the action!",
+                    data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = ((Guid)invite.id).ToString() })
+                });
 
             // Send team invite email
             try
@@ -969,13 +976,14 @@ public static class TeamEndpoints
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                VALUES (@userId, 'team_invite', 'Team Invitation',
+                VALUES (@userId, 'team_invite', @title,
                         @msg, '/player/teams', @data::jsonb, false)
                 """,
                 new
                 {
                     userId = reqUserIdGuid,
-                    msg = $"You have been invited to join {teamName}{(rosterName is not null ? $" ({rosterName})" : "")}.",
+                    title = $"🤝 You're Invited to {teamName ?? "a Team"}!",
+                    msg = $"You've been recruited to join {teamName}{(rosterName is not null ? $" ({rosterName})" : "")}. Accept and get in the game!",
                     data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, roster_id = rosterId })
                 });
 
@@ -1011,11 +1019,11 @@ public static class TeamEndpoints
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, data, is_read)
-                SELECT uid, 'team_announcement', 'Team Announcement', @message,
+                SELECT uid, 'team_announcement', @title, @message,
                        jsonb_build_object('team_id', @teamId, 'team_name', @teamName), false
                 FROM UNNEST(@userIds::uuid[]) AS uid
                 """,
-                new { message = req.Message, teamId = id, teamName, userIds = memberIds.ToArray() });
+                new { title = $"📣 {teamName ?? "Team"} Announcement", message = req.Message, teamId = id, teamName, userIds = memberIds.ToArray() });
 
             // Push real-time
             foreach (var uid in memberIds)

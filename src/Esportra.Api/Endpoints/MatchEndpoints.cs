@@ -898,18 +898,22 @@ public static class MatchEndpoints
                                             WHERE tm.team_id = @teamId AND tm.role = 'captain' AND tm.is_active = true
                                             """,
                                             new { teamId = gfWinnerId });
+                                        var winningTeamName = await conn.QuerySingleOrDefaultAsync<string>(
+                                            "SELECT name FROM teams WHERE id = @id",
+                                            new { id = gfWinnerId });
                                         foreach (var captainId in winningCaptains)
                                         {
                                             await conn.ExecuteAsync(
                                                 """
                                                 INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                                                VALUES (@userId, 'tournament_announcement', 'Tournament Won!',
+                                                VALUES (@userId, 'tournament_announcement', @title,
                                                         @msg, @link,
                                                         jsonb_build_object('tournament_id', @tid::text, 'team_id', @teamId::text)::jsonb, false)
                                                 """,
                                                 new {
                                                     userId = captainId,
-                                                    msg = $"Congratulations! Your team won {tournamentName ?? "the tournament"}!",
+                                                    title = $"🏆 Champions! {winningTeamName ?? "Your Team"} Wins!",
+                                                    msg = $"WHAT A RUN! {winningTeamName ?? "Your team"} just conquered {tournamentName ?? "the tournament"}! The trophy is yours — celebrate with your squad!",
                                                     link = $"/tournaments/{stageInfo.tournament_id}",
                                                     tid = ((Guid)stageInfo.tournament_id).ToString(),
                                                     teamId = ((Guid)gfWinnerId).ToString()

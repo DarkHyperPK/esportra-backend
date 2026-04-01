@@ -959,12 +959,13 @@ public static class TournamentEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament_announcement', 'Payment Approved',
+                    VALUES (@userId, 'tournament_announcement', @title,
                             @message, @data::jsonb)
                     """,
                     new {
                         userId  = (Guid)participant.user_id,
-                        message = $"Your payment for {(string)participant.tournament_name} has been approved. You are now registered!",
+                        title   = $"💰 Payment Confirmed!",
+                        message = $"You're officially in! Your payment for {(string)participant.tournament_name} has been approved. Time to prepare for battle!",
                         data    = $"{{\"tournament_id\":\"{id}\"}}"
                     });
             }
@@ -1012,12 +1013,13 @@ public static class TournamentEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament_announcement', 'Payment Rejected',
+                    VALUES (@userId, 'tournament_announcement', @title,
                             @message, @data::jsonb)
                     """,
                     new {
                         userId  = (Guid)participant.user_id,
-                        message = $"Your payment for {(string)participant.tournament_name} was rejected. Reason: {req.Reason ?? "No reason provided."}",
+                        title   = "❌ Payment Not Accepted",
+                        message = $"Your payment for {(string)participant.tournament_name} was not accepted. Reason: {req.Reason ?? "No reason provided."} — You can resubmit if eligible.",
                         data    = $"{{\"tournament_id\":\"{id}\"}}"
                     });
             }
@@ -2199,13 +2201,13 @@ public static class TournamentEndpoints
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                            VALUES (@userId, 'result_accepted', 'Match Result Enforced',
+                            VALUES (@userId, 'result_accepted', '⚖️ Match Result Enforced',
                                     @message, '/user/matches', @data::jsonb, FALSE)
                             """,
                             new
                             {
                                 userId  = captainId,
-                                message = $"The organizer has enforced the match result: {captain.own_score} – {captain.opp_score} for your team.",
+                                message = $"The organizer has made the final call — match result: {captain.own_score} – {captain.opp_score} for your team.",
                                 data    = System.Text.Json.JsonSerializer.Serialize(new { match_id = matchId, dispute_id = disputeId }),
                             });
                         await notifHub.Clients.Group($"user:{captainId}")
@@ -2226,10 +2228,12 @@ public static class TournamentEndpoints
                 Guid filerId = (Guid)dispute.raised_by_user_id;
                 string title = ((string?)dispute.title) ?? "Your dispute";
                 var notifType  = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
-                var notifTitle = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
+                var notifTitle = req.Status == "resolved"
+                    ? "✅ Dispute Resolved"
+                    : "❌ Dispute Rejected";
                 var notifMsg   = req.Status == "resolved"
-                    ? $"Your dispute \"{title}\" has been resolved by the organizer."
-                    : $"Your dispute \"{title}\" has been rejected by the organizer.";
+                    ? $"Your dispute \"{title}\" has been resolved by the organizer. Check the outcome in your disputes page."
+                    : $"Your dispute \"{title}\" was reviewed and rejected by the organizer.";
 
                 await conn.ExecuteAsync(
                     """
@@ -3044,8 +3048,8 @@ public static class TournamentEndpoints
                 {
                     adminIds  = adminIds.ToArray(),
                     type      = type ?? "new_dispute",
-                    title     = title ?? "New Dispute Filed",
-                    message   = message ?? "A new dispute has been filed.",
+                    title     = title ?? "🚨 New Dispute Filed",
+                    message   = message ?? "A new dispute requires admin review and resolution.",
                     link      = link ?? "",
                     disputeId,
                 });

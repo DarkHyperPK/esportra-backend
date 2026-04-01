@@ -186,18 +186,23 @@ public static class MatchSystemEndpoints
                     if (captain?.user_id is not null)
                     {
                         var captainId = captain.user_id is Guid g ? g : Guid.Parse(captain.user_id.ToString());
+                        var reporterTeamName = await conn.QuerySingleOrDefaultAsync<string>(
+                            "SELECT name FROM teams WHERE id = @id",
+                            new { id = Guid.Parse(req.ReportedByTeamId) });
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications
                               (user_id, type, title, message, link, data, is_read)
                             VALUES
-                              (@userId, 'result_reported', 'Match Result Reported',
-                               'Your opponent has reported the match result. Please verify or dispute.',
+                              (@userId, 'result_reported', @title,
+                               @msg,
                                @link, @data::jsonb, FALSE)
                             """,
                             new
                             {
                                 userId = captainId,
+                                title  = $"⚔️ Match Result Submitted",
+                                msg    = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
                                 link   = matchLink,
                                 data   = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
                             });
@@ -601,8 +606,8 @@ public static class MatchSystemEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                        VALUES (@userId, 'result_disputed', 'Match Result Disputed',
-                                'The opposing team has disputed your reported result. An organizer will review.',
+                        VALUES (@userId, 'result_disputed', '🚨 Result Disputed!',
+                                'The opposing team has challenged your reported result. An organizer will step in to review.',
                                 '/tournaments/captain',
                                 jsonb_build_object('match_id', @matchId::text)::jsonb, false)
                         """,
@@ -616,8 +621,8 @@ public static class MatchSystemEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                        VALUES (@userId, 'dispute_filed', 'Match Dispute Filed',
-                                'A team has disputed a match result in your tournament. Review in the Disputes tab.',
+                        VALUES (@userId, 'dispute_filed', '⚠️ Dispute Needs Your Attention',
+                                'A team has disputed a match result in your tournament. Head to Disputes to make your ruling.',
                                 @link,
                                 jsonb_build_object('match_id', @matchId::text, 'tournament_id', @tournamentId::text)::jsonb, false)
                         """,
@@ -1236,10 +1241,12 @@ public static class MatchSystemEndpoints
             if (dispute is not null)
             {
                 var notifType    = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
-                var notifTitle   = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
+                var notifTitle   = req.Status == "resolved"
+                    ? "✅ Dispute Resolved"
+                    : "❌ Dispute Rejected";
                 var notifMessage = req.Status == "resolved"
-                    ? $"Your match dispute has been resolved. Organizer note: {req.Resolution}"
-                    : $"Your match dispute was rejected. Organizer note: {req.Resolution}";
+                    ? $"Your match dispute has been resolved in your favor. Organizer note: {req.Resolution}"
+                    : $"Your match dispute was reviewed and rejected. Organizer note: {req.Resolution}";
                 var notifData    = JsonSerializer.Serialize(new { match_id = matchId });
 
                 // Resolve tournament ID for notification link

@@ -192,14 +192,15 @@ public static class OrganizationEndpoints
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, data, is_read)
-                VALUES (@userId, 'staff_invite', 'Staff Invitation',
+                VALUES (@userId, 'staff_invite', @title,
                         @message,
                         @data::jsonb, FALSE)
                 """,
                 new
                 {
                     userId  = profileIdGuid,
-                    message = $"{req.InviterName ?? "An organizer"} invited you to staff {req.OrgName ?? "an organization"} as {FriendlyRole(req.Role)}.",
+                    title   = $"🎯 You've Been Recruited as Staff!",
+                    message = $"{req.InviterName ?? "An organizer"} wants you on the team — join {req.OrgName ?? "their organization"} as {FriendlyRole(req.Role)}.",
                     data    = System.Text.Json.JsonSerializer.Serialize(new { link = "/staff/dashboard", organization_staff_id = staffIdGuid, organization_id = orgId, role = req.Role }),
                 });
 
