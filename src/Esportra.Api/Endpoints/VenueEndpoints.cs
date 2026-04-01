@@ -51,7 +51,7 @@ public static class VenueEndpoints
                 """
                 SELECT id, name, description, address, city, state, country, postal_code,
                        slug, venue_id, status, stations, hours, games,
-                       price_per_hour, images, card_image, amenities, pc_specs,
+                       price_per_hour, currency, images, card_image, amenities, pc_specs,
                        owner_id, latitude, longitude, subscription_tier,
                        rejection_reason, submitted_at, published_at, created_at
                 FROM venues
