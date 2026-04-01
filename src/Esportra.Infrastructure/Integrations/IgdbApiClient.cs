@@ -32,7 +32,7 @@ public sealed class IgdbApiClient
         ["Counter-Strike 2"] = 252882,
         ["Fortnite"] = 1905,
         ["League of Legends"] = 115,
-        ["Dota 2"] = 11198,
+        ["Dota 2"] = 126793,
         ["Apex Legends"] = 114795,
         ["Overwatch 2"] = 152035,
         ["Rocket League"] = 7542,
