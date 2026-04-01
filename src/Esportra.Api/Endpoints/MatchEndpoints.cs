@@ -873,10 +873,49 @@ public static class MatchEndpoints
                                     {
                                         // Use SECURITY DEFINER function to bypass organizer-only trigger
                                         await conn.ExecuteAsync(
-                                            "SELECT admin_set_tournament_winner(@tid, @wid)",
-                                            new { tid = (Guid)stageInfo.tournament_id, wid = gfWinnerId });
+                                            "SELECT admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                                            new { p_tournament_id = (Guid)stageInfo.tournament_id, p_winner_id = gfWinnerId });
                                     }
-                                    catch { /* trigger may block — non-critical */ }
+                                    catch (Exception winEx)
+                                    {
+                                        // Fallback: direct UPDATE (backend connects as privileged user)
+                                        Console.WriteLine($"[WARN] admin_set_tournament_winner RPC failed: {winEx.Message}. Attempting direct update.");
+                                        await conn.ExecuteAsync(
+                                            "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tournamentId",
+                                            new { winnerId = gfWinnerId, tournamentId = (Guid)stageInfo.tournament_id });
+                                    }
+
+                                    // Send tournament won notification to winning team captains
+                                    try
+                                    {
+                                        var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
+                                            "SELECT name FROM tournaments WHERE id = @tid",
+                                            new { tid = (Guid)stageInfo.tournament_id });
+                                        var winningCaptains = await conn.QueryAsync<Guid>(
+                                            """
+                                            SELECT tm.user_id FROM team_members tm
+                                            WHERE tm.team_id = @teamId AND tm.role = 'captain' AND tm.is_active = true
+                                            """,
+                                            new { teamId = gfWinnerId });
+                                        foreach (var captainId in winningCaptains)
+                                        {
+                                            await conn.ExecuteAsync(
+                                                """
+                                                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                                                VALUES (@userId, 'tournament_announcement', 'Tournament Won!',
+                                                        @msg, @link,
+                                                        jsonb_build_object('tournament_id', @tid::text, 'team_id', @teamId::text)::jsonb, false)
+                                                """,
+                                                new {
+                                                    userId = captainId,
+                                                    msg = $"Congratulations! Your team won {tournamentName ?? "the tournament"}!",
+                                                    link = $"/tournaments/{stageInfo.tournament_id}",
+                                                    tid = ((Guid)stageInfo.tournament_id).ToString(),
+                                                    teamId = ((Guid)gfWinnerId).ToString()
+                                                });
+                                        }
+                                    }
+                                    catch { /* Notification is non-critical */ }
                                 }
                             }
                         }
