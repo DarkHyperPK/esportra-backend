@@ -157,16 +157,16 @@ public static class VenueEndpoints
                     (name, description, address, city, state, country, postal_code,
                      stations, hours, games, amenities, images, card_image, pc_specs,
                      slug, venue_id, owner_id, contact_email, contact_phone,
-                     price_per_hour, status, submitted_at)
+                     price_per_hour, latitude, longitude, status, submitted_at)
                 VALUES
                     (@name, @description, @address, @city, @state, @country, @postalCode,
                      @stations, @hours, @games, @amenities, @images, @cardImage, @pcSpecs::jsonb,
                      @slug, @venueId, @ownerId, @contactEmail, @contactPhone,
-                     @pricePerHour, @status, @submittedAt::timestamptz)
+                     @pricePerHour, @latitude, @longitude, @status, @submittedAt::timestamptz)
                 RETURNING id, name, description, address, city, state, country, postal_code,
                          stations, hours, games, amenities, images, card_image, pc_specs,
                          slug, venue_id, owner_id, contact_email, contact_phone,
-                         price_per_hour, status, submitted_at, created_at
+                         price_per_hour, latitude, longitude, status, submitted_at, created_at
                 """,
                 new
                 {
@@ -192,6 +192,8 @@ public static class VenueEndpoints
                     contactEmail = req.ContactEmail,
                     contactPhone = req.ContactPhone,
                     pricePerHour = req.PricePerHour,
+                    latitude     = req.Latitude,
+                    longitude    = req.Longitude,
                     status       = req.Status ?? "draft",
                     submittedAt  = req.SubmittedAt,
                 });
@@ -243,6 +245,9 @@ public static class VenueEndpoints
             if (req.PricePerHour.HasValue)    { setClauses.Add("price_per_hour = @pricePerHour"); parameters.Add("pricePerHour", req.PricePerHour.Value); }
             if (req.Amenities is not null)    { setClauses.Add("amenities = @amenities");         parameters.Add("amenities", req.Amenities); }
             if (req.PcSpecs is not null)      { setClauses.Add("pc_specs = @pcSpecs::jsonb");     parameters.Add("pcSpecs", JsonSerializer.Serialize(req.PcSpecs)); }
+            if (req.PostalCode is not null)   { setClauses.Add("postal_code = @postalCode");      parameters.Add("postalCode", req.PostalCode); }
+            if (req.Latitude.HasValue)        { setClauses.Add("latitude = @latitude");           parameters.Add("latitude", req.Latitude.Value); }
+            if (req.Longitude.HasValue)       { setClauses.Add("longitude = @longitude");         parameters.Add("longitude", req.Longitude.Value); }
 
             if (req.Status is not null)
             {
@@ -263,7 +268,7 @@ public static class VenueEndpoints
 
             setClauses.Add("updated_at = NOW()");
 
-            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING id, name, description, address, city, state, country, postal_code, stations, hours, games, amenities, images, card_image, pc_specs, slug, venue_id, owner_id, contact_email, contact_phone, price_per_hour, status, created_at, updated_at";
+            var sql = $"UPDATE venues SET {string.Join(", ", setClauses)} WHERE id = @id RETURNING id, name, description, address, city, state, country, postal_code, stations, hours, games, amenities, images, card_image, pc_specs, slug, venue_id, owner_id, contact_email, contact_phone, price_per_hour, latitude, longitude, status, created_at, updated_at";
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -612,6 +617,8 @@ public sealed record CreateVenueRequest(
     string?   ContactEmail    = null,
     string?   ContactPhone    = null,
     decimal   PricePerHour    = 0,
+    double?   Latitude        = null,
+    double?   Longitude       = null,
     string?   Status          = null,
     string?   SubmittedAt     = null);
 
@@ -622,6 +629,7 @@ public sealed record UpdateVenueRequest(
     string?   City            = null,
     string?   State           = null,
     string?   Country         = null,
+    string?   PostalCode      = null,
     int?      Stations        = null,
     string?   Hours           = null,
     string?   Games           = null,
@@ -632,6 +640,8 @@ public sealed record UpdateVenueRequest(
     decimal?  PricePerHour    = null,
     string[]? Amenities       = null,
     object?   PcSpecs         = null,
+    double?   Latitude        = null,
+    double?   Longitude       = null,
     string?   Status          = null,
     string?   RejectionReason = null,
     string?   PriceRange      = null,
