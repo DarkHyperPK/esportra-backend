@@ -17,30 +17,35 @@ public static class StorageEndpoints
     {
         ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico"
     };
+    private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mov", ".webm", ".avi"
+    };
     private static readonly HashSet<string> AllowedDocExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".pdf", ".pptx", ".ppt", ".doc", ".docx"
     };
     private static readonly HashSet<string> AllowedExtensions =
-        new(AllowedImageExtensions.Concat(AllowedDocExtensions), StringComparer.OrdinalIgnoreCase);
+        new(AllowedImageExtensions.Concat(AllowedVideoExtensions).Concat(AllowedDocExtensions), StringComparer.OrdinalIgnoreCase);
 
-    private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10 MB
+    private const long MaxFileSizeBytes = 50 * 1024 * 1024; // 50 MB (videos can be large)
 
     // Buckets that users are allowed to upload to
     private static readonly HashSet<string> AllowedUploadBuckets = new(StringComparer.OrdinalIgnoreCase)
     {
         "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
         "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
-        "match-evidence", "organizer-banners", "organizer-media",
-        "system.assets.partners", "venue-images", "venues.images", "venues.layouts"
+        "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
+        "system.assets.partners", "system.assets.website", "system.assets.games",
+        "users.documents.kyc", "venue-images", "venues.images", "venues.layouts"
     };
 
-    // Buckets that users are allowed to delete from (only their own files)
+    // Buckets that users are allowed to delete from
     private static readonly HashSet<string> AllowedDeleteBuckets = new(StringComparer.OrdinalIgnoreCase)
     {
         "users.avatars", "teams.logos", "organizer-banners", "organizer-media",
-        "system.assets.partners", "venue-images", "venues.images", "venues.layouts",
-        "tournaments.banners", "tournaments.media"
+        "system.assets.partners", "system.assets.website", "venue-images", "venues.images", "venues.layouts",
+        "tournaments.banners", "tournaments.media", "tournament-images"
     };
 
     public static void MapStorageEndpoints(this WebApplication app)
@@ -74,7 +79,7 @@ public static class StorageEndpoints
             // Validate file extension
             var ext = Path.GetExtension(file.FileName);
             if (string.IsNullOrEmpty(ext) || !AllowedExtensions.Contains(ext))
-                return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg) and documents (pdf, pptx)." });
+                return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg), videos (mp4, mov, webm), and documents (pdf, pptx)." });
 
             var folder = form["folder"].FirstOrDefault() ?? "";
 
