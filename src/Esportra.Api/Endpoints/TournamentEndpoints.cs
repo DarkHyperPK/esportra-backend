@@ -245,11 +245,14 @@ public static class TournamentEndpoints
                                o.slug AS organization_slug,
                                p.username   AS organizer_username,
                                p.full_name  AS organizer_full_name,
-                               wt.name AS winner_team_name
+                               wt.name AS winner_team_name,
+                               v.city   AS venue_city,
+                               v.country AS venue_country
                         FROM tournaments t
                         LEFT JOIN organizations o ON o.id = t.organization_id
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
                         LEFT JOIN teams        wt ON wt.id = t.winner_id
+                        LEFT JOIN venues        v ON v.id  = t.venue_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND t.status::text IN ('published', 'open', 'check_in')

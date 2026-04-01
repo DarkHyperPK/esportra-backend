@@ -858,10 +858,11 @@ public static class MatchEndpoints
                             if (stageInfo is not null &&
                                 ((string?)stageInfo.format == "single_elimination" || (string?)stageInfo.format == "double_elimination"))
                             {
+                                // Grand final = highest round_index in the bracket (bracket_type is 'winners', not 'final')
                                 var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                                     """
                                     SELECT winner_id FROM brkt_matches
-                                    WHERE version_id = @versionId AND bracket_type = 'final'
+                                    WHERE version_id = @versionId
                                       AND status = 'completed' AND winner_id IS NOT NULL
                                     ORDER BY round_index DESC, match_number DESC
                                     LIMIT 1
