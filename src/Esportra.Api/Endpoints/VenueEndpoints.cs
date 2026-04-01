@@ -106,7 +106,29 @@ public static class VenueEndpoints
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                "SELECT * FROM find_nearby_venues(@lat, @lng, @radiusKm)",
+                """
+                SELECT v.*,
+                       ROUND((6371 * acos(
+                         LEAST(1.0,
+                           cos(radians(@lat)) * cos(radians(v.latitude)) *
+                           cos(radians(v.longitude) - radians(@lng)) +
+                           sin(radians(@lat)) * sin(radians(v.latitude))
+                         )
+                       ))::numeric, 1) AS distance_km
+                FROM public.venues v
+                WHERE v.status = 'published'
+                  AND v.deleted_at IS NULL
+                  AND v.latitude IS NOT NULL
+                  AND v.longitude IS NOT NULL
+                  AND (6371 * acos(
+                    LEAST(1.0,
+                      cos(radians(@lat)) * cos(radians(v.latitude)) *
+                      cos(radians(v.longitude) - radians(@lng)) +
+                      sin(radians(@lat)) * sin(radians(v.latitude))
+                    )
+                  )) <= @radiusKm
+                ORDER BY distance_km ASC
+                """,
                 new { lat, lng, radiusKm });
             return Results.Ok(rows);
         });

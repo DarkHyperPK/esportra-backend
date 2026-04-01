@@ -430,7 +430,9 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM venues) AS active_venues,
                     (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments,
                     (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications,
-                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '1 day') AS new_users_today
+                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '1 day') AS new_users_today,
+                    (SELECT COUNT(*) FROM venues WHERE status = 'pending_review' AND deleted_at IS NULL) AS pending_venues,
+                    (SELECT COUNT(*) FROM licenses WHERE status = 'pending') AS pending_licenses
                 """);
             return Results.Ok(new {
                 totalUsers = (long)row.total_users,
@@ -440,7 +442,9 @@ public static class AdminEndpoints
                 pendingVerifications = (long)row.pending_verifications,
                 totalBookings = 0,
                 newUsersToday = (long)row.new_users_today,
-                pendingPartners = 0
+                pendingPartners = 0,
+                pendingVenues = (long)row.pending_venues,
+                pendingLicenses = (long)row.pending_licenses
             });
         }).RequireAuthorization("Admin");
 
