@@ -143,6 +143,32 @@ public static class SponsorEndpoints
             if (sponsorId is null)
                 return Results.Forbid();
 
+            // Fetch current tier for permission enforcement
+            var currentTier = (await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT tier FROM sponsors WHERE id = @id", new { id = sponsorId.Value }))?.ToLowerInvariant() ?? "partner";
+            // Map legacy tiers
+            if (currentTier == "standard" || currentTier == "diamond") currentTier = "partner";
+            var isHighTier = currentTier == "ascendant" || currentTier == "radiant";
+
+            // Tier enforcement: partner tier cannot set banner, gallery, or detail deck
+            if (!isHighTier)
+            {
+                if (req.BannerImageUrl is not null && req.BannerImageUrl != "")
+                    return Results.Json(new { error = "Banner uploads require Ascendant or Radiant tier." }, statusCode: 403);
+                if (req.GalleryImages is not null && req.GalleryImages.Length > 0)
+                    return Results.Json(new { error = "Gallery uploads require Ascendant or Radiant tier." }, statusCode: 403);
+                if (req.DetailDeckUrl is not null && req.DetailDeckUrl != "")
+                    return Results.Json(new { error = "Detail deck uploads require Ascendant or Radiant tier." }, statusCode: 403);
+            }
+
+            // Gallery image count enforcement
+            if (req.GalleryImages is not null)
+            {
+                var maxImages = currentTier == "radiant" ? 8 : currentTier == "ascendant" ? 5 : 0;
+                if (req.GalleryImages.Length > maxImages)
+                    return Results.Json(new { error = $"Your tier allows a maximum of {maxImages} gallery images." }, statusCode: 403);
+            }
+
             // Build SET clause from non-null fields
             var sets = new List<string>();
             var p = new DynamicParameters();
