@@ -1741,7 +1741,7 @@ public static class AdminEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "GET /api/admin/licenses failed");
-                return Results.Json(new { error = ex.Message, detail = ex.InnerException?.Message }, statusCode: 500);
+                return Results.Json(new { error = "Failed to load licenses." }, statusCode: 500);
             }
         }).RequireAuthorization("Admin");
 
@@ -1910,9 +1910,9 @@ public static class AdminEndpoints
                         "UPDATE profiles SET role = 'casual'::app_role WHERE id = @userId AND role::text = @licenseType",
                         new { userId, licenseType = normalizedType });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return Results.Json(new { success = false, error = ex.Message }, statusCode: 500);
+                return Results.Json(new { success = false, error = "License operation failed." }, statusCode: 500);
             }
 
             // Evict cached UserContext so the role change takes effect immediately
@@ -1973,9 +1973,9 @@ public static class AdminEndpoints
                         "UPDATE profiles SET role = @licenseType::app_role WHERE id = @userId AND role = 'casual'::app_role",
                         new { userId, licenseType = normalizedType });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return Results.Json(new { success = false, error = ex.Message }, statusCode: 500);
+                return Results.Json(new { success = false, error = "License operation failed." }, statusCode: 500);
             }
 
             // Evict cached UserContext so the role change takes effect immediately

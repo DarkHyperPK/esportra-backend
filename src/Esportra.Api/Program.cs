@@ -78,7 +78,7 @@ builder.Services
             },
             OnAuthenticationFailed = ctx =>
             {
-                ctx.HttpContext.Response.Headers["X-Auth-Error"] = ctx.Exception.GetType().Name;
+                ctx.HttpContext.Response.Headers["X-Auth-Error"] = "authentication_failed";
                 return Task.CompletedTask;
             },
         };
@@ -298,9 +298,9 @@ if (app.Environment.IsDevelopment())
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
-    ForwardLimit = 1, // Only trust the immediate proxy (Coolify/Traefik)
-    // Trust all proxies inside Docker network (Coolify sets up a Docker network).
-    KnownNetworks  = { },
+    ForwardLimit = 1,
+    // Trust Docker bridge network and typical Coolify/Traefik subnets
+    KnownNetworks  = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12) },
     KnownProxies   = { },
 });
 

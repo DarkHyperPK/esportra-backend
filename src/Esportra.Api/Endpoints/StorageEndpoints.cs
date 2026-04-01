@@ -12,6 +12,37 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class StorageEndpoints
 {
+    // Allowed file extensions for uploads
+    private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico"
+    };
+    private static readonly HashSet<string> AllowedDocExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".pdf", ".pptx", ".ppt", ".doc", ".docx"
+    };
+    private static readonly HashSet<string> AllowedExtensions =
+        new(AllowedImageExtensions.Concat(AllowedDocExtensions), StringComparer.OrdinalIgnoreCase);
+
+    private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10 MB
+
+    // Buckets that users are allowed to upload to
+    private static readonly HashSet<string> AllowedUploadBuckets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
+        "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
+        "match-evidence", "organizer-banners", "organizer-media",
+        "system.assets.partners", "venue-images", "venues.images", "venues.layouts"
+    };
+
+    // Buckets that users are allowed to delete from (only their own files)
+    private static readonly HashSet<string> AllowedDeleteBuckets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "users.avatars", "teams.logos", "organizer-banners", "organizer-media",
+        "system.assets.partners", "venue-images", "venues.images", "venues.layouts",
+        "tournaments.banners", "tournaments.media"
+    };
+
     public static void MapStorageEndpoints(this WebApplication app)
     {
         // ── POST /api/storage/upload ─────────────────────────────────────────
@@ -33,6 +64,18 @@ public static class StorageEndpoints
             if (string.IsNullOrWhiteSpace(bucket))
                 return Results.BadRequest(new { error = "Query/form parameter 'bucket' is required." });
 
+            if (!AllowedUploadBuckets.Contains(bucket))
+                return Results.BadRequest(new { error = "Upload to this bucket is not allowed." });
+
+            // Validate file size
+            if (file.Length > MaxFileSizeBytes)
+                return Results.BadRequest(new { error = $"File exceeds maximum size of {MaxFileSizeBytes / (1024 * 1024)}MB." });
+
+            // Validate file extension
+            var ext = Path.GetExtension(file.FileName);
+            if (string.IsNullOrEmpty(ext) || !AllowedExtensions.Contains(ext))
+                return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg) and documents (pdf, pptx)." });
+
             var folder = form["folder"].FirstOrDefault() ?? "";
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
@@ -43,7 +86,6 @@ public static class StorageEndpoints
             // Build filename: keep original name, prefix with timestamp for uniqueness
             var sanitized = Path.GetFileNameWithoutExtension(file.FileName)
                 .Replace(' ', '-').Replace('/', '-').Replace('\\', '-');
-            var ext = Path.GetExtension(file.FileName);
             var uniqueName = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{sanitized}{ext}";
             var storagePath = string.IsNullOrWhiteSpace(folder)
                 ? uniqueName
@@ -68,7 +110,7 @@ public static class StorageEndpoints
                 logger.LogError("Supabase storage upload failed: {Url} {Status} {Body}",
                     uploadUrl, response.StatusCode, errorBody);
                 return Results.Json(
-                    new { error = "File upload failed.", detail = errorBody, url = uploadUrl },
+                    new { error = "File upload failed." },
                     statusCode: (int)response.StatusCode);
             }
 
@@ -134,7 +176,7 @@ public static class StorageEndpoints
                 logger.LogError("Player card upload failed: {Url} {Status} {Body}",
                     uploadUrl, response.StatusCode, errorBody);
                 return Results.Json(
-                    new { error = "File upload failed.", detail = errorBody, url = uploadUrl },
+                    new { error = "File upload failed." },
                     statusCode: (int)response.StatusCode);
             }
 
@@ -166,6 +208,14 @@ public static class StorageEndpoints
             if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(path))
                 return Results.BadRequest(new { error = "Query parameters 'bucket' and 'path' are required." });
 
+            // Restrict which buckets users can delete from
+            if (!AllowedDeleteBuckets.Contains(bucket))
+                return Results.Forbid();
+
+            // Prevent path traversal
+            if (path.Contains("..") || path.Contains('\0'))
+                return Results.BadRequest(new { error = "Invalid path." });
+
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
                 ?? throw new InvalidOperationException("Supabase:Url not configured");
             var serviceKey = config["Supabase:ServiceKey"]
@@ -180,10 +230,8 @@ public static class StorageEndpoints
 
             if (!response.IsSuccessStatusCode)
             {
-                var errorBody = await response.Content.ReadAsStringAsync();
-                logger.LogWarning("Storage delete failed: {Url} {Status} {Body}",
-                    deleteUrl, response.StatusCode, errorBody);
-                // Non-fatal — file may already be gone
+                logger.LogWarning("Storage delete failed: {Url} {Status}",
+                    deleteUrl, response.StatusCode);
             }
 
             return Results.Ok(new { deleted = true });

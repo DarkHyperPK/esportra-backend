@@ -118,7 +118,7 @@ public static class SponsorEndpoints
             {
                 var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "GET /api/sponsors/me failed");
-                return Results.Json(new { error = "Failed to load sponsor data", detail = ex.Message }, statusCode: 500);
+                return Results.Json(new { error = "Failed to load sponsor data." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -199,7 +199,7 @@ public static class SponsorEndpoints
             {
                 var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "PUT /api/sponsors/me failed for sponsor {SponsorId}", sponsorId);
-                return Results.Json(new { error = "Update failed", detail = ex.Message }, statusCode: 500);
+                return Results.Json(new { error = "Update failed." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
