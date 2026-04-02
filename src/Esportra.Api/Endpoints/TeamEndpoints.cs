@@ -89,7 +89,7 @@ public static class TeamEndpoints
                                'verified',   p.is_verified,
                                'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
-                           ) ORDER BY tm.role, p.username
+                           ) ORDER BY tm.display_order, tm.role, p.username
                        ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
                 FROM teams t
                 LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE
@@ -129,7 +129,7 @@ public static class TeamEndpoints
                                'verified',   p.is_verified,
                                'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
-                           ) ORDER BY tm.role, p.username
+                           ) ORDER BY tm.display_order, tm.role, p.username
                        ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
                 FROM teams t
                 LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE
@@ -439,6 +439,39 @@ public static class TeamEndpoints
             return Results.Ok(new { success = true, userId, role = req.Role });
         }).RequireAuthorization("Authenticated");
 
+        // ── PUT /api/teams/{id}/members/order ─────────────────────────────────
+        app.MapPut("/api/teams/{id}/members/order", async (
+            Guid                             id,
+            [FromBody] ReorderMembersRequest req,
+            HttpContext                      ctx,
+            IDbConnectionFactory            db,
+            CancellationToken               ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+
+            // Captain must be order 0
+            var captainId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT user_id FROM team_members WHERE team_id = @id AND role = 'captain' AND is_active = TRUE",
+                new { id });
+
+            foreach (var item in req.Order)
+            {
+                var uid = Guid.Parse(item.UserId);
+                if (uid == captainId && item.DisplayOrder != 0)
+                    return Results.BadRequest(new { error = "Captain must be position 0." });
+
+                await conn.ExecuteAsync(
+                    "UPDATE team_members SET display_order = @order WHERE team_id = @id AND user_id = @uid AND is_active = TRUE",
+                    new { id, uid, order = item.DisplayOrder });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/teams/{id}/invite ───────────────────────────────────────
         app.MapPost("/api/teams/{id}/invite", async (
             Guid                        id,
@@ -744,6 +777,7 @@ public static class TeamEndpoints
                 LEFT JOIN faceit_accounts fa ON fa.user_id = tm.user_id
                 LEFT JOIN leaderboard vs ON vs.user_id = tm.user_id AND vs.game = 'valorant'
                 WHERE tm.team_id = @id AND tm.is_active = true
+                ORDER BY tm.display_order, tm.role, p.username
                 """,
                 new { id });
             return Results.Ok(members);
@@ -1415,3 +1449,7 @@ public sealed record BatchRosterInviteRequest(List<BatchInvitee> Invitees);
 public sealed record BatchInvitee(string UserId, string? Email = null);
 
 public sealed record TeamBatchRequest(List<string> Ids);
+
+public sealed record ReorderMembersRequest(List<MemberOrderItem> Order);
+
+public sealed record MemberOrderItem(string UserId, int DisplayOrder);
