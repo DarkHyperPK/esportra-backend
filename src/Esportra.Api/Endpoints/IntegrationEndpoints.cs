@@ -160,10 +160,14 @@ public static class IntegrationEndpoints
                     token_expires_at = EXCLUDED.token_expires_at
                 """, new { userId = userGuid, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
 
-            // Sync profiles.riot_tag
+            // Sync profiles.riot_tag (clear from any other profile first to enforce uniqueness)
+            var riotTag = $"{gameName}#{tagLine}";
+            await conn.ExecuteAsync(
+                "UPDATE public.profiles SET riot_tag = NULL WHERE riot_tag = @riotTag AND id != @userId",
+                new { riotTag, userId = userGuid });
             await conn.ExecuteAsync(
                 "UPDATE public.profiles SET riot_tag = @riotTag WHERE id = @userId",
-                new { riotTag = $"{gameName}#{tagLine}", userId = userGuid });
+                new { riotTag, userId = userGuid });
 
             return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=success");
         }); // Public — Riot redirect has no JWT
