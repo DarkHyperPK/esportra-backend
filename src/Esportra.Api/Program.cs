@@ -340,12 +340,12 @@ app.Use(async (ctx, next) =>
     {
         await next();
     }
-    catch (UnauthorizedAccessException ex)
+    catch (UnauthorizedAccessException)
     {
         if (!ctx.Response.HasStarted)
         {
             ctx.Response.StatusCode = 403;
-            await ctx.Response.WriteAsJsonAsync(new { error = ex.Message });
+            await ctx.Response.WriteAsJsonAsync(new { error = "You don't have permission to perform this action." });
         }
     }
     catch (Exception ex)
@@ -355,11 +355,9 @@ app.Use(async (ctx, next) =>
         if (!ctx.Response.HasStarted)
         {
             ctx.Response.StatusCode = 500;
-            var showDetails = !app.Environment.IsProduction();
             await ctx.Response.WriteAsJsonAsync(new
             {
-                error = showDetails ? ex.Message : "An internal error occurred.",
-                type  = showDetails ? ex.GetType().Name : (string?)null,
+                error = "Something went wrong. Please try again or contact support if the issue persists.",
             });
         }
     }

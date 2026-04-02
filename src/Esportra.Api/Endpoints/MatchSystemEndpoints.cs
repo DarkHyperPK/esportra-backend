@@ -222,10 +222,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to submit match report for match {MatchId}", id);
-                return Results.Problem(
-                    detail: "Report submission failed. Please try again.",
-                    statusCode: 500,
-                    title: "Report submission failed");
+                return Results.Json(new { error = "We couldn't submit your report. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -458,7 +455,7 @@ public static class MatchSystemEndpoints
                                     {
                                         success        = false,
                                         error          = "version_conflict",
-                                        message        = "Match state changed during finalization. Please retry.",
+                                        message        = "This match was updated by someone else. Please try again.",
                                         matchId        = id,
                                         reportId       = rid,
                                         seriesComplete = true,
@@ -509,7 +506,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to accept report {ReportId} for match {MatchId}", rid, id);
-                return Results.Problem(detail: "Failed to accept report. Please try again.", statusCode: 500, title: "Accept failed");
+                return Results.Json(new { error = "We couldn't process the report. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -642,7 +639,7 @@ public static class MatchSystemEndpoints
             catch (Exception)
             {
                 tx.Rollback();
-                return Results.Problem("Failed to file dispute. Please try again.");
+                return Results.Json(new { error = "We couldn't file your dispute. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -994,7 +991,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to create time proposal for match {MatchId}", matchId);
-                return Results.Json(new { error = "Failed to create time proposal." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't submit your time proposal. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 

@@ -685,7 +685,7 @@ public static class TournamentEndpoints
             if ((Guid)row.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
             if (row.deleted_at is null)
-                return Results.BadRequest(new { error = "Tournament must be soft-deleted (trashed) before permanent deletion." });
+                return Results.BadRequest(new { error = "Tournament must be moved to trash before it can be permanently deleted." });
 
             await conn.ExecuteAsync("DELETE FROM tournaments WHERE id = @id", new { id });
             try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
@@ -1096,7 +1096,7 @@ public static class TournamentEndpoints
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
             var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
-                return Results.Problem("Storage configuration missing.");
+                return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
             var ext         = Path.GetExtension(file.FileName) ?? ".jpg";
             var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
@@ -1116,8 +1116,7 @@ public static class TournamentEndpoints
 
             if (!resp.IsSuccessStatusCode)
             {
-                var err = await resp.Content.ReadAsStringAsync(ct);
-                return Results.Problem($"Storage upload failed: {err}");
+                return Results.Json(new { error = "We couldn't upload your file. Please try again." }, statusCode: 500);
             }
 
             // Store the storage path (not a public URL — bucket is private)
@@ -1162,7 +1161,7 @@ public static class TournamentEndpoints
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
             if (string.IsNullOrWhiteSpace(supabaseUrl))
-                return Results.Problem("Storage configuration missing.");
+                return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
             var publicUrl = $"{supabaseUrl}/storage/v1/object/public/{receiptRef}";
             return Results.Ok(new { url = publicUrl });
@@ -2301,7 +2300,7 @@ public static class TournamentEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to resolve dispute {DisputeId}", disputeId);
-                return Results.Problem("Failed to resolve dispute. Please try again.", statusCode: 500);
+                return Results.Json(new { error = "We couldn't resolve this dispute. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 

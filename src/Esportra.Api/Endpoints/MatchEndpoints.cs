@@ -292,7 +292,7 @@ public static class MatchEndpoints
             catch (Exception ex)
             {
                 log.LogError(ex, "Scan failed for match {MatchId}", req.MatchId);
-                return Results.Json(new { error = "Match scan failed. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't scan the match. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -350,11 +350,11 @@ public static class MatchEndpoints
                     matchId, (int)match.version, winnerId, loserId, team1Score, team2Score, ct);
 
                 if (!success)
-                    return Results.Conflict(new { error = "Match state has changed — retry." });
+                    return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
             }
             catch (InvalidOperationException)
             {
-                return Results.Conflict(new { error = "Match state has changed — retry." });
+                return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
             }
 
             // 5. Mark report as processed
@@ -447,11 +447,11 @@ public static class MatchEndpoints
                 var success = await finalizer.FinalizeAsync(
                     matchId, req.WinnerId, req.LoserId, req.Team1Score, req.Team2Score, ct);
 
-                if (!success) return Results.Conflict(new { error = "Match state has changed." });
+                if (!success) return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
             }
             catch (InvalidOperationException)
             {
-                return Results.Conflict(new { error = "Match state has changed — retry." });
+                return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
             }
 
             await matchHub.Clients
@@ -680,7 +680,7 @@ public static class MatchEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             if (req.Team1Score == req.Team2Score)
-                return Results.BadRequest(new { error = "Scores cannot be equal." });
+                return Results.BadRequest(new { error = "Scores can't be tied. One team must win." });
 
             // Resolve team IDs from request or from the match itself
             var t1Id = req.Team1Id;

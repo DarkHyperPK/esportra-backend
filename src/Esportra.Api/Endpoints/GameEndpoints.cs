@@ -22,7 +22,7 @@ public static class GameEndpoints
             CancellationToken    ct) =>
         {
             if (string.IsNullOrWhiteSpace(q))
-                return Results.BadRequest(new { error = "Query parameter 'q' is required." });
+                return Results.BadRequest(new { error = "Please enter a search term." });
 
             using var conn = db.CreateConnection();
 
@@ -87,7 +87,7 @@ public static class GameEndpoints
             IDbConnectionFactory db) =>
         {
             if (string.IsNullOrWhiteSpace(game))
-                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+                return Results.BadRequest(new { error = "Please select a game." });
 
             using var conn = db.CreateConnection();
             var maps = await conn.QueryAsync<dynamic>(
@@ -110,7 +110,7 @@ public static class GameEndpoints
             IDbConnectionFactory db) =>
         {
             if (string.IsNullOrWhiteSpace(game))
-                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+                return Results.BadRequest(new { error = "Please select a game." });
 
             using var conn = db.CreateConnection();
             var sql = "SELECT id::text as id, game, map_name, map_image_url, is_active FROM public.game_maps WHERE game ILIKE @game";
@@ -141,7 +141,7 @@ public static class GameEndpoints
             CancellationToken    ct) =>
         {
             if (string.IsNullOrWhiteSpace(game))
-                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+                return Results.BadRequest(new { error = "Please select a game." });
 
             using var conn = db.CreateConnection();
 
@@ -199,7 +199,7 @@ public static class GameEndpoints
             CancellationToken    ct) =>
         {
             if (string.IsNullOrWhiteSpace(game))
-                return Results.BadRequest(new { error = "Query parameter 'game' is required." });
+                return Results.BadRequest(new { error = "Please select a game." });
 
             using var conn = db.CreateConnection();
 

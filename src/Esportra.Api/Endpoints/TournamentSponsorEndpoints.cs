@@ -115,7 +115,7 @@ public static class TournamentSponsorEndpoints
                 });
 
             if (row is null)
-                return Results.Json(new { error = "Failed to assign sponsor." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't assign the sponsor. Please try again." }, statusCode: 500);
 
             return Results.Ok(new
             {
@@ -177,7 +177,7 @@ public static class TournamentSponsorEndpoints
                 """;
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, p);
-            if (row is null) return Results.NotFound(new { error = "Tournament-sponsor link not found." });
+            if (row is null) return Results.NotFound(new { error = "Sponsor assignment not found." });
 
             return Results.Ok(new
             {
@@ -221,7 +221,7 @@ public static class TournamentSponsorEndpoints
 
             return deleted > 0
                 ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "Tournament-sponsor link not found." });
+                : Results.NotFound(new { error = "Sponsor assignment not found." });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/sponsors/{sponsorId}/tournaments ────────────────────────

@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
@@ -341,10 +341,10 @@ public static class AdminEndpoints
             CancellationToken     ct) =>
         {
             if (req.EventType is not ("impression" or "click"))
-                return Results.BadRequest(new { error = "EventType must be 'impression' or 'click'" });
+                return Results.BadRequest(new { error = "Event type must be 'impression' or 'click'." });
 
             if (!Guid.TryParse(req.SponsorId, out var sponsorId))
-                return Results.BadRequest(new { error = "Invalid SponsorId" });
+                return Results.BadRequest(new { error = "Invalid sponsor ID." });
 
             using var conn = db.CreateConnection();
 
@@ -669,7 +669,7 @@ public static class AdminEndpoints
             }
             catch (Exception)
             {
-                return Results.Json(new { error = "Failed to send email. Please try again." }, statusCode: 502);
+                return Results.Json(new { error = "We couldn't send the email. Please try again." }, statusCode: 502);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -1741,7 +1741,7 @@ public static class AdminEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "GET /api/admin/licenses failed");
-                return Results.Json(new { error = "Failed to load licenses." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't load the licenses. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Admin");
 
@@ -1806,7 +1806,7 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
             var licenseType = (req.LicenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (licenseType is not ("organizer" or "venue_owner" or "broadcaster"))
-                return Results.BadRequest(new { error = "Invalid license_type" });
+                return Results.BadRequest(new { error = "Invalid license type." });
             var syncsVerifiedRoles = licenseType is "organizer" or "venue_owner";
 
             using var conn = db.CreateConnection();
@@ -1884,7 +1884,7 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
             var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
-                return Results.BadRequest(new { success = false, error = "Invalid license_type" });
+                return Results.BadRequest(new { success = false, error = "Invalid license type." });
             var syncsVerifiedRoles = normalizedType is "organizer" or "venue_owner";
 
             using var conn = db.CreateConnection();
@@ -1935,7 +1935,7 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
             var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
-                return Results.BadRequest(new { success = false, error = "Invalid license_type" });
+                return Results.BadRequest(new { success = false, error = "Invalid license type." });
             var syncsVerifiedRoles = normalizedType is "organizer" or "venue_owner";
 
             using var conn = db.CreateConnection();
@@ -1998,7 +1998,7 @@ public static class AdminEndpoints
             try { req = await ctx.Request.ReadFromJsonAsync<AdminBackfillLicensesRequest>(ct); } catch { }
             var licenseType = (req?.LicenseType ?? "organizer").Trim().ToLowerInvariant();
             if (licenseType is not ("organizer" or "venue_owner" or "broadcaster"))
-                return Results.BadRequest(new { success = false, error = "Invalid license_type" });
+                return Results.BadRequest(new { success = false, error = "Invalid license type." });
             var syncsVerifiedRoles = licenseType is "organizer" or "venue_owner";
             var prefix = licenseType switch
             {

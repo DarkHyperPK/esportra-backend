@@ -156,7 +156,7 @@ public static class StageEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Error syncing map pool for tournament {TournamentId}", tournamentId);
-                return Results.Problem("Error syncing map pool. Please try again.");
+                return Results.Json(new { error = "We couldn't sync the map pool. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 

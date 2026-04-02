@@ -985,7 +985,7 @@ public static class OrganizationEndpoints
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to deserialize organization update body");
-                return Results.BadRequest(new { error = "Invalid request body." });
+                return Results.BadRequest(new { error = "We couldn't read your request. Please check the form and try again." });
             }
             if (req is null) return Results.BadRequest(new { error = "Empty request body" });
 
@@ -1029,7 +1029,7 @@ public static class OrganizationEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to update organization {OrgId}", orgId);
-                return Results.Problem("Failed to update organization. Please try again.", statusCode: 500);
+                return Results.Json(new { error = "We couldn't update the organization. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 

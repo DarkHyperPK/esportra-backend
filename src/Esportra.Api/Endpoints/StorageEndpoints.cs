@@ -67,10 +67,10 @@ public static class StorageEndpoints
 
             var bucket = form["bucket"].FirstOrDefault();
             if (string.IsNullOrWhiteSpace(bucket))
-                return Results.BadRequest(new { error = "Query/form parameter 'bucket' is required." });
+                return Results.BadRequest(new { error = "Please specify a storage location." });
 
             if (!AllowedUploadBuckets.Contains(bucket))
-                return Results.BadRequest(new { error = "Upload to this bucket is not allowed." });
+                return Results.BadRequest(new { error = "You're not allowed to upload to this location." });
 
             // Validate file size
             if (file.Length > MaxFileSizeBytes)
@@ -211,7 +211,7 @@ public static class StorageEndpoints
             var path   = ctx.Request.Query["path"].FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(path))
-                return Results.BadRequest(new { error = "Query parameters 'bucket' and 'path' are required." });
+                return Results.BadRequest(new { error = "Please specify the file location." });
 
             // Restrict which buckets users can delete from
             if (!AllowedDeleteBuckets.Contains(bucket))

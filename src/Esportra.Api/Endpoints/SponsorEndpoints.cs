@@ -118,7 +118,7 @@ public static class SponsorEndpoints
             {
                 var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "GET /api/sponsors/me failed");
-                return Results.Json(new { error = "Failed to load sponsor data." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't load your sponsor profile. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -199,7 +199,7 @@ public static class SponsorEndpoints
             {
                 var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "PUT /api/sponsors/me failed for sponsor {SponsorId}", sponsorId);
-                return Results.Json(new { error = "Update failed." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't save your changes. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -342,7 +342,7 @@ public static class SponsorEndpoints
                 new { userId = userCtx.UserIdGuid, meta = updatedJson });
 
             if (updated is null)
-                return Results.Json(new { error = "Update failed." }, statusCode: 500);
+                return Results.Json(new { error = "We couldn't save your changes. Please try again." }, statusCode: 500);
 
             return Results.Ok(new { success = true, meta = JsonSerializer.Deserialize<object>(updatedJson) });
         }).RequireAuthorization("Authenticated");
