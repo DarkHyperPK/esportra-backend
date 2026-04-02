@@ -766,9 +766,9 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller belongs to the team
+            // Verify caller belongs to the team and is not a coach
             var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
+                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE AND role != 'coach')",
                 new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 

@@ -394,6 +394,51 @@ public static class TeamEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── PUT /api/teams/{id}/members/{userId}/role ─────────────────────────
+        app.MapPut("/api/teams/{id}/members/{userId}/role", async (
+            Guid                        id,
+            Guid                        userId,
+            [FromBody] ChangeRoleRequest req,
+            HttpContext                  ctx,
+            IDbConnectionFactory        db,
+            CancellationToken           ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var allowedRoles = new HashSet<string> { "member", "substitute", "coach" };
+            if (!allowedRoles.Contains(req.Role))
+                return Results.BadRequest(new { error = $"Invalid role. Allowed: {string.Join(", ", allowedRoles)}" });
+
+            using var conn = db.CreateConnection();
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+
+            // Prevent changing captain's role via this endpoint
+            var targetRole = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT role FROM team_members WHERE team_id = @id AND user_id = @userId AND is_active = TRUE",
+                new { id, userId });
+            if (targetRole is null)
+                return Results.NotFound(new { error = "Member not found." });
+            if (targetRole == "captain")
+                return Results.BadRequest(new { error = "Cannot change captain role. Use transfer-captain instead." });
+
+            // Enforce max 2 coaches
+            if (req.Role == "coach")
+            {
+                var coachCount = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM team_members WHERE team_id = @id AND role = 'coach' AND is_active = TRUE",
+                    new { id });
+                if (coachCount >= 2)
+                    return Results.BadRequest(new { error = "Maximum 2 coaches per team." });
+            }
+
+            await conn.ExecuteAsync(
+                "UPDATE team_members SET role = @role WHERE team_id = @id AND user_id = @userId AND is_active = TRUE",
+                new { id, userId, role = req.Role });
+
+            return Results.Ok(new { success = true, userId, role = req.Role });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/teams/{id}/invite ───────────────────────────────────────
         app.MapPost("/api/teams/{id}/invite", async (
             Guid                        id,
@@ -1346,6 +1391,8 @@ public sealed record UpdateTeamRequest(
     string? CountryCode = null);
 
 public sealed record TransferCaptainRequest(string NewCaptainId);
+
+public sealed record ChangeRoleRequest(string Role);
 
 public sealed record TeamInviteRequest(string UserId, string? Message = null);
 

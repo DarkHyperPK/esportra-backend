@@ -159,7 +159,7 @@ public sealed class ChatHub : Hub
             SELECT EXISTS (
                 SELECT 1 FROM brkt_matches bm
                 JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId
+                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role != 'coach'
                 UNION ALL
                 SELECT 1 FROM brkt_matches bm
                 JOIN brkt_versions bv ON bv.id = bm.version_id
