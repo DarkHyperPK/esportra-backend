@@ -1020,7 +1020,13 @@ public static class MatchSystemEndpoints
 
             // Prevent accepting own proposal
             var proposerTeamId = await conn.QuerySingleOrDefaultAsync<string?>(
-                "SELECT proposed_by_team_id::text FROM match_time_proposals WHERE id = @proposalId AND match_id = @matchId",
+                """
+                SELECT tm.team_id::text FROM match_time_proposals mtp
+                JOIN team_members tm ON tm.user_id = mtp.proposed_by AND tm.role = 'captain' AND tm.is_active = TRUE
+                JOIN brkt_matches bm ON bm.id = mtp.match_id AND (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                WHERE mtp.id = @proposalId AND mtp.match_id = @matchId
+                LIMIT 1
+                """,
                 new { proposalId, matchId });
             if (proposerTeamId is not null && captainTeam == proposerTeamId)
                 return Results.BadRequest(new { error = "Cannot accept your own time proposal." });
