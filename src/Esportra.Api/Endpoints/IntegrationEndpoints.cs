@@ -160,11 +160,14 @@ public static class IntegrationEndpoints
                     token_expires_at = EXCLUDED.token_expires_at
                 """, new { userId = userGuid, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
 
-            // Sync profiles.riot_tag (clear from any other profile first to enforce uniqueness)
+            // Sync profiles.riot_tag (reject if already linked to another account)
             var riotTag = $"{gameName}#{tagLine}";
-            await conn.ExecuteAsync(
-                "UPDATE public.profiles SET riot_tag = NULL WHERE riot_tag = @riotTag AND id != @userId",
+            var existingOwner = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM public.profiles WHERE riot_tag = @riotTag AND id != @userId",
                 new { riotTag, userId = userGuid });
+            if (existingOwner is not null)
+                return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=already_linked");
+
             await conn.ExecuteAsync(
                 "UPDATE public.profiles SET riot_tag = @riotTag WHERE id = @userId",
                 new { riotTag, userId = userGuid });
