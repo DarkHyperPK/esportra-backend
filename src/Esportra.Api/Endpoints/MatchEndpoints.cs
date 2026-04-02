@@ -631,10 +631,22 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission
+            // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            {
+                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM team_members tm
+                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                    )
+                    """,
+                    new { matchId, userId = userCtx.UserIdGuid });
+                if (!isCaptain) return Results.Forbid();
+            }
 
             var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
 
@@ -657,7 +669,7 @@ public static class MatchEndpoints
                     new { matchId, status = "in_progress" }, ct);
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/save-score ──────────────────────────
         // Replaces GraphMatchService.saveScoreAndAdvance (score + advance + finals reset + stage completion)
