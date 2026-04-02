@@ -1618,9 +1618,10 @@ public static class TournamentEndpoints
                 "SELECT games::text FROM br_game_data WHERE tournament_id = @tid",
                 new { tid = id.ToString() });
 
-            var gamesElement = row is not null
-                ? JsonSerializer.Deserialize<JsonElement>(row)
-                : new JsonElement();
+            if (row is null)
+                return Results.Ok(new { games = (object?)null });
+
+            var gamesElement = JsonSerializer.Deserialize<JsonElement>(row);
             return Results.Ok(new { games = gamesElement });
         }).RequireAuthorization("Authenticated");
 
