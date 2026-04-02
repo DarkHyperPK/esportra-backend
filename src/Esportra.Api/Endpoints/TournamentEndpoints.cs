@@ -1605,6 +1605,129 @@ public static class TournamentEndpoints
                 new { pattern = $"%{name}%" });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
+
+        // ── BR Game Data ─────────────────────────────────────────────────────
+
+        // GET /api/tournaments/{id}/br-games — read BR game data (any authenticated user)
+        app.MapGet("/api/tournaments/{id}/br-games", async (
+            Guid                 id,
+            IDbConnectionFactory db) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT games::text FROM br_game_data WHERE tournament_id = @tid",
+                new { tid = id.ToString() });
+
+            var gamesElement = row is not null
+                ? JsonSerializer.Deserialize<JsonElement>(row)
+                : new JsonElement();
+            return Results.Ok(new { games = gamesElement });
+        }).RequireAuthorization("Authenticated");
+
+        // PUT /api/tournaments/{id}/br-games — upsert BR game data (organizer/staff only)
+        app.MapPut("/api/tournaments/{id}/br-games", async (
+            Guid                 id,
+            [FromBody] BRGameDataRequest req,
+            HttpContext           ctx,
+            IDbConnectionFactory  db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isStaff = await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, id);
+            var isAdmin = StaffAuthHelper.IsPlatformAdmin(userCtx);
+            if (!isStaff && !isAdmin)
+                return Results.Json(new { error = "Only tournament organizers can update game data." }, statusCode: 403);
+
+            var gamesJson = JsonSerializer.Serialize(req.Games);
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO br_game_data (tournament_id, games, updated_at, updated_by)
+                VALUES (@tid, @games::jsonb, NOW(), @uid)
+                ON CONFLICT (tournament_id) DO UPDATE SET
+                    games      = @games::jsonb,
+                    updated_at = NOW(),
+                    updated_by = @uid
+                """,
+                new { tid = id.ToString(), games = gamesJson, uid = userCtx.UserIdGuid });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // PUT /api/tournaments/{id}/br-games/evidence — submit evidence (any tournament participant)
+        app.MapPut("/api/tournaments/{id}/br-games/evidence", async (
+            Guid                 id,
+            [FromBody] BRSubmitEvidenceRequest req,
+            HttpContext           ctx,
+            IDbConnectionFactory  db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isParticipant = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_participants tp
+                    JOIN team_members tm ON tm.team_id = tp.team_id
+                    WHERE tp.tournament_id = @tid AND tm.user_id = @uid AND tm.is_active = TRUE
+                )
+                """,
+                new { tid = id, uid = userCtx.UserIdGuid });
+
+            if (!isParticipant)
+            {
+                var isStaff = await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, id);
+                if (!isStaff && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                    return Results.Json(new { error = "You must be a tournament participant to submit evidence." }, statusCode: 403);
+            }
+
+            var existing = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT games::text FROM br_game_data WHERE tournament_id = @tid",
+                new { tid = id.ToString() });
+
+            var games = existing is not null
+                ? JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(existing) ?? new()
+                : new Dictionary<string, JsonElement>();
+
+            var gameKey = $"game_{req.GameNumber}";
+            BRGameDataInternal gameData;
+            if (games.TryGetValue(gameKey, out var elem))
+                gameData = JsonSerializer.Deserialize<BRGameDataInternal>(elem.GetRawText()) ?? new();
+            else
+                gameData = new() { gameNumber = req.GameNumber, status = "pending" };
+
+            gameData.evidence = (gameData.evidence ?? new())
+                .Where(e => e.teamId != req.TeamId)
+                .Append(new BREvidenceItem
+                {
+                    teamId = req.TeamId,
+                    imageUrl = req.ImageUrl,
+                    submittedBy = userCtx.UserId,
+                    submittedAt = DateTime.UtcNow.ToString("o"),
+                    reviewed = false,
+                })
+                .ToList();
+
+            games[gameKey] = JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(gameData));
+
+            var gamesJson = JsonSerializer.Serialize(games);
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO br_game_data (tournament_id, games, updated_at, updated_by)
+                VALUES (@tid, @games::jsonb, NOW(), @uid)
+                ON CONFLICT (tournament_id) DO UPDATE SET
+                    games      = @games::jsonb,
+                    updated_at = NOW(),
+                    updated_by = @uid
+                """,
+                new { tid = id.ToString(), games = gamesJson, uid = userCtx.UserIdGuid });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -3239,3 +3362,31 @@ public sealed record UpdateTournamentStaffRequest(
     string[]? Permissions = null);
 
 public sealed record RespondToStaffInviteRequest(bool Accept);
+
+// ── BR Game Data request records ─────────────────────────────────────────────
+
+public sealed record BRGameDataRequest(JsonElement Games);
+
+public sealed record BRSubmitEvidenceRequest(
+    int     GameNumber,
+    string  TeamId,
+    string  ImageUrl);
+
+// Internal deserialization helpers for BR evidence merge
+internal sealed class BRGameDataInternal
+{
+    public int gameNumber { get; set; }
+    public string status { get; set; } = "pending";
+    public List<object>? results { get; set; }
+    public string? lobbyCode { get; set; }
+    public List<BREvidenceItem>? evidence { get; set; }
+}
+
+internal sealed class BREvidenceItem
+{
+    public string teamId { get; set; } = "";
+    public string imageUrl { get; set; } = "";
+    public string submittedBy { get; set; } = "";
+    public string submittedAt { get; set; } = "";
+    public bool reviewed { get; set; }
+}
