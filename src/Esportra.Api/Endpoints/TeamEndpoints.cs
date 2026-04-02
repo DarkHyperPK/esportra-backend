@@ -99,6 +99,7 @@ public static class TeamEndpoints
                     UNION
                     SELECT id FROM teams WHERE owner_id = @userId
                 )
+                AND t.is_solo = false
                 GROUP BY t.id
                 ORDER BY t.created_at DESC
                 """,

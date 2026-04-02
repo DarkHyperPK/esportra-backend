@@ -810,7 +810,7 @@ public static class TournamentEndpoints
 
             // Lock tournament row to prevent race condition on capacity check
             var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT status, max_teams, entry_fee, payment_instructions FROM tournaments WHERE id = @id FOR UPDATE",
+                "SELECT status, max_teams, entry_fee, payment_instructions, game FROM tournaments WHERE id = @id FOR UPDATE",
                 new { id }, txn);
             if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
             if ((string)tourn.status != "open")
@@ -838,6 +838,43 @@ public static class TournamentEndpoints
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
             Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
             var   participantType = teamIdGuid is not null ? "team" : "solo";
+
+            // Auto-create a virtual team for solo participants so that
+            // brkt_matches.team1_id / team2_id always references teams(id).
+            if (participantType == "solo")
+            {
+                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT username, avatar_url FROM profiles WHERE id = @uid",
+                    new { uid = userCtx.UserIdGuid }, txn);
+
+                var vtId  = Guid.NewGuid();
+                var vtTag = $"solo-{vtId:N}";
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members, logo_url)
+                    VALUES (@vtId, @name, @tag, @game, @ownerId, true, 1, @logo)
+                    """,
+                    new
+                    {
+                        vtId,
+                        name = (string?)profile?.username ?? "Solo Player",
+                        tag  = vtTag,
+                        game = (string)tourn.game,
+                        ownerId = userCtx.UserIdGuid,
+                        logo = (string?)profile?.avatar_url,
+                    }, txn);
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO team_members (team_id, user_id, role, is_active)
+                    VALUES (@teamId, @userId, 'captain', true)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { teamId = vtId, userId = userCtx.UserIdGuid }, txn);
+
+                teamIdGuid = vtId;
+            }
 
             // Determine if this is a paid tournament
             decimal tournEntryFee = (decimal)(tourn.entry_fee ?? 0m);
