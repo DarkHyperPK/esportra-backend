@@ -69,6 +69,15 @@ public static class ProfileEndpoints
                 .Where(kv => AllowedUpdateFields.Contains(kv.Key) && kv.Value is not null)
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
 
+            // Normalize empty tag fields to null (DB has unique partial index on non-empty values)
+            foreach (var tagField in new[] { "riot_tag", "steam_tag", "faceit_nickname" })
+            {
+                if (valid.TryGetValue(tagField, out var v) && v is JsonElement je && je.GetString() is "" or null)
+                    valid[tagField] = (object)DBNull.Value;
+                else if (valid.TryGetValue(tagField, out var sv) && sv is string s && string.IsNullOrWhiteSpace(s))
+                    valid[tagField] = (object)DBNull.Value;
+            }
+
             if (valid.Count == 0)
                 return Results.BadRequest(new { error = "No valid fields to update." });
 
