@@ -387,10 +387,22 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission
+            // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            {
+                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM team_members tm
+                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                    )
+                    """,
+                    new { matchId, userId = userCtx.UserIdGuid });
+                if (!isCaptain) return Results.Forbid();
+            }
 
             var winnerId = req?.WinnerId ?? Guid.Empty;
             var loserId  = req?.LoserId  ?? Guid.Empty;
@@ -404,7 +416,7 @@ public static class MatchEndpoints
                 if (m is not null && m.team1_score is not null && m.team2_score is not null)
                 {
                     if ((int)m.team1_score == (int)m.team2_score)
-                        return Results.BadRequest(new { error = "Cannot auto-finalize: scores are tied. Provide explicit winnerId." });
+                        return Results.BadRequest(new { error = "Scores are tied — a winner can't be determined automatically." });
 
                     winnerId = (int)m.team1_score > (int)m.team2_score ? (Guid)m.team1_id : (Guid)m.team2_id;
                     loserId  = winnerId == (Guid)m.team1_id ? (Guid)m.team2_id : (Guid)m.team1_id;
@@ -420,7 +432,7 @@ public static class MatchEndpoints
                     ct);
 
             return Results.Ok(new { success, matchId });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/award-walkover ──────────────────────
         app.MapPost("/api/matches/{matchId}/award-walkover", async (
@@ -437,10 +449,22 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission
+            // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            {
+                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM team_members tm
+                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                    )
+                    """,
+                    new { matchId, userId = userCtx.UserIdGuid });
+                if (!isCaptain) return Results.Forbid();
+            }
 
             try
             {
@@ -460,7 +484,7 @@ public static class MatchEndpoints
                     new { matchId, status = "completed" }, ct);
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/swap-teams ──────────────────────────
         app.MapPost("/api/matches/{matchId}/swap-teams", async (
@@ -686,10 +710,22 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission
+            // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            {
+                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM team_members tm
+                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
+                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                    )
+                    """,
+                    new { matchId, userId = userCtx.UserIdGuid });
+                if (!isCaptain) return Results.Forbid();
+            }
 
             if (req.Team1Score == req.Team2Score)
                 return Results.BadRequest(new { error = "Scores can't be tied. One team must win." });
