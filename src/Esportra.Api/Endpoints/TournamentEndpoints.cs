@@ -605,59 +605,76 @@ public static class TournamentEndpoints
             // and only if ALL stages are completed
             if (req.Status == "completed" && updated is not null)
             {
-                // Check that stages exist and ALL are completed
-                // Use count comparison to handle NULL status correctly
-                var stageCounts = await conn.QuerySingleAsync<dynamic>(
-                    """
-                    SELECT
-                        COUNT(*)::int AS total,
-                        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
-                    FROM tournament_stages
-                    WHERE tournament_id = @id
-                    """,
-                    new { id });
+                Guid? resolvedWinnerId = null;
 
-                int stageTotal = (int)stageCounts.total;
-                int stageCompleted = (int)stageCounts.completed;
-
-                if (stageTotal > 0 && stageTotal == stageCompleted)
+                // 1. BR tournaments: frontend sends winner_team_name, look up team by name
+                if (!string.IsNullOrWhiteSpace(req.WinnerTeamName))
                 {
-                    var winnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    resolvedWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                         """
-                        SELECT m.winner_id
-                        FROM brkt_matches m
-                        JOIN brkt_versions v ON v.id = m.version_id
-                        JOIN tournament_stages s ON s.id = v.stage_id
-                        WHERE s.tournament_id = @id
-                          AND s.stage_order = (
-                              SELECT MAX(stage_order) FROM tournament_stages WHERE tournament_id = @id
-                          )
-                          AND m.status = 'completed'
-                          AND m.winner_id IS NOT NULL
-                          AND m.bracket_type = 'final'
-                        ORDER BY m.round_index DESC, m.match_number DESC
+                        SELECT tp.team_id FROM tournament_participants tp
+                        JOIN teams t ON t.id = tp.team_id
+                        WHERE tp.tournament_id = @id AND t.name = @teamName
                         LIMIT 1
+                        """,
+                        new { id, teamName = req.WinnerTeamName });
+                }
+
+                // 2. Bracket tournaments: find winner from grand final match
+                if (resolvedWinnerId is null)
+                {
+                    var stageCounts = await conn.QuerySingleAsync<dynamic>(
+                        """
+                        SELECT
+                            COUNT(*)::int AS total,
+                            COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
+                        FROM tournament_stages
+                        WHERE tournament_id = @id
                         """,
                         new { id });
 
-                    if (winnerId.HasValue)
+                    int stageTotal = (int)stageCounts.total;
+                    int stageCompleted = (int)stageCounts.completed;
+
+                    if (stageTotal > 0 && stageTotal == stageCompleted)
                     {
-                        try
-                        {
-                            using var tx = conn.BeginTransaction();
-                            await conn.ExecuteAsync(
-                                "SET LOCAL request.jwt.claim.role = 'service_role'",
-                                transaction: tx);
-                            await conn.ExecuteAsync(
-                                "UPDATE tournaments SET winner_id = @winnerId WHERE id = @id",
-                                new { id, winnerId = winnerId.Value },
-                                transaction: tx);
-                            tx.Commit();
-                        }
-                        catch
-                        {
-                            // If trigger still blocks, don't fail the status change
-                        }
+                        resolvedWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                            """
+                            SELECT m.winner_id
+                            FROM brkt_matches m
+                            JOIN brkt_versions v ON v.id = m.version_id
+                            JOIN tournament_stages s ON s.id = v.stage_id
+                            WHERE s.tournament_id = @id
+                              AND s.stage_order = (
+                                  SELECT MAX(stage_order) FROM tournament_stages WHERE tournament_id = @id
+                              )
+                              AND m.status = 'completed'
+                              AND m.winner_id IS NOT NULL
+                              AND m.bracket_type = 'final'
+                            ORDER BY m.round_index DESC, m.match_number DESC
+                            LIMIT 1
+                            """,
+                            new { id });
+                    }
+                }
+
+                if (resolvedWinnerId.HasValue)
+                {
+                    try
+                    {
+                        using var tx = conn.BeginTransaction();
+                        await conn.ExecuteAsync(
+                            "SET LOCAL request.jwt.claim.role = 'service_role'",
+                            transaction: tx);
+                        await conn.ExecuteAsync(
+                            "UPDATE tournaments SET winner_id = @winnerId WHERE id = @id",
+                            new { id, winnerId = resolvedWinnerId.Value },
+                            transaction: tx);
+                        tx.Commit();
+                    }
+                    catch
+                    {
+                        // If trigger still blocks, don't fail the status change
                     }
                 }
             }
@@ -3167,7 +3184,8 @@ public sealed record UpdateTournamentRequest(
     DateTime? DeletedAt            = null,
     bool      ClearDeletedAt       = false,
     object?   Settings             = null,
-    string?   PaymentInstructions  = null);
+    string?   PaymentInstructions  = null,
+    string?   WinnerTeamName       = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId            = null,
