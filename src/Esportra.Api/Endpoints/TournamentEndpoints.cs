@@ -1701,14 +1701,22 @@ public static class TournamentEndpoints
             else
                 gameData = new() { gameNumber = req.GameNumber, status = "pending" };
 
+            // Resolve team name from DB
+            var teamName = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT name FROM teams WHERE id = @tid",
+                new { tid = Guid.Parse(req.TeamId) }) ?? "Unknown Team";
+
             gameData.evidence = (gameData.evidence ?? new())
                 .Where(e => e.teamId != req.TeamId)
                 .Append(new BREvidenceItem
                 {
                     teamId = req.TeamId,
+                    teamName = teamName,
                     imageUrl = req.ImageUrl,
                     submittedBy = userCtx.UserId,
                     submittedAt = DateTime.UtcNow.ToString("o"),
+                    placement = req.Placement,
+                    kills = req.Kills,
                     reviewed = false,
                 })
                 .ToList();
@@ -3371,7 +3379,9 @@ public sealed record BRGameDataRequest(JsonElement Games);
 public sealed record BRSubmitEvidenceRequest(
     int     GameNumber,
     string  TeamId,
-    string  ImageUrl);
+    string  ImageUrl,
+    int?    Placement = null,
+    int?    Kills     = null);
 
 // Internal deserialization helpers for BR evidence merge
 internal sealed class BRGameDataInternal
@@ -3386,8 +3396,11 @@ internal sealed class BRGameDataInternal
 internal sealed class BREvidenceItem
 {
     public string teamId { get; set; } = "";
+    public string teamName { get; set; } = "";
     public string imageUrl { get; set; } = "";
     public string submittedBy { get; set; } = "";
     public string submittedAt { get; set; } = "";
+    public int? placement { get; set; }
+    public int? kills { get; set; }
     public bool reviewed { get; set; }
 }
