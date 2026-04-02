@@ -262,6 +262,7 @@ builder.Services.AddScoped<AuditService>();
 
 // ── Background jobs ───────────────────────────────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
+builder.Services.AddHostedService<CheckinWalkoversJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
