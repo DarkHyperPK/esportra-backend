@@ -445,6 +445,75 @@ public static class MatchSystemEndpoints
                                         logger.LogInformation(
                                             "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
                                             id, winnerId, team1Wins, team2Wins, bestOf);
+
+                                        // Check if all matches in this stage are now completed → set stage + tournament winner
+                                        try
+                                        {
+                                            if (match.version_id is not null)
+                                            {
+                                                var versionId = (Guid)match.version_id;
+                                                var pendingCount = await conn.QuerySingleAsync<int>(
+                                                    "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
+                                                    new { versionId });
+
+                                                if (pendingCount == 0)
+                                                {
+                                                    var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                                                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
+                                                        new { versionId });
+
+                                                    if (stageId is not null)
+                                                    {
+                                                        await conn.ExecuteAsync(
+                                                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+                                                            new { stageId });
+
+                                                        var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                                                            "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
+                                                            new { stageId });
+
+                                                        if (stageInfo is not null)
+                                                        {
+                                                            var fmt = (string?)stageInfo.format;
+                                                            if (fmt is "single_elimination" or "double_elimination")
+                                                            {
+                                                                var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                                                                    """
+                                                                    SELECT winner_id FROM brkt_matches
+                                                                    WHERE version_id = @versionId
+                                                                      AND status = 'completed' AND winner_id IS NOT NULL
+                                                                    ORDER BY round_index DESC, match_number DESC
+                                                                    LIMIT 1
+                                                                    """,
+                                                                    new { versionId });
+
+                                                                if (gfWinnerId is not null)
+                                                                {
+                                                                    var tid = (Guid)stageInfo.tournament_id;
+                                                                    try
+                                                                    {
+                                                                        await conn.ExecuteAsync(
+                                                                            "SELECT admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                                                                            new { p_tournament_id = tid, p_winner_id = gfWinnerId });
+                                                                    }
+                                                                    catch
+                                                                    {
+                                                                        await conn.ExecuteAsync(
+                                                                            "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tournamentId",
+                                                                            new { winnerId = gfWinnerId, tournamentId = tid });
+                                                                    }
+                                                                    logger.LogInformation("Tournament {TournamentId} winner set to {WinnerId}", tid, gfWinnerId);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        catch (Exception stageEx)
+                                        {
+                                            logger.LogWarning(stageEx, "Stage completion check failed for match {MatchId} (non-fatal)", id);
+                                        }
                                     }
                                 }
                                 catch (InvalidOperationException ex)
