@@ -1701,16 +1701,27 @@ public static class TournamentEndpoints
             else
                 gameData = new() { gameNumber = req.GameNumber, status = "pending" };
 
+            // Resolve team to tournament_participants team_id for consistency
+            var tpTeamId = await conn.QuerySingleOrDefaultAsync<string?>(
+                """
+                SELECT tp.team_id::text FROM tournament_participants tp
+                JOIN team_members tm ON tm.team_id = tp.team_id
+                WHERE tp.tournament_id = @tournId AND tm.user_id = @uid AND tm.is_active = TRUE
+                LIMIT 1
+                """,
+                new { tournId = id, uid = userCtx.UserIdGuid });
+            var resolvedTeamId = tpTeamId ?? req.TeamId;
+
             // Resolve team name from DB
             var teamName = await conn.QuerySingleOrDefaultAsync<string?>(
                 "SELECT name FROM teams WHERE id = @tid",
-                new { tid = Guid.Parse(req.TeamId) }) ?? "Unknown Team";
+                new { tid = Guid.Parse(resolvedTeamId) }) ?? "Unknown Team";
 
             gameData.evidence = (gameData.evidence ?? new())
-                .Where(e => e.teamId != req.TeamId)
+                .Where(e => e.teamId != resolvedTeamId)
                 .Append(new BREvidenceItem
                 {
-                    teamId = req.TeamId,
+                    teamId = resolvedTeamId,
                     teamName = teamName,
                     imageUrl = req.ImageUrl,
                     submittedBy = userCtx.UserId,
