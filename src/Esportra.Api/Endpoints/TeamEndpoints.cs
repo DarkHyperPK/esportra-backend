@@ -433,7 +433,7 @@ public static class TeamEndpoints
             }
 
             await conn.ExecuteAsync(
-                "UPDATE team_members SET role = @role WHERE team_id = @id AND user_id = @userId AND is_active = TRUE",
+                "UPDATE team_members SET role = @role::team_member_role WHERE team_id = @id AND user_id = @userId AND is_active = TRUE",
                 new { id, userId, role = req.Role });
 
             return Results.Ok(new { success = true, userId, role = req.Role });
