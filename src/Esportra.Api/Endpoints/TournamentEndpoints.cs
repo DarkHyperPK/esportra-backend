@@ -2329,7 +2329,7 @@ public static class TournamentEndpoints
                 WHERE tm.user_id = @userId
                   AND tm.role = 'captain'
                   AND tm.is_active = TRUE
-                  AND t.status IN ('in_progress', 'check_in', 'registration_open', 'registration_closed')
+                  AND t.status IN ('ongoing', 'check_in', 'open', 'published')
                 ORDER BY t.start_date DESC
                 """, new { userId = userCtx.UserIdGuid });
 
