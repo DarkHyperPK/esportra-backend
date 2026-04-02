@@ -813,7 +813,7 @@ public static class TournamentEndpoints
                 "SELECT status, max_teams, entry_fee, payment_instructions, game FROM tournaments WHERE id = @id FOR UPDATE",
                 new { id }, txn);
             if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
-            if ((string)tourn.status != "open")
+            if ((string)tourn.status is not "open" and not "published")
             {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament is not accepting registrations." }); }
 
             // Check capacity (0 or null = unlimited)
