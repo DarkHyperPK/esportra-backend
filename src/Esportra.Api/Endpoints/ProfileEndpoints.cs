@@ -64,18 +64,21 @@ public static class ProfileEndpoints
             if (userCtx.UserIdGuid != id && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
-            // Filter to allowed fields only
+            // Filter to allowed fields only (allow tag fields even if null/empty for clearing)
+            var tagFields = new HashSet<string> { "riot_tag", "steam_tag", "faceit_nickname" };
             var valid = updates
-                .Where(kv => AllowedUpdateFields.Contains(kv.Key) && kv.Value is not null)
+                .Where(kv => AllowedUpdateFields.Contains(kv.Key) && (kv.Value is not null || tagFields.Contains(kv.Key)))
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
 
             // Normalize empty tag fields to null (DB has unique partial index on non-empty values)
-            foreach (var tagField in new[] { "riot_tag", "steam_tag", "faceit_nickname" })
+            foreach (var tagField in tagFields)
             {
-                if (valid.TryGetValue(tagField, out var v) && v is JsonElement je && je.GetString() is "" or null)
-                    valid[tagField] = (object)DBNull.Value;
-                else if (valid.TryGetValue(tagField, out var sv) && sv is string s && string.IsNullOrWhiteSpace(s))
-                    valid[tagField] = (object)DBNull.Value;
+                if (valid.TryGetValue(tagField, out var v))
+                {
+                    if (v is null || (v is JsonElement je && (je.ValueKind == JsonValueKind.Null || je.GetString() is "" or null))
+                        || (v is string s && string.IsNullOrWhiteSpace(s)))
+                        valid[tagField] = null;
+                }
             }
 
             if (valid.Count == 0)
@@ -100,7 +103,9 @@ public static class ProfileEndpoints
             var parameters = new DynamicParameters();
             foreach (var kv in valid)
             {
-                if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
+                if (kv.Value is null)
+                    parameters.Add(kv.Key, null, System.Data.DbType.String);
+                else if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
                     parameters.Add(kv.Key, je.GetRawText());
                 else
                     parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
