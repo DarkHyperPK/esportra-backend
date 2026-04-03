@@ -171,7 +171,8 @@ public static class GameEndpoints
                 banners = assets.Banners,
                 cover = assets.Cover,
                 videos = assets.Videos.Select(v => new { videoId = v.VideoId, name = v.Name }),
-                matchedGame = assets.MatchedName
+                matchedGame = assets.MatchedName,
+                igdbId = assets.IgdbId
             };
 
             // Cache the full response as JSON

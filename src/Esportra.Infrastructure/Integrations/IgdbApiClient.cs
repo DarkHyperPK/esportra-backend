@@ -66,40 +66,35 @@ public sealed class IgdbApiClient
         // Resolve IGDB-specific search names for games where our display name differs
         var igdbSearchName = IgdbSearchNames.TryGetValue(canonicalName, out var sn) ? sn : canonicalName;
 
-        string body;
+        const string fields = "id, name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name";
+
+        // Strategy 1: Known ID (most reliable)
         if (KnownGameIds.TryGetValue(canonicalName, out var knownId))
         {
-            body = $"""
-                where id = {knownId};
-                fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
-                limit 1;
-                """;
-        }
-        else
-        {
-            // Use exact name match first, which is more reliable than fuzzy search
-            body = $"""
-                where name ~ *"{EscapeIgdb(igdbSearchName)}"*;
-                fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
-                limit 1;
-                """;
+            var body = $"where id = {knownId}; fields {fields}; limit 1;";
+            var result = await QueryIgdbAsync(body, ct);
+            if (result is not null) return result;
         }
 
-        var result = await QueryIgdbAsync(body, ct);
-        if (result is not null) return result;
-
-        // Fallback: fuzzy search (only if exact name match found nothing)
-        if (!KnownGameIds.ContainsKey(canonicalName))
+        // Strategy 2: Exact name match
         {
-            body = $"""
-                search "{EscapeIgdb(igdbSearchName)}";
-                fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
-                limit 1;
-                """;
+            var body = $"""where name = "{EscapeIgdb(igdbSearchName)}"; fields {fields}; limit 1;""";
+            var result = await QueryIgdbAsync(body, ct);
+            if (result is not null) return result;
+        }
+
+        // Strategy 3: Contains match (prefer shorter names = base games)
+        {
+            var body = $"""where name ~ *"{EscapeIgdb(igdbSearchName)}"*; fields {fields}; sort name.asc; limit 1;""";
+            var result = await QueryIgdbAsync(body, ct);
+            if (result is not null) return result;
+        }
+
+        // Strategy 4: Fuzzy search (last resort)
+        {
+            var body = $"""search "{EscapeIgdb(igdbSearchName)}"; fields {fields}; limit 1;""";
             return await QueryIgdbAsync(body, ct);
         }
-
-        return null;
     }
 
     private async Task<IgdbGameAssets?> QueryIgdbAsync(string body, CancellationToken ct)
@@ -170,14 +165,16 @@ public sealed class IgdbApiClient
 
         if (banners.Count == 0 && cover is null) return null;
 
-        // Extract matched game name from IGDB response
+        // Extract matched game info from IGDB response
         var matchedName = game.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
+        var matchedId = game.TryGetProperty("id", out var idProp) ? idProp.GetInt32() : (int?)null;
 
         return new IgdbGameAssets(
             banners.Count > 0 ? banners : (cover is not null ? [cover] : []),
             cover,
             videos,
-            matchedName
+            matchedName,
+            matchedId
         );
     }
 
@@ -199,4 +196,4 @@ public sealed class IgdbApiClient
 }
 
 public sealed record IgdbVideo(string VideoId, string? Name);
-public sealed record IgdbGameAssets(List<string> Banners, string? Cover, List<IgdbVideo> Videos, string? MatchedName = null);
+public sealed record IgdbGameAssets(List<string> Banners, string? Cover, List<IgdbVideo> Videos, string? MatchedName = null, int? IgdbId = null);
