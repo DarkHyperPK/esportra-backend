@@ -181,6 +181,7 @@ public static class TournamentEndpoints
                         new { status, game, q, organizerGuid, isOnline = is_online, city, country, region, limit, offset })).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                tags: ["tournament-list"],
                 cancellationToken: ct);
             return Results.Json(rows, s_snakeCase);
         });
@@ -378,7 +379,7 @@ public static class TournamentEndpoints
             [FromBody] CreateTournamentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
-            IDistributedCache                 distCache,
+            HybridCache                       cache,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -492,9 +493,8 @@ public static class TournamentEndpoints
 
                 tx.Commit();
 
-                // Invalidate tournament list cache (HybridCache doesn't support wildcards)
-                // Remove known cache key patterns explicitly
-                try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
+                // Invalidate all tournament list cache entries
+                try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
 
                 return Results.Ok(tournament);
             }
@@ -511,7 +511,7 @@ public static class TournamentEndpoints
             [FromBody] UpdateTournamentRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
-            IDistributedCache             distCache,
+            HybridCache                   cache,
             CancellationToken             ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -689,7 +689,7 @@ public static class TournamentEndpoints
                 }
             }
 
-            try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
+            try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Organizer");
 
@@ -698,7 +698,7 @@ public static class TournamentEndpoints
             Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
-            IDistributedCache    distCache,
+            HybridCache          cache,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -715,7 +715,7 @@ public static class TournamentEndpoints
                 return Results.BadRequest(new { error = "Tournament must be moved to trash before it can be permanently deleted." });
 
             await conn.ExecuteAsync("DELETE FROM tournaments WHERE id = @id", new { id });
-            try { await distCache.RemoveAsync("tournaments:::::50:0", ct); } catch { /* best effort */ }
+            try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return Results.Ok(new { deleted = true });
         }).RequireAuthorization("Organizer");
 
