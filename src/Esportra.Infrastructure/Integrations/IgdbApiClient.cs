@@ -29,7 +29,15 @@ public sealed class IgdbApiClient
     private static readonly Dictionary<string, int> KnownGameIds = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Valorant"]           = 126459,
+        ["Counter-Strike 2"]   = 242408,
+        ["League of Legends"]  = 115,
+        ["Dota 2"]             = 2963,
         ["Fortnite"]           = 1905,
+        ["Apex Legends"]       = 114795,
+        ["PUBG"]               = 27789,  // PUBG: Battlegrounds
+        ["Rocket League"]      = 11198,
+        ["Tekken 8"]           = 217590,
+        ["EA FC"]              = 308698, // EA Sports FC 25
     };
 
     // IGDB search overrides — some games need different search terms than our display names
