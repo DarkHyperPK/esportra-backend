@@ -32,6 +32,15 @@ public sealed class IgdbApiClient
         ["Fortnite"]           = 1905,
     };
 
+    // IGDB search overrides — some games need different search terms than our display names
+    private static readonly Dictionary<string, string> IgdbSearchNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Counter-Strike 2"] = "Counter-Strike 2",
+        ["PUBG"]             = "PUBG: Battlegrounds",
+        ["EA FC"]            = "EA Sports FC 25",
+        ["Tekken 8"]         = "Tekken 8",
+    };
+
     // Alternate game names that map to the same IGDB IDs
     private static readonly Dictionary<string, string> GameNameAliases = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -54,6 +63,9 @@ public sealed class IgdbApiClient
         // Resolve aliases to canonical name
         var canonicalName = GameNameAliases.TryGetValue(gameName.Trim(), out var alias) ? alias : gameName.Trim();
 
+        // Resolve IGDB-specific search names for games where our display name differs
+        var igdbSearchName = IgdbSearchNames.TryGetValue(canonicalName, out var sn) ? sn : canonicalName;
+
         string body;
         if (KnownGameIds.TryGetValue(canonicalName, out var knownId))
         {
@@ -65,12 +77,33 @@ public sealed class IgdbApiClient
         }
         else
         {
+            // Use exact name match first, which is more reliable than fuzzy search
             body = $"""
-                search "{EscapeIgdb(canonicalName)}";
+                where name ~ *"{EscapeIgdb(igdbSearchName)}"*;
                 fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
                 limit 1;
                 """;
         }
+
+        var result = await QueryIgdbAsync(body, ct);
+        if (result is not null) return result;
+
+        // Fallback: fuzzy search (only if exact name match found nothing)
+        if (!KnownGameIds.ContainsKey(canonicalName))
+        {
+            body = $"""
+                search "{EscapeIgdb(igdbSearchName)}";
+                fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
+                limit 1;
+                """;
+            return await QueryIgdbAsync(body, ct);
+        }
+
+        return null;
+    }
+
+    private async Task<IgdbGameAssets?> QueryIgdbAsync(string body, CancellationToken ct)
+    {
 
         var request = new HttpRequestMessage(HttpMethod.Post, "https://api.igdb.com/v4/games")
         {
