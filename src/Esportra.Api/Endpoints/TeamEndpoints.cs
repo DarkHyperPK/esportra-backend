@@ -237,8 +237,8 @@ public static class TeamEndpoints
                     name        = COALESCE(@name, name),
                     tag         = COALESCE(@tag,  tag),
                     description = COALESCE(@description, description),
-                    logo_url    = COALESCE(@logoUrl, logo_url),
-                    banner_url  = COALESCE(@bannerUrl, banner_url),
+                    logo_url    = CASE WHEN @removeLogo THEN NULL ELSE COALESCE(@logoUrl, logo_url) END,
+                    banner_url  = CASE WHEN @removeBanner THEN NULL ELSE COALESCE(@bannerUrl, banner_url) END,
                     website_url = COALESCE(@websiteUrl, website_url),
                     country_code = COALESCE(@countryCode, country_code),
                     updated_at  = NOW()
@@ -256,6 +256,8 @@ public static class TeamEndpoints
                     bannerUrl   = req.BannerUrl,
                     websiteUrl  = req.WebsiteUrl,
                     countryCode = req.CountryCode,
+                    removeLogo  = req.RemoveLogo,
+                    removeBanner = req.RemoveBanner,
                 });
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -1424,7 +1426,9 @@ public sealed record UpdateTeamRequest(
     string? LogoUrl     = null,
     string? BannerUrl   = null,
     string? WebsiteUrl  = null,
-    string? CountryCode = null);
+    string? CountryCode = null,
+    bool RemoveLogo     = false,
+    bool RemoveBanner   = false);
 
 public sealed record TransferCaptainRequest(string NewCaptainId);
 
