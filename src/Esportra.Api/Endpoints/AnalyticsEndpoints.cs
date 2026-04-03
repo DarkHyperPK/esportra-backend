@@ -129,11 +129,15 @@ public static class AnalyticsEndpoints
                 "SELECT role, status, is_active FROM verified_roles WHERE user_id = @userId",
                 new { userId = userCtx.UserIdGuid });
 
+            var verificationRequests = await conn.QueryAsync<dynamic>(
+                "SELECT id, requested_role, status, business_name, business_type, created_at, reviewed_at, rejection_reason, verification_notes FROM verification_requests WHERE user_id = @userId ORDER BY created_at DESC",
+                new { userId = userCtx.UserIdGuid });
+
             var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { userRoles, verifiedRoles, organization_id = (object?)org?.id });
+            return Results.Ok(new { userRoles, verifiedRoles, verificationRequests, organization_id = (object?)org?.id });
         }).RequireAuthorization("Authenticated");
     }
 }
