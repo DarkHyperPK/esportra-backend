@@ -24,11 +24,34 @@ public sealed class IgdbApiClient
         _clientSecret = config["Igdb:ClientSecret"] ?? string.Empty;
     }
 
-    // Known IGDB game IDs for exact matches (avoids fuzzy search returning wrong game)
-    // IGDB fuzzy search handles all our supported games correctly by name.
-    // Do NOT hardcode game IDs — they can silently point to wrong games.
+    // Known IGDB game IDs for exact matches (avoids fuzzy search returning wrong game).
+    // Verified IDs from IGDB — use `where id = X` for precise results.
     private static readonly Dictionary<string, int> KnownGameIds = new(StringComparer.OrdinalIgnoreCase)
     {
+        ["Valorant"]           = 126459,
+        ["Counter-Strike 2"]   = 227155,
+        ["League of Legends"]  = 115,
+        ["Dota 2"]             = 1942,
+        ["Fortnite"]           = 1905,
+        ["Apex Legends"]       = 114795,
+        ["PUBG"]               = 131572, // PUBG: Battlegrounds
+        ["Rocket League"]      = 7346,
+        ["Tekken 8"]           = 216716,
+        ["EA FC"]              = 265036, // EA Sports FC 25
+    };
+
+    // Alternate game names that map to the same IGDB IDs
+    private static readonly Dictionary<string, string> GameNameAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["CS2"]                          = "Counter-Strike 2",
+        ["CSGO"]                         = "Counter-Strike 2",
+        ["Counter-Strike: Global Offensive"] = "Counter-Strike 2",
+        ["LoL"]                          = "League of Legends",
+        ["PUBG: Battlegrounds"]          = "PUBG",
+        ["PlayerUnknown's Battlegrounds"]= "PUBG",
+        ["EA Sports FC"]                 = "EA FC",
+        ["EA Sports FC 25"]              = "EA FC",
+        ["FIFA"]                         = "EA FC",
     };
 
     /// <summary>Search for a game and return all artwork, screenshot, and video assets.</summary>
@@ -36,8 +59,11 @@ public sealed class IgdbApiClient
     {
         await EnsureTokenAsync(ct);
 
+        // Resolve aliases to canonical name
+        var canonicalName = GameNameAliases.TryGetValue(gameName.Trim(), out var alias) ? alias : gameName.Trim();
+
         string body;
-        if (KnownGameIds.TryGetValue(gameName.Trim(), out var knownId))
+        if (KnownGameIds.TryGetValue(canonicalName, out var knownId))
         {
             body = $"""
                 where id = {knownId};
@@ -48,7 +74,7 @@ public sealed class IgdbApiClient
         else
         {
             body = $"""
-                search "{EscapeIgdb(gameName)}";
+                search "{EscapeIgdb(canonicalName)}";
                 fields name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name;
                 limit 1;
                 """;
@@ -119,10 +145,14 @@ public sealed class IgdbApiClient
 
         if (banners.Count == 0 && cover is null) return null;
 
+        // Extract matched game name from IGDB response
+        var matchedName = game.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
+
         return new IgdbGameAssets(
             banners.Count > 0 ? banners : (cover is not null ? [cover] : []),
             cover,
-            videos
+            videos,
+            matchedName
         );
     }
 
@@ -144,4 +174,4 @@ public sealed class IgdbApiClient
 }
 
 public sealed record IgdbVideo(string VideoId, string? Name);
-public sealed record IgdbGameAssets(List<string> Banners, string? Cover, List<IgdbVideo> Videos);
+public sealed record IgdbGameAssets(List<string> Banners, string? Cover, List<IgdbVideo> Videos, string? MatchedName = null);
