@@ -62,6 +62,7 @@ public static class TournamentEndpoints
         string?   OrganizationSlug,
         string?   OrganizerUsername,
         string?   OrganizerFullName,
+        string?   Region = null,
         string?   WinnerTeamName = null,
         string?   VenueCity = null,
         string?   VenueCountry = null
@@ -74,7 +75,7 @@ public static class TournamentEndpoints
                t.entry_fee, t.prize_pool,
                t.banner_url, t.logo_url, t.is_public,
                t.organizer_id, t.venue_id, t.description,
-               t.created_at, t.updated_at,
+               t.created_at, t.updated_at, t.region,
                (SELECT COUNT(*) FROM tournament_participants tp
                 WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                o.name   AS organizer_name,
@@ -100,6 +101,7 @@ public static class TournamentEndpoints
                OR (@isOnline = FALSE AND t.venue_id IS NOT NULL))
           AND (@city    IS NULL OR v.city    ILIKE '%' || @city    || '%')
           AND (@country IS NULL OR v.country ILIKE '%' || @country || '%')
+          AND (@region  IS NULL OR t.region = @region)
         ORDER BY t.start_date ASC
         LIMIT @limit OFFSET @offset
         """;
@@ -117,6 +119,7 @@ public static class TournamentEndpoints
             bool?                is_online,
             string?              city,
             string?              country,
+            string?              region,
             int                  limit  = 50,
             int                  offset = 0,
             IDbConnectionFactory db     = null!,
@@ -143,7 +146,7 @@ public static class TournamentEndpoints
                            t.entry_fee, t.prize_pool,
                            t.banner_url, t.logo_url, t.is_public,
                            t.organizer_id, t.venue_id, t.description,
-                           t.created_at, t.updated_at,
+                           t.created_at, t.updated_at, t.region,
                            (SELECT COUNT(*) FROM tournament_participants tp
                             WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                            o.name   AS organizer_name,
@@ -165,7 +168,7 @@ public static class TournamentEndpoints
                 return Results.Json(rows2, s_snakeCase);
             }
 
-            var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{is_online}:{city}:{country}:{limit}:{offset}";
+            var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{is_online}:{city}:{country}:{region}:{limit}:{offset}";
             Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
             var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
                 cacheKey,
@@ -174,7 +177,7 @@ public static class TournamentEndpoints
                     using var conn = db.CreateConnection();
                     return (await conn.QueryAsync<TournamentListRow>(
                         TournamentListSql,
-                        new { status, game, q, organizerGuid, isOnline = is_online, city, country, limit, offset })).AsList();
+                        new { status, game, q, organizerGuid, isOnline = is_online, city, country, region, limit, offset })).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 cancellationToken: ct);
@@ -238,7 +241,7 @@ public static class TournamentEndpoints
                                t.entry_fee, t.prize_pool,
                                t.banner_url, t.logo_url, t.is_public,
                                t.organizer_id, t.venue_id, t.description,
-                               t.created_at, t.updated_at,
+                               t.created_at, t.updated_at, t.region,
                                (SELECT COUNT(*) FROM tournament_participants tp
                                 WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                                o.name AS organizer_name,
@@ -400,19 +403,19 @@ public static class TournamentEndpoints
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
-                        rewards, stream_url, settings, organizer_id, rules, payment_instructions
+                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
-                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions
+                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region
                     )
                     RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
                              status, banner_url, logo_url, organization_id, venue_id, is_public,
                              check_in_required, check_in_deadline, auto_remove_unchecked,
-                             rewards, stream_url, settings, organizer_id, created_at, rules, payment_instructions
+                             rewards, stream_url, settings, organizer_id, created_at, rules, payment_instructions, region
                     """,
                     new
                     {
@@ -445,6 +448,7 @@ public static class TournamentEndpoints
                         organizerId          = userCtx.UserIdGuid,
                         rules                = req.Rules,
                         paymentInstructions  = req.PaymentInstructions,
+                        region               = req.Region,
                     },
                     tx);
 
@@ -542,6 +546,7 @@ public static class TournamentEndpoints
                     stream_url           = COALESCE(@streamUrl, stream_url),
                     rules                = COALESCE(@rules, rules),
                     payment_instructions = COALESCE(@paymentInstructions, payment_instructions),
+                    region               = COALESCE(@region, region),
                     settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
@@ -550,7 +555,7 @@ public static class TournamentEndpoints
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
                          status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
-                         rewards, stream_url, rules, payment_instructions, settings, organizer_id, created_at, updated_at
+                         rewards, stream_url, rules, payment_instructions, region, settings, organizer_id, created_at, updated_at
                 """,
                 new
                 {
@@ -574,6 +579,7 @@ public static class TournamentEndpoints
                     streamUrl            = req.StreamUrl,
                     rules                = req.Rules,
                     paymentInstructions  = req.PaymentInstructions,
+                    region               = req.Region,
                     settings             = req.Settings is not null
                                              ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
                                              : null,
@@ -3285,6 +3291,7 @@ public sealed record CreateTournamentRequest(
     string?    LogoUrl              = null,
     string?    OrganizationId       = null,
     string?    VenueId              = null,
+    string?    Region               = null,
     bool?      IsPublic             = true,
     bool?      CheckInRequired      = false,
     DateTime?  CheckInDeadline      = null,
@@ -3318,6 +3325,7 @@ public sealed record UpdateTournamentRequest(
     DateTime? RegistrationDeadline = null,
     string?   BannerUrl            = null,
     string?   LogoUrl              = null,
+    string?   Region               = null,
     bool?     IsPublic             = null,
     bool?     CheckInRequired      = null,
     DateTime? CheckInDeadline      = null,
