@@ -25,19 +25,11 @@ public sealed class IgdbApiClient
     }
 
     // Known IGDB game IDs for exact matches (avoids fuzzy search returning wrong game).
-    // Verified IDs from IGDB — use `where id = X` for precise results.
+    // Only add IDs that have been verified against IGDB API response.
     private static readonly Dictionary<string, int> KnownGameIds = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Valorant"]           = 126459,
-        ["Counter-Strike 2"]   = 227155,
-        ["League of Legends"]  = 115,
-        ["Dota 2"]             = 1942,
         ["Fortnite"]           = 1905,
-        ["Apex Legends"]       = 114795,
-        ["PUBG"]               = 131572, // PUBG: Battlegrounds
-        ["Rocket League"]      = 7346,
-        ["Tekken 8"]           = 216716,
-        ["EA FC"]              = 265036, // EA Sports FC 25
     };
 
     // Alternate game names that map to the same IGDB IDs
