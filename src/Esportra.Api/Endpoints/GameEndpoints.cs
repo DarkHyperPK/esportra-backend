@@ -145,7 +145,7 @@ public static class GameEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Check cache
+            // Check cache (igdb_assets JSONB column)
             string? cachedJson = null;
             try
             {
@@ -156,7 +156,7 @@ public static class GameEndpoints
                       AND last_updated > NOW() - INTERVAL '7 days'
                     """, new { name = game });
             }
-            catch { /* column may not exist yet */ }
+            catch { /* column may not exist yet — migration pending */ }
 
             if (cachedJson is not null)
                 return Results.Text(cachedJson, "application/json");
@@ -164,13 +164,15 @@ public static class GameEndpoints
             // Fetch from IGDB
             var assets = await igdb.GetGameAssetsAsync(game, ct);
             if (assets is null)
-                return Results.Ok(new { banners = Array.Empty<string>(), cover = (string?)null, videos = Array.Empty<object>() });
+                return Results.Ok(new { banners = Array.Empty<string>(), cover = (string?)null, videos = Array.Empty<object>(), matchedGame = (string?)null });
 
             var response = new
             {
                 banners = assets.Banners,
                 cover = assets.Cover,
-                videos = assets.Videos.Select(v => new { videoId = v.VideoId, name = v.Name })
+                videos = assets.Videos.Select(v => new { videoId = v.VideoId, name = v.Name }),
+                matchedGame = assets.MatchedName,
+                igdbId = assets.IgdbId
             };
 
             // Cache the full response as JSON
@@ -185,7 +187,7 @@ public static class GameEndpoints
                         last_updated = EXCLUDED.last_updated
                     """, new { name = game, json = responseJson });
             }
-            catch { /* cache write failure is non-critical */ }
+            catch { /* cache write failure is non-critical — column may not exist yet */ }
 
             return Results.Ok(response);
         }); // Public
