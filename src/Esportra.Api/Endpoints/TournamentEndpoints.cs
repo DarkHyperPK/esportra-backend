@@ -57,12 +57,12 @@ public static class TournamentEndpoints
         string?   Description,
         DateTime  CreatedAt,
         DateTime? UpdatedAt,
+        string?   Region,
         long      CurrentParticipants,
         string?   OrganizerName,
         string?   OrganizationSlug,
         string?   OrganizerUsername,
         string?   OrganizerFullName,
-        string?   Region = null,
         string?   WinnerTeamName = null,
         string?   VenueCity = null,
         string?   VenueCountry = null
