@@ -90,8 +90,8 @@ public static class TournamentEndpoints
         LEFT JOIN profiles      p ON p.id = t.organizer_id
         LEFT JOIN teams        wt ON wt.id = t.winner_id
         LEFT JOIN venues        v ON v.id  = t.venue_id
-        WHERE t.is_public = TRUE
-          AND t.deleted_at IS NULL
+        WHERE t.deleted_at IS NULL
+          AND (t.is_public = TRUE OR t.organizer_id = @organizerGuid)
           AND (@status IS NULL OR t.status::text = @status)
           AND (@game   IS NULL OR t.game   ILIKE '%' || @game || '%')
           AND (@q      IS NULL OR t.name   ILIKE '%' || @q   || '%')
