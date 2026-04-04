@@ -76,33 +76,54 @@ public sealed class IgdbApiClient
 
         const string fields = "id, name, artworks.image_id, cover.image_id, screenshots.image_id, videos.video_id, videos.name";
 
-        // Strategy 1: Known ID (most reliable)
+        // Strategy 1: Known ID (most reliable — still validate in case IGDB reassigned IDs)
         if (KnownGameIds.TryGetValue(canonicalName, out var knownId))
         {
             var body = $"where id = {knownId}; fields {fields}; limit 1;";
             var result = await QueryIgdbAsync(body, ct);
-            if (result is not null) return result;
+            if (result is not null && IsRelevantMatch(result.MatchedName, canonicalName, igdbSearchName))
+                return result;
         }
 
         // Strategy 2: Exact name match
         {
             var body = $"""where name = "{EscapeIgdb(igdbSearchName)}"; fields {fields}; limit 1;""";
             var result = await QueryIgdbAsync(body, ct);
-            if (result is not null) return result;
+            if (result is not null && IsRelevantMatch(result.MatchedName, canonicalName, igdbSearchName))
+                return result;
         }
 
         // Strategy 3: Contains match (prefer shorter names = base games)
         {
             var body = $"""where name ~ *"{EscapeIgdb(igdbSearchName)}"*; fields {fields}; sort name.asc; limit 1;""";
             var result = await QueryIgdbAsync(body, ct);
-            if (result is not null) return result;
+            if (result is not null && IsRelevantMatch(result.MatchedName, canonicalName, igdbSearchName))
+                return result;
         }
 
-        // Strategy 4: Fuzzy search (last resort)
+        // Strategy 4: Fuzzy search (last resort — validate to avoid wrong game artwork)
         {
             var body = $"""search "{EscapeIgdb(igdbSearchName)}"; fields {fields}; limit 1;""";
-            return await QueryIgdbAsync(body, ct);
+            var result = await QueryIgdbAsync(body, ct);
+            if (result is not null && IsRelevantMatch(result.MatchedName, canonicalName, igdbSearchName))
+                return result;
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Validates that the IGDB-matched game name is actually related to what we searched for.
+    /// Prevents caching wrong game artwork (e.g. "Grit and Valor" for "Valorant").
+    /// </summary>
+    private static bool IsRelevantMatch(string? matchedName, string canonicalName, string igdbSearchName)
+    {
+        if (string.IsNullOrEmpty(matchedName)) return true; // can't validate — allow
+        var matched = matchedName.ToLowerInvariant();
+        var canonical = canonicalName.ToLowerInvariant();
+        var search = igdbSearchName.ToLowerInvariant();
+        return matched.Contains(canonical) || canonical.Contains(matched) ||
+               matched.Contains(search) || search.Contains(matched);
     }
 
     private async Task<IgdbGameAssets?> QueryIgdbAsync(string body, CancellationToken ct)
