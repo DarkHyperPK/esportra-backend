@@ -2369,7 +2369,295 @@ public static class AdminEndpoints
                 contactEmail,
             });
         }).RequireAuthorization("Admin");
+
+        // ══════════════════════════════════════════════════════════════════════
+        // TEAM MANAGEMENT (super_admin only)
+        // ══════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/teams — paginated list with search + stats ────────
+        app.MapGet("/api/admin/teams", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct,
+            string?  search = null,
+            string?  game   = null,
+            int      limit  = 20,
+            int      offset = 0) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            limit = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string> { "t.is_solo = FALSE" };
+            if (!string.IsNullOrWhiteSpace(search))
+                conditions.Add("(t.name ILIKE @search OR t.tag ILIKE @search)");
+            if (!string.IsNullOrWhiteSpace(game))
+                conditions.Add("t.game ILIKE @game");
+
+            var where = "WHERE " + string.Join(" AND ", conditions);
+            var searchParam = search is not null ? $"%{search}%" : null;
+            var gameParam = game is not null ? $"%{game}%" : null;
+
+            var total = await conn.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*) FROM teams t {where}",
+                new { search = searchParam, game = gameParam });
+
+            var teams = await conn.QueryAsync<dynamic>(
+                $"""
+                SELECT t.id, t.name, t.tag, t.game, t.logo_url, t.owner_id, t.is_active,
+                       t.country_code, t.created_at,
+                       (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id AND tm.is_active = TRUE) AS member_count,
+                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.team_id = t.id) AS tournament_count,
+                       (SELECT COUNT(*) FROM tournaments tr WHERE tr.winner_id = t.id AND tr.status = 'completed') AS wins,
+                       p.username AS owner_username, p.full_name AS owner_name, p.avatar_url AS owner_avatar
+                FROM teams t
+                LEFT JOIN profiles p ON p.id = t.owner_id
+                {where}
+                ORDER BY t.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { search = searchParam, game = gameParam, limit, offset });
+
+            // Aggregate stats
+            var stats = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE is_solo = FALSE) AS total_teams,
+                    COUNT(*) FILTER (WHERE is_solo = FALSE AND is_active = TRUE) AS active_teams,
+                    ROUND(AVG(mc)::numeric, 1) AS avg_members
+                FROM teams t
+                LEFT JOIN LATERAL (
+                    SELECT COUNT(*) AS mc FROM team_members tm WHERE tm.team_id = t.id AND tm.is_active = TRUE
+                ) m ON TRUE
+                WHERE t.is_solo = FALSE
+                """);
+
+            return Results.Ok(new { teams, total, stats });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/teams/{id} — full detail ─────────────────────────
+        app.MapGet("/api/admin/teams/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT t.*, p.username AS owner_username, p.full_name AS owner_name, p.avatar_url AS owner_avatar
+                FROM teams t
+                LEFT JOIN profiles p ON p.id = t.owner_id
+                WHERE t.id = @id
+                """, new { id });
+            if (team is null) return Results.NotFound();
+
+            var members = await conn.QueryAsync<dynamic>(
+                """
+                SELECT tm.user_id, tm.role, tm.is_active, tm.joined_at, tm.display_order,
+                       p.username, p.full_name, p.avatar_url, p.email
+                FROM team_members tm
+                LEFT JOIN profiles p ON p.id = tm.user_id
+                WHERE tm.team_id = @id
+                ORDER BY tm.display_order ASC, tm.joined_at ASC
+                """, new { id });
+
+            var tournaments = await conn.QueryAsync<dynamic>(
+                """
+                SELECT tp.tournament_id, tp.status, tp.registration_date AS registered_at,
+                       t.name AS tournament_name, t.game, t.status AS tournament_status,
+                       t.start_date, t.prize_pool
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE tp.team_id = @id
+                ORDER BY t.start_date DESC
+                """, new { id });
+
+            var invites = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ti.id, ti.invited_user_id, ti.status, ti.created_at, ti.responded_at,
+                       p.username AS invited_username, p.avatar_url AS invited_avatar
+                FROM team_invitations ti
+                LEFT JOIN profiles p ON p.id = ti.invited_user_id
+                WHERE ti.team_id = @id
+                ORDER BY ti.created_at DESC
+                LIMIT 20
+                """, new { id });
+
+            // Leaderboard rank (RP calculation)
+            var leaderboard = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                WITH team_stats AS (
+                    SELECT
+                        COALESCE(SUM(CASE WHEN m.winner_id = @id THEN 1 ELSE 0 END), 0) AS wins,
+                        COALESCE(SUM(CASE
+                            WHEN m.status = 'completed' AND m.winner_id IS NOT NULL AND m.winner_id != @id
+                            THEN 1 ELSE 0
+                        END), 0) AS losses,
+                        COALESCE((SELECT COUNT(*) FROM tournaments tr WHERE tr.winner_id = @id AND tr.status = 'completed'), 0) AS tournament_wins
+                    FROM brkt_matches m
+                    WHERE (m.team1_id = @id OR m.team2_id = @id) AND m.status = 'completed'
+                )
+                SELECT wins, losses, (wins + losses) AS matches_played,
+                       CASE WHEN (wins + losses) > 0 THEN ROUND(wins * 100.0 / (wins + losses), 1) ELSE 0 END AS win_rate,
+                       tournament_wins AS tournaments_won,
+                       (wins * 50 + tournament_wins * 500 - losses * 10) AS rp
+                FROM team_stats
+                """, new { id });
+
+            return Results.Ok(new { team, members, tournaments, invites, leaderboard });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/teams/{id} — disband team ─────────────────────
+        app.MapDelete("/api/admin/teams/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, name FROM teams WHERE id = @id", new { id });
+            if (team is null) return Results.NotFound();
+
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                await conn.ExecuteAsync("DELETE FROM team_roster_members WHERE roster_id IN (SELECT id FROM team_rosters WHERE team_id = @id)", new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM team_rosters WHERE team_id = @id", new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM team_invitations WHERE team_id = @id", new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id",     new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM tournament_participants WHERE team_id = @id", new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id",                 new { id }, tx);
+                tx.Commit();
+            }
+            catch { tx.Rollback(); throw; }
+
+            return Results.Ok(new { success = true, disbanded = (string)team.name });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/teams/{id}/members/{userId} — remove member ───
+        app.MapDelete("/api/admin/teams/{id}/members/{userId}", async (
+            Guid                 id,
+            Guid                 userId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            // Prevent removing the captain — must transfer first
+            var member = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT role FROM team_members WHERE team_id = @id AND user_id = @userId",
+                new { id, userId });
+            if (member is null) return Results.NotFound(new { error = "Member not found." });
+            if ((string)member.role == "captain")
+                return Results.BadRequest(new { error = "Cannot remove captain. Transfer captaincy first." });
+
+            await conn.ExecuteAsync(
+                "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
+                new { id, userId });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/teams/{id}/transfer-captain ─────────────────────
+        app.MapPost("/api/admin/teams/{id}/transfer-captain", async (
+            Guid                              id,
+            [FromBody] AdminTransferCaptainReq req,
+            HttpContext                        ctx,
+            IDbConnectionFactory              db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            if (!Guid.TryParse(req.NewCaptainId, out var newCaptainId))
+                return Results.BadRequest(new { error = "Invalid user ID." });
+
+            using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                // Demote current captain
+                await conn.ExecuteAsync(
+                    "UPDATE team_members SET role = 'member' WHERE team_id = @id AND role = 'captain'",
+                    new { id }, tx);
+
+                // Promote new captain
+                var affected = await conn.ExecuteAsync(
+                    "UPDATE team_members SET role = 'captain' WHERE team_id = @id AND user_id = @newCaptainId",
+                    new { id, newCaptainId }, tx);
+                if (affected == 0) { tx.Rollback(); return Results.BadRequest(new { error = "User is not a team member." }); }
+
+                // Transfer ownership
+                await conn.ExecuteAsync(
+                    "UPDATE teams SET owner_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
+                    new { id, newCaptainId }, tx);
+
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id",
+                    new { id, newCaptainId }, tx);
+
+                tx.Commit();
+            }
+            catch { tx.Rollback(); throw; }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/teams/{id} — edit team details ───────────────────
+        app.MapPut("/api/admin/teams/{id}", async (
+            Guid                          id,
+            [FromBody] AdminEditTeamReq   req,
+            HttpContext                    ctx,
+            IDbConnectionFactory          db,
+            CancellationToken             ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                UPDATE teams SET
+                    name        = COALESCE(@name, name),
+                    tag         = COALESCE(@tag, tag),
+                    description = COALESCE(@description, description),
+                    game        = COALESCE(@game, game),
+                    updated_at  = NOW()
+                WHERE id = @id
+                RETURNING id, name, tag, game
+                """,
+                new { id, name = req.Name, tag = req.Tag, description = req.Description, game = req.Game });
+
+            return updated is null ? Results.NotFound() : Results.Ok(updated);
+        }).RequireAuthorization("Admin");
     }
+
+    private sealed record AdminTransferCaptainReq(string NewCaptainId);
+    private sealed record AdminEditTeamReq(string? Name = null, string? Tag = null, string? Description = null, string? Game = null);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
