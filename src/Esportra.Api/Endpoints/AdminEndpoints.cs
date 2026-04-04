@@ -2386,7 +2386,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -2448,7 +2448,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -2526,7 +2526,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -2560,7 +2560,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -2589,7 +2589,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             if (!Guid.TryParse(req.NewCaptainId, out var newCaptainId))
                 return Results.BadRequest(new { error = "Invalid user ID." });
@@ -2635,7 +2635,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
