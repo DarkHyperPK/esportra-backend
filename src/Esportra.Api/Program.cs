@@ -252,6 +252,13 @@ builder.Services.AddHttpClient("GeoIP", http =>
     http.Timeout = TimeSpan.FromSeconds(3);
 });
 
+// Named VenueHub client for venue-hub inter-service calls
+builder.Services.AddHttpClient("VenueHub", http =>
+{
+    http.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddSingleton<Esportra.Api.Services.VenueHubService>();
+
 // ── Phase 2: Core services ────────────────────────────────────────────────────
 builder.Services.AddScoped<BracketPersistenceService>();
 builder.Services.AddScoped<MatchFinalizationService>();

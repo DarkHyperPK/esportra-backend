@@ -426,6 +426,7 @@ public static class VenueEndpoints
             [FromBody] CreateBookingRequest req,
             HttpContext                     ctx,
             IDbConnectionFactory           db,
+            Esportra.Api.Services.VenueHubService venueHub,
             CancellationToken              ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -457,26 +458,27 @@ public static class VenueEndpoints
                     return Results.BadRequest(new { error = $"Only {req.AvailableStations} stations available." });
                 }
 
-                // 2. Calculate end time
+                // 2. Calculate end time and generate booking code
                 var start   = TimeOnly.Parse(req.StartTime);
                 var end     = start.AddHours(req.Hours);
                 var endStr  = end.ToString("HH:mm");
                 var total   = effectivePrice * req.Hours * req.Stations;
+                var bookingCode = GenerateBookingCode();
 
-                // 3. Insert booking
+                // 3. Insert booking with code
                 var booking = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO venue_bookings
                         (venue_id, user_id, booking_date, start_time, end_time,
                          duration_hours, stations_booked, total_amount, status,
-                         special_requests, contact_phone, contact_email)
+                         booking_code, special_requests, contact_phone, contact_email)
                     VALUES
                         (@venueId, @userId, @date::date, @startTime::time, @endTime::time,
-                         @hours, @stations, @total, 'pending',
-                         @specialRequests, @contactPhone, @contactEmail)
+                         @hours, @stations, @total, 'confirmed',
+                         @bookingCode, @specialRequests, @contactPhone, @contactEmail)
                     RETURNING id, venue_id, user_id, booking_date, start_time, end_time,
                              duration_hours, stations_booked, total_amount, status,
-                             special_requests, contact_phone, contact_email, created_at
+                             booking_code, special_requests, contact_phone, contact_email, created_at
                     """,
                     new
                     {
@@ -488,6 +490,7 @@ public static class VenueEndpoints
                         hours          = req.Hours,
                         stations       = req.Stations,
                         total,
+                        bookingCode,
                         specialRequests = req.SpecialRequests,
                         contactPhone   = req.ContactPhone,
                         contactEmail   = req.ContactEmail,
@@ -506,6 +509,25 @@ public static class VenueEndpoints
                 }
 
                 tx.Commit();
+
+                // 5. Route to venue-hub (fire-and-forget, non-blocking)
+                if (venueHub.IsConfigured)
+                {
+                    var bookingId = ((dynamic)booking).id.ToString();
+                    var durationMinutes = req.Hours * 60;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await venueHub.RouteBookingAsync(
+                                bookingId, id.ToString(), null,
+                                userCtx.UserId, userCtx.Email ?? "Customer",
+                                durationMinutes, bookingCode, req.StartTime);
+                        }
+                        catch { /* best-effort — local hub will pick it up via sync */ }
+                    }, ct);
+                }
+
                 return Results.Ok(booking);
             }
             catch
@@ -617,6 +639,38 @@ public static class VenueEndpoints
                 """, new { id, userId = userCtx.UserIdGuid });
             return booking is null ? Results.NotFound() : Results.Ok(booking);
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/venues/{id}/online — venue hub online status ————————————
+        app.MapGet("/api/venues/{id}/online", async (
+            Guid id,
+            Esportra.Api.Services.VenueHubService venueHub) =>
+        {
+            var isOnline = await venueHub.IsVenueOnlineAsync(id.ToString());
+            return Results.Ok(new { venueId = id, isOnline });
+        });
+
+        // ── GET /api/venues/{id}/seats — real-time seat availability —————————
+        app.MapGet("/api/venues/{id}/seats", async (
+            Guid id,
+            Esportra.Api.Services.VenueHubService venueHub) =>
+        {
+            var seats = await venueHub.GetVenueSeatsAsync(id.ToString());
+            if (seats is null)
+                return Results.Ok(new { venueId = id, isOnline = false, stations = Array.Empty<object>() });
+            return Results.Ok(seats);
+        });
+    }
+
+    private static string GenerateBookingCode()
+    {
+        const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 to avoid confusion
+        var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+        var bytes = new byte[8];
+        rng.GetBytes(bytes);
+        var code = new char[8];
+        for (var i = 0; i < 8; i++)
+            code[i] = chars[bytes[i] % chars.Length];
+        return new string(code);
     }
 }
 
