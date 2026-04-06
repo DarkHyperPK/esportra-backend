@@ -21,8 +21,11 @@ public sealed class VenueHubService
     {
         _httpFactory = httpFactory;
         _venueHubUrl = config["VenueHub:Url"]?.TrimEnd('/') ?? "";
-        _internalSecret = config["VenueHub:InternalSecret"] ?? "dev-internal-secret-change-in-production";
+        _internalSecret = config["VenueHub:InternalSecret"] ?? "";
         _logger = logger;
+
+        if (IsConfigured && string.IsNullOrEmpty(_internalSecret))
+            _logger.LogWarning("VenueHub:Url is set but VenueHub:InternalSecret is missing — authenticated calls will fail");
     }
 
     /// <summary>

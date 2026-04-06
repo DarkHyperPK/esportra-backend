@@ -432,6 +432,14 @@ public static class VenueEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            // Input validation
+            if (req.Hours <= 0 || req.Hours > 24)
+                return Results.BadRequest(new { error = "Hours must be between 1 and 24." });
+            if (req.Stations <= 0)
+                return Results.BadRequest(new { error = "Stations must be at least 1." });
+            if (!TimeOnly.TryParse(req.StartTime, out var start))
+                return Results.BadRequest(new { error = "Invalid start time format." });
+
             using var conn = db.CreateConnection();
             using var tx   = conn.BeginTransaction();
             try
@@ -453,13 +461,18 @@ public static class VenueEndpoints
                         return Results.BadRequest(new { error = "Slot not available or insufficient stations." });
                     effectivePrice = (decimal)avail.price_per_hour;
                 }
-                else if (req.Stations > req.AvailableStations)
+                else
                 {
-                    return Results.BadRequest(new { error = $"Only {req.AvailableStations} stations available." });
+                    // No availability record — check against venue's total station count
+                    var venueStations = await conn.QuerySingleOrDefaultAsync<int?>(
+                        "SELECT total_stations FROM venues WHERE id = @id", new { id }, tx);
+                    if (venueStations is null)
+                        return Results.NotFound(new { error = "Venue not found." });
+                    if (req.Stations > venueStations.Value)
+                        return Results.BadRequest(new { error = $"Only {venueStations.Value} stations available." });
                 }
 
                 // 2. Calculate end time and generate booking code
-                var start   = TimeOnly.Parse(req.StartTime);
                 var end     = start.AddHours(req.Hours);
                 var endStr  = end.ToString("HH:mm");
                 var total   = effectivePrice * req.Hours * req.Stations;
@@ -515,16 +528,26 @@ public static class VenueEndpoints
                 {
                     var bookingId = ((dynamic)booking).id.ToString();
                     var durationMinutes = req.Hours * 60;
+
+                    // Fetch display name from profile instead of exposing email
+                    var displayName = await conn.QuerySingleOrDefaultAsync<string?>(
+                        "SELECT username FROM profiles WHERE id = @userId",
+                        new { userId = userCtx.UserIdGuid }) ?? "Online Booking";
+
                     _ = Task.Run(async () =>
                     {
                         try
                         {
                             await venueHub.RouteBookingAsync(
                                 bookingId, id.ToString(), null,
-                                userCtx.UserId, userCtx.Email ?? "Customer",
+                                userCtx.UserId, displayName,
                                 durationMinutes, bookingCode, req.StartTime);
                         }
-                        catch { /* best-effort — local hub will pick it up via sync */ }
+                        catch (Exception ex)
+                        {
+                            // Best-effort — local hub will pick it up via booking code sync
+                            Console.WriteLine($"[VenueBooking] Route to venue-hub failed for {bookingId}: {ex.Message}");
+                        }
                     }, ct);
                 }
 
@@ -664,9 +687,8 @@ public static class VenueEndpoints
     private static string GenerateBookingCode()
     {
         const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 to avoid confusion
-        var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
         var bytes = new byte[8];
-        rng.GetBytes(bytes);
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
         var code = new char[8];
         for (var i = 0; i < 8; i++)
             code[i] = chars[bytes[i] % chars.Length];
@@ -735,7 +757,6 @@ public sealed record CreateBookingRequest(
     int      Hours,
     int      Stations,
     decimal  PricePerHour,
-    int      AvailableStations,
     string?  SpecialRequests = null,
     string?  ContactPhone    = null,
     string?  ContactEmail    = null);
