@@ -101,9 +101,15 @@ public static class VenueEndpoints
             double               lat,
             double               lng,
             double               radiusKm   = 50,
+            int                  limit      = 20,
+            int                  offset     = 0,
             IDbConnectionFactory db         = null!,
             CancellationToken    ct         = default) =>
         {
+            if (limit > 100) limit = 100;
+            if (limit < 1) limit = 1;
+            if (offset < 0) offset = 0;
+
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
@@ -128,8 +134,9 @@ public static class VenueEndpoints
                     )
                   )) <= @radiusKm
                 ORDER BY distance_km ASC
+                LIMIT @limit OFFSET @offset
                 """,
-                new { lat, lng, radiusKm });
+                new { lat, lng, radiusKm, limit, offset });
             return Results.Ok(rows);
         });
 
@@ -170,8 +177,16 @@ public static class VenueEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Generate a unique venue_id (VN-XXXXX format)
-            var venueIdStr = $"VN-{Guid.NewGuid().ToString("N")[..6].ToUpper()}";
+            // Generate a unique venue_id with collision retry
+            string venueIdStr;
+            for (int attempt = 0; ; attempt++)
+            {
+                venueIdStr = $"VN-{Guid.NewGuid().ToString("N")[..8].ToUpper()}";
+                var exists = await conn.QuerySingleOrDefaultAsync<int>(
+                    "SELECT 1 FROM venues WHERE venue_id = @v LIMIT 1", new { v = venueIdStr });
+                if (exists == 0) break;
+                if (attempt >= 5) return Results.Problem("Unable to generate unique venue ID. Please retry.");
+            }
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -217,7 +232,7 @@ public static class VenueEndpoints
                     currency     = req.Currency ?? "USD",
                     latitude     = req.Latitude,
                     longitude    = req.Longitude,
-                    status       = req.Status ?? "draft",
+                    status       = "draft",
                     submittedAt  = req.SubmittedAt,
                 });
 
@@ -441,6 +456,7 @@ public static class VenueEndpoints
                 return Results.BadRequest(new { error = "Invalid start time format." });
 
             using var conn = db.CreateConnection();
+            conn.Open();
             using var tx   = conn.BeginTransaction();
             try
             {
@@ -548,7 +564,7 @@ public static class VenueEndpoints
                             // Best-effort — local hub will pick it up via booking code sync
                             Console.WriteLine($"[VenueBooking] Route to venue-hub failed for {bookingId}: {ex.Message}");
                         }
-                    }, ct);
+                    });
                 }
 
                 return Results.Ok(booking);
