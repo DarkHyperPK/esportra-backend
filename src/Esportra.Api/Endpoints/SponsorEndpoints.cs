@@ -243,7 +243,7 @@ public static class SponsorEndpoints
                     var root = doc.RootElement;
 
                     var country = root.TryGetProperty("country", out var c) ? c.GetString() ?? "Unknown" : "Unknown";
-                    var ageGroup = root.TryGetProperty("age_group", out var a) ? a.GetString() ?? "unknown" : "unknown";
+                    var ageGroup = root.TryGetProperty("age_group", out var a) ? a.GetString() ?? "Unknown" : "Unknown";
 
                     countryMap[country] = countryMap.GetValueOrDefault(country) + 1;
                     ageMap[ageGroup] = ageMap.GetValueOrDefault(ageGroup) + 1;
