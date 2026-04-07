@@ -234,11 +234,18 @@ public static class AdminEndpoints
         app.MapGet("/api/admin/users", async (
             HttpContext          ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      limit  = 20,
-            [FromQuery] int      offset = 0,
-            [FromQuery] string?  search = null,
-            [FromQuery] string?  status = null,
-            [FromQuery] string?  role   = null,
+            [FromQuery] int      limit       = 20,
+            [FromQuery] int      offset      = 0,
+            [FromQuery] string?  search      = null,
+            [FromQuery] string?  status      = null,
+            [FromQuery] string?  role        = null,
+            [FromQuery] string?  country     = null,
+            [FromQuery] string?  joined_from = null,
+            [FromQuery] string?  joined_to   = null,
+            [FromQuery] string?  verified    = null,
+            [FromQuery] string?  has_team    = null,
+            [FromQuery] string?  sort_by     = null,
+            [FromQuery] string?  sort_dir    = null,
             CancellationToken    ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
@@ -267,9 +274,34 @@ public static class AdminEndpoints
                     conditions.Add("EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.role = @role AND ur2.is_active = TRUE)");
             }
 
+            if (!string.IsNullOrWhiteSpace(country))
+                conditions.Add("p.country_code = @country");
+
+            DateTimeOffset? joinedFrom = null;
+            DateTimeOffset? joinedTo = null;
+            if (!string.IsNullOrWhiteSpace(joined_from) && DateTimeOffset.TryParse(joined_from, out var jf))
+            { joinedFrom = jf; conditions.Add("p.created_at >= @joinedFrom"); }
+            if (!string.IsNullOrWhiteSpace(joined_to) && DateTimeOffset.TryParse(joined_to, out var jt))
+            { joinedTo = jt.AddDays(1); conditions.Add("p.created_at < @joinedTo"); }
+
+            if (verified == "true")
+                conditions.Add("p.is_verified = TRUE");
+            else if (verified == "false")
+                conditions.Add("(p.is_verified IS NULL OR p.is_verified = FALSE)");
+
+            if (has_team == "true")
+                conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+            else if (has_team == "false")
+                conditions.Add("NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+
             var where = conditions.Count > 0
                 ? "WHERE " + string.Join(" AND ", conditions)
                 : "";
+
+            // Whitelist allowed sort columns
+            var allowedSorts = new HashSet<string> { "created_at", "username", "updated_at" };
+            var sortColumn = allowedSorts.Contains(sort_by ?? "") ? sort_by! : "created_at";
+            var sortDirection = sort_dir?.ToLower() == "asc" ? "ASC" : "DESC";
 
             var sql = $"""
                 SELECT
@@ -279,15 +311,19 @@ public static class AdminEndpoints
                     p.full_name,
                     p.avatar_url,
                     p.is_suspended,
-                    p.created_at
+                    p.created_at,
+                    p.country_code,
+                    p.date_of_birth,
+                    p.is_verified,
+                    p.updated_at
                 FROM profiles p
                 {where}
-                ORDER BY p.created_at DESC
+                ORDER BY p.{sortColumn} {sortDirection}
                 LIMIT @limit OFFSET @offset
                 """;
 
             var users = await conn.QueryAsync<dynamic>(sql,
-                new { search = $"%{search}%", limit, offset, role });
+                new { search = $"%{search}%", limit, offset, role, country, joinedFrom, joinedTo });
 
             // Fetch roles for these users in a single query
             var userIds = users.Select(u => (Guid)u.id).ToList();
@@ -310,13 +346,14 @@ public static class AdminEndpoints
                 return new {
                     u.id, u.username, u.email, u.full_name,
                     u.avatar_url, u.is_suspended, u.created_at,
+                    u.country_code, u.date_of_birth, u.is_verified, u.updated_at,
                     roles = rolesMap.ContainsKey(uid) ? rolesMap[uid].ToArray() : Array.Empty<string>()
                 };
             });
 
             var total = await conn.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM profiles p {where}",
-                new { search = $"%{search}%", role });
+                new { search = $"%{search}%", role, country, joinedFrom, joinedTo });
 
             // Role breakdown counts (unfiltered — always reflects full platform)
             var roleCountRows = await conn.QueryAsync<dynamic>(
@@ -1109,29 +1146,77 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/tournaments ─────────────────────────────────────────
         app.MapGet("/api/admin/tournaments", async (
-            string?              status,
-            int                  page   = 1,
-            int                  limit  = 50,
-            HttpContext          ctx    = default!,
-            IDbConnectionFactory db     = default!,
-            CancellationToken    ct     = default) =>
+            [FromQuery] string?  status      = null,
+            [FromQuery] string?  search      = null,
+            [FromQuery] string?  game        = null,
+            [FromQuery] string?  format      = null,
+            [FromQuery] decimal? prize_min   = null,
+            [FromQuery] decimal? prize_max   = null,
+            [FromQuery] string?  date_from   = null,
+            [FromQuery] string?  date_to     = null,
+            [FromQuery] string?  sort_by     = null,
+            [FromQuery] string?  sort_dir    = null,
+            int                  page        = 1,
+            int                  limit       = 50,
+            HttpContext          ctx         = default!,
+            IDbConnectionFactory db          = default!,
+            CancellationToken    ct          = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
+            page = Math.Max(page, 1);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
-                """
+
+            var conditions = new List<string>();
+            if (!string.IsNullOrWhiteSpace(status))
+                conditions.Add("t.status::text = @status");
+            if (!string.IsNullOrWhiteSpace(search))
+                conditions.Add("(t.name ILIKE @search OR p.username ILIKE @search)");
+            if (!string.IsNullOrWhiteSpace(game))
+                conditions.Add("t.game ILIKE @game");
+            if (!string.IsNullOrWhiteSpace(format))
+                conditions.Add("t.format = @format");
+            if (prize_min.HasValue)
+                conditions.Add("COALESCE(t.prize_pool, 0) >= @prizeMin");
+            if (prize_max.HasValue)
+                conditions.Add("COALESCE(t.prize_pool, 0) <= @prizeMax");
+
+            DateTimeOffset? dateFrom = null;
+            DateTimeOffset? dateTo = null;
+            if (!string.IsNullOrWhiteSpace(date_from) && DateTimeOffset.TryParse(date_from, out var df))
+            { dateFrom = df; conditions.Add("t.created_at >= @dateFrom"); }
+            if (!string.IsNullOrWhiteSpace(date_to) && DateTimeOffset.TryParse(date_to, out var dt2))
+            { dateTo = dt2.AddDays(1); conditions.Add("t.created_at < @dateTo"); }
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
+            var allowedSorts = new HashSet<string> { "created_at", "start_date", "prize_pool", "name" };
+            var sortColumn = allowedSorts.Contains(sort_by ?? "") ? sort_by! : "created_at";
+            var sortDirection = sort_dir?.ToLower() == "asc" ? "ASC" : "DESC";
+
+            var sql = $"""
                 SELECT t.*, p.username AS organizer_name
                 FROM tournaments t
                 LEFT JOIN profiles p ON p.id = t.organizer_id
-                WHERE (@status IS NULL OR t.status::text = @status)
-                ORDER BY t.created_at DESC
+                {where}
+                ORDER BY t.{sortColumn} {sortDirection}
                 LIMIT @limit OFFSET @offset
-                """,
-                new { status, limit, offset = (page - 1) * limit });
-            return Results.Ok(rows);
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(sql,
+                new { status, search = $"%{search}%", game = $"%{game}%", format, prizeMin = prize_min, prizeMax = prize_max, dateFrom, dateTo, limit, offset = (page - 1) * limit });
+
+            var needsJoin = !string.IsNullOrWhiteSpace(search);
+            var countJoin = needsJoin ? "LEFT JOIN profiles p ON p.id = t.organizer_id" : "";
+            var total = await conn.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*) FROM tournaments t {countJoin} {where}",
+                new { status, search = $"%{search}%", game = $"%{game}%", format, prizeMin = prize_min, prizeMax = prize_max, dateFrom, dateTo });
+
+            return Results.Ok(new { data = rows, total });
         }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/tournaments/{id} ───────────────────────────────────
