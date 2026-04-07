@@ -20,6 +20,13 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class AdminEndpoints
 {
+    private static string EscapeLike(string? input)
+    {
+        if (string.IsNullOrEmpty(input)) return "%";
+        var escaped = input.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+        return $"%{escaped}%";
+    }
+
     public static void MapAdminEndpoints(this WebApplication app)
     {
         // ── POST /api/admin/users/{userId}/action ─────────────────────────────
@@ -257,7 +264,7 @@ public static class AdminEndpoints
 
             var conditions = new List<string>();
             if (!string.IsNullOrWhiteSpace(search))
-                conditions.Add("(p.username ILIKE @search OR p.email ILIKE @search OR p.full_name ILIKE @search)");
+                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR p.email ILIKE @search ESCAPE '\\' OR p.full_name ILIKE @search ESCAPE '\\')");
             if (status == "suspended")
                 conditions.Add("p.is_suspended = TRUE");
             else if (status == "active")
@@ -323,7 +330,7 @@ public static class AdminEndpoints
                 """;
 
             var users = await conn.QueryAsync<dynamic>(sql,
-                new { search = $"%{search}%", limit, offset, role, country, joinedFrom, joinedTo });
+                new { search = EscapeLike(search), limit, offset, role, country, joinedFrom, joinedTo });
 
             // Fetch roles for these users in a single query
             var userIds = users.Select(u => (Guid)u.id).ToList();
@@ -353,7 +360,7 @@ public static class AdminEndpoints
 
             var total = await conn.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM profiles p {where}",
-                new { search = $"%{search}%", role, country, joinedFrom, joinedTo });
+                new { search = EscapeLike(search), role, country, joinedFrom, joinedTo });
 
             // Role breakdown counts (unfiltered — always reflects full platform)
             var roleCountRows = await conn.QueryAsync<dynamic>(
@@ -1173,9 +1180,9 @@ public static class AdminEndpoints
             if (!string.IsNullOrWhiteSpace(status))
                 conditions.Add("t.status::text = @status");
             if (!string.IsNullOrWhiteSpace(search))
-                conditions.Add("(t.name ILIKE @search OR p.username ILIKE @search)");
+                conditions.Add("(t.name ILIKE @search ESCAPE '\\' OR p.username ILIKE @search ESCAPE '\\')");
             if (!string.IsNullOrWhiteSpace(game))
-                conditions.Add("t.game ILIKE @game");
+                conditions.Add("t.game ILIKE @game ESCAPE '\\'");
             if (!string.IsNullOrWhiteSpace(format))
                 conditions.Add("t.format = @format");
             if (prize_min.HasValue)
@@ -1208,15 +1215,21 @@ public static class AdminEndpoints
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(sql,
-                new { status, search = $"%{search}%", game = $"%{game}%", format, prizeMin = prize_min, prizeMax = prize_max, dateFrom, dateTo, limit, offset = (page - 1) * limit });
+                new { status, search = EscapeLike(search), game = EscapeLike(game), format, prizeMin = prize_min, prizeMax = prize_max, dateFrom, dateTo, limit, offset = (page - 1) * limit });
 
             var needsJoin = !string.IsNullOrWhiteSpace(search);
             var countJoin = needsJoin ? "LEFT JOIN profiles p ON p.id = t.organizer_id" : "";
             var total = await conn.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM tournaments t {countJoin} {where}",
-                new { status, search = $"%{search}%", game = $"%{game}%", format, prizeMin = prize_min, prizeMax = prize_max, dateFrom, dateTo });
+                new { status, search = EscapeLike(search), game = EscapeLike(game), format, prizeMin = prize_min, prizeMax = prize_max, dateFrom, dateTo });
 
-            return Results.Ok(new { data = rows, total });
+            var statusCounts = await conn.QueryAsync<dynamic>(
+                "SELECT status::text AS status, COUNT(*)::int AS count FROM tournaments GROUP BY status");
+            var statusCountDict = new Dictionary<string, int>();
+            foreach (var sc in statusCounts)
+                statusCountDict[(string)sc.status] = (int)sc.count;
+
+            return Results.Ok(new { data = rows, total, statusCounts = statusCountDict });
         }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/tournaments/{id} ───────────────────────────────────
@@ -1557,7 +1570,7 @@ public static class AdminEndpoints
             conditions.Add("(@organizationId IS NULL OR sal.organization_id = @organizationId)");
 
             if (!string.IsNullOrWhiteSpace(search))
-                conditions.Add("(p.username ILIKE @search OR sal.action ILIKE @search OR sal.target_type ILIKE @search)");
+                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR sal.action ILIKE @search ESCAPE '\\' OR sal.target_type ILIKE @search ESCAPE '\\')");
             if (!string.IsNullOrWhiteSpace(target_type))
                 conditions.Add("sal.target_type = @target_type");
 
@@ -1586,11 +1599,11 @@ public static class AdminEndpoints
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(sql,
-                new { organizationId, search = $"%{search}%", target_type, fromDate, toDate, limit, offset = (page - 1) * limit });
+                new { organizationId, search = EscapeLike(search), target_type, fromDate, toDate, limit, offset = (page - 1) * limit });
 
             var countSql = $"SELECT COUNT(*) FROM staff_audit_log sal LEFT JOIN profiles p ON p.id = sal.actor_id {where}";
             var total = await conn.ExecuteScalarAsync<int>(countSql,
-                new { organizationId, search = $"%{search}%", target_type, fromDate, toDate });
+                new { organizationId, search = EscapeLike(search), target_type, fromDate, toDate });
 
             return Results.Ok(new { data = rows, count = total });
         }).RequireAuthorization("Admin");
