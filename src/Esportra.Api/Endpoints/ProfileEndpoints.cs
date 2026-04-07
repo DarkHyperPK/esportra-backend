@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
@@ -708,9 +709,99 @@ public static class ProfileEndpoints
                 new { rosterId });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/discord-dm ──────────────────────────────────
+        // Toggle Discord DM notifications on/off
+        app.MapPut("/api/profiles/me/discord-dm", async (
+            [FromBody] ToggleDiscordDmRequest req,
+            HttpContext                       ctx,
+            IDbConnectionFactory             db,
+            CancellationToken                 ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Check if user has Discord linked before enabling
+            if (req.Enabled)
+            {
+                var hasDiscord = await conn.QuerySingleOrDefaultAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM auth.identities WHERE user_id = @userId AND provider = 'discord')",
+                    new { userId = userCtx.UserIdGuid });
+
+                if (!hasDiscord)
+                    return Results.BadRequest(new { error = "Link your Discord account first." });
+            }
+
+            await conn.ExecuteAsync(
+                """
+                UPDATE profiles
+                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('discord_dm_enabled', @enabled::boolean)
+                WHERE id = @userId
+                """,
+                new { userId = userCtx.UserIdGuid, enabled = req.Enabled });
+
+            return Results.Ok(new { success = true, discord_dm_enabled = req.Enabled });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/discord-dm ──────────────────────────────────
+        app.MapGet("/api/profiles/me/discord-dm", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var result = await conn.QuerySingleOrDefaultAsync<(bool enabled, bool hasDiscord)>(
+                """
+                SELECT
+                    COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) AS enabled,
+                    EXISTS(SELECT 1 FROM auth.identities WHERE user_id = p.id AND provider = 'discord') AS has_discord
+                FROM profiles p
+                WHERE p.id = @userId
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { discord_dm_enabled = result.enabled, has_discord = result.hasDiscord });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/profiles/me/discord-join ──────────────────────────────
+        // Auto-join the user to the Esportra Discord server using their OAuth token
+        app.MapPost("/api/profiles/me/discord-join", async (
+            [FromBody] DiscordJoinRequest      req,
+            HttpContext                         ctx,
+            IDbConnectionFactory               db,
+            DiscordNotificationService          discord,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (string.IsNullOrEmpty(req.ProviderToken))
+                return Results.BadRequest(new { error = "Missing Discord provider token" });
+
+            using var conn = db.CreateConnection();
+
+            // Get the user's Discord provider_id from Supabase identities
+            var discordId = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT provider_id FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
+                new { userId = userCtx.UserIdGuid });
+
+            if (string.IsNullOrEmpty(discordId))
+                return Results.BadRequest(new { error = "Discord account not linked" });
+
+            var joined = await discord.TryAutoJoinGuildAsync(discordId, req.ProviderToken);
+
+            return Results.Ok(new { success = joined });
+        }).RequireAuthorization("Authenticated");
     }
 }
 
+public sealed record ToggleDiscordDmRequest(bool Enabled);
+public sealed record DiscordJoinRequest(string ProviderToken);
 public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
 public sealed record VerificationRequestBody(

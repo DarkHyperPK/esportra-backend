@@ -1758,7 +1758,14 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, username, email, full_name, avatar_url, is_admin, admin_roles, created_at FROM profiles WHERE id = @userId",
+                """
+                SELECT id, username, email, full_name, avatar_url, bio, location, country_code,
+                       date_of_birth, riot_tag, faceit_nickname, social_links, card_image_url,
+                       banner_url, is_verified, is_admin, admin_roles, is_suspended,
+                       suspension_reason, suspension_type, suspension_until, settings,
+                       created_at, updated_at
+                FROM profiles WHERE id = @userId
+                """,
                 new { userId });
             if (profile is null) return Results.NotFound(new { error = "User not found" });
 
@@ -1780,6 +1787,12 @@ public static class AdminEndpoints
             var tournaments = await conn.QueryAsync<dynamic>(
                 "SELECT id, name, game, status::text AS status FROM tournaments WHERE organizer_id = @userId ORDER BY created_at DESC LIMIT 20",
                 new { userId });
+            var connectedAccounts = await conn.QueryAsync<dynamic>(
+                "SELECT provider, provider_id, created_at, updated_at FROM auth.identities WHERE user_id = @userId",
+                new { userId });
+            var teams = await conn.QueryAsync<dynamic>(
+                "SELECT t.id, t.name, t.tag, t.logo_url, tm.role FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE tm.user_id = @userId AND tm.status = 'accepted'",
+                new { userId });
 
             return Results.Ok(new
             {
@@ -1789,7 +1802,9 @@ public static class AdminEndpoints
                 verified_roles = verifiedRoles,
                 organizations,
                 venues,
-                tournaments
+                tournaments,
+                connected_accounts = connectedAccounts,
+                teams
             });
         }).RequireAuthorization("Admin");
 

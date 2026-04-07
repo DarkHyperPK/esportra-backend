@@ -101,9 +101,15 @@ public static class VenueEndpoints
             double               lat,
             double               lng,
             double               radiusKm   = 50,
+            int                  limit      = 20,
+            int                  offset     = 0,
             IDbConnectionFactory db         = null!,
             CancellationToken    ct         = default) =>
         {
+            if (limit > 100) limit = 100;
+            if (limit < 1) limit = 1;
+            if (offset < 0) offset = 0;
+
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
@@ -128,8 +134,9 @@ public static class VenueEndpoints
                     )
                   )) <= @radiusKm
                 ORDER BY distance_km ASC
+                LIMIT @limit OFFSET @offset
                 """,
-                new { lat, lng, radiusKm });
+                new { lat, lng, radiusKm, limit, offset });
             return Results.Ok(rows);
         });
 
@@ -170,8 +177,16 @@ public static class VenueEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Generate a unique venue_id (VN-XXXXX format)
-            var venueIdStr = $"VN-{Guid.NewGuid().ToString("N")[..6].ToUpper()}";
+            // Generate a unique venue_id with collision retry
+            string venueIdStr;
+            for (int attempt = 0; ; attempt++)
+            {
+                venueIdStr = $"VN-{Guid.NewGuid().ToString("N")[..8].ToUpper()}";
+                var exists = await conn.QuerySingleOrDefaultAsync<int>(
+                    "SELECT 1 FROM venues WHERE venue_id = @v LIMIT 1", new { v = venueIdStr });
+                if (exists == 0) break;
+                if (attempt >= 5) return Results.Problem("Unable to generate unique venue ID. Please retry.");
+            }
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -217,7 +232,7 @@ public static class VenueEndpoints
                     currency     = req.Currency ?? "USD",
                     latitude     = req.Latitude,
                     longitude    = req.Longitude,
-                    status       = req.Status ?? "draft",
+                    status       = "draft",
                     submittedAt  = req.SubmittedAt,
                 });
 
@@ -426,12 +441,22 @@ public static class VenueEndpoints
             [FromBody] CreateBookingRequest req,
             HttpContext                     ctx,
             IDbConnectionFactory           db,
+            Esportra.Api.Services.VenueHubService venueHub,
             CancellationToken              ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            // Input validation
+            if (req.Hours <= 0 || req.Hours > 24)
+                return Results.BadRequest(new { error = "Hours must be between 1 and 24." });
+            if (req.Stations <= 0)
+                return Results.BadRequest(new { error = "Stations must be at least 1." });
+            if (!TimeOnly.TryParse(req.StartTime, out var start))
+                return Results.BadRequest(new { error = "Invalid start time format." });
+
             using var conn = db.CreateConnection();
+            conn.Open();
             using var tx   = conn.BeginTransaction();
             try
             {
@@ -452,31 +477,37 @@ public static class VenueEndpoints
                         return Results.BadRequest(new { error = "Slot not available or insufficient stations." });
                     effectivePrice = (decimal)avail.price_per_hour;
                 }
-                else if (req.Stations > req.AvailableStations)
+                else
                 {
-                    return Results.BadRequest(new { error = $"Only {req.AvailableStations} stations available." });
+                    // No availability record — check against venue's total station count
+                    var venueStations = await conn.QuerySingleOrDefaultAsync<int?>(
+                        "SELECT total_stations FROM venues WHERE id = @id", new { id }, tx);
+                    if (venueStations is null)
+                        return Results.NotFound(new { error = "Venue not found." });
+                    if (req.Stations > venueStations.Value)
+                        return Results.BadRequest(new { error = $"Only {venueStations.Value} stations available." });
                 }
 
-                // 2. Calculate end time
-                var start   = TimeOnly.Parse(req.StartTime);
+                // 2. Calculate end time and generate booking code
                 var end     = start.AddHours(req.Hours);
                 var endStr  = end.ToString("HH:mm");
                 var total   = effectivePrice * req.Hours * req.Stations;
+                var bookingCode = GenerateBookingCode();
 
-                // 3. Insert booking
+                // 3. Insert booking with code
                 var booking = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO venue_bookings
                         (venue_id, user_id, booking_date, start_time, end_time,
                          duration_hours, stations_booked, total_amount, status,
-                         special_requests, contact_phone, contact_email)
+                         booking_code, special_requests, contact_phone, contact_email)
                     VALUES
                         (@venueId, @userId, @date::date, @startTime::time, @endTime::time,
-                         @hours, @stations, @total, 'pending',
-                         @specialRequests, @contactPhone, @contactEmail)
+                         @hours, @stations, @total, 'confirmed',
+                         @bookingCode, @specialRequests, @contactPhone, @contactEmail)
                     RETURNING id, venue_id, user_id, booking_date, start_time, end_time,
                              duration_hours, stations_booked, total_amount, status,
-                             special_requests, contact_phone, contact_email, created_at
+                             booking_code, special_requests, contact_phone, contact_email, created_at
                     """,
                     new
                     {
@@ -488,6 +519,7 @@ public static class VenueEndpoints
                         hours          = req.Hours,
                         stations       = req.Stations,
                         total,
+                        bookingCode,
                         specialRequests = req.SpecialRequests,
                         contactPhone   = req.ContactPhone,
                         contactEmail   = req.ContactEmail,
@@ -506,6 +538,35 @@ public static class VenueEndpoints
                 }
 
                 tx.Commit();
+
+                // 5. Route to venue-hub (fire-and-forget, non-blocking)
+                if (venueHub.IsConfigured)
+                {
+                    var bookingId = ((dynamic)booking).id.ToString();
+                    var durationMinutes = req.Hours * 60;
+
+                    // Fetch display name from profile instead of exposing email
+                    var displayName = await conn.QuerySingleOrDefaultAsync<string?>(
+                        "SELECT username FROM profiles WHERE id = @userId",
+                        new { userId = userCtx.UserIdGuid }) ?? "Online Booking";
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await venueHub.RouteBookingAsync(
+                                bookingId, id.ToString(), null,
+                                userCtx.UserId, displayName,
+                                durationMinutes, bookingCode, req.StartTime);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Best-effort — local hub will pick it up via booking code sync
+                            Console.WriteLine($"[VenueBooking] Route to venue-hub failed for {bookingId}: {ex.Message}");
+                        }
+                    });
+                }
+
                 return Results.Ok(booking);
             }
             catch
@@ -617,6 +678,124 @@ public static class VenueEndpoints
                 """, new { id, userId = userCtx.UserIdGuid });
             return booking is null ? Results.NotFound() : Results.Ok(booking);
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/venues/{id}/online — venue hub online status ————————————
+        app.MapGet("/api/venues/{id}/online", async (
+            Guid id,
+            Esportra.Api.Services.VenueHubService venueHub) =>
+        {
+            var isOnline = await venueHub.IsVenueOnlineAsync(id.ToString());
+            return Results.Ok(new { venueId = id, isOnline });
+        });
+
+        // ── GET /api/venues/{id}/seats — real-time seat availability —————————
+        app.MapGet("/api/venues/{id}/seats", async (
+            Guid id,
+            Esportra.Api.Services.VenueHubService venueHub) =>
+        {
+            var seats = await venueHub.GetVenueSeatsAsync(id.ToString());
+            if (seats is null)
+                return Results.Ok(new { venueId = id, isOnline = false, stations = Array.Empty<object>() });
+            return Results.Ok(seats);
+        });
+
+        // ── POST /api/venues/{id}/hub-key — generate / rotate hub API key ———
+        app.MapPost("/api/venues/{id}/hub-key", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // 1. Verify caller owns the venue
+            var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                "SELECT id, owner_id, hub_key_issued_at FROM venues WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+
+            if (venue is null) return Results.NotFound();
+            if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
+
+            // 2. Generate a random 32-char hex key
+            var plainKey = Guid.NewGuid().ToString("N");
+
+            // 3. Hash with bcrypt
+            var hash = BCrypt.Net.BCrypt.HashPassword(plainKey);
+
+            // 4. Persist hash + timestamps
+            bool hadPreviousKey = venue.hub_key_issued_at is not null;
+            await conn.ExecuteAsync(
+                """
+                UPDATE venues
+                SET hub_api_key_hash  = @hash,
+                    hub_key_issued_at = NOW(),
+                    hub_key_rotated_at = CASE WHEN hub_key_issued_at IS NOT NULL THEN NOW() ELSE NULL END
+                WHERE id = @id AND owner_id = @userId
+                """,
+                new { hash, id, userId = userCtx.UserIdGuid });
+
+            // 5. Fetch updated timestamps
+            var updated = await conn.QueryFirstAsync<dynamic>(
+                "SELECT hub_key_issued_at, hub_key_rotated_at FROM venues WHERE id = @id",
+                new { id });
+
+            return Results.Ok(new
+            {
+                key        = plainKey,
+                issuedAt   = (DateTimeOffset?)updated.hub_key_issued_at,
+                rotated    = hadPreviousKey
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/venues/{id}/hub-config — hub connection config for desktop app
+        app.MapGet("/api/venues/{id}/hub-config", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            IConfiguration       config,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                """
+                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at
+                FROM venues
+                WHERE id = @id AND deleted_at IS NULL
+                """,
+                new { id });
+
+            if (venue is null) return Results.NotFound();
+            if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
+
+            var hubUrl = config["VenueHub:Url"]?.TrimEnd('/') ?? "";
+
+            return Results.Ok(new
+            {
+                venueId       = id,
+                hubUrl,
+                hasKey        = venue.hub_api_key_hash is not null,
+                keyIssuedAt   = (DateTimeOffset?)venue.hub_key_issued_at,
+                keyRotatedAt  = (DateTimeOffset?)venue.hub_key_rotated_at
+            });
+        }).RequireAuthorization("Authenticated");
+    }
+
+    private static string GenerateBookingCode()
+    {
+        const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 to avoid confusion
+        var bytes = new byte[8];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        var code = new char[8];
+        for (var i = 0; i < 8; i++)
+            code[i] = chars[bytes[i] % chars.Length];
+        return new string(code);
     }
 }
 
@@ -681,7 +860,6 @@ public sealed record CreateBookingRequest(
     int      Hours,
     int      Stations,
     decimal  PricePerHour,
-    int      AvailableStations,
     string?  SpecialRequests = null,
     string?  ContactPhone    = null,
     string?  ContactEmail    = null);

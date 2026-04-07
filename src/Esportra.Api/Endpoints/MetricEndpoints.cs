@@ -40,19 +40,9 @@ public static class MetricEndpoints
             var rawId     = $"{ip}:{today}:{salt}";
             var visitorId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawId)));
 
-            // GeoIP lookup via configured provider (HTTPS)
+            // For authenticated users: get country + age from their profile (reliable).
+            // For anonymous: fall back to GeoIP for country only.
             string? country = null;
-            try
-            {
-                var geoHttp = httpFactory.CreateClient("GeoIP");
-                var geoRes = await geoHttp.GetStringAsync($"https://ipapi.co/{ip}/json/", ct);
-                using var geoDoc = JsonDocument.Parse(geoRes);
-                country = geoDoc.RootElement.TryGetProperty("country_code", out var cc)
-                    ? cc.GetString() : null;
-            }
-            catch { /* GeoIP failure is non-fatal */ }
-
-            // Optional: age group from authenticated user's profile
             string? ageGroup = null;
             var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? ctx.User.FindFirstValue("sub");
@@ -61,14 +51,16 @@ public static class MetricEndpoints
 
             if (!string.IsNullOrWhiteSpace(userId))
             {
-                var dob = await conn.QuerySingleOrDefaultAsync<DateTime?>(
-                    "SELECT date_of_birth FROM public.profiles WHERE id = @userId",
+                var profile = await conn.QuerySingleOrDefaultAsync<(string? country_code, DateTime? date_of_birth)>(
+                    "SELECT country_code, date_of_birth FROM public.profiles WHERE id = @userId",
                     new { userId });
 
-                if (dob.HasValue)
+                country = profile.country_code;
+
+                if (profile.date_of_birth.HasValue)
                 {
-                    var age = DateTime.UtcNow.Year - dob.Value.Year;
-                    if (dob.Value.Date > DateTime.UtcNow.AddYears(-age)) age--;
+                    var age = DateTime.UtcNow.Year - profile.date_of_birth.Value.Year;
+                    if (profile.date_of_birth.Value.Date > DateTime.UtcNow.AddYears(-age)) age--;
 
                     ageGroup = age switch
                     {
@@ -79,6 +71,20 @@ public static class MetricEndpoints
                         _     => "35_plus",
                     };
                 }
+            }
+
+            // GeoIP fallback only for anonymous visitors (no profile data)
+            if (string.IsNullOrEmpty(country) && string.IsNullOrWhiteSpace(userId))
+            {
+                try
+                {
+                    var geoHttp = httpFactory.CreateClient("GeoIP");
+                    var geoRes = await geoHttp.GetStringAsync($"https://ipapi.co/{ip}/json/", ct);
+                    using var geoDoc = JsonDocument.Parse(geoRes);
+                    country = geoDoc.RootElement.TryGetProperty("country_code", out var cc)
+                        ? cc.GetString() : null;
+                }
+                catch { /* GeoIP failure is non-fatal */ }
             }
 
             var metadata = JsonSerializer.Serialize(new { country, age_group = ageGroup });

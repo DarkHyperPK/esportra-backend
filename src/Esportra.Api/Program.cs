@@ -252,6 +252,13 @@ builder.Services.AddHttpClient("GeoIP", http =>
     http.Timeout = TimeSpan.FromSeconds(3);
 });
 
+// Named VenueHub client for venue-hub inter-service calls
+builder.Services.AddHttpClient("VenueHub", http =>
+{
+    http.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddSingleton<Esportra.Api.Services.VenueHubService>();
+
 // ── Phase 2: Core services ────────────────────────────────────────────────────
 builder.Services.AddScoped<BracketPersistenceService>();
 builder.Services.AddScoped<MatchFinalizationService>();
@@ -260,9 +267,14 @@ builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
 
+// ── Discord bot DM notifications ──────────────────────────────────────────────
+builder.Services.AddHttpClient("Discord");
+builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
+
 // ── Background jobs ───────────────────────────────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<CheckinWalkoversJob>();
+builder.Services.AddHostedService<DiscordDmDispatcherJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -273,9 +285,13 @@ var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
 
 // ── Run database migrations ──────────────────────────────────────────────────
+// Migrations need supabase_admin (superuser) to issue GRANTs on tables it owns.
+// postgres user is NOT superuser in Supabase and GRANT silently no-ops.
+// Fallback to the regular connection string if no migration-specific one is set.
 {
+    var migrationConnStr = builder.Configuration.GetConnectionString("PostgresMigrations") ?? pgConnStr;
     var migrationLogger = app.Services.GetRequiredService<ILogger<Esportra.Infrastructure.Migrations.MigrationRunner>>();
-    var migrationRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(pgConnStr, migrationLogger);
+    var migrationRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(migrationConnStr, migrationLogger);
     if (!migrationRunner.Run())
     {
         Console.Error.WriteLine("[STARTUP] Database migration failed. Aborting.");
@@ -404,7 +420,7 @@ app.MapVetoEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
 app.MapSponsorEndpoints();
-app.MapTournamentSponsorEndpoints();
+app.MapSitemapEndpoints();
 
 // ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
