@@ -23,14 +23,13 @@ public sealed class DiscordNotificationService
     private static readonly HashSet<string> DmEligibleTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "match_ready",
-        "check_in_reminder",
         "result_reported",
         "result_disputed",
         "dispute_resolved",
         "tournament_registered",
-        "tournament_announcement", // used for "tournament starting" notifications
+        "tournament_announcement",
         "result_accepted",
-        "match_walkover"
+        "match_completed"
     };
 
     public DiscordNotificationService(

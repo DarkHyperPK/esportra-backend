@@ -698,6 +698,93 @@ public static class VenueEndpoints
                 return Results.Ok(new { venueId = id, isOnline = false, stations = Array.Empty<object>() });
             return Results.Ok(seats);
         });
+
+        // ── POST /api/venues/{id}/hub-key — generate / rotate hub API key ———
+        app.MapPost("/api/venues/{id}/hub-key", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // 1. Verify caller owns the venue
+            var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                "SELECT id, owner_id, hub_key_issued_at FROM venues WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+
+            if (venue is null) return Results.NotFound();
+            if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
+
+            // 2. Generate a random 32-char hex key
+            var plainKey = Guid.NewGuid().ToString("N");
+
+            // 3. Hash with bcrypt
+            var hash = BCrypt.Net.BCrypt.HashPassword(plainKey);
+
+            // 4. Persist hash + timestamps
+            bool hadPreviousKey = venue.hub_key_issued_at is not null;
+            await conn.ExecuteAsync(
+                """
+                UPDATE venues
+                SET hub_api_key_hash  = @hash,
+                    hub_key_issued_at = NOW(),
+                    hub_key_rotated_at = CASE WHEN hub_key_issued_at IS NOT NULL THEN NOW() ELSE NULL END
+                WHERE id = @id AND owner_id = @userId
+                """,
+                new { hash, id, userId = userCtx.UserIdGuid });
+
+            // 5. Fetch updated timestamps
+            var updated = await conn.QueryFirstAsync<dynamic>(
+                "SELECT hub_key_issued_at, hub_key_rotated_at FROM venues WHERE id = @id",
+                new { id });
+
+            return Results.Ok(new
+            {
+                key        = plainKey,
+                issuedAt   = (DateTimeOffset?)updated.hub_key_issued_at,
+                rotated    = hadPreviousKey
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/venues/{id}/hub-config — hub connection config for desktop app
+        app.MapGet("/api/venues/{id}/hub-config", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            IConfiguration       config,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                """
+                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at
+                FROM venues
+                WHERE id = @id AND deleted_at IS NULL
+                """,
+                new { id });
+
+            if (venue is null) return Results.NotFound();
+            if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
+
+            var hubUrl = config["VenueHub:Url"]?.TrimEnd('/') ?? "";
+
+            return Results.Ok(new
+            {
+                venueId       = id,
+                hubUrl,
+                hasKey        = venue.hub_api_key_hash is not null,
+                keyIssuedAt   = (DateTimeOffset?)venue.hub_key_issued_at,
+                keyRotatedAt  = (DateTimeOffset?)venue.hub_key_rotated_at
+            });
+        }).RequireAuthorization("Authenticated");
     }
 
     private static string GenerateBookingCode()
