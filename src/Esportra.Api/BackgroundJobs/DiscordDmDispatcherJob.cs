@@ -69,9 +69,9 @@ public sealed class DiscordDmDispatcherJob : BackgroundService
               AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) = TRUE
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
               AND n.type IN (
-                  'match_ready', 'check_in_reminder', 'result_reported',
-                  'result_disputed', 'dispute_resolved', 'tournament_registered',
-                  'tournament_announcement', 'result_accepted', 'match_walkover'
+                  'match_ready', 'result_reported', 'result_disputed',
+                  'dispute_resolved', 'tournament_registered',
+                  'tournament_announcement', 'result_accepted', 'match_completed'
               )
             ORDER BY n.created_at ASC
             LIMIT 20
