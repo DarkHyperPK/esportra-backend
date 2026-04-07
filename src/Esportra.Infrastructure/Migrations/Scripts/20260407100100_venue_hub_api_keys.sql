@@ -37,7 +37,7 @@ VOLATILE
 SECURITY INVOKER
 SET search_path = public
 AS $$
-  SELECT encode(gen_random_bytes(16), 'hex');
+  SELECT encode(extensions.gen_random_bytes(16), 'hex');
 $$;
 
 
@@ -59,7 +59,7 @@ BEGIN
     WHERE  status = 'published'
       AND  hub_api_key_hash IS NULL
   LOOP
-    raw_key := encode(gen_random_bytes(16), 'hex');
+    raw_key := encode(extensions.gen_random_bytes(16), 'hex');
 
     UPDATE public.venues
     SET    hub_api_key_hash  = extensions.crypt(raw_key, extensions.gen_salt('bf')),
