@@ -7,6 +7,7 @@ using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Email;
 using Esportra.Infrastructure.Supabase;
+using Esportra.Core.Audit;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -37,6 +38,7 @@ public static class AdminEndpoints
             [FromBody] ManageUserRequest req,
             IDbConnectionFactory     db,
             ISupabaseAdminClient     supabase,
+            AuditService             audit,
             HttpContext              ctx,
             CancellationToken        ct) =>
         {
@@ -52,9 +54,22 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
+            // For delete: fetch name before deletion, audit afterward
+            if (req.Action == "delete-user")
+            {
+                var targetName = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT COALESCE(full_name, username, id::text) FROM profiles WHERE id = @userId", new { userId });
+                var result = await DeleteUserAsync(userId, conn, supabase, ct);
+                // AuditService uses its own connection — safe to call after conn operations
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Delete, TargetType.User,
+                    userId, targetName ?? userId.ToString(), ct: ct);
+                return result;
+            }
+
             return req.Action switch
             {
-                "delete-user" => await DeleteUserAsync(userId, conn, supabase, ct),
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
                 "assign_role" => await AssignRoleToUserAsync(userId, req, conn, ct),
                 "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, ct),
@@ -783,12 +798,15 @@ public static class AdminEndpoints
             [FromBody] SuspendUserRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            AuditService         audit,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersBan)) return Results.Forbid();
             using var conn = db.CreateConnection();
+            var targetName = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT COALESCE(full_name, username, id::text) FROM profiles WHERE id = @userId", new { userId });
             await conn.ExecuteAsync(
                 """
                 UPDATE profiles
@@ -798,6 +816,11 @@ public static class AdminEndpoints
                 WHERE id = @userId
                 """,
                 new { userId, reason = req.Reason });
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Suspend, TargetType.User,
+                userId, targetName ?? userId.ToString(),
+                new { reason = req.Reason }, ct: ct);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -806,12 +829,15 @@ public static class AdminEndpoints
             Guid                 userId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            AuditService         audit,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.Permissions.Contains(Permissions.UsersBan)) return Results.Forbid();
             using var conn = db.CreateConnection();
+            var targetName = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT COALESCE(full_name, username, id::text) FROM profiles WHERE id = @userId", new { userId });
             await conn.ExecuteAsync(
                 """
                 UPDATE profiles
@@ -823,6 +849,10 @@ public static class AdminEndpoints
                 WHERE id = @userId
                 """,
                 new { userId });
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Unsuspend, TargetType.User,
+                userId, targetName ?? userId.ToString(), ct: ct);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -832,6 +862,8 @@ public static class AdminEndpoints
             HttpContext                      ctx,
             IDbConnectionFactory             db,
             ISupabaseAdminClient             supabase,
+            AuditService                     audit,
+            ILogger<Program>                 logger,
             CancellationToken                ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -860,16 +892,59 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Fetch target names for audit logging before any mutations
+            var targetUsers = (await conn.QueryAsync<(Guid id, string name)>(
+                "SELECT id, COALESCE(full_name, username, id::text) AS name FROM profiles WHERE id = ANY(@ids)",
+                new { ids = safeIds })).ToDictionary(u => u.id, u => u.name);
+
             if (req.Action == "delete")
             {
-                var deleted = 0;
+                // All-or-nothing: single transaction wraps all cascade deletes
+                using var txn = conn.BeginTransaction();
+                try
+                {
+                    foreach (var userId in safeIds)
+                        await DeleteUserCascadeAsync(userId, conn, txn);
+
+                    txn.Commit();
+                }
+                catch
+                {
+                    txn.Rollback();
+                    throw;
+                }
+
+                // Supabase auth cleanup after DB commit succeeds — external service calls
+                // can't be rolled back, so we only attempt them after data is committed.
+                // Each call is individually try-caught to prevent one failure from blocking the rest.
+                var authFailures = 0;
                 foreach (var userId in safeIds)
                 {
-                    var result = await DeleteUserAsync(userId, conn, supabase, ct);
-                    if (result is Microsoft.AspNetCore.Http.HttpResults.Ok<object>) deleted++;
+                    try
+                    {
+                        await supabase.DeleteUserAsync(userId.ToString(), ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        authFailures++;
+                        logger.LogError(ex, "[BulkDelete] Failed to delete Supabase auth for user {UserId} — orphaned auth entry requires manual cleanup", userId);
+                    }
                 }
-                return Results.Ok(new { success = true, affected = deleted });
+
+                // Audit each deletion
+                foreach (var userId in safeIds)
+                {
+                    await audit.LogAsync(
+                        userCtx.UserIdGuid, userCtx.Email,
+                        ActionType.Delete, TargetType.User,
+                        userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
+                        new { bulk = true, batchSize = safeIds.Length }, ct: ct);
+                }
+
+                return Results.Ok(new { success = true, affected = safeIds.Length, authCleanupFailures = authFailures });
             }
+
+            var actionType = req.Action == "suspend" ? ActionType.Suspend : ActionType.Unsuspend;
 
             var (sql, parameters) = req.Action switch
             {
@@ -898,6 +973,19 @@ public static class AdminEndpoints
 
             var affected = await conn.ExecuteAsync(
                 new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            // Audit each affected user (email used as adminName — UserContext lacks display name)
+            var auditDetails = req.Action == "suspend"
+                ? (object)new { bulk = true, batchSize = safeIds.Length, reason = req.Reason }
+                : new { bulk = true, batchSize = safeIds.Length };
+            foreach (var userId in safeIds)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    actionType, TargetType.User,
+                    userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
+                    auditDetails, ct: ct);
+            }
 
             return Results.Ok(new { success = true, affected });
         }).RequireAuthorization("Admin");
@@ -1340,6 +1428,7 @@ public static class AdminEndpoints
             [FromBody] BulkTournamentActionRequest req,
             HttpContext                            ctx,
             IDbConnectionFactory                   db,
+            AuditService                           audit,
             CancellationToken                      ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1363,10 +1452,35 @@ public static class AdminEndpoints
             if (sql is null)
                 return Results.BadRequest(new { error = $"Unknown action: {req.Action}" });
 
+            // Map action string to audit ActionType
+            var actionType = req.Action switch
+            {
+                "approve"   => ActionType.Approve,
+                "cancel"    => ActionType.Cancel,
+                "feature"   => ActionType.Feature,
+                "unfeature" => ActionType.Unfeature,
+                _           => ActionType.Update
+            };
+
             using var conn = db.CreateConnection();
+
+            // Fetch target names for audit logging before mutation
+            var targetTournaments = (await conn.QueryAsync<(Guid id, string name)>(
+                "SELECT id, COALESCE(name, id::text) AS name FROM tournaments WHERE id = ANY(@ids)",
+                new { ids = req.TournamentIds })).ToDictionary(t => t.id, t => t.name);
 
             var affected = await conn.ExecuteAsync(
                 new CommandDefinition(sql, new { Ids = req.TournamentIds }, cancellationToken: ct));
+
+            // Audit each affected tournament
+            foreach (var id in req.TournamentIds)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    actionType, TargetType.Tournament,
+                    id, targetTournaments.GetValueOrDefault(id, id.ToString()),
+                    new { bulk = true, batchSize = req.TournamentIds.Length, action = req.Action }, ct: ct);
+            }
 
             return Results.Ok(new { success = true, affected });
         }).RequireAuthorization("Admin");
@@ -3031,51 +3145,76 @@ public static class AdminEndpoints
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Deletes a user's data from all dependent tables in FK-dependency order.
+    /// When externalTxn is provided (bulk mode), caller manages commit/rollback
+    /// and must call Supabase auth delete separately after commit.
+    /// When externalTxn is null (single mode), creates its own transaction and
+    /// deletes from Supabase auth after commit.
+    /// </summary>
     private static async Task<IResult> DeleteUserAsync(
         Guid userId,
         System.Data.IDbConnection conn,
         ISupabaseAdminClient supabase,
-        CancellationToken ct)
+        CancellationToken ct,
+        System.Data.IDbTransaction? externalTxn = null)
     {
-        // Delete in dependency order to avoid FK constraint errors.
-        // Wrap in transaction so a mid-way failure doesn't leave partial data.
-        using var txn = conn.BeginTransaction();
+        var ownsTransaction = externalTxn is null;
+        var txn = externalTxn ?? conn.BeginTransaction();
         try
         {
-            await conn.ExecuteAsync(
-                "DELETE FROM public.match_result_reports WHERE reported_by = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.match_messages WHERE sender_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.notifications WHERE user_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.staff_tournament_assignments WHERE organization_staff_id IN (SELECT id FROM organization_staff WHERE user_id = @id)", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.organization_staff WHERE user_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.sponsor_accounts WHERE user_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.tournament_participants WHERE user_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.team_members WHERE user_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.tournaments WHERE organizer_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId }, txn);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.profiles WHERE id = @id", new { id = userId }, txn);
-
-            txn.Commit();
+            await DeleteUserCascadeAsync(userId, conn, txn);
+            if (ownsTransaction) txn.Commit();
         }
         catch
         {
-            txn.Rollback();
+            if (ownsTransaction) txn.Rollback();
             throw;
         }
+        finally
+        {
+            if (ownsTransaction) txn.Dispose();
+        }
 
-        // Finally delete from Supabase Auth (outside transaction — can't rollback external service)
-        await supabase.DeleteUserAsync(userId.ToString(), ct);
+        // Delete from Supabase Auth only in single-user mode.
+        // In bulk mode, caller handles this after the outer transaction commits.
+        if (ownsTransaction)
+            await supabase.DeleteUserAsync(userId.ToString(), ct);
+
         return Results.Ok(new { success = true });
+    }
+
+    /// <summary>
+    /// Cascade-deletes all user data from dependent tables within a transaction.
+    /// Does NOT touch Supabase Auth — caller is responsible for that.
+    /// </summary>
+    private static async Task DeleteUserCascadeAsync(
+        Guid userId,
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction txn)
+    {
+        await conn.ExecuteAsync(
+            "DELETE FROM public.match_result_reports WHERE reported_by = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.match_messages WHERE sender_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.notifications WHERE user_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.staff_tournament_assignments WHERE organization_staff_id IN (SELECT id FROM organization_staff WHERE user_id = @id)", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.organization_staff WHERE user_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.sponsor_accounts WHERE user_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.tournament_participants WHERE user_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.team_members WHERE user_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.tournaments WHERE organizer_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.user_roles WHERE user_id = @id", new { id = userId }, txn);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.profiles WHERE id = @id", new { id = userId }, txn);
     }
 
     private static async Task<IResult> UpdateUserRoleAsync(
