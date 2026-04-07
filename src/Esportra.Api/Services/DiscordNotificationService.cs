@@ -179,11 +179,16 @@ public sealed class DiscordNotificationService
         };
         var msgResp = await http.SendAsync(msgReq);
 
-        if (!msgResp.IsSuccessStatusCode)
+        var msgBody = await msgResp.Content.ReadAsStringAsync();
+        if (msgResp.IsSuccessStatusCode)
         {
-            var body = await msgResp.Content.ReadAsStringAsync();
+            _logger.LogInformation("✅ Discord DM sent to {DiscordId} (channel {Channel}), type={Type}",
+                discordUserId, channelData.Id, notificationType);
+        }
+        else
+        {
             _logger.LogWarning("Failed to send DM to Discord user {DiscordId}: {Status} {Body}",
-                discordUserId, msgResp.StatusCode, body);
+                discordUserId, msgResp.StatusCode, msgBody);
         }
     }
 
