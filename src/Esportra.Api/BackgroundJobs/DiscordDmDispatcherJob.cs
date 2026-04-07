@@ -56,7 +56,7 @@ public sealed class DiscordDmDispatcherJob : BackgroundService
         using var conn = db.CreateConnection();
 
         // Fetch recent notifications that:
-        // 1. Are for users who have discord_dm_enabled
+        // 1. Are for users who have Discord linked and haven't explicitly disabled DMs
         // 2. Haven't been sent yet (no discord_dm_sent flag)
         // 3. Were created in the last 2 minutes (avoid reprocessing old ones)
         var pending = (await conn.QueryAsync<PendingDm>(
@@ -64,8 +64,9 @@ public sealed class DiscordDmDispatcherJob : BackgroundService
             SELECT n.id, n.user_id, n.type, n.title, n.message
             FROM notifications n
             INNER JOIN profiles p ON p.id = n.user_id
+            INNER JOIN auth.identities ai ON ai.user_id = p.id AND ai.provider = 'discord'
             WHERE n.created_at > NOW() - INTERVAL '2 minutes'
-              AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, FALSE) = TRUE
+              AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) = TRUE
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
               AND n.type IN (
                   'match_ready', 'check_in_reminder', 'result_reported',

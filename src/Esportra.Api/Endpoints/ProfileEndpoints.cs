@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
@@ -757,7 +758,7 @@ public static class ProfileEndpoints
             var result = await conn.QuerySingleOrDefaultAsync<(bool enabled, bool hasDiscord)>(
                 """
                 SELECT
-                    COALESCE((p.settings->>'discord_dm_enabled')::boolean, FALSE) AS enabled,
+                    COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) AS enabled,
                     EXISTS(SELECT 1 FROM auth.identities WHERE user_id = p.id AND provider = 'discord') AS has_discord
                 FROM profiles p
                 WHERE p.id = @userId
@@ -766,10 +767,41 @@ public static class ProfileEndpoints
 
             return Results.Ok(new { discord_dm_enabled = result.enabled, has_discord = result.hasDiscord });
         }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/profiles/me/discord-join ──────────────────────────────
+        // Auto-join the user to the Esportra Discord server using their OAuth token
+        app.MapPost("/api/profiles/me/discord-join", async (
+            [FromBody] DiscordJoinRequest      req,
+            HttpContext                         ctx,
+            IDbConnectionFactory               db,
+            DiscordNotificationService          discord,
+            CancellationToken                   ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (string.IsNullOrEmpty(req.ProviderToken))
+                return Results.BadRequest(new { error = "Missing Discord provider token" });
+
+            using var conn = db.CreateConnection();
+
+            // Get the user's Discord provider_id from Supabase identities
+            var discordId = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT provider_id FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
+                new { userId = userCtx.UserIdGuid });
+
+            if (string.IsNullOrEmpty(discordId))
+                return Results.BadRequest(new { error = "Discord account not linked" });
+
+            var joined = await discord.TryAutoJoinGuildAsync(discordId, req.ProviderToken);
+
+            return Results.Ok(new { success = joined });
+        }).RequireAuthorization("Authenticated");
     }
 }
 
 public sealed record ToggleDiscordDmRequest(bool Enabled);
+public sealed record DiscordJoinRequest(string ProviderToken);
 public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
 public sealed record VerificationRequestBody(

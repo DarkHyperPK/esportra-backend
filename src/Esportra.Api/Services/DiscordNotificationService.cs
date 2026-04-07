@@ -64,7 +64,7 @@ public sealed class DiscordNotificationService
             var prefs = await conn.QuerySingleOrDefaultAsync<(bool enabled, string? discordId)>(
                 """
                 SELECT
-                    COALESCE((p.settings->>'discord_dm_enabled')::boolean, FALSE) AS enabled,
+                    COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) AS enabled,
                     ai.provider_id AS discord_id
                 FROM profiles p
                 LEFT JOIN auth.identities ai
@@ -95,6 +95,46 @@ public sealed class DiscordNotificationService
         foreach (var userId in userIds)
         {
             await TrySendDmAsync(userId, notificationType, title, message);
+        }
+    }
+
+    /// <summary>
+    /// Adds a user to the Esportra Discord server using their OAuth access token.
+    /// Requires the guilds.join scope on the user's OAuth token.
+    /// </summary>
+    public async Task<bool> TryAutoJoinGuildAsync(string discordUserId, string userAccessToken)
+    {
+        if (!IsConfigured || string.IsNullOrEmpty(_guildId)) return false;
+
+        try
+        {
+            var http = _httpFactory.CreateClient("Discord");
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bot", _botToken);
+
+            var payload = JsonSerializer.Serialize(new { access_token = userAccessToken });
+            var req = new HttpRequestMessage(HttpMethod.Put,
+                $"https://discord.com/api/v10/guilds/{_guildId}/members/{discordUserId}")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            var resp = await http.SendAsync(req);
+
+            // 201 = added, 204 = already a member — both are success
+            if (resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.NoContent)
+            {
+                _logger.LogInformation("Discord user {DiscordId} auto-joined guild", discordUserId);
+                return true;
+            }
+
+            var body = await resp.Content.ReadAsStringAsync();
+            _logger.LogWarning("Failed to auto-join Discord user {DiscordId}: {Status} {Body}",
+                discordUserId, resp.StatusCode, body);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to auto-join Discord user {DiscordId} to guild", discordUserId);
+            return false;
         }
     }
 
