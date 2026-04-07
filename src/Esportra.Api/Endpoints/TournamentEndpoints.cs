@@ -3152,6 +3152,7 @@ public static class TournamentEndpoints
         app.MapPost("/api/disputes", async (
             HttpContext                     ctx,
             IDbConnectionFactory            db,
+            Esportra.Core.Alerts.AdminAlertService alertService,
             CancellationToken               ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3200,6 +3201,16 @@ public static class TournamentEndpoints
                     evidenceUrl,
                     reason,
                 });
+
+            // Create admin alert for new dispute
+            await alertService.CreateAsync(
+                "dispute_filed",
+                Esportra.Core.Alerts.AlertSeverity.Warning,
+                $"Dispute filed — {(string)dispute.reference_number}",
+                $"{title ?? "Dispute"}: {reason ?? "No reason given"}",
+                new { dispute_id = (Guid)dispute.id, tournament_id = tournamentId, reference = (string)dispute.reference_number },
+                ct);
+
             return Results.Created($"/api/disputes/{dispute.id}", dispute);
         }).RequireAuthorization("Authenticated");
 

@@ -587,6 +587,7 @@ public static class MatchSystemEndpoints
             HttpContext                       ctx,
             IDbConnectionFactory             db,
             IHubContext<MatchHub>            matchHub,
+            Esportra.Core.Alerts.AdminAlertService alertService,
             CancellationToken                ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -697,7 +698,16 @@ public static class MatchSystemEndpoints
 
                 tx.Commit();
 
-                // 7. Broadcast dispute event via SignalR (after commit)
+                // 7a. Create admin alert for new dispute
+                await alertService.CreateAsync(
+                    "dispute_filed",
+                    Esportra.Core.Alerts.AlertSeverity.Warning,
+                    $"Match dispute filed — {(string)dispute.reference_number}",
+                    $"A team has disputed match result. Reason: {req.Reason?[..Math.Min(req.Reason?.Length ?? 0, 100)]}",
+                    new { dispute_id = (Guid)dispute.id, match_id = id, reference = (string)dispute.reference_number },
+                    ct);
+
+                // 7b. Broadcast dispute event via SignalR (after commit)
                 await matchHub.Clients
                     .Group(MatchHub.MatchGroup(id.ToString()))
                     .SendAsync(MatchHubEvents.ReportDisputed,

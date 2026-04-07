@@ -28,6 +28,15 @@ public static class AdminEndpoints
         return $"%{escaped}%";
     }
 
+    private static string CsvEscape(object? value)
+    {
+        if (value is null) return "";
+        var s = value.ToString() ?? "";
+        if (s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r'))
+            return $"\"{s.Replace("\"", "\"\"")}\"";
+        return s;
+    }
+
     public static void MapAdminEndpoints(this WebApplication app)
     {
         // ── POST /api/admin/users/{userId}/action ─────────────────────────────
@@ -3138,6 +3147,573 @@ public static class AdminEndpoints
 
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Admin");
+
+        // ══════════════════════════════════════════════════════════════════════
+        // CSV EXPORT ENDPOINTS
+        // ══════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/export/users ──────────────────────────────────────
+        app.MapGet("/api/admin/export/users", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] string?  search      = null,
+            [FromQuery] string?  status      = null,
+            [FromQuery] string?  role        = null,
+            [FromQuery] string?  country     = null,
+            [FromQuery] string?  joined_from = null,
+            [FromQuery] string?  joined_to   = null,
+            [FromQuery] string?  verified    = null,
+            [FromQuery] string?  has_team    = null,
+            [FromQuery] string?  sort_by     = null,
+            [FromQuery] string?  sort_dir    = null,
+            CancellationToken    ct          = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.UsersView)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            var parameters = new DynamicParameters();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR p.email ILIKE @search ESCAPE '\\' OR p.full_name ILIKE @search ESCAPE '\\')");
+                parameters.Add("search", EscapeLike(search));
+            }
+
+            if (status == "suspended")
+                conditions.Add("p.is_suspended = TRUE");
+            else if (status == "active")
+                conditions.Add("(p.is_suspended IS NULL OR p.is_suspended = FALSE)");
+
+            if (!string.IsNullOrWhiteSpace(role))
+            {
+                if (role == "admin")
+                    conditions.Add("EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = p.id)");
+                else if (role == "casual")
+                    conditions.Add("NOT EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.is_active = TRUE) AND NOT EXISTS (SELECT 1 FROM admin_user_roles aur2 WHERE aur2.user_id = p.id)");
+                else
+                {
+                    conditions.Add("EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.role = @role AND ur2.is_active = TRUE)");
+                    parameters.Add("role", role);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(country))
+            {
+                conditions.Add("p.country_code = @country");
+                parameters.Add("country", country);
+            }
+
+            if (!string.IsNullOrWhiteSpace(joined_from) && DateTimeOffset.TryParse(joined_from, out var jf))
+            {
+                conditions.Add("p.created_at >= @joinedFrom");
+                parameters.Add("joinedFrom", jf);
+            }
+            if (!string.IsNullOrWhiteSpace(joined_to) && DateTimeOffset.TryParse(joined_to, out var jt))
+            {
+                conditions.Add("p.created_at < @joinedTo");
+                parameters.Add("joinedTo", jt.AddDays(1));
+            }
+
+            if (verified == "true")
+                conditions.Add("p.is_verified = TRUE");
+            else if (verified == "false")
+                conditions.Add("(p.is_verified IS NULL OR p.is_verified = FALSE)");
+
+            if (has_team == "true")
+                conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+            else if (has_team == "false")
+                conditions.Add("NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
+            var allowedSorts = new HashSet<string> { "created_at", "username", "updated_at" };
+            var sortColumn = allowedSorts.Contains(sort_by ?? "") ? sort_by! : "created_at";
+            var sortDirection = sort_dir?.ToLower() == "asc" ? "ASC" : "DESC";
+
+            var sql = $"""
+                SELECT p.id, p.full_name, p.username, p.email, p.country_code, p.date_of_birth, p.is_suspended, p.created_at,
+                       COALESCE(array_agg(DISTINCT ur.role) FILTER (WHERE ur.role IS NOT NULL), ARRAY[]::text[]) AS roles
+                FROM profiles p
+                LEFT JOIN user_roles ur ON ur.user_id = p.id AND ur.is_active = TRUE
+                {where}
+                GROUP BY p.id
+                ORDER BY p.{sortColumn} {sortDirection}
+                LIMIT 10000
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("ID,Full Name,Username,Email,Country,Date of Birth,Suspended,Roles,Joined");
+            foreach (var row in rows)
+            {
+                var dict = (IDictionary<string, object?>)row;
+                var rolesVal = dict["roles"];
+                var rolesStr = rolesVal is string[] arr ? string.Join("; ", arr)
+                             : rolesVal?.ToString() ?? "";
+                sb.AppendLine(string.Join(",",
+                    CsvEscape(dict["id"]),
+                    CsvEscape(dict["full_name"]),
+                    CsvEscape(dict["username"]),
+                    CsvEscape(dict["email"]),
+                    CsvEscape(dict["country_code"]),
+                    CsvEscape(dict["date_of_birth"]),
+                    CsvEscape(dict["is_suspended"] is true ? "Yes" : "No"),
+                    CsvEscape(rolesStr),
+                    CsvEscape(dict["created_at"])));
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+            return Results.File(bytes, "text/csv", $"users_export_{DateTime.UtcNow:yyyy-MM-dd}.csv");
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/export/tournaments ────────────────────────────────
+        app.MapGet("/api/admin/export/tournaments", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] string?  search    = null,
+            [FromQuery] string?  status    = null,
+            [FromQuery] string?  game      = null,
+            [FromQuery] string?  format    = null,
+            [FromQuery] decimal? prize_min = null,
+            [FromQuery] decimal? prize_max = null,
+            [FromQuery] string?  date_from = null,
+            [FromQuery] string?  date_to   = null,
+            [FromQuery] string?  sort_by   = null,
+            [FromQuery] string?  sort_dir  = null,
+            CancellationToken    ct        = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.TournamentsView)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            var parameters = new DynamicParameters();
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                conditions.Add("t.status::text = @status");
+                parameters.Add("status", status);
+            }
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                conditions.Add("(t.name ILIKE @search ESCAPE '\\' OR p.username ILIKE @search ESCAPE '\\')");
+                parameters.Add("search", EscapeLike(search));
+            }
+            if (!string.IsNullOrWhiteSpace(game))
+            {
+                conditions.Add("t.game ILIKE @game ESCAPE '\\'");
+                parameters.Add("game", EscapeLike(game));
+            }
+            if (!string.IsNullOrWhiteSpace(format))
+            {
+                conditions.Add("t.format = @format");
+                parameters.Add("format", format);
+            }
+            if (prize_min.HasValue)
+            {
+                conditions.Add("COALESCE(t.prize_pool, 0) >= @prizeMin");
+                parameters.Add("prizeMin", prize_min.Value);
+            }
+            if (prize_max.HasValue)
+            {
+                conditions.Add("COALESCE(t.prize_pool, 0) <= @prizeMax");
+                parameters.Add("prizeMax", prize_max.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(date_from) && DateTimeOffset.TryParse(date_from, out var df))
+            {
+                conditions.Add("t.created_at >= @dateFrom");
+                parameters.Add("dateFrom", df);
+            }
+            if (!string.IsNullOrWhiteSpace(date_to) && DateTimeOffset.TryParse(date_to, out var dt2))
+            {
+                conditions.Add("t.created_at < @dateTo");
+                parameters.Add("dateTo", dt2.AddDays(1));
+            }
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
+            var allowedSorts = new HashSet<string> { "created_at", "start_date", "prize_pool", "name" };
+            var sortColumn = allowedSorts.Contains(sort_by ?? "") ? sort_by! : "created_at";
+            var sortDirection = sort_dir?.ToLower() == "asc" ? "ASC" : "DESC";
+
+            var sql = $"""
+                SELECT t.id, t.name, t.game, t.status, t.format, t.prize_pool, t.max_teams,
+                       t.is_featured, t.start_date, t.created_at
+                FROM tournaments t
+                LEFT JOIN profiles p ON p.id = t.organizer_id
+                {where}
+                ORDER BY t.{sortColumn} {sortDirection}
+                LIMIT 10000
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("ID,Name,Game,Status,Format,Prize Pool,Max Teams,Featured,Start Date,Created");
+            foreach (var row in rows)
+            {
+                var dict = (IDictionary<string, object?>)row;
+                sb.AppendLine(string.Join(",",
+                    CsvEscape(dict["id"]),
+                    CsvEscape(dict["name"]),
+                    CsvEscape(dict["game"]),
+                    CsvEscape(dict["status"]),
+                    CsvEscape(dict["format"]),
+                    CsvEscape(dict["prize_pool"]),
+                    CsvEscape(dict["max_teams"]),
+                    CsvEscape(dict["is_featured"] is true ? "Yes" : "No"),
+                    CsvEscape(dict["start_date"]),
+                    CsvEscape(dict["created_at"])));
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+            return Results.File(bytes, "text/csv", $"tournaments_export_{DateTime.UtcNow:yyyy-MM-dd}.csv");
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/export/audit-logs ─────────────────────────────────
+        app.MapGet("/api/admin/export/audit-logs", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] string?  search      = null,
+            [FromQuery] string?  target_type = null,
+            [FromQuery] string?  from        = null,
+            [FromQuery] string?  to          = null,
+            CancellationToken    ct          = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.SystemAudit)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            var parameters = new DynamicParameters();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR sal.action ILIKE @search ESCAPE '\\' OR sal.target_type ILIKE @search ESCAPE '\\')");
+                parameters.Add("search", EscapeLike(search));
+            }
+            if (!string.IsNullOrWhiteSpace(target_type))
+            {
+                conditions.Add("sal.target_type = @target_type");
+                parameters.Add("target_type", target_type);
+            }
+            if (!string.IsNullOrWhiteSpace(from) && DateTimeOffset.TryParse(from, out var fd))
+            {
+                conditions.Add("sal.created_at >= @fromDate");
+                parameters.Add("fromDate", fd);
+            }
+            if (!string.IsNullOrWhiteSpace(to) && DateTimeOffset.TryParse(to, out var td))
+            {
+                conditions.Add("sal.created_at <= @toDate");
+                parameters.Add("toDate", td);
+            }
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
+            var sql = $"""
+                SELECT sal.id, sal.actor_id, p.username AS actor_name, sal.action, sal.target_type,
+                       sal.target_id, sal.details, sal.created_at
+                FROM staff_audit_log sal
+                LEFT JOIN profiles p ON p.id = sal.actor_id
+                {where}
+                ORDER BY sal.created_at DESC
+                LIMIT 10000
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("ID,Admin,Action,Target Type,Target ID,Details,Date");
+            foreach (var row in rows)
+            {
+                var dict = (IDictionary<string, object?>)row;
+                var detailsRaw = dict["details"];
+                var detailsStr = detailsRaw is string s ? s : detailsRaw?.ToString() ?? "";
+                sb.AppendLine(string.Join(",",
+                    CsvEscape(dict["id"]),
+                    CsvEscape(dict["actor_name"]),
+                    CsvEscape(dict["action"]),
+                    CsvEscape(dict["target_type"]),
+                    CsvEscape(dict["target_id"]),
+                    CsvEscape(detailsStr),
+                    CsvEscape(dict["created_at"])));
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+            return Results.File(bytes, "text/csv", $"audit_logs_export_{DateTime.UtcNow:yyyy-MM-dd}.csv");
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/export/disputes ───────────────────────────────────
+        app.MapGet("/api/admin/export/disputes", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] string?  status = null,
+            CancellationToken    ct     = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.DisputesView)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var parameters = new DynamicParameters();
+            var statusFilter = "";
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                statusFilter = "WHERE td.status = @status";
+                parameters.Add("status", status);
+            }
+
+            var sql = $"""
+                SELECT td.id, td.reference_number, td.title, td.dispute_reason, td.status,
+                       td.resolution_notes, t.name AS tournament_name,
+                       p.full_name AS raised_by_name, td.created_at, td.updated_at
+                FROM tournament_disputes td
+                LEFT JOIN tournaments t ON t.id = td.tournament_id
+                LEFT JOIN profiles p ON p.id = td.raised_by_user_id
+                {statusFilter}
+                ORDER BY td.created_at DESC
+                LIMIT 10000
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("Reference,Title,Reason,Status,Tournament,Raised By,Resolution,Created,Updated");
+            foreach (var row in rows)
+            {
+                var dict = (IDictionary<string, object?>)row;
+                sb.AppendLine(string.Join(",",
+                    CsvEscape(dict["reference_number"]),
+                    CsvEscape(dict["title"]),
+                    CsvEscape(dict["dispute_reason"]),
+                    CsvEscape(dict["status"]),
+                    CsvEscape(dict["tournament_name"]),
+                    CsvEscape(dict["raised_by_name"]),
+                    CsvEscape(dict["resolution_notes"]),
+                    CsvEscape(dict["created_at"]),
+                    CsvEscape(dict["updated_at"])));
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+            return Results.File(bytes, "text/csv", $"disputes_export_{DateTime.UtcNow:yyyy-MM-dd}.csv");
+        }).RequireAuthorization("Admin");
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // ── ADMIN ALERTS ──────────────────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/alerts ────────────────────────────────────────────────
+        app.MapGet("/api/admin/alerts", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] string?  status   = null,
+            [FromQuery] string?  severity = null,
+            [FromQuery] string?  type     = null,
+            [FromQuery] int      page     = 1,
+            [FromQuery] int      limit    = 20,
+            CancellationToken    ct       = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new List<string>();
+            var parameters = new DynamicParameters();
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                conditions.Add("a.status = @status");
+                parameters.Add("status", status);
+            }
+            if (!string.IsNullOrWhiteSpace(severity))
+            {
+                conditions.Add("a.severity = @severity");
+                parameters.Add("severity", severity);
+            }
+            if (!string.IsNullOrWhiteSpace(type))
+            {
+                conditions.Add("a.type = @type");
+                parameters.Add("type", type);
+            }
+
+            var where = conditions.Count > 0
+                ? "WHERE " + string.Join(" AND ", conditions)
+                : "";
+
+            var offset = Math.Max(0, (page - 1) * limit);
+            parameters.Add("limit", Math.Clamp(limit, 1, 100));
+            parameters.Add("offset", offset);
+
+            var countSql = $"SELECT COUNT(*) FROM admin_alerts a {where}";
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(countSql, parameters, cancellationToken: ct));
+
+            var sql = $"""
+                SELECT a.id, a.type, a.severity, a.title, a.message, a.data,
+                       a.status, a.acknowledged_by, a.acknowledged_at,
+                       a.resolved_by, a.resolved_at, a.created_at,
+                       p1.username AS acknowledged_by_name,
+                       p2.username AS resolved_by_name
+                FROM admin_alerts a
+                LEFT JOIN profiles p1 ON p1.id = a.acknowledged_by
+                LEFT JOIN profiles p2 ON p2.id = a.resolved_by
+                {where}
+                ORDER BY
+                    CASE a.status WHEN 'active' THEN 0 WHEN 'acknowledged' THEN 1 ELSE 2 END,
+                    CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                    a.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var alerts = await conn.QueryAsync<dynamic>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            return Results.Ok(new { data = alerts, total, page, limit });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/alerts/summary ────────────────────────────────────────
+        app.MapGet("/api/admin/alerts/summary", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var sql = """
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'active') AS active_count,
+                    COUNT(*) FILTER (WHERE status = 'active' AND severity = 'critical') AS critical_count,
+                    COUNT(*) FILTER (WHERE status = 'active' AND severity = 'warning') AS warning_count,
+                    COUNT(*) FILTER (WHERE status = 'active' AND severity = 'info') AS info_count,
+                    COUNT(*) FILTER (WHERE status = 'acknowledged') AS acknowledged_count
+                FROM admin_alerts
+                """;
+
+            var result = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(sql, cancellationToken: ct));
+            return Results.Ok(result);
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/alerts/{id}/acknowledge ───────────────────────────────
+        app.MapPut("/api/admin/alerts/{id}/acknowledge", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE admin_alerts
+                SET status = 'acknowledged', acknowledged_by = @userId, acknowledged_at = now()
+                WHERE id = @id AND status = 'active'
+                """, new { id, userId = userCtx.UserIdGuid }, cancellationToken: ct));
+
+            return rows > 0 ? Results.Ok(new { success = true }) : Results.NotFound();
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/alerts/{id}/resolve ───────────────────────────────────
+        app.MapPut("/api/admin/alerts/{id}/resolve", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE admin_alerts
+                SET status = 'resolved', resolved_by = @userId, resolved_at = now()
+                WHERE id = @id AND status IN ('active', 'acknowledged')
+                """, new { id, userId = userCtx.UserIdGuid }, cancellationToken: ct));
+
+            return rows > 0 ? Results.Ok(new { success = true }) : Results.NotFound();
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/alerts ───────────────────────────────────────────────
+        // Create a manual admin alert (for system announcements, etc.)
+        app.MapPost("/api/admin/alerts", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromBody] CreateAdminAlertRequest req,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            if (string.IsNullOrWhiteSpace(req.Title))
+                return Results.BadRequest(new { error = "Title is required" });
+
+            using var conn = db.CreateConnection();
+
+            var id = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                INSERT INTO admin_alerts (type, severity, title, message, data)
+                VALUES (@type, @severity, @title, @message, @data::jsonb)
+                RETURNING id
+                """, new {
+                    type     = req.Type ?? "system_event",
+                    severity = req.Severity ?? "info",
+                    title    = req.Title,
+                    message  = req.Message,
+                    data     = req.Data ?? "{}"
+                }, cancellationToken: ct));
+
+            return Results.Ok(new { id, success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/alerts/bulk-acknowledge ───────────────────────────────
+        app.MapPut("/api/admin/alerts/bulk-acknowledge", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromBody] BulkAlertActionRequest req,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            if (req.AlertIds is null || req.AlertIds.Length == 0)
+                return Results.BadRequest(new { error = "No alert IDs provided" });
+
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE admin_alerts
+                SET status = 'acknowledged', acknowledged_by = @userId, acknowledged_at = now()
+                WHERE id = ANY(@ids) AND status = 'active'
+                """, new { ids = req.AlertIds, userId = userCtx.UserIdGuid }, cancellationToken: ct));
+
+            return Results.Ok(new { success = true, updated = rows });
+        }).RequireAuthorization("Admin");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
@@ -3334,3 +3910,10 @@ public sealed record UpdateApplicationRequest(string? Status = null, string? Not
 public sealed record AdminUserRoleAssignRequest(Guid UserId, Guid RoleId);
 public sealed record AdminUpdateTournamentRequest(string? Status = null, bool? IsFeatured = null);
 public sealed record AdminUpdateUserRequest(bool? IsAdmin = null, Guid[]? AdminRoles = null);
+public sealed record CreateAdminAlertRequest(
+    string? Type = null,
+    string? Severity = null,
+    string Title = "",
+    string? Message = null,
+    string? Data = null);
+public sealed record BulkAlertActionRequest(Guid[] AlertIds);
