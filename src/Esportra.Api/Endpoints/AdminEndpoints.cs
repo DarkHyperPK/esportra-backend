@@ -826,6 +826,82 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
+        // ── POST /api/admin/users/bulk-action ─────────────────────────────────
+        app.MapPost("/api/admin/users/bulk-action", async (
+            [FromBody] BulkUserActionRequest req,
+            HttpContext                      ctx,
+            IDbConnectionFactory             db,
+            ISupabaseAdminClient             supabase,
+            CancellationToken                ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.UserIds is not { Length: > 0 })
+                return Results.BadRequest(new { error = "UserIds must not be empty." });
+            if (req.UserIds.Length > 100)
+                return Results.BadRequest(new { error = "Cannot process more than 100 users at once." });
+
+            var requiredPerm = req.Action switch
+            {
+                "suspend" or "unsuspend" => Permissions.UsersBan,
+                "delete" => Permissions.UsersDelete,
+                _ => (string?)null
+            };
+            if (requiredPerm is null)
+                return Results.BadRequest(new { error = $"Unknown action: {req.Action}" });
+            if (!userCtx.Permissions.Contains(requiredPerm))
+                return Results.Forbid();
+
+            // Prevent admin from acting on themselves
+            var safeIds = req.UserIds.Where(id => id != userCtx.UserIdGuid).ToArray();
+            if (safeIds.Length == 0)
+                return Results.BadRequest(new { error = "Cannot perform this action on yourself." });
+
+            using var conn = db.CreateConnection();
+
+            if (req.Action == "delete")
+            {
+                var deleted = 0;
+                foreach (var userId in safeIds)
+                {
+                    var result = await DeleteUserAsync(userId, conn, supabase, ct);
+                    if (result is Microsoft.AspNetCore.Http.HttpResults.Ok<object>) deleted++;
+                }
+                return Results.Ok(new { success = true, affected = deleted });
+            }
+
+            var (sql, parameters) = req.Action switch
+            {
+                "suspend" => (
+                    """
+                    UPDATE profiles
+                    SET is_suspended = true,
+                        suspension_reason = @Reason,
+                        updated_at = NOW()
+                    WHERE id = ANY(@UserIds)
+                    """,
+                    (object)new { UserIds = safeIds, req.Reason }),
+                "unsuspend" => (
+                    """
+                    UPDATE profiles
+                    SET is_suspended = false,
+                        suspension_reason = null,
+                        suspension_type = null,
+                        suspension_until = null,
+                        updated_at = NOW()
+                    WHERE id = ANY(@UserIds)
+                    """,
+                    (object)new { UserIds = safeIds }),
+                _ => throw new InvalidOperationException()
+            };
+
+            var affected = await conn.ExecuteAsync(
+                new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            return Results.Ok(new { success = true, affected });
+        }).RequireAuthorization("Admin");
+
         // ── POST /api/emails ──────────────────────────────────────────────────
         // Replaces: send-email Edge Function (internal use only)
         // Requires authenticated admin or service call.
@@ -1257,6 +1333,42 @@ public static class AdminEndpoints
                 new { id, req.Status, req.IsFeatured });
 
             return affected == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/tournaments/bulk-action ───────────────────────────
+        app.MapPost("/api/admin/tournaments/bulk-action", async (
+            [FromBody] BulkTournamentActionRequest req,
+            HttpContext                            ctx,
+            IDbConnectionFactory                   db,
+            CancellationToken                      ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.TournamentsEdit))
+                return Results.Forbid();
+
+            if (req.TournamentIds is not { Length: > 0 })
+                return Results.BadRequest(new { error = "TournamentIds must not be empty." });
+            if (req.TournamentIds.Length > 100)
+                return Results.BadRequest(new { error = "Cannot process more than 100 tournaments at once." });
+
+            var sql = req.Action switch
+            {
+                "approve"   => "UPDATE tournaments SET status = 'approved'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status IN ('draft', 'pending')",
+                "cancel"    => "UPDATE tournaments SET status = 'cancelled'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status NOT IN ('completed', 'cancelled')",
+                "feature"   => "UPDATE tournaments SET is_featured = true, updated_at = now() WHERE id = ANY(@Ids)",
+                "unfeature" => "UPDATE tournaments SET is_featured = false, updated_at = now() WHERE id = ANY(@Ids)",
+                _ => (string?)null
+            };
+            if (sql is null)
+                return Results.BadRequest(new { error = $"Unknown action: {req.Action}" });
+
+            using var conn = db.CreateConnection();
+
+            var affected = await conn.ExecuteAsync(
+                new CommandDefinition(sql, new { Ids = req.TournamentIds }, cancellationToken: ct));
+
+            return Results.Ok(new { success = true, affected });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/disputes ────────────────────────────────────────────
