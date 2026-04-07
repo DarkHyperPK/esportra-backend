@@ -285,9 +285,13 @@ var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
 
 // ── Run database migrations ──────────────────────────────────────────────────
+// Migrations need supabase_admin (superuser) to issue GRANTs on tables it owns.
+// postgres user is NOT superuser in Supabase and GRANT silently no-ops.
+// Fallback to the regular connection string if no migration-specific one is set.
 {
+    var migrationConnStr = builder.Configuration.GetConnectionString("PostgresMigrations") ?? pgConnStr;
     var migrationLogger = app.Services.GetRequiredService<ILogger<Esportra.Infrastructure.Migrations.MigrationRunner>>();
-    var migrationRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(pgConnStr, migrationLogger);
+    var migrationRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(migrationConnStr, migrationLogger);
     if (!migrationRunner.Run())
     {
         Console.Error.WriteLine("[STARTUP] Database migration failed. Aborting.");
