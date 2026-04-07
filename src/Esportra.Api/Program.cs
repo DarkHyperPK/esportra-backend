@@ -267,9 +267,14 @@ builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
 
+// ── Discord bot DM notifications ──────────────────────────────────────────────
+builder.Services.AddHttpClient("Discord");
+builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
+
 // ── Background jobs ───────────────────────────────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<CheckinWalkoversJob>();
+builder.Services.AddHostedService<DiscordDmDispatcherJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
