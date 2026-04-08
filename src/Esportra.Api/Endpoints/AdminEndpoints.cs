@@ -5405,6 +5405,8 @@ public static class AdminEndpoints
                 ORDER BY rs.created_at DESC
                 """, cancellationToken: ct));
 
+            DapperJsonbHelper.FixJsonb(rows);
+
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
 
@@ -5441,6 +5443,8 @@ public static class AdminEndpoints
 
             if (req.Recipients is null || req.Recipients.Length == 0)
                 return Results.BadRequest(new { error = "At least one recipient is required." });
+            if (req.Recipients.Length > 50)
+                return Results.BadRequest(new { error = "Maximum 50 recipients allowed." });
 
             var emailRegex = new System.Text.RegularExpressions.Regex(
                 @"^[^@\s]+@[^@\s]+\.[^@\s]+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -5502,8 +5506,26 @@ public static class AdminEndpoints
                 new { reportType = req.ReportType, frequency = req.Frequency },
                 ct: ct);
 
-            var schedule = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
-                "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+            var schedule = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    id,
+                    name,
+                    report_type    AS "reportType",
+                    frequency,
+                    day_of_week    AS "dayOfWeek",
+                    day_of_month   AS "dayOfMonth",
+                    time_of_day    AS "timeOfDay",
+                    recipients,
+                    format,
+                    filters,
+                    is_active      AS "isActive",
+                    last_run_at    AS "lastRunAt",
+                    next_run_at    AS "nextRunAt",
+                    created_by     AS "createdBy",
+                    created_at     AS "createdAt",
+                    updated_at     AS "updatedAt"
+                FROM report_schedules WHERE id = @id
+                """, new { id }, cancellationToken: ct));
 
             return Results.Created($"/api/admin/report-schedules/{id}", schedule);
         }).RequireAuthorization("Admin");
@@ -5552,7 +5574,23 @@ public static class AdminEndpoints
             if (!string.IsNullOrWhiteSpace(req.Name))
             { sets.Add("name = @name"); p.Add("name", req.Name.Trim()); }
             if (req.IsActive.HasValue)
-            { sets.Add("is_active = @isActive"); p.Add("isActive", req.IsActive.Value); }
+            {
+                sets.Add("is_active = @isActive"); p.Add("isActive", req.IsActive.Value);
+                // When re-activating, recompute next_run_at so the schedule fires on time
+                if (req.IsActive.Value)
+                {
+                    var existDict  = (IDictionary<string, object?>)existing;
+                    var freq       = existDict["frequency"]?.ToString() ?? "daily";
+                    var dowRaw     = existDict["day_of_week"];
+                    var domRaw     = existDict["day_of_month"];
+                    var todRaw     = existDict["time_of_day"]?.ToString() ?? "08:00";
+                    var dow        = dowRaw is not null ? Convert.ToInt32(dowRaw) : (int?)null;
+                    var dom        = domRaw is not null ? Convert.ToInt32(domRaw) : (int?)null;
+                    TimeOnly.TryParse(todRaw, out var tod);
+                    var nextRun    = ComputeNextRun(freq, dow, dom, tod);
+                    sets.Add("next_run_at = @nextRunAt"); p.Add("nextRunAt", nextRun);
+                }
+            }
             if (req.Recipients is { Length: > 0 })
             { sets.Add("recipients = @recipients"); p.Add("recipients", req.Recipients); }
             if (!string.IsNullOrWhiteSpace(req.Format))
@@ -5571,8 +5609,26 @@ public static class AdminEndpoints
                 new { updated = sets },
                 ct: ct);
 
-            var updated = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
-                "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+            var updated = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    id,
+                    name,
+                    report_type    AS "reportType",
+                    frequency,
+                    day_of_week    AS "dayOfWeek",
+                    day_of_month   AS "dayOfMonth",
+                    time_of_day    AS "timeOfDay",
+                    recipients,
+                    format,
+                    filters,
+                    is_active      AS "isActive",
+                    last_run_at    AS "lastRunAt",
+                    next_run_at    AS "nextRunAt",
+                    created_by     AS "createdBy",
+                    created_at     AS "createdAt",
+                    updated_at     AS "updatedAt"
+                FROM report_schedules WHERE id = @id
+                """, new { id }, cancellationToken: ct));
 
             return Results.Ok(updated);
         }).RequireAuthorization("Admin");
@@ -5625,6 +5681,14 @@ public static class AdminEndpoints
                 "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
             if (schedule is null) return Results.NotFound(new { error = "Schedule not found." });
 
+            // Guard against concurrent runs on the same schedule
+            var alreadyRunning = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                SELECT COUNT(*) FROM report_run_log
+                WHERE schedule_id = @id AND status = 'running'
+                """, new { id }, cancellationToken: ct));
+            if (alreadyRunning > 0)
+                return Results.Conflict(new { error = "A run is already in progress for this schedule." });
+
             // Insert a 'running' log entry
             var runId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
                 INSERT INTO report_run_log (schedule_id, status, triggered_by)
@@ -5636,20 +5700,35 @@ public static class AdminEndpoints
             {
                 var schedDict = (IDictionary<string, object?>)schedule;
                 var reportType = schedDict["report_type"]?.ToString() ?? "users";
+                var format     = schedDict["format"]?.ToString() ?? "json";
 
                 // ── Generate report data ─────────────────────────────────────
                 var (payload, rowCount) = await GenerateReportAsync(conn, reportType, ct);
 
-                var json = JsonSerializer.Serialize(payload);
-                var bytes = System.Text.Encoding.UTF8.GetByteCount(json);
+                string fileContent;
+                string mimeType;
 
-                // Store JSON inline as download_url (base64 data URI for small reports)
-                var dataUri = $"data:application/json;base64,{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json))}";
+                if (format.Equals("csv", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Serialise to JSON first, then convert rows → CSV
+                    var tempJson = JsonSerializer.Serialize(payload);
+                    using var doc = JsonDocument.Parse(tempJson);
+                    fileContent = ConvertReportToCsv(doc);
+                    mimeType    = "text/csv";
+                }
+                else
+                {
+                    fileContent = JsonSerializer.Serialize(payload);
+                    mimeType    = "application/json";
+                }
 
-                // Update run log — completed
+                var bytes   = System.Text.Encoding.UTF8.GetByteCount(fileContent);
+                var dataUri = $"data:{mimeType};base64,{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(fileContent))}";
+
+                // Update run log — success
                 await conn.ExecuteAsync(new CommandDefinition("""
                     UPDATE report_run_log
-                    SET status          = 'completed',
+                    SET status          = 'success',
                         completed_at    = NOW(),
                         row_count       = @rowCount,
                         file_size_bytes = @fileSize,
@@ -5914,6 +5993,51 @@ public static class AdminEndpoints
 
     // ── Scheduled Reports Helpers ─────────────────────────────────────────────
 
+    /// <summary>
+    /// Converts a report JSON document to CSV.
+    /// Looks for a top-level "rows" array; falls back to a "summary" object.
+    /// </summary>
+    private static string ConvertReportToCsv(JsonDocument doc)
+    {
+        var sb   = new System.Text.StringBuilder();
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("rows", out var rowsEl) && rowsEl.ValueKind == JsonValueKind.Array)
+        {
+            var rows = rowsEl.EnumerateArray().ToList();
+            if (rows.Count == 0) return "";
+
+            // Header row from first object's property names
+            var headers = rows[0].EnumerateObject().Select(p => CsvEscape(p.Name)).ToList();
+            sb.AppendLine(string.Join(",", headers));
+
+            // Data rows
+            foreach (var row in rows)
+            {
+                var values = row.EnumerateObject()
+                                .Select(p => CsvEscape(p.Value.ToString()))
+                                .ToList();
+                sb.AppendLine(string.Join(",", values));
+            }
+        }
+        else if (root.TryGetProperty("summary", out var summaryEl))
+        {
+            var props = summaryEl.EnumerateObject().ToList();
+            sb.AppendLine(string.Join(",", props.Select(p => CsvEscape(p.Name))));
+            sb.AppendLine(string.Join(",", props.Select(p => CsvEscape(p.Value.ToString()))));
+        }
+
+        return sb.ToString();
+    }
+
+    private static string CsvEscape(string? value)
+    {
+        value ??= "";
+        if (value.Contains(',') || value.Contains('"') || value.Contains('\n'))
+            return $"\"{value.Replace("\"", "\"\"")}\"";
+        return value;
+    }
+
     /// <summary>Computes the next UTC run time for a report schedule.</summary>
     private static DateTime ComputeNextRun(string frequency, int? dayOfWeek, int? dayOfMonth, TimeOnly timeOfDay)
     {
@@ -5988,7 +6112,7 @@ public static class AdminEndpoints
                     LEFT JOIN user_roles ur ON ur.user_id = p.id AND ur.is_active = TRUE
                     GROUP BY p.id
                     ORDER BY p.created_at DESC
-                    LIMIT 10000
+                    LIMIT 1000
                     """, cancellationToken: ct));
                 var list = rows.ToList();
                 return (new { report_type = "users", generated_at = DateTime.UtcNow, rows = list }, list.Count);
@@ -6001,7 +6125,7 @@ public static class AdminEndpoints
                            t.max_teams, t.is_featured, t.start_date, t.created_at
                     FROM tournaments t
                     ORDER BY t.created_at DESC
-                    LIMIT 10000
+                    LIMIT 1000
                     """, cancellationToken: ct));
                 var list = rows.ToList();
                 return (new { report_type = "tournaments", generated_at = DateTime.UtcNow, rows = list }, list.Count);
@@ -6045,7 +6169,7 @@ public static class AdminEndpoints
                            mq.created_at, mq.reviewed_at
                     FROM moderation_queue mq
                     ORDER BY mq.created_at DESC
-                    LIMIT 10000
+                    LIMIT 1000
                     """, cancellationToken: ct));
                 var list = rows.ToList();
                 return (new { report_type = "moderation", generated_at = DateTime.UtcNow, rows = list }, list.Count);
