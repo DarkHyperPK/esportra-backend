@@ -6775,7 +6775,7 @@ public static class AdminEndpoints
             };
 
             return Results.Ok(catalog);
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/dashboard/preferences ──────────────────────────────
         // Returns the calling admin's saved dashboard layout, or a default if none exists.
@@ -6819,11 +6819,19 @@ public static class AdminEndpoints
                 return Results.Ok(new { layout = defaultLayout, isDefault = true });
             }
 
-            var prefs = JsonSerializer.Deserialize<DashboardWidgetConfig[]>(raw,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            DashboardWidgetConfig[]? prefs = null;
+            try
+            {
+                prefs = JsonSerializer.Deserialize<DashboardWidgetConfig[]>(raw,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch (JsonException) { /* corrupt JSONB — fall back to default */ }
+
+            if (prefs is null || prefs.Length == 0)
+                return Results.Ok(new { layout = (object)Array.Empty<DashboardWidgetConfig>(), isDefault = true });
 
             return Results.Ok(new { layout = prefs, isDefault = false });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/dashboard/preferences ──────────────────────────────
         // Upserts the calling admin's dashboard layout.
@@ -6841,11 +6849,23 @@ public static class AdminEndpoints
                 return Results.BadRequest(new { error = "Layout is required." });
             if (req.Layout.Length > 20)
                 return Results.BadRequest(new { error = "Layout may contain at most 20 widgets." });
+
+            var validWidgetIds = new HashSet<string>
+            {
+                "stats-overview", "user-growth", "tournament-activity", "revenue-summary",
+                "moderation-queue", "anomaly-alerts", "online-users", "recent-registrations",
+                "pending-gdpr", "system-health"
+            };
+            var seen = new HashSet<string>();
             for (var i = 0; i < req.Layout.Length; i++)
             {
                 var w = req.Layout[i];
                 if (string.IsNullOrWhiteSpace(w.WidgetId))
                     return Results.BadRequest(new { error = $"Widget at index {i} has an empty WidgetId." });
+                if (!validWidgetIds.Contains(w.WidgetId))
+                    return Results.BadRequest(new { error = $"Unknown widget ID: '{w.WidgetId}'." });
+                if (!seen.Add(w.WidgetId))
+                    return Results.BadRequest(new { error = $"Duplicate widget ID: '{w.WidgetId}'." });
                 if (w.Position < 0)
                     return Results.BadRequest(new { error = $"Widget '{w.WidgetId}' has a negative Position." });
             }
@@ -6865,7 +6885,7 @@ public static class AdminEndpoints
                 cancellationToken: ct));
 
             return Results.Ok(new { saved = true });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Admin");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
