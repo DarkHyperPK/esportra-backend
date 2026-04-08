@@ -4739,6 +4739,255 @@ public static class AdminEndpoints
 
             return Results.Ok(new { success = true, updated = rows });
         }).RequireAuthorization("Admin");
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // ── ADMIN SESSION MANAGEMENT ─────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/sessions/active ───────────────────────────────────────
+        // Lists currently active admin sessions by cross-referencing Supabase Auth
+        // user list with the admin_user_roles table.
+        app.MapGet("/api/admin/sessions/active", async (
+            HttpContext           ctx,
+            IDbConnectionFactory  db,
+            ISupabaseAdminClient  supabase,
+            [FromQuery] int       page   = 1,
+            [FromQuery] int       limit  = 20,
+            [FromQuery] string?   search = null,
+            CancellationToken     ct     = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            var clampedLimit = Math.Clamp(limit, 1, 100);
+            var clampedPage  = Math.Max(1, page);
+
+            using var conn = db.CreateConnection();
+
+            // Get all admin user IDs with their roles from the database
+            var adminUsers = (await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                SELECT aur.user_id,
+                       p.username,
+                       p.full_name,
+                       COALESCE(p.email, '') AS email,
+                       ARRAY_AGG(ar.key) AS roles
+                FROM admin_user_roles aur
+                JOIN admin_roles ar ON ar.id = aur.role_id
+                LEFT JOIN profiles p ON p.id = aur.user_id
+                GROUP BY aur.user_id, p.username, p.full_name, p.email
+                """, cancellationToken: ct))).ToList();
+
+            if (adminUsers.Count == 0)
+                return Results.Ok(new { items = Array.Empty<object>(), total = 0, page = clampedPage, limit = clampedLimit });
+
+            // Build a lookup from userId → admin profile info
+            var adminLookup = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
+            foreach (var au in adminUsers)
+            {
+                var dict = (IDictionary<string, object?>)au;
+                var uid = dict["user_id"]?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(uid))
+                    adminLookup[uid] = au;
+            }
+
+            // Fetch users from Supabase Auth admin API (paginate to find all admin users)
+            var allAdminSessions = new List<object>();
+            int supabasePage = 1;
+            const int perPage = 50;
+
+            while (true)
+            {
+                var result = await supabase.ListUsersAsync(supabasePage, perPage, ct);
+
+                foreach (var authUser in result.Users)
+                {
+                    if (!adminLookup.TryGetValue(authUser.Id, out var adminInfo)) continue;
+
+                    var info = (IDictionary<string, object?>)adminInfo;
+                    var username = info["username"]?.ToString() ?? "";
+                    var email    = info["email"]?.ToString() ?? authUser.Email;
+                    var roles    = info["roles"];
+
+                    // Apply search filter (email or username)
+                    if (!string.IsNullOrWhiteSpace(search))
+                    {
+                        var term = search.Trim();
+                        if (!email.Contains(term, StringComparison.OrdinalIgnoreCase) &&
+                            !username.Contains(term, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                    }
+
+                    allAdminSessions.Add(new
+                    {
+                        userId        = authUser.Id,
+                        email,
+                        username,
+                        roles,
+                        lastSignInAt  = authUser.LastSignInAt,
+                        createdAt     = authUser.CreatedAt,
+                    });
+                }
+
+                if (result.Users.Count < perPage) break;
+                supabasePage++;
+            }
+
+            // Apply pagination to the filtered result set
+            var total    = allAdminSessions.Count;
+            var offset   = (clampedPage - 1) * clampedLimit;
+            var pageData = allAdminSessions.Skip(offset).Take(clampedLimit).ToList();
+
+            return Results.Ok(new { items = pageData, total, page = clampedPage, limit = clampedLimit });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/sessions/audit ────────────────────────────────────────
+        // Returns recent admin login/logout activity from audit_logs.
+        app.MapGet("/api/admin/sessions/audit", async (
+            HttpContext           ctx,
+            IDbConnectionFactory  db,
+            [FromQuery] int       page   = 1,
+            [FromQuery] int       limit  = 20,
+            [FromQuery] Guid?     userId = null,
+            CancellationToken     ct     = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            var clampedLimit = Math.Clamp(limit, 1, 100);
+            var clampedPage  = Math.Max(1, page);
+            var offset       = (clampedPage - 1) * clampedLimit;
+
+            using var conn = db.CreateConnection();
+
+            // Filter to login/logout actions where the actor is an admin
+            var conditions = new List<string>
+            {
+                "al.action_type IN ('login', 'logout')",
+                """
+                EXISTS (
+                    SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.admin_id
+                )
+                """
+            };
+            var parameters = new DynamicParameters();
+
+            if (userId.HasValue)
+            {
+                conditions.Add("al.admin_id = @filterUserId");
+                parameters.Add("filterUserId", userId.Value);
+            }
+
+            var where = "WHERE " + string.Join(" AND ", conditions);
+
+            var countSql = $"SELECT COUNT(*) FROM audit_logs al {where}";
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                countSql, parameters, cancellationToken: ct));
+
+            parameters.Add("limit", clampedLimit);
+            parameters.Add("offset", offset);
+
+            var sql = $"""
+                SELECT al.id, al.admin_id, al.admin_name, al.action_type,
+                       al.target_type, al.target_id, al.target_name,
+                       al.details, al.severity, al.created_at,
+                       p.username, p.avatar_url
+                FROM audit_logs al
+                LEFT JOIN profiles p ON p.id = al.admin_id
+                {where}
+                ORDER BY al.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                sql, parameters, cancellationToken: ct));
+            DapperJsonbHelper.FixJsonb(rows);
+
+            return Results.Ok(new { items = rows, total, page = clampedPage, limit = clampedLimit });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/sessions/{userId}/revoke ─────────────────────────────
+        // Force logout a user by invalidating their Supabase Auth refresh tokens
+        // and evicting their cached UserContext.
+        app.MapPost("/api/admin/sessions/{userId}/revoke", async (
+            Guid                  userId,
+            [FromBody] RevokeSessionRequest req,
+            HttpContext           ctx,
+            IDbConnectionFactory  db,
+            ISupabaseAdminClient  supabase,
+            AuditService          audit,
+            HybridCache           cache,
+            CancellationToken     ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            // Cannot revoke own session
+            if (userCtx.UserIdGuid == userId)
+                return Results.BadRequest(new { error = "Cannot revoke your own session." });
+
+            using var conn = db.CreateConnection();
+
+            // Verify target user exists
+            var targetName = await conn.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+                "SELECT COALESCE(username, full_name, id::text) FROM profiles WHERE id = @userId",
+                new { userId }, cancellationToken: ct));
+
+            if (targetName is null)
+                return Results.NotFound(new { error = "User not found." });
+
+            // Invalidate Supabase Auth sessions (ban/unban cycle)
+            try
+            {
+                await supabase.LogoutUserAsync(userId.ToString(), ct);
+            }
+            catch (Exception ex)
+            {
+                // Log but don't fail — cache eviction below still forces re-auth
+                var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
+                logger.LogWarning(ex, "Supabase force-logout failed for {UserId}, proceeding with cache eviction", userId);
+            }
+
+            // Evict cached UserContext — forces re-authentication on next request
+            try { await cache.RemoveAsync($"user-ctx:{userId}"); } catch { /* best effort */ }
+
+            // Audit the session revocation
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Logout, TargetType.User,
+                userId, targetName,
+                new { reason = req.Reason, revokedBy = userCtx.Email, action = "session_revoke" },
+                AuditSeverity.High, ct);
+
+            return Results.Ok(new { success = true, userId, username = targetName });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/sessions/online-count ─────────────────────────────────
+        // Returns count of distinct users active in the last 15 minutes,
+        // based on audit_logs entries.
+        app.MapGet("/api/admin/sessions/online-count", async (
+            HttpContext           ctx,
+            IDbConnectionFactory  db,
+            CancellationToken     ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var count = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                SELECT COUNT(DISTINCT admin_id)
+                FROM audit_logs
+                WHERE created_at > NOW() - INTERVAL '15 minutes'
+                  AND admin_id IS NOT NULL
+                """, cancellationToken: ct));
+
+            return Results.Ok(new { onlineCount = count, windowMinutes = 15 });
+        }).RequireAuthorization("Admin");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);

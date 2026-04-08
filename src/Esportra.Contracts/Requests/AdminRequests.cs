@@ -25,6 +25,8 @@ public sealed record SponsorTrackRequest(
     string? PageUrl = null,
     string? TournamentId = null);
 
+public sealed record RevokeSessionRequest(string? Reason = null);
+
 public sealed record CreateAuditLogRequest(
     string  AdminId,
     string  AdminName,
