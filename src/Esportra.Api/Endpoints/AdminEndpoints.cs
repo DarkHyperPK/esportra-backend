@@ -5354,6 +5354,392 @@ public static class AdminEndpoints
 
             return Results.Ok(new { enabled = newEnabled, message = newEnabled ? "IP allowlist enabled." : "IP allowlist disabled." });
         }).RequireAuthorization("Admin");
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // ── SCHEDULED REPORTS (Phase 12) ─────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/report-schedules ──────────────────────────────────────
+        app.MapGet("/api/admin/report-schedules", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    rs.id,
+                    rs.name,
+                    rs.report_type    AS "reportType",
+                    rs.frequency,
+                    rs.day_of_week    AS "dayOfWeek",
+                    rs.day_of_month   AS "dayOfMonth",
+                    rs.time_of_day    AS "timeOfDay",
+                    rs.recipients,
+                    rs.format,
+                    rs.filters,
+                    rs.is_active      AS "isActive",
+                    rs.last_run_at    AS "lastRunAt",
+                    rs.next_run_at    AS "nextRunAt",
+                    rs.created_by     AS "createdBy",
+                    rs.created_at     AS "createdAt",
+                    rs.updated_at     AS "updatedAt",
+                    rrl.id            AS "lastRunId",
+                    rrl.status        AS "lastRunStatus",
+                    rrl.row_count     AS "lastRunRowCount",
+                    rrl.completed_at  AS "lastRunCompletedAt",
+                    rrl.error_message AS "lastRunErrorMessage"
+                FROM report_schedules rs
+                LEFT JOIN LATERAL (
+                    SELECT id, status, row_count, completed_at, error_message
+                    FROM report_run_log
+                    WHERE schedule_id = rs.id
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                ) rrl ON TRUE
+                ORDER BY rs.created_at DESC
+                """, cancellationToken: ct));
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/report-schedules ─────────────────────────────────────
+        app.MapPost("/api/admin/report-schedules", async (
+            CreateReportScheduleRequest req,
+            HttpContext                 ctx,
+            IDbConnectionFactory        db,
+            AuditService               audit,
+            CancellationToken          ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            // ── Validation ───────────────────────────────────────────────────
+            if (string.IsNullOrWhiteSpace(req.Name))
+                return Results.BadRequest(new { error = "Name is required." });
+
+            var allowedTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "users", "tournaments", "revenue", "activity", "moderation" };
+            if (!allowedTypes.Contains(req.ReportType))
+                return Results.BadRequest(new { error = $"Invalid reportType. Allowed: {string.Join(", ", allowedTypes)}." });
+
+            var allowedFreqs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "daily", "weekly", "monthly" };
+            if (!allowedFreqs.Contains(req.Frequency))
+                return Results.BadRequest(new { error = $"Invalid frequency. Allowed: {string.Join(", ", allowedFreqs)}." });
+
+            var allowedFormats = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "csv", "json" };
+            var format = string.IsNullOrWhiteSpace(req.Format) ? "csv" : req.Format.ToLower();
+            if (!allowedFormats.Contains(format))
+                return Results.BadRequest(new { error = "Invalid format. Allowed: csv, json." });
+
+            if (req.Recipients is null || req.Recipients.Length == 0)
+                return Results.BadRequest(new { error = "At least one recipient is required." });
+
+            var emailRegex = new System.Text.RegularExpressions.Regex(
+                @"^[^@\s]+@[^@\s]+\.[^@\s]+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var invalidEmails = req.Recipients.Where(r => !emailRegex.IsMatch(r ?? "")).ToList();
+            if (invalidEmails.Count > 0)
+                return Results.BadRequest(new { error = $"Invalid email(s): {string.Join(", ", invalidEmails)}." });
+
+            if (!TimeOnly.TryParse(req.TimeOfDay, out var timeOfDay))
+                return Results.BadRequest(new { error = "Invalid timeOfDay format. Use HH:mm." });
+
+            // Weekly requires dayOfWeek 0-6
+            if (req.Frequency.Equals("weekly", StringComparison.OrdinalIgnoreCase))
+            {
+                if (req.DayOfWeek is null or < 0 or > 6)
+                    return Results.BadRequest(new { error = "dayOfWeek (0-6) is required for weekly schedules." });
+            }
+            // Monthly requires dayOfMonth 1-31
+            if (req.Frequency.Equals("monthly", StringComparison.OrdinalIgnoreCase))
+            {
+                if (req.DayOfMonth is null or < 1 or > 31)
+                    return Results.BadRequest(new { error = "dayOfMonth (1-31) is required for monthly schedules." });
+            }
+
+            var filtersJson = req.Filters is not null
+                ? JsonSerializer.Serialize(req.Filters)
+                : "{}";
+
+            var nextRun = ComputeNextRun(req.Frequency, req.DayOfWeek, req.DayOfMonth, timeOfDay);
+
+            using var conn = db.CreateConnection();
+
+            var id = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                INSERT INTO report_schedules
+                    (name, report_type, frequency, day_of_week, day_of_month, time_of_day,
+                     recipients, format, filters, is_active, next_run_at, created_by)
+                VALUES
+                    (@name, @reportType, @frequency, @dayOfWeek, @dayOfMonth, @timeOfDay::time,
+                     @recipients, @format, @filters::jsonb, TRUE, @nextRunAt, @createdBy)
+                RETURNING id
+                """, new
+            {
+                name        = req.Name.Trim(),
+                reportType  = req.ReportType.ToLower(),
+                frequency   = req.Frequency.ToLower(),
+                dayOfWeek   = req.DayOfWeek,
+                dayOfMonth  = req.DayOfMonth,
+                timeOfDay   = timeOfDay.ToString("HH:mm"),
+                recipients  = req.Recipients,
+                format,
+                filters     = filtersJson,
+                nextRunAt   = nextRun,
+                createdBy   = userCtx.UserIdGuid
+            }, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Create, TargetType.System,
+                id, req.Name.Trim(),
+                new { reportType = req.ReportType, frequency = req.Frequency },
+                ct: ct);
+
+            var schedule = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
+                "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+
+            return Results.Created($"/api/admin/report-schedules/{id}", schedule);
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/report-schedules/{id} ─────────────────────────────────
+        app.MapPut("/api/admin/report-schedules/{id:guid}", async (
+            Guid                         id,
+            UpdateReportScheduleRequest  req,
+            HttpContext                  ctx,
+            IDbConnectionFactory         db,
+            AuditService                audit,
+            CancellationToken           ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+            if (existing is null) return Results.NotFound(new { error = "Schedule not found." });
+
+            // Validate format if provided
+            if (!string.IsNullOrWhiteSpace(req.Format))
+            {
+                var allowedFmts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "csv", "json" };
+                if (!allowedFmts.Contains(req.Format))
+                    return Results.BadRequest(new { error = "Invalid format. Allowed: csv, json." });
+            }
+
+            // Validate recipients if provided
+            if (req.Recipients is { Length: > 0 })
+            {
+                var emailRegex = new System.Text.RegularExpressions.Regex(
+                    @"^[^@\s]+@[^@\s]+\.[^@\s]+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var invalidEmails = req.Recipients.Where(r => !emailRegex.IsMatch(r ?? "")).ToList();
+                if (invalidEmails.Count > 0)
+                    return Results.BadRequest(new { error = $"Invalid email(s): {string.Join(", ", invalidEmails)}." });
+            }
+
+            var sets      = new List<string>();
+            var p         = new DynamicParameters();
+            p.Add("id", id);
+
+            if (!string.IsNullOrWhiteSpace(req.Name))
+            { sets.Add("name = @name"); p.Add("name", req.Name.Trim()); }
+            if (req.IsActive.HasValue)
+            { sets.Add("is_active = @isActive"); p.Add("isActive", req.IsActive.Value); }
+            if (req.Recipients is { Length: > 0 })
+            { sets.Add("recipients = @recipients"); p.Add("recipients", req.Recipients); }
+            if (!string.IsNullOrWhiteSpace(req.Format))
+            { sets.Add("format = @format"); p.Add("format", req.Format.ToLower()); }
+
+            if (sets.Count == 0)
+                return Results.BadRequest(new { error = "No fields to update." });
+
+            var sql = $"UPDATE report_schedules SET {string.Join(", ", sets)} WHERE id = @id";
+            await conn.ExecuteAsync(new CommandDefinition(sql, p, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Update, TargetType.System,
+                id, id.ToString(),
+                new { updated = sets },
+                ct: ct);
+
+            var updated = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
+                "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+
+            return Results.Ok(updated);
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/report-schedules/{id} ──────────────────────────────
+        app.MapDelete("/api/admin/report-schedules/{id:guid}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService        audit,
+            CancellationToken   ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var name = await conn.ExecuteScalarAsync<string>(new CommandDefinition(
+                "SELECT name FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+            if (name is null) return Results.NotFound(new { error = "Schedule not found." });
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Delete, TargetType.System,
+                id, name,
+                ct: ct);
+
+            return Results.NoContent();
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/report-schedules/{id}/run ────────────────────────────
+        app.MapPost("/api/admin/report-schedules/{id:guid}/run", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService        audit,
+            CancellationToken   ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var schedule = await conn.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT * FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+            if (schedule is null) return Results.NotFound(new { error = "Schedule not found." });
+
+            // Insert a 'running' log entry
+            var runId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                INSERT INTO report_run_log (schedule_id, status, triggered_by)
+                VALUES (@scheduleId, 'running', 'manual')
+                RETURNING id
+                """, new { scheduleId = id }, cancellationToken: ct));
+
+            try
+            {
+                var schedDict = (IDictionary<string, object?>)schedule;
+                var reportType = schedDict["report_type"]?.ToString() ?? "users";
+
+                // ── Generate report data ─────────────────────────────────────
+                var (payload, rowCount) = await GenerateReportAsync(conn, reportType, ct);
+
+                var json = JsonSerializer.Serialize(payload);
+                var bytes = System.Text.Encoding.UTF8.GetByteCount(json);
+
+                // Store JSON inline as download_url (base64 data URI for small reports)
+                var dataUri = $"data:application/json;base64,{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json))}";
+
+                // Update run log — completed
+                await conn.ExecuteAsync(new CommandDefinition("""
+                    UPDATE report_run_log
+                    SET status          = 'completed',
+                        completed_at    = NOW(),
+                        row_count       = @rowCount,
+                        file_size_bytes = @fileSize,
+                        download_url    = @downloadUrl
+                    WHERE id = @runId
+                    """, new { runId, rowCount, fileSize = (long)bytes, downloadUrl = dataUri },
+                    cancellationToken: ct));
+
+                // Update schedule last_run_at
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "UPDATE report_schedules SET last_run_at = NOW() WHERE id = @id",
+                    new { id }, cancellationToken: ct));
+
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Create, TargetType.System,
+                    id, $"manual_run:{reportType}",
+                    new { runId, rowCount },
+                    ct: ct);
+
+                var runLog = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
+                    "SELECT * FROM report_run_log WHERE id = @runId", new { runId }, cancellationToken: ct));
+
+                return Results.Ok(runLog);
+            }
+            catch (Exception ex)
+            {
+                // Mark as failed
+                await conn.ExecuteAsync(new CommandDefinition("""
+                    UPDATE report_run_log
+                    SET status        = 'failed',
+                        completed_at  = NOW(),
+                        error_message = @err
+                    WHERE id = @runId
+                    """, new { runId, err = ex.Message }, cancellationToken: ct));
+
+                var failedLog = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
+                    "SELECT * FROM report_run_log WHERE id = @runId", new { runId }, cancellationToken: ct));
+
+                return Results.Ok(failedLog);
+            }
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/report-schedules/{id}/history ─────────────────────────
+        app.MapGet("/api/admin/report-schedules/{id:guid}/history", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int      page  = 1,
+            [FromQuery] int      limit = 20,
+            CancellationToken    ct    = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            if (page < 1)  page  = 1;
+            if (limit < 1) limit = 20;
+            if (limit > 100) limit = 100;
+            var offset = (page - 1) * limit;
+
+            using var conn = db.CreateConnection();
+
+            var exists = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
+            if (exists == 0) return Results.NotFound(new { error = "Schedule not found." });
+
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM report_run_log WHERE schedule_id = @id", new { id }, cancellationToken: ct));
+
+            var runs = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    id,
+                    schedule_id      AS "scheduleId",
+                    status,
+                    started_at       AS "startedAt",
+                    completed_at     AS "completedAt",
+                    row_count        AS "rowCount",
+                    file_size_bytes  AS "fileSizeBytes",
+                    error_message    AS "errorMessage",
+                    download_url     AS "downloadUrl",
+                    triggered_by     AS "triggeredBy"
+                FROM report_run_log
+                WHERE schedule_id = @id
+                ORDER BY started_at DESC
+                LIMIT @limit OFFSET @offset
+                """, new { id, limit, offset }, cancellationToken: ct));
+
+            return Results.Ok(new { items = runs, total, page, limit });
+        }).RequireAuthorization("Admin");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
@@ -5525,6 +5911,150 @@ public static class AdminEndpoints
 
         return Results.Ok(new { success = true, role });
     }
+
+    // ── Scheduled Reports Helpers ─────────────────────────────────────────────
+
+    /// <summary>Computes the next UTC run time for a report schedule.</summary>
+    private static DateTime ComputeNextRun(string frequency, int? dayOfWeek, int? dayOfMonth, TimeOnly timeOfDay)
+    {
+        var now = DateTime.UtcNow;
+        var todayAtTime = now.Date.Add(timeOfDay.ToTimeSpan());
+        return frequency.ToLower() switch
+        {
+            "daily"   => todayAtTime > now ? todayAtTime : todayAtTime.AddDays(1),
+            "weekly"  => ComputeNextWeekly(now, dayOfWeek ?? 1, timeOfDay),
+            "monthly" => ComputeNextMonthly(now, dayOfMonth ?? 1, timeOfDay),
+            _         => now.AddDays(1)
+        };
+    }
+
+    private static DateTime ComputeNextWeekly(DateTime now, int targetDow, TimeOnly timeOfDay)
+    {
+        var currentDow = (int)now.DayOfWeek; // 0=Sunday
+        var daysUntil  = ((targetDow - currentDow) + 7) % 7;
+        var candidate  = now.Date.AddDays(daysUntil).Add(timeOfDay.ToTimeSpan());
+        // If candidate is in the past (same day, time already passed) advance one week
+        if (candidate <= now) candidate = candidate.AddDays(7);
+        return candidate;
+    }
+
+    private static DateTime ComputeNextMonthly(DateTime now, int targetDay, TimeOnly timeOfDay)
+    {
+        // Clamp to valid days in the current month
+        var daysInMonth = DateTime.DaysInMonth(now.Year, now.Month);
+        var clampedDay  = Math.Min(targetDay, daysInMonth);
+        var candidate   = new DateTime(now.Year, now.Month, clampedDay)
+                              .Add(timeOfDay.ToTimeSpan());
+        if (candidate <= now)
+        {
+            // Advance to next month
+            var nextMonth   = now.Month == 12 ? 1 : now.Month + 1;
+            var nextYear    = now.Month == 12 ? now.Year + 1 : now.Year;
+            var daysInNext  = DateTime.DaysInMonth(nextYear, nextMonth);
+            var clampedNext = Math.Min(targetDay, daysInNext);
+            candidate = new DateTime(nextYear, nextMonth, clampedNext)
+                            .Add(timeOfDay.ToTimeSpan());
+        }
+        return candidate;
+    }
+
+    /// <summary>
+    /// Generates a summary report for the given type.
+    /// Returns (payload object, row count).
+    /// </summary>
+    private static async Task<(object Payload, int RowCount)> GenerateReportAsync(
+        System.Data.IDbConnection conn,
+        string                    reportType,
+        CancellationToken         ct)
+    {
+        switch (reportType.ToLower())
+        {
+            case "users":
+            {
+                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                    SELECT
+                        p.id,
+                        p.full_name,
+                        p.username,
+                        p.email,
+                        p.country_code,
+                        p.is_suspended,
+                        p.created_at,
+                        COALESCE(
+                            array_agg(DISTINCT ur.role) FILTER (WHERE ur.role IS NOT NULL),
+                            ARRAY[]::text[]
+                        ) AS roles
+                    FROM profiles p
+                    LEFT JOIN user_roles ur ON ur.user_id = p.id AND ur.is_active = TRUE
+                    GROUP BY p.id
+                    ORDER BY p.created_at DESC
+                    LIMIT 10000
+                    """, cancellationToken: ct));
+                var list = rows.ToList();
+                return (new { report_type = "users", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+            }
+
+            case "tournaments":
+            {
+                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                    SELECT t.id, t.name, t.game, t.status, t.format, t.prize_pool,
+                           t.max_teams, t.is_featured, t.start_date, t.created_at
+                    FROM tournaments t
+                    ORDER BY t.created_at DESC
+                    LIMIT 10000
+                    """, cancellationToken: ct));
+                var list = rows.ToList();
+                return (new { report_type = "tournaments", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+            }
+
+            case "revenue":
+            {
+                var row = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                    SELECT
+                        COUNT(*)                                                    AS total_entries,
+                        COALESCE(SUM(CASE WHEN amount > 0 THEN amount END), 0)      AS total_revenue,
+                        COALESCE(AVG(CASE WHEN amount > 0 THEN amount END), 0)      AS avg_transaction,
+                        MIN(created_at)                                             AS earliest,
+                        MAX(created_at)                                             AS latest
+                    FROM wallet_transactions
+                    """, cancellationToken: ct));
+                return (new { report_type = "revenue", generated_at = DateTime.UtcNow, summary = row }, 1);
+            }
+
+            case "activity":
+            {
+                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                    SELECT
+                        DATE_TRUNC('day', created_at) AS activity_date,
+                        COUNT(*)                       AS event_count,
+                        action_type
+                    FROM audit_logs
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
+                    GROUP BY DATE_TRUNC('day', created_at), action_type
+                    ORDER BY activity_date DESC, event_count DESC
+                    LIMIT 5000
+                    """, cancellationToken: ct));
+                var list = rows.ToList();
+                return (new { report_type = "activity", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+            }
+
+            case "moderation":
+            {
+                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                    SELECT mq.id, mq.content_type, mq.status, mq.auto_flagged,
+                           mq.created_at, mq.reviewed_at
+                    FROM moderation_queue mq
+                    ORDER BY mq.created_at DESC
+                    LIMIT 10000
+                    """, cancellationToken: ct));
+                var list = rows.ToList();
+                return (new { report_type = "moderation", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+            }
+
+            default:
+                return (new { report_type = reportType, generated_at = DateTime.UtcNow, rows = Array.Empty<object>() }, 0);
+        }
+    }
 }
 
 // ── Admin request records ─────────────────────────────────────────────────────
@@ -5565,3 +6095,21 @@ public sealed record ModerationReviewRequest(string Action, string? Notes);
 public sealed record ReportContentRequest(string ContentType, Guid ContentId, string? FieldName, string? Reason);
 public sealed record AddIpAllowlistRequest(string IpAddress, string? Label, string? ExpiresAt);
 public sealed record UpdateIpAllowlistRequest(string? Label, bool? IsActive, string? ExpiresAt);
+
+// ── Phase 12: Scheduled Reports ───────────────────────────────────────────────
+public sealed record CreateReportScheduleRequest(
+    string   Name,
+    string   ReportType,
+    string   Frequency,
+    int?     DayOfWeek,
+    int?     DayOfMonth,
+    string   TimeOfDay,
+    string[] Recipients,
+    string?  Format,
+    object?  Filters);
+
+public sealed record UpdateReportScheduleRequest(
+    string?   Name,
+    bool?     IsActive,
+    string[]? Recipients,
+    string?   Format);
