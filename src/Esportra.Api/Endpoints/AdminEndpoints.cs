@@ -5819,6 +5819,465 @@ public static class AdminEndpoints
 
             return Results.Ok(new { items = runs, total, page, limit });
         }).RequireAuthorization("Admin");
+
+        // ── Phase 13: GDPR / Compliance ───────────────────────────────────────
+
+        // GET /api/admin/gdpr/requests — paginated list with user info
+        app.MapGet("/api/admin/gdpr/requests", async (
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct,
+            string?  status      = null,
+            string?  requestType = null,
+            int      page        = 1,
+            int      limit       = 25) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            if (page  < 1)   page  = 1;
+            if (limit < 1)   limit = 1;
+            if (limit > 100) limit = 100;
+            var offset = (page - 1) * limit;
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new System.Text.StringBuilder("WHERE 1=1");
+            var p = new DynamicParameters();
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                conditions.Append(" AND gr.status = @status");
+                p.Add("status", status);
+            }
+            if (!string.IsNullOrWhiteSpace(requestType))
+            {
+                conditions.Append(" AND gr.request_type = @requestType");
+                p.Add("requestType", requestType);
+            }
+            p.Add("limit",  limit);
+            p.Add("offset", offset);
+
+            var countSql = $"""
+                SELECT COUNT(*) FROM gdpr_requests gr {conditions}
+                """;
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(countSql, p, cancellationToken: ct));
+
+            var querySql = $"""
+                SELECT
+                    gr.id,
+                    gr.user_id            AS "userId",
+                    gr.request_type       AS "requestType",
+                    gr.status,
+                    gr.requested_at       AS "requestedAt",
+                    gr.processed_at       AS "processedAt",
+                    gr.processed_by       AS "processedBy",
+                    gr.notes,
+                    gr.download_url       AS "downloadUrl",
+                    gr.expires_at         AS "expiresAt",
+                    p.username,
+                    p.email,
+                    p.full_name           AS "fullName"
+                FROM gdpr_requests gr
+                LEFT JOIN profiles p ON p.id = gr.user_id
+                {conditions}
+                ORDER BY gr.requested_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+            var items = await conn.QueryAsync<dynamic>(new CommandDefinition(querySql, p, cancellationToken: ct));
+
+            return Results.Ok(new { items, total, page, limit });
+        }).RequireAuthorization("Admin");
+
+        // POST /api/admin/gdpr/requests/{id}/process — approve or reject
+        app.MapPost("/api/admin/gdpr/requests/{id}/process", async (
+            Guid                      id,
+            [FromBody] ProcessGdprRequest req,
+            IDbConnectionFactory      db,
+            AuditService              audit,
+            HttpContext               ctx,
+            CancellationToken         ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            if (req.Action is not ("approve" or "reject"))
+                return Results.BadRequest(new { error = "Action must be 'approve' or 'reject'." });
+
+            using var conn = db.CreateConnection();
+
+            var gdprReq = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition("""
+                SELECT id, user_id, request_type, status
+                FROM gdpr_requests
+                WHERE id = @id
+                """, new { id }, cancellationToken: ct));
+
+            if (gdprReq is null) return Results.NotFound(new { error = "GDPR request not found." });
+
+            string currentStatus = (string)gdprReq.status;
+            if (currentStatus is "completed" or "failed" or "cancelled")
+                return Results.Conflict(new { error = $"Request is already {currentStatus} and cannot be reprocessed." });
+
+            Guid   targetUserId   = (Guid)gdprReq.user_id;
+            string requestType    = (string)gdprReq.request_type;
+
+            if (req.Action == "reject")
+            {
+                await conn.ExecuteAsync(new CommandDefinition("""
+                    UPDATE gdpr_requests
+                    SET status       = 'cancelled',
+                        processed_at = NOW(),
+                        processed_by = @adminId,
+                        notes        = @notes
+                    WHERE id = @id
+                    """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "" },
+                    cancellationToken: ct));
+
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Reject, TargetType.User,
+                    targetUserId, targetUserId.ToString(),
+                    new { gdpr_request_id = id, request_type = requestType },
+                    ct: ct);
+
+                return Results.Ok(new { success = true, status = "cancelled" });
+            }
+
+            // ── Approve ──────────────────────────────────────────────────────
+            // Mark as processing immediately
+            await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE gdpr_requests
+                SET status = 'processing'
+                WHERE id = @id
+                """, new { id }, cancellationToken: ct));
+
+            try
+            {
+                if (requestType == "export")
+                {
+                    // Collect user data from multiple tables
+                    var profile = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                        "SELECT * FROM profiles WHERE id = @uid",
+                        new { uid = targetUserId }, cancellationToken: ct));
+
+                    var tournaments = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                        SELECT tr.id, tr.tournament_id, tr.status, tr.registered_at,
+                               t.name AS tournament_name, t.game, t.start_date
+                        FROM tournament_registrations tr
+                        JOIN tournaments t ON t.id = tr.tournament_id
+                        WHERE tr.user_id = @uid OR tr.team_id IN (
+                            SELECT team_id FROM team_members WHERE user_id = @uid
+                        )
+                        ORDER BY tr.registered_at DESC
+                        LIMIT 500
+                        """, new { uid = targetUserId }, cancellationToken: ct));
+
+                    var teams = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                        SELECT tm.team_id, tm.role, tm.joined_at, t.name AS team_name, t.game
+                        FROM team_members tm
+                        JOIN teams t ON t.id = tm.team_id
+                        WHERE tm.user_id = @uid
+                        ORDER BY tm.joined_at DESC
+                        LIMIT 200
+                        """, new { uid = targetUserId }, cancellationToken: ct));
+
+                    var matches = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                        SELECT m.id, m.status, m.scheduled_at, m.completed_at,
+                               m.team1_score, m.team2_score
+                        FROM matches m
+                        JOIN tournament_registrations tr ON
+                            tr.tournament_id = m.tournament_id AND (
+                                tr.user_id = @uid OR tr.team_id IN (
+                                    SELECT team_id FROM team_members WHERE user_id = @uid
+                                )
+                            )
+                        ORDER BY m.scheduled_at DESC
+                        LIMIT 500
+                        """, new { uid = targetUserId }, cancellationToken: ct));
+
+                    var consents = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                        SELECT consent_type, granted, recorded_at, version
+                        FROM consent_records
+                        WHERE user_id = @uid
+                        ORDER BY recorded_at DESC
+                        """, new { uid = targetUserId }, cancellationToken: ct));
+
+                    var exportPayload = new
+                    {
+                        exported_at      = DateTime.UtcNow,
+                        user_id          = targetUserId,
+                        profile,
+                        tournaments      = tournaments.ToList(),
+                        teams            = teams.ToList(),
+                        matches          = matches.ToList(),
+                        consent_records  = consents.ToList()
+                    };
+
+                    var json    = JsonSerializer.Serialize(exportPayload);
+                    var b64     = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json));
+                    var dataUri = $"data:application/json;base64,{b64}";
+
+                    await conn.ExecuteAsync(new CommandDefinition("""
+                        UPDATE gdpr_requests
+                        SET status       = 'completed',
+                            processed_at = NOW(),
+                            processed_by = @adminId,
+                            notes        = @notes,
+                            download_url = @downloadUrl,
+                            expires_at   = NOW() + INTERVAL '7 days'
+                        WHERE id = @id
+                        """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "", downloadUrl = dataUri },
+                        cancellationToken: ct));
+
+                    await audit.LogAsync(
+                        userCtx.UserIdGuid, userCtx.Email,
+                        ActionType.Approve, TargetType.User,
+                        targetUserId, targetUserId.ToString(),
+                        new { gdpr_request_id = id, request_type = "export" },
+                        ct: ct);
+
+                    return Results.Ok(new { success = true, status = "completed", expiresAt = DateTime.UtcNow.AddDays(7) });
+                }
+
+                // ── Deletion (right to erasure) ───────────────────────────────
+                var partialUuid = targetUserId.ToString("N")[..8];
+                var anonUsername = $"deleted_user_{partialUuid}";
+
+                await conn.ExecuteAsync(new CommandDefinition("""
+                    UPDATE profiles
+                    SET username   = @username,
+                        full_name  = 'Deleted User',
+                        bio        = '',
+                        avatar_url = NULL,
+                        is_deleted = TRUE,
+                        updated_at = NOW()
+                    WHERE id = @uid
+                    """, new { username = anonUsername, uid = targetUserId },
+                    cancellationToken: ct));
+
+                // Remove sensitive consent records
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM consent_records WHERE user_id = @uid",
+                    new { uid = targetUserId }, cancellationToken: ct));
+
+                await conn.ExecuteAsync(new CommandDefinition("""
+                    UPDATE gdpr_requests
+                    SET status       = 'completed',
+                        processed_at = NOW(),
+                        processed_by = @adminId,
+                        notes        = @notes
+                    WHERE id = @id
+                    """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "" },
+                    cancellationToken: ct));
+
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Delete, TargetType.User,
+                    targetUserId, anonUsername,
+                    new { gdpr_request_id = id, request_type = "deletion", action = "anonymized" },
+                    AuditSeverity.High,
+                    ct);
+
+                return Results.Ok(new { success = true, status = "completed" });
+            }
+            catch (Exception ex)
+            {
+                await conn.ExecuteAsync(new CommandDefinition("""
+                    UPDATE gdpr_requests
+                    SET status = 'failed',
+                        notes  = @notes
+                    WHERE id = @id
+                    """, new { id, notes = $"Processing failed: {ex.Message}" },
+                    cancellationToken: ct));
+
+                return Results.Problem("GDPR request processing failed. The request has been marked as failed.");
+            }
+        }).RequireAuthorization("Admin");
+
+        // GET /api/admin/gdpr/stats — compliance dashboard stats
+        app.MapGet("/api/admin/gdpr/stats", async (
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var stats = await conn.QueryFirstAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    COUNT(*) FILTER (WHERE status IN ('pending','processing'))                       AS "pendingRequests",
+                    COUNT(*) FILTER (WHERE status = 'completed'
+                                      AND processed_at::date = CURRENT_DATE)                         AS "completedToday",
+                    COUNT(*) FILTER (WHERE request_type = 'export')                                  AS "exportRequests",
+                    COUNT(*) FILTER (WHERE request_type = 'deletion')                                AS "deletionRequests",
+                    COALESCE(
+                        AVG(
+                            EXTRACT(EPOCH FROM (processed_at - requested_at)) / 86400.0
+                        ) FILTER (WHERE status = 'completed' AND processed_at IS NOT NULL),
+                        0
+                    )                                                                                AS "avgProcessingDays"
+                FROM gdpr_requests
+                """, cancellationToken: ct));
+
+            return Results.Ok(stats);
+        }).RequireAuthorization("Admin");
+
+        // GET /api/admin/gdpr/consent-records — paginated consent audit
+        app.MapGet("/api/admin/gdpr/consent-records", async (
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct,
+            Guid?   userId      = null,
+            string? consentType = null,
+            bool?   granted     = null,
+            int     page        = 1,
+            int     limit       = 25) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            if (page  < 1)   page  = 1;
+            if (limit < 1)   limit = 1;
+            if (limit > 100) limit = 100;
+            var offset = (page - 1) * limit;
+
+            using var conn = db.CreateConnection();
+
+            var conditions = new System.Text.StringBuilder("WHERE 1=1");
+            var p = new DynamicParameters();
+
+            if (userId.HasValue)
+            {
+                conditions.Append(" AND cr.user_id = @userId");
+                p.Add("userId", userId.Value);
+            }
+            if (!string.IsNullOrWhiteSpace(consentType))
+            {
+                conditions.Append(" AND cr.consent_type = @consentType");
+                p.Add("consentType", consentType);
+            }
+            if (granted.HasValue)
+            {
+                conditions.Append(" AND cr.granted = @granted");
+                p.Add("granted", granted.Value);
+            }
+            p.Add("limit",  limit);
+            p.Add("offset", offset);
+
+            var countSql = $"SELECT COUNT(*) FROM consent_records cr {conditions}";
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(countSql, p, cancellationToken: ct));
+
+            var querySql = $"""
+                SELECT
+                    cr.id,
+                    cr.user_id      AS "userId",
+                    cr.consent_type AS "consentType",
+                    cr.granted,
+                    cr.ip_address   AS "ipAddress",
+                    cr.user_agent   AS "userAgent",
+                    cr.recorded_at  AS "recordedAt",
+                    cr.version,
+                    p.username,
+                    p.email
+                FROM consent_records cr
+                LEFT JOIN profiles p ON p.id = cr.user_id
+                {conditions}
+                ORDER BY cr.recorded_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+            var items = await conn.QueryAsync<dynamic>(new CommandDefinition(querySql, p, cancellationToken: ct));
+
+            return Results.Ok(new { items, total, page, limit });
+        }).RequireAuthorization("Admin");
+
+        // POST /api/gdpr/request — user submits own GDPR request
+        app.MapPost("/api/gdpr/request", async (
+            [FromBody] SubmitGdprRequest req,
+            IDbConnectionFactory        db,
+            HttpContext                 ctx,
+            CancellationToken           ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var allowedTypes = new HashSet<string> { "export", "deletion" };
+            if (string.IsNullOrWhiteSpace(req.RequestType) || !allowedTypes.Contains(req.RequestType))
+                return Results.BadRequest(new { error = "RequestType must be 'export' or 'deletion'." });
+
+            using var conn = db.CreateConnection();
+
+            // Enforce one active request per user per type
+            var existing = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                SELECT COUNT(*) FROM gdpr_requests
+                WHERE user_id      = @userId
+                  AND request_type = @requestType
+                  AND status IN ('pending', 'processing')
+                """, new { userId = userCtx.UserIdGuid, requestType = req.RequestType },
+                cancellationToken: ct));
+
+            if (existing > 0)
+                return Results.Conflict(new { error = $"A {req.RequestType} request is already pending or in progress." });
+
+            var newId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                INSERT INTO gdpr_requests (user_id, request_type)
+                VALUES (@userId, @requestType)
+                RETURNING id
+                """, new { userId = userCtx.UserIdGuid, requestType = req.RequestType },
+                cancellationToken: ct));
+
+            return Results.Created($"/api/gdpr/request/{newId}", new { id = newId, status = "pending" });
+        }).RequireAuthorization("Authenticated");
+
+        // POST /api/consent — user records a consent decision
+        app.MapPost("/api/consent", async (
+            [FromBody] RecordConsentRequest req,
+            IDbConnectionFactory           db,
+            HttpContext                    ctx,
+            CancellationToken              ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var allowedConsentTypes = new HashSet<string>
+            {
+                "marketing", "analytics", "third_party", "terms_of_service"
+            };
+            if (string.IsNullOrWhiteSpace(req.ConsentType) || !allowedConsentTypes.Contains(req.ConsentType))
+                return Results.BadRequest(new { error = $"ConsentType must be one of: {string.Join(", ", allowedConsentTypes)}." });
+
+            // Resolve real client IP — trust X-Forwarded-For behind a proxy
+            var ip = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+                     ?? ctx.Connection.RemoteIpAddress?.ToString();
+
+            var userAgent = ctx.Request.Headers["User-Agent"].FirstOrDefault();
+            var version   = string.IsNullOrWhiteSpace(req.Version) ? "1.0" : req.Version;
+
+            using var conn = db.CreateConnection();
+
+            var newId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                INSERT INTO consent_records (user_id, consent_type, granted, ip_address, user_agent, version)
+                VALUES (@userId, @consentType, @granted, @ip, @userAgent, @version)
+                RETURNING id
+                """,
+                new
+                {
+                    userId      = userCtx.UserIdGuid,
+                    consentType = req.ConsentType,
+                    granted     = req.Granted,
+                    ip,
+                    userAgent,
+                    version
+                },
+                cancellationToken: ct));
+
+            return Results.Created($"/api/consent/{newId}",
+                new { id = newId, consentType = req.ConsentType, granted = req.Granted, version });
+        }).RequireAuthorization("Authenticated");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
@@ -6237,3 +6696,8 @@ public sealed record UpdateReportScheduleRequest(
     bool?     IsActive,
     string[]? Recipients,
     string?   Format);
+
+// ── Phase 13: GDPR / Compliance ───────────────────────────────────────────────
+public sealed record ProcessGdprRequest(string Action, string? Notes);
+public sealed record SubmitGdprRequest(string RequestType);
+public sealed record RecordConsentRequest(string ConsentType, bool Granted, string? Version);
