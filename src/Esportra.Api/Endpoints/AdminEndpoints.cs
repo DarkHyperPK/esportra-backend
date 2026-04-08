@@ -4745,12 +4745,11 @@ public static class AdminEndpoints
         // ══════════════════════════════════════════════════════════════════════════
 
         // ── GET /api/admin/sessions/active ───────────────────────────────────────
-        // Lists currently active admin sessions by cross-referencing Supabase Auth
-        // user list with the admin_user_roles table.
+        // Lists currently active admin sessions using a database-first approach.
+        // Queries profiles + admin_user_roles directly, avoiding Supabase Auth API pagination.
         app.MapGet("/api/admin/sessions/active", async (
             HttpContext           ctx,
             IDbConnectionFactory  db,
-            ISupabaseAdminClient  supabase,
             [FromQuery] int       page   = 1,
             [FromQuery] int       limit  = 20,
             [FromQuery] string?   search = null,
@@ -4762,83 +4761,56 @@ public static class AdminEndpoints
 
             var clampedLimit = Math.Clamp(limit, 1, 100);
             var clampedPage  = Math.Max(1, page);
+            var offset       = (clampedPage - 1) * clampedLimit;
 
             using var conn = db.CreateConnection();
 
-            // Get all admin user IDs with their roles from the database
-            var adminUsers = (await conn.QueryAsync<dynamic>(new CommandDefinition("""
-                SELECT aur.user_id,
-                       p.username,
-                       p.full_name,
-                       COALESCE(p.email, '') AS email,
+            // Escape LIKE/ILIKE pattern metacharacters for safe search
+            var searchPattern = string.IsNullOrWhiteSpace(search) ? null
+                : $"%{search.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
+
+            var countSql = """
+                SELECT COUNT(DISTINCT aur.user_id)
+                FROM admin_user_roles aur
+                JOIN profiles p ON p.id = aur.user_id
+                WHERE (@search IS NULL OR p.email ILIKE @searchPattern ESCAPE '\' OR p.username ILIKE @searchPattern ESCAPE '\')
+                """;
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                countSql, new { search, searchPattern }, cancellationToken: ct));
+
+            var sql = """
+                SELECT p.id AS "userId", COALESCE(p.email, '') AS email, p.username,
+                       p.full_name AS "fullName", p.avatar_url AS "avatarUrl",
+                       p.created_at AS "createdAt",
+                       (SELECT MAX(al.created_at) FROM audit_logs al
+                        WHERE al.admin_id = p.id AND al.action_type = 'login') AS "lastSignInAt",
                        ARRAY_AGG(ar.key) AS roles
                 FROM admin_user_roles aur
+                JOIN profiles p ON p.id = aur.user_id
                 JOIN admin_roles ar ON ar.id = aur.role_id
-                LEFT JOIN profiles p ON p.id = aur.user_id
-                GROUP BY aur.user_id, p.username, p.full_name, p.email
-                """, cancellationToken: ct))).ToList();
+                WHERE (@search IS NULL OR p.email ILIKE @searchPattern ESCAPE '\' OR p.username ILIKE @searchPattern ESCAPE '\')
+                GROUP BY p.id, p.email, p.username, p.full_name, p.avatar_url, p.created_at
+                ORDER BY "lastSignInAt" DESC NULLS LAST
+                LIMIT @limit OFFSET @offset
+                """;
 
-            if (adminUsers.Count == 0)
-                return Results.Ok(new { items = Array.Empty<object>(), total = 0, page = clampedPage, limit = clampedLimit });
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                sql, new { search, searchPattern, limit = clampedLimit, offset },
+                cancellationToken: ct));
 
-            // Build a lookup from userId → admin profile info
-            var adminLookup = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
-            foreach (var au in adminUsers)
+            // ARRAY_AGG returns a Postgres text array — Dapper may deserialize as string[] or raw "{a,b}" string
+            var items = rows.Select(row =>
             {
-                var dict = (IDictionary<string, object?>)au;
-                var uid = dict["user_id"]?.ToString() ?? "";
-                if (!string.IsNullOrEmpty(uid))
-                    adminLookup[uid] = au;
-            }
+                var dict = (IDictionary<string, object?>)row;
+                var rolesValue = dict["roles"];
+                var rolesArray = rolesValue is string[] arr ? arr
+                    : rolesValue?.ToString()?.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    ?? Array.Empty<string>();
+                dict["roles"] = rolesArray;
+                return dict;
+            }).ToList();
 
-            // Fetch users from Supabase Auth admin API (paginate to find all admin users)
-            var allAdminSessions = new List<object>();
-            int supabasePage = 1;
-            const int perPage = 50;
-
-            while (true)
-            {
-                var result = await supabase.ListUsersAsync(supabasePage, perPage, ct);
-
-                foreach (var authUser in result.Users)
-                {
-                    if (!adminLookup.TryGetValue(authUser.Id, out var adminInfo)) continue;
-
-                    var info = (IDictionary<string, object?>)adminInfo;
-                    var username = info["username"]?.ToString() ?? "";
-                    var email    = info["email"]?.ToString() ?? authUser.Email;
-                    var roles    = info["roles"];
-
-                    // Apply search filter (email or username)
-                    if (!string.IsNullOrWhiteSpace(search))
-                    {
-                        var term = search.Trim();
-                        if (!email.Contains(term, StringComparison.OrdinalIgnoreCase) &&
-                            !username.Contains(term, StringComparison.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    allAdminSessions.Add(new
-                    {
-                        userId        = authUser.Id,
-                        email,
-                        username,
-                        roles,
-                        lastSignInAt  = authUser.LastSignInAt,
-                        createdAt     = authUser.CreatedAt,
-                    });
-                }
-
-                if (result.Users.Count < perPage) break;
-                supabasePage++;
-            }
-
-            // Apply pagination to the filtered result set
-            var total    = allAdminSessions.Count;
-            var offset   = (clampedPage - 1) * clampedLimit;
-            var pageData = allAdminSessions.Skip(offset).Take(clampedLimit).ToList();
-
-            return Results.Ok(new { items = pageData, total, page = clampedPage, limit = clampedLimit });
+            return Results.Ok(new { items, total, page = clampedPage, limit = clampedLimit });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/sessions/audit ────────────────────────────────────────
@@ -4889,10 +4861,15 @@ public static class AdminEndpoints
             parameters.Add("offset", offset);
 
             var sql = $"""
-                SELECT al.id, al.admin_id, al.admin_name, al.action_type,
-                       al.target_type, al.target_id, al.target_name,
-                       al.details, al.severity, al.created_at,
-                       p.username, p.avatar_url
+                SELECT al.id,
+                       al.action_type AS "actionType",
+                       al.admin_id AS "actorId",
+                       al.admin_name AS "actorUsername",
+                       p.email AS "actorEmail",
+                       al.details->>'ip' AS "ipAddress",
+                       al.details->>'user_agent' AS "userAgent",
+                       al.details,
+                       al.created_at AS "createdAt"
                 FROM audit_logs al
                 LEFT JOIN profiles p ON p.id = al.admin_id
                 {where}
@@ -4939,6 +4916,7 @@ public static class AdminEndpoints
                 return Results.NotFound(new { error = "User not found." });
 
             // Invalidate Supabase Auth sessions (ban/unban cycle)
+            var partialFailure = false;
             try
             {
                 await supabase.LogoutUserAsync(userId.ToString(), ct);
@@ -4949,10 +4927,21 @@ public static class AdminEndpoints
                 var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
                     .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
                 logger.LogWarning(ex, "Supabase force-logout failed for {UserId}, proceeding with cache eviction", userId);
+                partialFailure = true;
             }
 
             // Evict cached UserContext — forces re-authentication on next request
-            try { await cache.RemoveAsync($"user-ctx:{userId}"); } catch { /* best effort */ }
+            try
+            {
+                await cache.RemoveAsync($"user-ctx:{userId}");
+            }
+            catch (Exception ex)
+            {
+                // Cache eviction failure — session will expire naturally via TTL
+                var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
+                logger.LogWarning(ex, "Cache eviction failed for {UserId} — session will expire naturally", userId);
+            }
 
             // Audit the session revocation
             await audit.LogAsync(
@@ -4962,7 +4951,16 @@ public static class AdminEndpoints
                 new { reason = req.Reason, revokedBy = userCtx.Email, action = "session_revoke" },
                 AuditSeverity.High, ct);
 
-            return Results.Ok(new { success = true, userId, username = targetName });
+            return Results.Ok(new
+            {
+                success = true,
+                partial = partialFailure,
+                userId,
+                username = targetName,
+                message = partialFailure
+                    ? "Session revoked with partial enforcement"
+                    : "Session revoked successfully"
+            });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/sessions/online-count ─────────────────────────────────
@@ -4986,7 +4984,7 @@ public static class AdminEndpoints
                   AND admin_id IS NOT NULL
                 """, cancellationToken: ct));
 
-            return Results.Ok(new { onlineCount = count, windowMinutes = 15 });
+            return Results.Ok(new { count, windowMinutes = 15 });
         }).RequireAuthorization("Admin");
     }
 
