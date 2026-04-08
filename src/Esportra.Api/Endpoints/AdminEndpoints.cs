@@ -4198,14 +4198,14 @@ public static class AdminEndpoints
 
             var newStatus = action == "approve" ? "approved" : "rejected";
 
-            // Update the queue item
-            await conn.ExecuteAsync(new CommandDefinition("""
+            // Update the queue item — atomic status check prevents TOCTOU race
+            var rowsAffected = await conn.ExecuteAsync(new CommandDefinition("""
                 UPDATE moderation_queue
                 SET status       = @newStatus,
                     reviewed_by  = @reviewedBy,
                     reviewed_at  = NOW(),
                     review_notes = @notes
-                WHERE id = @id
+                WHERE id = @id AND status = 'pending'
                 """, new
             {
                 id,
@@ -4213,6 +4213,9 @@ public static class AdminEndpoints
                 reviewedBy = userCtx.UserIdGuid,
                 notes      = req.Notes ?? ""
             }, cancellationToken: ct));
+
+            if (rowsAffected == 0)
+                return Results.Conflict(new { error = "Item has already been reviewed by another moderator" });
 
             // If rejected, take enforcement action based on content type
             if (newStatus == "rejected")
@@ -4225,7 +4228,7 @@ public static class AdminEndpoints
                 {
                     case "tournament":
                         await conn.ExecuteAsync(new CommandDefinition(
-                            "UPDATE tournaments SET status = 'suspended' WHERE id = @contentId",
+                            "UPDATE tournaments SET status = 'cancelled' WHERE id = @contentId",
                             new { contentId }, cancellationToken: ct));
                         break;
 
@@ -4334,10 +4337,22 @@ public static class AdminEndpoints
             if (req.ContentId == Guid.Empty)
                 return Results.BadRequest(new { error = "content_id is required" });
 
+            // Validate field_name against allowed values per content type
+            var fieldName = req.FieldName ?? "";
+            var validFields = contentType switch
+            {
+                "tournament"     => new[] { "name", "description" },
+                "team"           => new[] { "name", "description" },
+                "profile"        => new[] { "bio", "username" },
+                "match_evidence" => new[] { "" },
+                _                => Array.Empty<string>()
+            };
+            if (!validFields.Contains(fieldName))
+                return Results.BadRequest(new { error = $"Invalid field_name '{fieldName}' for content type '{contentType}'" });
+
             using var conn = db.CreateConnection();
 
             // Prevent duplicate reports (same user + content_id + field_name within 24h)
-            var fieldName = req.FieldName ?? "";
             var duplicate = await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
                 SELECT EXISTS (
                     SELECT 1 FROM moderation_queue
@@ -4932,8 +4947,4 @@ public sealed record BulkAlertActionRequest(Guid[] AlertIds);
 public sealed record UpdateSystemSettingsRequest(SystemSettingEntry[] Settings);
 public sealed record SystemSettingEntry(string Key, string Value);
 public sealed record ModerationReviewRequest(string Action, string? Notes);
-public sealed record ReportContentRequest(
-    [property: JsonPropertyName("content_type")] string ContentType,
-    [property: JsonPropertyName("content_id")] Guid ContentId,
-    [property: JsonPropertyName("field_name")] string? FieldName,
-    string? Reason);
+public sealed record ReportContentRequest(string ContentType, Guid ContentId, string? FieldName, string? Reason);
