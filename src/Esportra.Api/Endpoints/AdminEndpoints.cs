@@ -4986,6 +4986,339 @@ public static class AdminEndpoints
 
             return Results.Ok(new { count, windowMinutes = 15 });
         }).RequireAuthorization("Admin");
+
+        // ══════════════════════════════════════════════════════════════════════
+        // IP ALLOWLIST MANAGEMENT (super_admin only)
+        // ══════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/ip-allowlist ────────────────────────────────────────
+        app.MapGet("/api/admin/ip-allowlist", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var entries = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                SELECT a.id, a.ip_address, a.label, a.created_by,
+                       a.created_at, a.expires_at, a.is_active,
+                       p.username AS created_by_username
+                FROM admin_ip_allowlist a
+                LEFT JOIN profiles p ON p.id = a.created_by
+                ORDER BY a.created_at DESC
+                """, cancellationToken: ct));
+
+            return Results.Ok(entries.Select(e => new
+            {
+                id                = (Guid)e.id,
+                ipAddress         = (string)e.ip_address,
+                label             = (string)e.label,
+                createdBy         = (Guid?)e.created_by,
+                createdByUsername  = (string?)e.created_by_username,
+                createdAt         = (DateTime)e.created_at,
+                expiresAt         = (DateTime?)e.expires_at,
+                isActive          = (bool)e.is_active
+            }));
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/ip-allowlist ───────────────────────────────────────
+        app.MapPost("/api/admin/ip-allowlist", async (
+            [FromBody] AddIpAllowlistRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            // Validate IP format
+            if (string.IsNullOrWhiteSpace(req.IpAddress) ||
+                !System.Net.IPAddress.TryParse(req.IpAddress.Trim(), out _))
+                return Results.BadRequest(new { error = "Invalid IP address format." });
+
+            var ipAddress = req.IpAddress.Trim();
+            var label     = req.Label?.Trim() ?? "";
+
+            DateTimeOffset? expiresAt = null;
+            if (!string.IsNullOrWhiteSpace(req.ExpiresAt))
+            {
+                if (!DateTimeOffset.TryParse(req.ExpiresAt, out var parsed))
+                    return Results.BadRequest(new { error = "Invalid expiresAt date format." });
+                expiresAt = parsed;
+            }
+
+            using var conn = db.CreateConnection();
+
+            try
+            {
+                var entry = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition("""
+                    INSERT INTO admin_ip_allowlist (ip_address, label, created_by, expires_at)
+                    VALUES (@ipAddress, @label, @createdBy, @expiresAt)
+                    RETURNING id, ip_address, label, created_by, created_at, expires_at, is_active
+                    """, new
+                    {
+                        ipAddress,
+                        label,
+                        createdBy = userCtx.UserIdGuid,
+                        expiresAt = expiresAt?.UtcDateTime
+                    }, cancellationToken: ct));
+
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Create, TargetType.System,
+                    (Guid)entry!.id, "ip_allowlist",
+                    new { ip_address = ipAddress, label },
+                    ct: ct);
+
+                return Results.Created($"/api/admin/ip-allowlist/{entry.id}", new
+                {
+                    id        = (Guid)entry.id,
+                    ipAddress = (string)entry.ip_address,
+                    label     = (string)entry.label,
+                    createdBy = (Guid?)entry.created_by,
+                    createdAt = (DateTime)entry.created_at,
+                    expiresAt = (DateTime?)entry.expires_at,
+                    isActive  = (bool)entry.is_active
+                });
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+            {
+                return Results.Conflict(new { error = "This IP address is already in the allowlist." });
+            }
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/ip-allowlist/{id} ──────────────────────────────────
+        app.MapPut("/api/admin/ip-allowlist/{id}", async (
+            Guid                          id,
+            [FromBody] UpdateIpAllowlistRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            // Fetch existing entry
+            var existing = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT id, ip_address, label, is_active, expires_at FROM admin_ip_allowlist WHERE id = @id",
+                new { id }, cancellationToken: ct));
+
+            if (existing is null)
+                return Results.NotFound(new { error = "IP allowlist entry not found." });
+
+            // Build dynamic SET clause for provided fields only
+            var setClauses = new List<string>();
+            var parameters = new DynamicParameters();
+            parameters.Add("id", id);
+
+            if (req.Label is not null)
+            {
+                setClauses.Add("label = @label");
+                parameters.Add("label", req.Label.Trim());
+            }
+
+            if (req.IsActive is not null)
+            {
+                setClauses.Add("is_active = @isActive");
+                parameters.Add("isActive", req.IsActive.Value);
+            }
+
+            if (req.ExpiresAt is not null)
+            {
+                if (req.ExpiresAt == "")
+                {
+                    // Empty string clears the expiration
+                    setClauses.Add("expires_at = NULL");
+                }
+                else if (DateTimeOffset.TryParse(req.ExpiresAt, out var parsed))
+                {
+                    setClauses.Add("expires_at = @expiresAt");
+                    parameters.Add("expiresAt", parsed.UtcDateTime);
+                }
+                else
+                {
+                    return Results.BadRequest(new { error = "Invalid expiresAt date format." });
+                }
+            }
+
+            if (setClauses.Count == 0)
+                return Results.BadRequest(new { error = "No fields to update." });
+
+            var sql = $"UPDATE admin_ip_allowlist SET {string.Join(", ", setClauses)} WHERE id = @id " +
+                      "RETURNING id, ip_address, label, created_by, created_at, expires_at, is_active";
+
+            var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Update, TargetType.System,
+                id, "ip_allowlist",
+                new
+                {
+                    ip_address = (string)existing.ip_address,
+                    changes    = new { req.Label, req.IsActive, req.ExpiresAt }
+                },
+                ct: ct);
+
+            return Results.Ok(new
+            {
+                id                = (Guid)updated!.id,
+                ipAddress         = (string)updated.ip_address,
+                label             = (string)updated.label,
+                createdBy         = (Guid?)updated.created_by,
+                createdAt         = (DateTime)updated.created_at,
+                expiresAt         = (DateTime?)updated.expires_at,
+                isActive          = (bool)updated.is_active
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/ip-allowlist/{id} ───────────────────────────────
+        app.MapDelete("/api/admin/ip-allowlist/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var existing = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT id, ip_address, label FROM admin_ip_allowlist WHERE id = @id",
+                new { id }, cancellationToken: ct));
+
+            if (existing is null)
+                return Results.NotFound(new { error = "IP allowlist entry not found." });
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM admin_ip_allowlist WHERE id = @id",
+                new { id }, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Delete, TargetType.System,
+                id, "ip_allowlist",
+                new { ip_address = (string)existing.ip_address, label = (string)existing.label },
+                ct: ct);
+
+            return Results.Ok(new { message = "IP allowlist entry deleted." });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/ip-allowlist/status ────────────────────────────────
+        app.MapGet("/api/admin/ip-allowlist/status", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var enabledValue = await conn.ExecuteScalarAsync<string>(new CommandDefinition(
+                "SELECT value FROM system_settings WHERE key = 'security.ip_allowlist_enabled'",
+                cancellationToken: ct)) ?? "false";
+
+            var counts = await conn.QueryFirstAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    COUNT(*)                                               AS total,
+                    COUNT(*) FILTER (WHERE is_active = TRUE
+                        AND (expires_at IS NULL OR expires_at > NOW()))     AS active
+                FROM admin_ip_allowlist
+                """, cancellationToken: ct));
+
+            return Results.Ok(new
+            {
+                enabled       = string.Equals(enabledValue, "true", StringComparison.OrdinalIgnoreCase),
+                totalEntries  = (long)counts.total,
+                activeEntries = (long)counts.active
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/ip-allowlist/toggle ───────────────────────────────
+        app.MapPost("/api/admin/ip-allowlist/toggle", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var currentValue = await conn.ExecuteScalarAsync<string>(new CommandDefinition(
+                "SELECT value FROM system_settings WHERE key = 'security.ip_allowlist_enabled'",
+                cancellationToken: ct)) ?? "false";
+
+            var currentlyEnabled = string.Equals(currentValue, "true", StringComparison.OrdinalIgnoreCase);
+            var newEnabled       = !currentlyEnabled;
+
+            // Safety checks before enabling
+            if (newEnabled)
+            {
+                var activeCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                    SELECT COUNT(*) FROM admin_ip_allowlist
+                    WHERE is_active = TRUE
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    """, cancellationToken: ct));
+
+                if (activeCount == 0)
+                    return Results.BadRequest(new { error = "Cannot enable with no active IPs." });
+
+                // Check that the caller's IP is in the allowlist
+                var clientIp = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+                    ?? ctx.Connection.RemoteIpAddress?.ToString();
+
+                if (string.IsNullOrEmpty(clientIp))
+                    return Results.BadRequest(new { error = "Cannot determine your IP address." });
+
+                var callerInList = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                    SELECT COUNT(*) FROM admin_ip_allowlist
+                    WHERE ip_address = @clientIp
+                      AND is_active = TRUE
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    """, new { clientIp }, cancellationToken: ct));
+
+                if (callerInList == 0)
+                    return Results.BadRequest(new { error = "Your current IP is not in the allowlist." });
+            }
+
+            await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE system_settings
+                SET value = @newValue, updated_by = @updatedBy, updated_at = NOW()
+                WHERE key = 'security.ip_allowlist_enabled'
+                """, new
+                {
+                    newValue  = newEnabled ? "true" : "false",
+                    updatedBy = userCtx.UserIdGuid
+                }, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.SettingsUpdate, TargetType.System,
+                userCtx.UserIdGuid, "ip_allowlist_toggle",
+                new { enabled = newEnabled },
+                ct: ct);
+
+            return Results.Ok(new { enabled = newEnabled, message = newEnabled ? "IP allowlist enabled." : "IP allowlist disabled." });
+        }).RequireAuthorization("Admin");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
@@ -5195,3 +5528,5 @@ public sealed record UpdateSystemSettingsRequest(SystemSettingEntry[] Settings);
 public sealed record SystemSettingEntry(string Key, string Value);
 public sealed record ModerationReviewRequest(string Action, string? Notes);
 public sealed record ReportContentRequest(string ContentType, Guid ContentId, string? FieldName, string? Reason);
+public sealed record AddIpAllowlistRequest(string IpAddress, string? Label, string? ExpiresAt);
+public sealed record UpdateIpAllowlistRequest(string? Label, bool? IsActive, string? ExpiresAt);
