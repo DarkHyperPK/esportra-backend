@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
+using Esportra.Api.Helpers;
 
 namespace Esportra.Api.Endpoints;
 
@@ -3584,6 +3585,7 @@ public static class AdminEndpoints
                 """;
 
             var alerts = await conn.QueryAsync<dynamic>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+            DapperJsonbHelper.FixJsonb(alerts);
 
             return Results.Ok(new { data = alerts, total, page, limit });
         }).RequireAuthorization("Admin");
@@ -3673,6 +3675,13 @@ public static class AdminEndpoints
             if (string.IsNullOrWhiteSpace(req.Title))
                 return Results.BadRequest(new { error = "Title is required" });
 
+            var dataJson = "{}";
+            if (!string.IsNullOrWhiteSpace(req.Data))
+            {
+                try { System.Text.Json.JsonDocument.Parse(req.Data); dataJson = req.Data; }
+                catch { return Results.BadRequest(new { error = "Data must be valid JSON" }); }
+            }
+
             using var conn = db.CreateConnection();
 
             var id = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
@@ -3684,7 +3693,7 @@ public static class AdminEndpoints
                     severity = req.Severity ?? "info",
                     title    = req.Title,
                     message  = req.Message,
-                    data     = req.Data ?? "{}"
+                    data     = dataJson
                 }, cancellationToken: ct));
 
             return Results.Ok(new { id, success = true });
