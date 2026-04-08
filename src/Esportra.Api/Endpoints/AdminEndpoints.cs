@@ -1198,11 +1198,11 @@ public static class AdminEndpoints
                        (SELECT COUNT(*) FROM admin_role_permissions WHERE role_id = ar.id) AS permission_count,
                        (SELECT COUNT(*) FROM admin_user_roles WHERE role_id = ar.id) AS user_count
                 FROM admin_roles ar
-                WHERE (@q IS NULL OR ar.name ILIKE '%' || @q || '%' OR ar.key ILIKE '%' || @q || '%')
+                WHERE (@q IS NULL OR ar.name ILIKE @qp ESCAPE '\' OR ar.key ILIKE @qp ESCAPE '\')
                 ORDER BY ar.name ASC
                 LIMIT 100
                 """,
-                new { q },
+                new { q, qp = string.IsNullOrWhiteSpace(q) ? null : EscapeLike(q) },
                 cancellationToken: ct));
             return Results.Ok(rows);
         }).RequireAuthorization("Admin");
@@ -1298,6 +1298,12 @@ public static class AdminEndpoints
             if (string.IsNullOrWhiteSpace(req.Name))
                 return Results.BadRequest(new { error = "Name is required." });
 
+            if (req.Name.Length > 100)
+                return Results.BadRequest(new { error = "Name must be 100 characters or fewer." });
+
+            if ((req.Description?.Length ?? 0) > 500)
+                return Results.BadRequest(new { error = "Description must be 500 characters or fewer." });
+
             if (req.PermissionIds is null || req.PermissionIds.Length == 0)
                 return Results.BadRequest(new { error = "At least one permission is required." });
 
@@ -1312,44 +1318,40 @@ public static class AdminEndpoints
             if (existingCount != req.PermissionIds.Length)
                 return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
 
-            // Check uniqueness of name and key
-            var duplicate = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
-                "SELECT name, key FROM admin_roles WHERE name = @Name OR key = @Key LIMIT 1",
-                new { req.Name, req.Key },
-                cancellationToken: ct));
-
-            if (duplicate is not null)
-            {
-                var field = ((string)duplicate.name) == req.Name ? "name" : "key";
-                return Results.Conflict(new { error = $"A role with this {field} already exists." });
-            }
-
             var roleId = Guid.NewGuid();
+            conn.Open();
             using var txn = conn.BeginTransaction();
 
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                INSERT INTO admin_roles (id, name, key, description)
-                VALUES (@Id, @Name, @Key, @Description)
-                """,
-                new { Id = roleId, req.Name, req.Key, Description = req.Description ?? "" },
-                transaction: txn,
-                cancellationToken: ct));
-
-            foreach (var permId in req.PermissionIds)
+            try
             {
                 await conn.ExecuteAsync(new CommandDefinition(
                     """
-                    INSERT INTO admin_role_permissions (role_id, permission_id)
-                    VALUES (@RoleId, @PermId)
-                    ON CONFLICT DO NOTHING
+                    INSERT INTO admin_roles (id, name, key, description)
+                    VALUES (@Id, @Name, @Key, @Description)
                     """,
-                    new { RoleId = roleId, PermId = permId },
+                    new { Id = roleId, req.Name, req.Key, Description = req.Description ?? "" },
                     transaction: txn,
                     cancellationToken: ct));
-            }
 
-            txn.Commit();
+                foreach (var permId in req.PermissionIds)
+                {
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        """
+                        INSERT INTO admin_role_permissions (role_id, permission_id)
+                        VALUES (@RoleId, @PermId)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        new { RoleId = roleId, PermId = permId },
+                        transaction: txn,
+                        cancellationToken: ct));
+                }
+
+                txn.Commit();
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+            {
+                return Results.Conflict(new { error = "A role with this name or key already exists." });
+            }
 
             await audit.LogAsync(
                 userCtx.UserIdGuid, userCtx.Email,
@@ -1388,6 +1390,12 @@ public static class AdminEndpoints
             if (string.IsNullOrWhiteSpace(req.Name))
                 return Results.BadRequest(new { error = "Name is required." });
 
+            if (req.Name.Length > 100)
+                return Results.BadRequest(new { error = "Name must be 100 characters or fewer." });
+
+            if ((req.Description?.Length ?? 0) > 500)
+                return Results.BadRequest(new { error = "Description must be 500 characters or fewer." });
+
             if (req.PermissionIds is null || req.PermissionIds.Length == 0)
                 return Results.BadRequest(new { error = "At least one permission is required." });
 
@@ -1414,52 +1422,51 @@ public static class AdminEndpoints
             if (existingCount != req.PermissionIds.Length)
                 return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
 
-            // Check name uniqueness (excluding self)
-            var nameDup = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
-                "SELECT EXISTS(SELECT 1 FROM admin_roles WHERE name = @Name AND id != @roleId)",
-                new { req.Name, roleId },
-                cancellationToken: ct));
-
-            if (nameDup)
-                return Results.Conflict(new { error = "A role with this name already exists." });
-
             // Get old permissions for audit
             var oldPermIds = (await conn.QueryAsync<Guid>(new CommandDefinition(
                 "SELECT permission_id FROM admin_role_permissions WHERE role_id = @roleId",
                 new { roleId },
                 cancellationToken: ct))).ToArray();
 
+            conn.Open();
             using var txn = conn.BeginTransaction();
 
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                UPDATE admin_roles SET name = @Name, description = @Description
-                WHERE id = @roleId
-                """,
-                new { req.Name, Description = req.Description ?? "", roleId },
-                transaction: txn,
-                cancellationToken: ct));
-
-            await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
-                new { roleId },
-                transaction: txn,
-                cancellationToken: ct));
-
-            foreach (var permId in req.PermissionIds)
+            try
             {
                 await conn.ExecuteAsync(new CommandDefinition(
                     """
-                    INSERT INTO admin_role_permissions (role_id, permission_id)
-                    VALUES (@RoleId, @PermId)
-                    ON CONFLICT DO NOTHING
+                    UPDATE admin_roles SET name = @Name, description = @Description
+                    WHERE id = @roleId
                     """,
-                    new { RoleId = roleId, PermId = permId },
+                    new { req.Name, Description = req.Description ?? "", roleId },
                     transaction: txn,
                     cancellationToken: ct));
-            }
 
-            txn.Commit();
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
+                    new { roleId },
+                    transaction: txn,
+                    cancellationToken: ct));
+
+                foreach (var permId in req.PermissionIds)
+                {
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        """
+                        INSERT INTO admin_role_permissions (role_id, permission_id)
+                        VALUES (@RoleId, @PermId)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        new { RoleId = roleId, PermId = permId },
+                        transaction: txn,
+                        cancellationToken: ct));
+                }
+
+                txn.Commit();
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+            {
+                return Results.Conflict(new { error = "A role with this name already exists." });
+            }
 
             await audit.LogAsync(
                 userCtx.UserIdGuid, userCtx.Email,
@@ -1514,21 +1521,29 @@ public static class AdminEndpoints
             if (assignedCount > 0)
                 return Results.Conflict(new { error = $"Cannot delete role: {assignedCount} user(s) are still assigned to it." });
 
+            conn.Open();
             using var txn = conn.BeginTransaction();
 
-            await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
-                new { roleId },
-                transaction: txn,
-                cancellationToken: ct));
+            try
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
+                    new { roleId },
+                    transaction: txn,
+                    cancellationToken: ct));
 
-            await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM admin_roles WHERE id = @roleId",
-                new { roleId },
-                transaction: txn,
-                cancellationToken: ct));
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM admin_roles WHERE id = @roleId",
+                    new { roleId },
+                    transaction: txn,
+                    cancellationToken: ct));
 
-            txn.Commit();
+                txn.Commit();
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23503")
+            {
+                return Results.Conflict(new { error = "Cannot delete role: users were assigned after your check." });
+            }
 
             await audit.LogAsync(
                 userCtx.UserIdGuid, userCtx.Email,
