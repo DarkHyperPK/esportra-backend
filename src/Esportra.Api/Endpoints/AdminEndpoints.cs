@@ -6748,6 +6748,124 @@ public static class AdminEndpoints
                 scanErrors
             });
         }).RequireAuthorization(Permissions.SystemSettings);
+
+        // ── Phase 15: Dashboard Customization ─────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/dashboard/widgets ──────────────────────────────────
+        // Returns the static catalog of all available dashboard widgets.
+        app.MapGet("/api/admin/dashboard/widgets", (HttpContext ctx) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            var catalog = new[]
+            {
+                new { id = "stats-overview",       name = "Platform Statistics",             description = "Key platform metrics at a glance",                  category = "platform",    defaultRefreshInterval = 30  },
+                new { id = "user-growth",           name = "User Growth Chart",               description = "New user registrations over time",                   category = "analytics",   defaultRefreshInterval = 300 },
+                new { id = "tournament-activity",   name = "Tournament Activity",             description = "Active and upcoming tournament summary",             category = "tournaments", defaultRefreshInterval = 60  },
+                new { id = "revenue-summary",       name = "Revenue Summary",                 description = "Earnings and transaction overview",                  category = "finance",     defaultRefreshInterval = 300 },
+                new { id = "moderation-queue",      name = "Moderation Queue Status",         description = "Pending reports and moderation actions",             category = "moderation",  defaultRefreshInterval = 60  },
+                new { id = "anomaly-alerts",        name = "Anomaly Alerts",                  description = "Security anomalies and suspicious activity",         category = "security",    defaultRefreshInterval = 30  },
+                new { id = "online-users",          name = "Online Users Count",              description = "Currently active users on the platform",             category = "platform",    defaultRefreshInterval = 30  },
+                new { id = "recent-registrations",  name = "Recent Tournament Registrations", description = "Latest tournament sign-ups",                         category = "tournaments", defaultRefreshInterval = 60  },
+                new { id = "pending-gdpr",          name = "Pending GDPR Requests",           description = "Outstanding data subject requests",                  category = "compliance",  defaultRefreshInterval = 300 },
+                new { id = "system-health",         name = "System Health Status",            description = "API health, latency, and error rates",               category = "platform",    defaultRefreshInterval = 60  },
+            };
+
+            return Results.Ok(catalog);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/admin/dashboard/preferences ──────────────────────────────
+        // Returns the calling admin's saved dashboard layout, or a default if none exists.
+        app.MapGet("/api/admin/dashboard/preferences", async (
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var raw = await conn.QueryFirstOrDefaultAsync<string>(
+                new CommandDefinition(
+                    "SELECT layout FROM admin_dashboard_preferences WHERE user_id = @userId",
+                    new { userId = userCtx.UserIdGuid },
+                    cancellationToken: ct));
+
+            if (raw is null)
+            {
+                // No saved prefs — build and return the default layout
+                var widgetIds = new[]
+                {
+                    "stats-overview", "user-growth", "tournament-activity", "revenue-summary",
+                    "moderation-queue", "anomaly-alerts", "online-users", "recent-registrations",
+                    "pending-gdpr", "system-health"
+                };
+                var defaultRefreshIntervals = new Dictionary<string, int>
+                {
+                    ["stats-overview"]      = 30,  ["user-growth"]          = 300,
+                    ["tournament-activity"] = 60,  ["revenue-summary"]      = 300,
+                    ["moderation-queue"]    = 60,  ["anomaly-alerts"]        = 30,
+                    ["online-users"]        = 30,  ["recent-registrations"] = 60,
+                    ["pending-gdpr"]        = 300, ["system-health"]        = 60,
+                };
+                var defaultLayout = widgetIds
+                    .Select((id, i) => new DashboardWidgetConfig(id, i, true, defaultRefreshIntervals[id]))
+                    .ToArray();
+                return Results.Ok(new { layout = defaultLayout, isDefault = true });
+            }
+
+            var prefs = JsonSerializer.Deserialize<DashboardWidgetConfig[]>(raw,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            return Results.Ok(new { layout = prefs, isDefault = false });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/admin/dashboard/preferences ──────────────────────────────
+        // Upserts the calling admin's dashboard layout.
+        app.MapPut("/api/admin/dashboard/preferences", async (
+            [FromBody] SaveDashboardPreferencesRequest req,
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            if (req.Layout is null)
+                return Results.BadRequest(new { error = "Layout is required." });
+            if (req.Layout.Length > 20)
+                return Results.BadRequest(new { error = "Layout may contain at most 20 widgets." });
+            for (var i = 0; i < req.Layout.Length; i++)
+            {
+                var w = req.Layout[i];
+                if (string.IsNullOrWhiteSpace(w.WidgetId))
+                    return Results.BadRequest(new { error = $"Widget at index {i} has an empty WidgetId." });
+                if (w.Position < 0)
+                    return Results.BadRequest(new { error = $"Widget '{w.WidgetId}' has a negative Position." });
+            }
+
+            var layoutJson = JsonSerializer.Serialize(req.Layout);
+
+            using var conn = db.CreateConnection();
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT INTO admin_dashboard_preferences (user_id, layout, updated_at)
+                VALUES (@userId, @layout::jsonb, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET layout = EXCLUDED.layout, updated_at = NOW()
+                """,
+                new { userId = userCtx.UserIdGuid, layout = layoutJson },
+                cancellationToken: ct));
+
+            return Results.Ok(new { saved = true });
+        }).RequireAuthorization("Authenticated");
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
