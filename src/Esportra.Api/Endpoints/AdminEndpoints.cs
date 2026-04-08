@@ -5154,6 +5154,23 @@ public static class AdminEndpoints
             if (setClauses.Count == 0)
                 return Results.BadRequest(new { error = "No fields to update." });
 
+            // Guard: prevent deactivating the last active IP while the allowlist is enabled.
+            if (req.IsActive == false)
+            {
+                var enabledVal = await conn.ExecuteScalarAsync<string>(new CommandDefinition(
+                    "SELECT value FROM system_settings WHERE key = 'security.ip_allowlist_enabled'", cancellationToken: ct));
+                if (string.Equals(enabledVal, "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    var remaining = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                        SELECT COUNT(*) FROM admin_ip_allowlist
+                        WHERE id != @id AND is_active = TRUE
+                          AND (expires_at IS NULL OR expires_at > NOW())
+                        """, new { id }, cancellationToken: ct));
+                    if (remaining == 0)
+                        return Results.BadRequest(new { error = "Cannot remove/deactivate the last active IP while the allowlist is enabled. Disable the allowlist first." });
+                }
+            }
+
             var sql = $"UPDATE admin_ip_allowlist SET {string.Join(", ", setClauses)} WHERE id = @id " +
                       "RETURNING id, ip_address, label, created_by, created_at, expires_at, is_active";
 
@@ -5203,6 +5220,20 @@ public static class AdminEndpoints
 
             if (existing is null)
                 return Results.NotFound(new { error = "IP allowlist entry not found." });
+
+            // Guard: prevent deleting the last active IP while the allowlist is enabled.
+            var enabledVal = await conn.ExecuteScalarAsync<string>(new CommandDefinition(
+                "SELECT value FROM system_settings WHERE key = 'security.ip_allowlist_enabled'", cancellationToken: ct));
+            if (string.Equals(enabledVal, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                var remaining = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
+                    SELECT COUNT(*) FROM admin_ip_allowlist
+                    WHERE id != @id AND is_active = TRUE
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    """, new { id }, cancellationToken: ct));
+                if (remaining == 0)
+                    return Results.BadRequest(new { error = "Cannot remove/deactivate the last active IP while the allowlist is enabled. Disable the allowlist first." });
+            }
 
             await conn.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM admin_ip_allowlist WHERE id = @id",
@@ -5262,10 +5293,12 @@ public static class AdminEndpoints
             if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            // Wrap the read-check-update sequence in a transaction to prevent TOCTOU races
+            using var txn = conn.BeginTransaction();
 
             var currentValue = await conn.ExecuteScalarAsync<string>(new CommandDefinition(
                 "SELECT value FROM system_settings WHERE key = 'security.ip_allowlist_enabled'",
-                cancellationToken: ct)) ?? "false";
+                transaction: txn, cancellationToken: ct)) ?? "false";
 
             var currentlyEnabled = string.Equals(currentValue, "true", StringComparison.OrdinalIgnoreCase);
             var newEnabled       = !currentlyEnabled;
@@ -5277,7 +5310,7 @@ public static class AdminEndpoints
                     SELECT COUNT(*) FROM admin_ip_allowlist
                     WHERE is_active = TRUE
                       AND (expires_at IS NULL OR expires_at > NOW())
-                    """, cancellationToken: ct));
+                    """, transaction: txn, cancellationToken: ct));
 
                 if (activeCount == 0)
                     return Results.BadRequest(new { error = "Cannot enable with no active IPs." });
@@ -5294,7 +5327,7 @@ public static class AdminEndpoints
                     WHERE ip_address = @clientIp
                       AND is_active = TRUE
                       AND (expires_at IS NULL OR expires_at > NOW())
-                    """, new { clientIp }, cancellationToken: ct));
+                    """, new { clientIp }, transaction: txn, cancellationToken: ct));
 
                 if (callerInList == 0)
                     return Results.BadRequest(new { error = "Your current IP is not in the allowlist." });
@@ -5308,7 +5341,9 @@ public static class AdminEndpoints
                 {
                     newValue  = newEnabled ? "true" : "false",
                     updatedBy = userCtx.UserIdGuid
-                }, cancellationToken: ct));
+                }, transaction: txn, cancellationToken: ct));
+
+            txn.Commit();
 
             await audit.LogAsync(
                 userCtx.UserIdGuid, userCtx.Email,
