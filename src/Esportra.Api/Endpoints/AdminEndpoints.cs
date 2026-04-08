@@ -1181,7 +1181,7 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/roles ──────────────────────────────────────────────
-        // Returns the admin_roles catalog. Supports optional ?q= filter.
+        // Returns the admin_roles catalog with permission/user counts. Supports optional ?q= filter.
         app.MapGet("/api/admin/roles", async (
             string?              q,
             HttpContext          ctx,
@@ -1192,15 +1192,352 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
                 """
-                SELECT id, name, key FROM admin_roles
-                WHERE (@q IS NULL OR name ILIKE '%' || @q || '%' OR key ILIKE '%' || @q || '%')
-                ORDER BY name ASC
+                SELECT ar.id, ar.name, ar.key, ar.description, ar.created_at,
+                       (SELECT COUNT(*) FROM admin_role_permissions WHERE role_id = ar.id) AS permission_count,
+                       (SELECT COUNT(*) FROM admin_user_roles WHERE role_id = ar.id) AS user_count
+                FROM admin_roles ar
+                WHERE (@q IS NULL OR ar.name ILIKE '%' || @q || '%' OR ar.key ILIKE '%' || @q || '%')
+                ORDER BY ar.name ASC
                 LIMIT 100
                 """,
-                new { q });
+                new { q },
+                cancellationToken: ct));
             return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/permissions ────────────────────────────────────────
+        // Returns all available permissions grouped by resource.
+        app.MapGet("/api/admin/permissions", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT id, name, description, resource, action
+                FROM admin_permissions
+                ORDER BY resource, action
+                """,
+                cancellationToken: ct));
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/roles/{roleId} ─────────────────────────────────────
+        // Returns a single role with its assigned permissions and user count.
+        app.MapGet("/api/admin/roles/{roleId}", async (
+            Guid                 roleId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var role = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT ar.id, ar.name, ar.key, ar.description, ar.created_at,
+                       (SELECT COUNT(*) FROM admin_user_roles WHERE role_id = ar.id) AS user_count
+                FROM admin_roles ar
+                WHERE ar.id = @roleId
+                """,
+                new { roleId },
+                cancellationToken: ct));
+
+            if (role is null) return Results.NotFound(new { error = "Role not found." });
+
+            var permissions = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT ap.id, ap.name, ap.description, ap.resource, ap.action
+                FROM admin_permissions ap
+                JOIN admin_role_permissions arp ON arp.permission_id = ap.id
+                WHERE arp.role_id = @roleId
+                ORDER BY ap.resource, ap.action
+                """,
+                new { roleId },
+                cancellationToken: ct));
+
+            return Results.Ok(new
+            {
+                role.id,
+                role.name,
+                role.key,
+                role.description,
+                role.created_at,
+                role.user_count,
+                permissions
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/roles ─────────────────────────────────────────────
+        // Create a custom admin role with assigned permissions.
+        app.MapPost("/api/admin/roles", async (
+            [FromBody] CreateAdminRoleRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin"))
+                return Results.Forbid();
+
+            // Validate key format: lowercase, alphanumeric + underscores, 3-50 chars
+            if (string.IsNullOrWhiteSpace(req.Key) || req.Key.Length < 3 || req.Key.Length > 50
+                || !System.Text.RegularExpressions.Regex.IsMatch(req.Key, @"^[a-z0-9_]+$"))
+                return Results.BadRequest(new { error = "Key must be 3-50 characters, lowercase alphanumeric and underscores only." });
+
+            if (string.IsNullOrWhiteSpace(req.Name))
+                return Results.BadRequest(new { error = "Name is required." });
+
+            if (req.PermissionIds is null || req.PermissionIds.Length == 0)
+                return Results.BadRequest(new { error = "At least one permission is required." });
+
+            using var conn = db.CreateConnection();
+
+            // Validate all permissionIds exist
+            var existingCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM admin_permissions WHERE id = ANY(@Ids)",
+                new { Ids = req.PermissionIds },
+                cancellationToken: ct));
+
+            if (existingCount != req.PermissionIds.Length)
+                return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
+
+            // Check uniqueness of name and key
+            var duplicate = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT name, key FROM admin_roles WHERE name = @Name OR key = @Key LIMIT 1",
+                new { req.Name, req.Key },
+                cancellationToken: ct));
+
+            if (duplicate is not null)
+            {
+                var field = ((string)duplicate.name) == req.Name ? "name" : "key";
+                return Results.Conflict(new { error = $"A role with this {field} already exists." });
+            }
+
+            var roleId = Guid.NewGuid();
+            using var txn = conn.BeginTransaction();
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT INTO admin_roles (id, name, key, description)
+                VALUES (@Id, @Name, @Key, @Description)
+                """,
+                new { Id = roleId, req.Name, req.Key, Description = req.Description ?? "" },
+                transaction: txn,
+                cancellationToken: ct));
+
+            foreach (var permId in req.PermissionIds)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT INTO admin_role_permissions (role_id, permission_id)
+                    VALUES (@RoleId, @PermId)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { RoleId = roleId, PermId = permId },
+                    transaction: txn,
+                    cancellationToken: ct));
+            }
+
+            txn.Commit();
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Create, TargetType.System,
+                roleId, req.Name,
+                new { role_key = req.Key, permission_count = req.PermissionIds.Length },
+                ct: ct);
+
+            return Results.Created($"/api/admin/roles/{roleId}", new
+            {
+                id = roleId,
+                name = req.Name,
+                key = req.Key,
+                description = req.Description ?? "",
+                permission_count = req.PermissionIds.Length
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/roles/{roleId} ─────────────────────────────────────
+        // Update an existing custom role's name, description, and permissions.
+        app.MapPut("/api/admin/roles/{roleId}", async (
+            Guid                              roleId,
+            [FromBody] UpdateAdminRoleRequest  req,
+            HttpContext                       ctx,
+            IDbConnectionFactory             db,
+            AuditService                     audit,
+            CancellationToken                ct) =>
+        {
+            var protectedRoleKeys = new HashSet<string> { "super_admin", "ops_admin", "moderator", "finance_admin", "support_admin" };
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin"))
+                return Results.Forbid();
+
+            if (string.IsNullOrWhiteSpace(req.Name))
+                return Results.BadRequest(new { error = "Name is required." });
+
+            if (req.PermissionIds is null || req.PermissionIds.Length == 0)
+                return Results.BadRequest(new { error = "At least one permission is required." });
+
+            using var conn = db.CreateConnection();
+
+            // Fetch existing role
+            var existingRole = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT id, name, key, description FROM admin_roles WHERE id = @roleId",
+                new { roleId },
+                cancellationToken: ct));
+
+            if (existingRole is null) return Results.NotFound(new { error = "Role not found." });
+
+            // Check if protected
+            if (protectedRoleKeys.Contains((string)existingRole.key))
+                return Results.Json(new { error = "Built-in roles cannot be modified." }, statusCode: 403);
+
+            // Validate all permissionIds exist
+            var existingCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM admin_permissions WHERE id = ANY(@Ids)",
+                new { Ids = req.PermissionIds },
+                cancellationToken: ct));
+
+            if (existingCount != req.PermissionIds.Length)
+                return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
+
+            // Check name uniqueness (excluding self)
+            var nameDup = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+                "SELECT EXISTS(SELECT 1 FROM admin_roles WHERE name = @Name AND id != @roleId)",
+                new { req.Name, roleId },
+                cancellationToken: ct));
+
+            if (nameDup)
+                return Results.Conflict(new { error = "A role with this name already exists." });
+
+            // Get old permissions for audit
+            var oldPermIds = (await conn.QueryAsync<Guid>(new CommandDefinition(
+                "SELECT permission_id FROM admin_role_permissions WHERE role_id = @roleId",
+                new { roleId },
+                cancellationToken: ct))).ToArray();
+
+            using var txn = conn.BeginTransaction();
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE admin_roles SET name = @Name, description = @Description
+                WHERE id = @roleId
+                """,
+                new { req.Name, Description = req.Description ?? "", roleId },
+                transaction: txn,
+                cancellationToken: ct));
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
+                new { roleId },
+                transaction: txn,
+                cancellationToken: ct));
+
+            foreach (var permId in req.PermissionIds)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT INTO admin_role_permissions (role_id, permission_id)
+                    VALUES (@RoleId, @PermId)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { RoleId = roleId, PermId = permId },
+                    transaction: txn,
+                    cancellationToken: ct));
+            }
+
+            txn.Commit();
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Update, TargetType.System,
+                roleId, req.Name,
+                new
+                {
+                    old_name = (string)existingRole.name,
+                    new_name = req.Name,
+                    old_permissions = oldPermIds,
+                    new_permissions = req.PermissionIds
+                },
+                ct: ct);
+
+            return Results.Ok(new { success = true, id = roleId, name = req.Name });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/roles/{roleId} ──────────────────────────────────
+        // Delete a custom admin role. Built-in roles cannot be deleted.
+        app.MapDelete("/api/admin/roles/{roleId}", async (
+            Guid                 roleId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var protectedRoleKeys = new HashSet<string> { "super_admin", "ops_admin", "moderator", "finance_admin", "support_admin" };
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains("super_admin"))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var existingRole = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT id, name, key FROM admin_roles WHERE id = @roleId",
+                new { roleId },
+                cancellationToken: ct));
+
+            if (existingRole is null) return Results.NotFound(new { error = "Role not found." });
+
+            if (protectedRoleKeys.Contains((string)existingRole.key))
+                return Results.Json(new { error = "Built-in roles cannot be deleted." }, statusCode: 403);
+
+            // Check if any users are assigned
+            var assignedCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT COUNT(*) FROM admin_user_roles WHERE role_id = @roleId",
+                new { roleId },
+                cancellationToken: ct));
+
+            if (assignedCount > 0)
+                return Results.Conflict(new { error = $"Cannot delete role: {assignedCount} user(s) are still assigned to it." });
+
+            using var txn = conn.BeginTransaction();
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
+                new { roleId },
+                transaction: txn,
+                cancellationToken: ct));
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM admin_roles WHERE id = @roleId",
+                new { roleId },
+                transaction: txn,
+                cancellationToken: ct));
+
+            txn.Commit();
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                ActionType.Delete, TargetType.System,
+                roleId, (string)existingRole.name,
+                new { role_key = (string)existingRole.key },
+                ct: ct);
+
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/users/{userId}/roles ────────────────────────────────
@@ -4213,6 +4550,8 @@ public sealed record CreateVerifiedRoleRequest(
     [property: JsonPropertyName("is_active")] bool IsActive);
 public sealed record UpdateApplicationRequest(string? Status = null, string? Notes = null);
 public sealed record AdminUserRoleAssignRequest(Guid UserId, Guid RoleId);
+public sealed record CreateAdminRoleRequest(string Name, string Key, string Description, Guid[] PermissionIds);
+public sealed record UpdateAdminRoleRequest(string Name, string Description, Guid[] PermissionIds);
 public sealed record AdminUpdateTournamentRequest(string? Status = null, bool? IsFeatured = null);
 public sealed record AdminUpdateUserRequest(bool? IsAdmin = null, Guid[]? AdminRoles = null);
 public sealed record CreateAdminAlertRequest(
