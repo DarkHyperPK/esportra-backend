@@ -3516,6 +3516,87 @@ public static class AdminEndpoints
             return Results.File(bytes, "text/csv", $"disputes_export_{DateTime.UtcNow:yyyy-MM-dd}.csv");
         }).RequireAuthorization("Admin");
 
+        // ── GET /api/admin/entity-history/{targetType}/{targetId} ────────────────
+        app.MapGet("/api/admin/entity-history/{targetType}/{targetId}", async (
+            string               targetType,
+            Guid                 targetId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int      page  = 1,
+            [FromQuery] int      limit = 20,
+            CancellationToken    ct    = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            var allowedTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "User", "Tournament", "Team", "Venue", "Dispute", "Match", "Sponsor", "Payment", "System" };
+            if (!allowedTypes.Contains(targetType))
+                return Results.BadRequest(new { error = "Invalid target type" });
+
+            using var conn = db.CreateConnection();
+
+            var offset = Math.Max(0, (page - 1) * limit);
+            var clampedLimit = Math.Clamp(limit, 1, 50);
+
+            var countSql = """
+                SELECT COUNT(*) FROM audit_logs
+                WHERE target_type = @targetType AND target_id = @targetId
+                """;
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                countSql, new { targetType, targetId }, cancellationToken: ct));
+
+            var sql = """
+                SELECT id, admin_id, admin_name, action_type, target_type,
+                       target_id, target_name, details, severity, created_at
+                FROM audit_logs
+                WHERE target_type = @targetType AND target_id = @targetId
+                ORDER BY created_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                sql, new { targetType, targetId, limit = clampedLimit, offset }, cancellationToken: ct));
+            DapperJsonbHelper.FixJsonb(rows);
+
+            return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
+        }).RequireAuthorization("Admin");
+
+        // Also query staff_audit_log for legacy entries
+        // ── GET /api/admin/entity-history-legacy/{targetType}/{targetId} ──────────
+        app.MapGet("/api/admin/entity-history-legacy/{targetType}/{targetId}", async (
+            string               targetType,
+            Guid                 targetId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int      limit = 20,
+            CancellationToken    ct    = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var sql = """
+                SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
+                       sal.action AS action_type, sal.target_type,
+                       sal.target_id, sal.details, sal.created_at
+                FROM staff_audit_log sal
+                LEFT JOIN profiles p ON p.id = sal.actor_id
+                WHERE sal.target_type = @targetType AND sal.target_id = @targetId
+                ORDER BY sal.created_at DESC
+                LIMIT @limit
+                """;
+
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                sql, new { targetType, targetId, limit = Math.Clamp(limit, 1, 50) }, cancellationToken: ct));
+            DapperJsonbHelper.FixJsonb(rows);
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Admin");
+
         // ══════════════════════════════════════════════════════════════════════════
         // ── ADMIN ALERTS ──────────────────────────────────────────────────────────
         // ══════════════════════════════════════════════════════════════════════════
