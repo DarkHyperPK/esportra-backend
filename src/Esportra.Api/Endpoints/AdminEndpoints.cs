@@ -3535,29 +3535,49 @@ public static class AdminEndpoints
             if (!allowedTypes.Contains(targetType))
                 return Results.BadRequest(new { error = "Invalid target type" });
 
+            // AuditService stores target_type as lowercase
+            var normalizedType = targetType.ToLowerInvariant();
+
             using var conn = db.CreateConnection();
 
-            var offset = Math.Max(0, (page - 1) * limit);
             var clampedLimit = Math.Clamp(limit, 1, 50);
+            var offset = Math.Max(0, (page - 1) * clampedLimit);
 
             var countSql = """
-                SELECT COUNT(*) FROM audit_logs
-                WHERE target_type = @targetType AND target_id = @targetId
+                SELECT COUNT(*) FROM (
+                    SELECT id FROM audit_logs
+                    WHERE target_type = @targetType AND target_id = @targetId
+                    UNION ALL
+                    SELECT id FROM staff_audit_log
+                    WHERE target_type = @targetType AND target_id = @targetId
+                ) combined
                 """;
             var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-                countSql, new { targetType, targetId }, cancellationToken: ct));
+                countSql, new { targetType = normalizedType, targetId }, cancellationToken: ct));
 
             var sql = """
                 SELECT id, admin_id, admin_name, action_type, target_type,
                        target_id, target_name, details, severity, created_at
-                FROM audit_logs
-                WHERE target_type = @targetType AND target_id = @targetId
+                FROM (
+                    SELECT id, admin_id, admin_name, action_type, target_type,
+                           target_id, target_name, details, severity, created_at
+                    FROM audit_logs
+                    WHERE target_type = @targetType AND target_id = @targetId
+                    UNION ALL
+                    SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
+                           sal.action AS action_type, sal.target_type,
+                           sal.target_id, NULL AS target_name, sal.details,
+                           NULL AS severity, sal.created_at
+                    FROM staff_audit_log sal
+                    LEFT JOIN profiles p ON p.id = sal.actor_id
+                    WHERE sal.target_type = @targetType AND sal.target_id = @targetId
+                ) combined
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType, targetId, limit = clampedLimit, offset }, cancellationToken: ct));
+                sql, new { targetType = normalizedType, targetId, limit = clampedLimit, offset }, cancellationToken: ct));
             DapperJsonbHelper.FixJsonb(rows);
 
             return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
@@ -3577,6 +3597,8 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.AdminRoles.Any()) return Results.Forbid();
 
+            var normalizedType = targetType.ToLowerInvariant();
+
             using var conn = db.CreateConnection();
 
             var sql = """
@@ -3591,7 +3613,7 @@ public static class AdminEndpoints
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType, targetId, limit = Math.Clamp(limit, 1, 50) }, cancellationToken: ct));
+                sql, new { targetType = normalizedType, targetId, limit = Math.Clamp(limit, 1, 50) }, cancellationToken: ct));
             DapperJsonbHelper.FixJsonb(rows);
 
             return Results.Ok(rows);
