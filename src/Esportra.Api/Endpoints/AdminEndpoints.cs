@@ -6373,7 +6373,27 @@ public static class AdminEndpoints
                 new CommandDefinition(sql, p, cancellationToken: ct));
             DapperJsonbHelper.FixJsonb(items);
 
-            return Results.Ok(new { data = items, total, page, limit });
+            // Aggregate totals across ALL pages — not just the current page.
+            var unresolvedTotal = await conn.ExecuteScalarAsync<int>(
+                new CommandDefinition(
+                    "SELECT COUNT(*) FROM anomaly_events WHERE is_resolved = FALSE",
+                    cancellationToken: ct));
+
+            var criticalTotal = await conn.ExecuteScalarAsync<int>(
+                new CommandDefinition("""
+                    SELECT COUNT(*) FROM anomaly_events ae
+                    JOIN anomaly_rules ar ON ar.id = ae.rule_id
+                    WHERE ae.is_resolved = FALSE AND ar.severity = 'critical'
+                    """, cancellationToken: ct));
+
+            var highTotal = await conn.ExecuteScalarAsync<int>(
+                new CommandDefinition("""
+                    SELECT COUNT(*) FROM anomaly_events ae
+                    JOIN anomaly_rules ar ON ar.id = ae.rule_id
+                    WHERE ae.is_resolved = FALSE AND ar.severity = 'high'
+                    """, cancellationToken: ct));
+
+            return Results.Ok(new { items, total, page, limit, unresolvedTotal, criticalTotal, highTotal });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/anomalies/rules ────────────────────────────────────────
@@ -6405,7 +6425,7 @@ public static class AdminEndpoints
                 ORDER BY severity DESC, name
                 """, cancellationToken: ct));
 
-            return Results.Ok(new { data = rules });
+            return Results.Ok(rules);
         }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/anomalies/rules/{id} ───────────────────────────────────
@@ -6544,33 +6564,33 @@ public static class AdminEndpoints
             // Load all active rules
             var rules = (await conn.QueryAsync<AnomalyRuleRow>(
                 new CommandDefinition("""
-                    SELECT id, metric, threshold_count, window_minutes,
-                           severity, cooldown_minutes, last_triggered_at
+                    SELECT id, metric, name,
+                           threshold_count  AS "ThresholdCount",
+                           window_minutes   AS "WindowMinutes",
+                           severity,
+                           cooldown_minutes AS "CooldownMinutes",
+                           last_triggered_at AS "LastTriggeredAt"
                     FROM anomaly_rules
                     WHERE is_active = TRUE
                     ORDER BY metric
                     """, cancellationToken: ct))).ToList();
 
-            var newEvents = new List<object>();
-            var now       = DateTime.UtcNow;
+            var newEvents  = new List<object>();
+            var scanErrors = new List<object>();
+            var now        = DateTime.UtcNow;
 
-            // Check if disputes table exists (optional metric)
+            // Check if tournament_disputes table exists (optional metric)
             var disputesExists = await conn.ExecuteScalarAsync<bool>(
                 new CommandDefinition("""
                     SELECT EXISTS (
                         SELECT 1 FROM information_schema.tables
                         WHERE table_schema = 'public'
-                          AND table_name   = 'disputes'
+                          AND table_name   = 'tournament_disputes'
                     )
                     """, cancellationToken: ct));
 
             foreach (var rule in rules)
             {
-                // Cooldown guard — skip if fired recently
-                if (rule.LastTriggeredAt.HasValue &&
-                    (now - rule.LastTriggeredAt.Value).TotalMinutes < rule.CooldownMinutes)
-                    continue;
-
                 // Count events in window using parameterized interval
                 int observed;
                 try
@@ -6604,7 +6624,7 @@ public static class AdminEndpoints
 
                         "disputes" when disputesExists => await conn.ExecuteScalarAsync<int>(
                             new CommandDefinition("""
-                                SELECT COUNT(*) FROM disputes
+                                SELECT COUNT(*) FROM tournament_disputes
                                 WHERE created_at > NOW() - (@windowMinutes * INTERVAL '1 minute')
                                 """,
                                 new { windowMinutes = rule.WindowMinutes },
@@ -6623,16 +6643,34 @@ public static class AdminEndpoints
                         _ => 0
                     };
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // If a table is missing, skip this rule gracefully
+                    // Log and continue — don't let one rule failure abort the whole scan
+                    scanErrors.Add(new { ruleId = rule.Id, metric = rule.Metric, error = ex.Message });
                     continue;
                 }
 
                 if (observed <= rule.ThresholdCount)
                     continue;
 
-                // Threshold exceeded — create anomaly event
+                // Threshold exceeded — atomically claim the rule with a conditional UPDATE that
+                // also enforces the cooldown. If another concurrent scan already claimed it
+                // (or the cooldown hasn't elapsed), rowsAffected == 0 and we skip.
+                var rowsAffected = await conn.ExecuteAsync(
+                    new CommandDefinition("""
+                        UPDATE anomaly_rules
+                        SET last_triggered_at = NOW()
+                        WHERE id = @ruleId
+                          AND (last_triggered_at IS NULL
+                               OR last_triggered_at < NOW() - (@cooldown * INTERVAL '1 minute'))
+                        """,
+                        new { ruleId = rule.Id, cooldown = rule.CooldownMinutes },
+                        cancellationToken: ct));
+
+                if (rowsAffected == 0)
+                    continue; // cooldown not elapsed or concurrent scan already claimed this rule
+
+                // Create anomaly event
                 var detailsJson = System.Text.Json.JsonSerializer.Serialize(new
                 {
                     rule_name    = rule.Metric,
@@ -6658,13 +6696,6 @@ public static class AdminEndpoints
                             windowMinutes  = rule.WindowMinutes,
                             details        = detailsJson
                         },
-                        cancellationToken: ct));
-
-                // Update rule's last_triggered_at
-                await conn.ExecuteAsync(
-                    new CommandDefinition(
-                        "UPDATE anomaly_rules SET last_triggered_at = NOW() WHERE id = @id",
-                        new { id = rule.Id },
                         cancellationToken: ct));
 
                 // Create admin alert so it surfaces in the alerts dashboard
@@ -6713,7 +6744,8 @@ public static class AdminEndpoints
             {
                 scannedRules   = rules.Count,
                 detectedCount  = newEvents.Count,
-                detectedEvents = newEvents
+                detectedEvents = newEvents,
+                scanErrors
             });
         }).RequireAuthorization(Permissions.SystemSettings);
     }
@@ -7154,6 +7186,7 @@ public sealed record ResolveAnomalyRequest(string? Notes);
 internal sealed record AnomalyRuleRow(
     Guid      Id,
     string    Metric,
+    string    Name,
     int       ThresholdCount,
     int       WindowMinutes,
     string    Severity,
