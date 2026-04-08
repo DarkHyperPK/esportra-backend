@@ -1884,12 +1884,178 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/system-settings ────────────────────────────────────
-        app.MapGet("/api/admin/system-settings", (HttpContext ctx) =>
+        app.MapGet("/api/admin/system-settings", async (
+            string?              category,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            // Placeholder: no system_settings table yet — return empty config
-            return Results.Ok(new { maintenanceMode = false, registrationsEnabled = true });
+
+            using var conn = db.CreateConnection();
+
+            var isSuperAdmin = userCtx.AdminRoles.Contains("super_admin");
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT key, value, category, label, description,
+                       data_type, is_sensitive, updated_at
+                FROM system_settings
+                WHERE (@category IS NULL OR category = @category)
+                ORDER BY category, key
+                """, new { category });
+
+            var result = rows.Select(r =>
+            {
+                bool sensitive = (bool)r.is_sensitive;
+                return new
+                {
+                    key          = (string)r.key,
+                    value        = sensitive && !isSuperAdmin ? "••••••••" : (string)r.value,
+                    category     = (string)r.category,
+                    label        = (string)r.label,
+                    description  = (string)(r.description ?? ""),
+                    data_type    = (string)r.data_type,
+                    is_sensitive = sensitive,
+                    updated_at   = r.updated_at,
+                };
+            });
+
+            return Results.Ok(result);
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/system-settings/{key} ─────────────────────────────
+        app.MapGet("/api/admin/system-settings/{key}", async (
+            string               key,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var row = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                """
+                SELECT key, value, category, label, description,
+                       data_type, is_sensitive, updated_at
+                FROM system_settings
+                WHERE key = @key
+                """, new { key });
+
+            if (row is null) return Results.NotFound(new { error = $"Setting '{key}' not found." });
+
+            bool sensitive    = (bool)row.is_sensitive;
+            bool isSuperAdmin = userCtx.AdminRoles.Contains("super_admin");
+
+            return Results.Ok(new
+            {
+                key          = (string)row.key,
+                value        = sensitive && !isSuperAdmin ? "••••••••" : (string)row.value,
+                category     = (string)row.category,
+                label        = (string)row.label,
+                description  = (string)(row.description ?? ""),
+                data_type    = (string)row.data_type,
+                is_sensitive = sensitive,
+                updated_at   = row.updated_at,
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/system-settings ────────────────────────────────────
+        app.MapPut("/api/admin/system-settings", async (
+            [FromBody] UpdateSystemSettingsRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.Settings is null || req.Settings.Length == 0)
+                return Results.BadRequest(new { error = "At least one setting is required." });
+
+            using var conn = db.CreateConnection();
+
+            // Fetch existing settings for validation + audit diff
+            var requestedKeys = req.Settings.Select(s => s.Key).ToArray();
+            var existing = (await conn.QueryAsync<dynamic>(
+                "SELECT key, value, data_type, is_sensitive FROM system_settings WHERE key = ANY(@keys)",
+                new { keys = requestedKeys })).ToDictionary(r => (string)r.key, r => r);
+
+            // Validate all keys exist
+            var unknownKeys = requestedKeys.Where(k => !existing.ContainsKey(k)).ToArray();
+            if (unknownKeys.Length > 0)
+                return Results.BadRequest(new { error = $"Unknown setting keys: {string.Join(", ", unknownKeys)}" });
+
+            // Validate values by data_type
+            var errors = new List<string>();
+            foreach (var setting in req.Settings)
+            {
+                var meta = existing[setting.Key];
+                string dataType = (string)meta.data_type;
+
+                switch (dataType)
+                {
+                    case "boolean":
+                        if (setting.Value != "true" && setting.Value != "false")
+                            errors.Add($"'{setting.Key}' must be 'true' or 'false'.");
+                        break;
+                    case "number":
+                        if (!double.TryParse(setting.Value, System.Globalization.NumberStyles.Any,
+                                System.Globalization.CultureInfo.InvariantCulture, out _))
+                            errors.Add($"'{setting.Key}' must be a valid number.");
+                        break;
+                }
+            }
+
+            if (errors.Count > 0)
+                return Results.BadRequest(new { error = "Validation failed.", details = errors });
+
+            // Build audit diff and apply updates
+            var changes = new List<object>();
+            foreach (var setting in req.Settings)
+            {
+                var meta       = existing[setting.Key];
+                var oldValue   = (string)meta.value;
+                bool sensitive = (bool)meta.is_sensitive;
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE system_settings
+                    SET value = @value, updated_by = @updatedBy, updated_at = NOW()
+                    WHERE key = @key
+                    """,
+                    new { key = setting.Key, value = setting.Value, updatedBy = userCtx.UserIdGuid });
+
+                if (oldValue != setting.Value)
+                {
+                    changes.Add(new
+                    {
+                        key       = setting.Key,
+                        old_value = sensitive ? "••••••••" : oldValue,
+                        new_value = sensitive ? "••••••••" : setting.Value,
+                    });
+                }
+            }
+
+            // Audit log
+            if (changes.Count > 0)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid,
+                    userCtx.Email,
+                    ActionType.SettingsUpdate,
+                    TargetType.System,
+                    userCtx.UserIdGuid,           // targetId — system-level, use admin's own id
+                    "system_settings",
+                    new { updated_count = changes.Count, changes },
+                    ct: ct);
+            }
+
+            return Results.Ok(new { success = true, updated = changes.Count });
         }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/verification-requests ──────────────────────────────
@@ -4029,3 +4195,5 @@ public sealed record CreateAdminAlertRequest(
     string? Message = null,
     string? Data = null);
 public sealed record BulkAlertActionRequest(Guid[] AlertIds);
+public sealed record UpdateSystemSettingsRequest(SystemSettingEntry[] Settings);
+public sealed record SystemSettingEntry(string Key, string Value);
