@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
@@ -6302,6 +6302,420 @@ public static class AdminEndpoints
             return Results.Created($"/api/consent/{newId}",
                 new { id = newId, consentType = req.ConsentType, granted = req.Granted, version });
         }).RequireAuthorization("Authenticated");
+
+        // ══════════════════════════════════════════════════════════════════════════
+        // ── Phase 14: Anomaly Detection ───────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/anomalies ──────────────────────────────────────────────
+        app.MapGet("/api/admin/anomalies", async (
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct,
+            bool?   isResolved = null,
+            int     page       = 1,
+            int     limit      = 25) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            if (page  < 1)   page  = 1;
+            if (limit < 1)   limit = 1;
+            if (limit > 100) limit = 100;
+            var offset = (page - 1) * limit;
+
+            using var conn = db.CreateConnection();
+
+            var where  = new System.Text.StringBuilder("WHERE 1=1");
+            var p      = new DynamicParameters();
+
+            if (isResolved.HasValue)
+            {
+                where.Append(" AND ae.is_resolved = @isResolved");
+                p.Add("isResolved", isResolved.Value);
+            }
+
+            p.Add("limit",  limit);
+            p.Add("offset", offset);
+
+            var countSql = $"SELECT COUNT(*) FROM anomaly_events ae {where}";
+            var total    = await conn.ExecuteScalarAsync<int>(
+                new CommandDefinition(countSql, p, cancellationToken: ct));
+
+            var sql = $"""
+                SELECT
+                    ae.id,
+                    ae.rule_id           AS "ruleId",
+                    ar.name              AS "ruleName",
+                    ar.severity,
+                    ae.metric,
+                    ae.count_observed    AS "countObserved",
+                    ae.threshold_count   AS "thresholdCount",
+                    ae.window_minutes    AS "windowMinutes",
+                    ae.detected_at       AS "detectedAt",
+                    ae.resolved_at       AS "resolvedAt",
+                    ae.resolved_by       AS "resolvedBy",
+                    p.username           AS "resolvedByUsername",
+                    ae.is_resolved       AS "isResolved",
+                    ae.details
+                FROM anomaly_events ae
+                JOIN  anomaly_rules ar ON ar.id = ae.rule_id
+                LEFT JOIN profiles p   ON p.id  = ae.resolved_by
+                {where}
+                ORDER BY
+                    CASE WHEN ae.is_resolved = FALSE THEN 0 ELSE 1 END,
+                    ae.detected_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var items = await conn.QueryAsync<dynamic>(
+                new CommandDefinition(sql, p, cancellationToken: ct));
+            DapperJsonbHelper.FixJsonb(items);
+
+            return Results.Ok(new { data = items, total, page, limit });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/anomalies/rules ────────────────────────────────────────
+        app.MapGet("/api/admin/anomalies/rules", async (
+            IDbConnectionFactory db,
+            HttpContext          ctx,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var rules = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    id,
+                    name,
+                    description,
+                    metric,
+                    threshold_count  AS "thresholdCount",
+                    window_minutes   AS "windowMinutes",
+                    severity,
+                    is_active        AS "isActive",
+                    last_triggered_at AS "lastTriggeredAt",
+                    cooldown_minutes AS "cooldownMinutes",
+                    created_at       AS "createdAt"
+                FROM anomaly_rules
+                ORDER BY severity DESC, name
+                """, cancellationToken: ct));
+
+            return Results.Ok(new { data = rules });
+        }).RequireAuthorization("Admin");
+
+        // ── PUT /api/admin/anomalies/rules/{id} ───────────────────────────────────
+        app.MapPut("/api/admin/anomalies/rules/{id}", async (
+            Guid                    id,
+            UpdateAnomalyRuleRequest req,
+            IDbConnectionFactory    db,
+            HttpContext              ctx,
+            CancellationToken       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains(AdminRoles.SuperAdmin)) return Results.Forbid();
+
+            // Validate severity if provided
+            if (req.Severity is not null &&
+                req.Severity is not ("low" or "medium" or "high" or "critical"))
+                return Results.BadRequest(new { error = "Severity must be low, medium, high, or critical" });
+
+            if (req.ThresholdCount.HasValue && req.ThresholdCount.Value < 1)
+                return Results.BadRequest(new { error = "thresholdCount must be at least 1" });
+
+            if (req.WindowMinutes.HasValue && req.WindowMinutes.Value < 1)
+                return Results.BadRequest(new { error = "windowMinutes must be at least 1" });
+
+            if (req.CooldownMinutes.HasValue && req.CooldownMinutes.Value < 0)
+                return Results.BadRequest(new { error = "cooldownMinutes must be non-negative" });
+
+            using var conn = db.CreateConnection();
+
+            var exists = await conn.ExecuteScalarAsync<bool>(
+                new CommandDefinition(
+                    "SELECT EXISTS(SELECT 1 FROM anomaly_rules WHERE id = @id)",
+                    new { id }, cancellationToken: ct));
+
+            if (!exists) return Results.NotFound(new { error = "Anomaly rule not found" });
+
+            // Build partial update
+            var sets = new List<string>();
+            var dp   = new DynamicParameters();
+            dp.Add("id", id);
+
+            if (req.ThresholdCount.HasValue)  { sets.Add("threshold_count  = @thresholdCount");  dp.Add("thresholdCount",  req.ThresholdCount.Value); }
+            if (req.WindowMinutes.HasValue)    { sets.Add("window_minutes   = @windowMinutes");   dp.Add("windowMinutes",   req.WindowMinutes.Value); }
+            if (req.Severity is not null)      { sets.Add("severity         = @severity");        dp.Add("severity",        req.Severity); }
+            if (req.IsActive.HasValue)         { sets.Add("is_active        = @isActive");        dp.Add("isActive",        req.IsActive.Value); }
+            if (req.CooldownMinutes.HasValue)  { sets.Add("cooldown_minutes = @cooldownMinutes"); dp.Add("cooldownMinutes", req.CooldownMinutes.Value); }
+
+            if (sets.Count == 0)
+                return Results.BadRequest(new { error = "No fields provided to update" });
+
+            var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                new CommandDefinition(
+                    $"""
+                    UPDATE anomaly_rules
+                    SET {string.Join(", ", sets)}
+                    WHERE id = @id
+                    RETURNING
+                        id,
+                        name,
+                        description,
+                        metric,
+                        threshold_count  AS "thresholdCount",
+                        window_minutes   AS "windowMinutes",
+                        severity,
+                        is_active        AS "isActive",
+                        last_triggered_at AS "lastTriggeredAt",
+                        cooldown_minutes AS "cooldownMinutes",
+                        created_at       AS "createdAt"
+                    """,
+                    dp,
+                    cancellationToken: ct));
+
+            return Results.Ok(updated);
+        }).RequireAuthorization(Permissions.SystemSettings);
+
+        // ── POST /api/admin/anomalies/{id}/resolve ────────────────────────────────
+        app.MapPost("/api/admin/anomalies/{id}/resolve", async (
+            Guid                   id,
+            ResolveAnomalyRequest  req,
+            IDbConnectionFactory   db,
+            HttpContext             ctx,
+            CancellationToken      ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var resolvedById = userCtx.UserIdGuid;
+            var notes        = req.Notes?.Trim();
+
+            var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                new CommandDefinition("""
+                    UPDATE anomaly_events
+                    SET
+                        is_resolved = TRUE,
+                        resolved_at = NOW(),
+                        resolved_by = @resolvedBy,
+                        details     = details || jsonb_build_object('resolution_notes', @notes::text)
+                    WHERE id = @id AND is_resolved = FALSE
+                    RETURNING
+                        id,
+                        rule_id      AS "ruleId",
+                        metric,
+                        count_observed  AS "countObserved",
+                        threshold_count AS "thresholdCount",
+                        window_minutes  AS "windowMinutes",
+                        detected_at  AS "detectedAt",
+                        resolved_at  AS "resolvedAt",
+                        resolved_by  AS "resolvedBy",
+                        is_resolved  AS "isResolved"
+                    """,
+                    new { id, resolvedBy = resolvedById, notes },
+                    cancellationToken: ct));
+
+            if (updated is null)
+                return Results.NotFound(new { error = "Anomaly event not found or already resolved" });
+
+            return Results.Ok(updated);
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/anomalies/scan ────────────────────────────────────────
+        app.MapPost("/api/admin/anomalies/scan", async (
+            IDbConnectionFactory db,
+            HttpContext           ctx,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.AdminRoles.Contains(AdminRoles.SuperAdmin)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            // Load all active rules
+            var rules = (await conn.QueryAsync<AnomalyRuleRow>(
+                new CommandDefinition("""
+                    SELECT id, metric, threshold_count, window_minutes,
+                           severity, cooldown_minutes, last_triggered_at
+                    FROM anomaly_rules
+                    WHERE is_active = TRUE
+                    ORDER BY metric
+                    """, cancellationToken: ct))).ToList();
+
+            var newEvents = new List<object>();
+            var now       = DateTime.UtcNow;
+
+            // Check if disputes table exists (optional metric)
+            var disputesExists = await conn.ExecuteScalarAsync<bool>(
+                new CommandDefinition("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name   = 'disputes'
+                    )
+                    """, cancellationToken: ct));
+
+            foreach (var rule in rules)
+            {
+                // Cooldown guard — skip if fired recently
+                if (rule.LastTriggeredAt.HasValue &&
+                    (now - rule.LastTriggeredAt.Value).TotalMinutes < rule.CooldownMinutes)
+                    continue;
+
+                // Count events in window using parameterized interval
+                int observed;
+                try
+                {
+                    observed = rule.Metric switch
+                    {
+                        "failed_logins" => await conn.ExecuteScalarAsync<int>(
+                            new CommandDefinition("""
+                                SELECT COUNT(*) FROM audit_logs
+                                WHERE action_type = 'FailedLogin'
+                                  AND created_at  > NOW() - (@windowMinutes * INTERVAL '1 minute')
+                                """,
+                                new { windowMinutes = rule.WindowMinutes },
+                                cancellationToken: ct)),
+
+                        "new_accounts" => await conn.ExecuteScalarAsync<int>(
+                            new CommandDefinition("""
+                                SELECT COUNT(*) FROM profiles
+                                WHERE created_at > NOW() - (@windowMinutes * INTERVAL '1 minute')
+                                """,
+                                new { windowMinutes = rule.WindowMinutes },
+                                cancellationToken: ct)),
+
+                        "reports" => await conn.ExecuteScalarAsync<int>(
+                            new CommandDefinition("""
+                                SELECT COUNT(*) FROM moderation_queue
+                                WHERE created_at > NOW() - (@windowMinutes * INTERVAL '1 minute')
+                                """,
+                                new { windowMinutes = rule.WindowMinutes },
+                                cancellationToken: ct)),
+
+                        "disputes" when disputesExists => await conn.ExecuteScalarAsync<int>(
+                            new CommandDefinition("""
+                                SELECT COUNT(*) FROM disputes
+                                WHERE created_at > NOW() - (@windowMinutes * INTERVAL '1 minute')
+                                """,
+                                new { windowMinutes = rule.WindowMinutes },
+                                cancellationToken: ct)),
+
+                        "disputes" => 0,   // table doesn't exist — skip gracefully
+
+                        "registrations" => await conn.ExecuteScalarAsync<int>(
+                            new CommandDefinition("""
+                                SELECT COUNT(*) FROM tournament_registrations
+                                WHERE created_at > NOW() - (@windowMinutes * INTERVAL '1 minute')
+                                """,
+                                new { windowMinutes = rule.WindowMinutes },
+                                cancellationToken: ct)),
+
+                        _ => 0
+                    };
+                }
+                catch
+                {
+                    // If a table is missing, skip this rule gracefully
+                    continue;
+                }
+
+                if (observed <= rule.ThresholdCount)
+                    continue;
+
+                // Threshold exceeded — create anomaly event
+                var detailsJson = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    rule_name    = rule.Metric,
+                    window_start = now.AddMinutes(-rule.WindowMinutes),
+                    window_end   = now,
+                    scanned_by   = userCtx.UserId
+                });
+
+                var eventId = await conn.ExecuteScalarAsync<Guid>(
+                    new CommandDefinition("""
+                        INSERT INTO anomaly_events
+                            (rule_id, metric, count_observed, threshold_count, window_minutes, details)
+                        VALUES
+                            (@ruleId, @metric, @countObserved, @thresholdCount, @windowMinutes, @details::jsonb)
+                        RETURNING id
+                        """,
+                        new
+                        {
+                            ruleId         = rule.Id,
+                            metric         = rule.Metric,
+                            countObserved  = observed,
+                            thresholdCount = rule.ThresholdCount,
+                            windowMinutes  = rule.WindowMinutes,
+                            details        = detailsJson
+                        },
+                        cancellationToken: ct));
+
+                // Update rule's last_triggered_at
+                await conn.ExecuteAsync(
+                    new CommandDefinition(
+                        "UPDATE anomaly_rules SET last_triggered_at = NOW() WHERE id = @id",
+                        new { id = rule.Id },
+                        cancellationToken: ct));
+
+                // Create admin alert so it surfaces in the alerts dashboard
+                await conn.ExecuteAsync(
+                    new CommandDefinition("""
+                        INSERT INTO admin_alerts (type, severity, title, message, data)
+                        VALUES (
+                            'anomaly_detected',
+                            @severity,
+                            @title,
+                            @message,
+                            @data::jsonb
+                        )
+                        """,
+                        new
+                        {
+                            severity = rule.Severity,
+                            title    = $"Anomaly detected: {rule.Metric}",
+                            message  = $"{observed} events observed in last {rule.WindowMinutes} minute(s) — threshold is {rule.ThresholdCount}.",
+                            data     = System.Text.Json.JsonSerializer.Serialize(new
+                            {
+                                anomaly_event_id = eventId,
+                                rule_id          = rule.Id,
+                                metric           = rule.Metric,
+                                count_observed   = observed,
+                                threshold_count  = rule.ThresholdCount,
+                                window_minutes   = rule.WindowMinutes
+                            })
+                        },
+                        cancellationToken: ct));
+
+                newEvents.Add(new
+                {
+                    id             = eventId,
+                    ruleId         = rule.Id,
+                    metric         = rule.Metric,
+                    severity       = rule.Severity,
+                    countObserved  = observed,
+                    thresholdCount = rule.ThresholdCount,
+                    windowMinutes  = rule.WindowMinutes,
+                    detectedAt     = now
+                });
+            }
+
+            return Results.Ok(new
+            {
+                scannedRules   = rules.Count,
+                detectedCount  = newEvents.Count,
+                detectedEvents = newEvents
+            });
+        }).RequireAuthorization(Permissions.SystemSettings);
     }
 
     private sealed record AdminTransferCaptainReq(string NewCaptainId);
@@ -6725,3 +7139,23 @@ public sealed record UpdateReportScheduleRequest(
 public sealed record ProcessGdprRequest(string Action, string? Notes);
 public sealed record SubmitGdprRequest(string RequestType);
 public sealed record RecordConsentRequest(string ConsentType, bool Granted, string? Version);
+
+// ── Phase 14: Anomaly Detection ───────────────────────────────────────────────
+public sealed record UpdateAnomalyRuleRequest(
+    int?    ThresholdCount,
+    int?    WindowMinutes,
+    string? Severity,
+    bool?   IsActive,
+    int?    CooldownMinutes);
+
+public sealed record ResolveAnomalyRequest(string? Notes);
+
+/// <summary>Internal projection used only by the anomaly scan loop.</summary>
+internal sealed record AnomalyRuleRow(
+    Guid      Id,
+    string    Metric,
+    int       ThresholdCount,
+    int       WindowMinutes,
+    string    Severity,
+    int       CooldownMinutes,
+    DateTime? LastTriggeredAt);
