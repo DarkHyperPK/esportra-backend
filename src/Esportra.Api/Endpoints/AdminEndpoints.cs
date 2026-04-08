@@ -7,6 +7,7 @@ using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Email;
 using Esportra.Infrastructure.Supabase;
+using Esportra.Core.Alerts;
 using Esportra.Core.Audit;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -4061,6 +4062,358 @@ public static class AdminEndpoints
             return Results.File(bytes, "text/csv", $"disputes_export_{DateTime.UtcNow:yyyy-MM-dd}.csv");
         }).RequireAuthorization("Admin");
 
+        // ══════════════════════════════════════════════════════════════════════════
+        // ── CONTENT MODERATION QUEUE ─────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/admin/moderation-queue ──────────────────────────────────────
+        app.MapGet("/api/admin/moderation-queue", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            [FromQuery] string?  status       = null,
+            [FromQuery(Name = "content_type")] string? contentType = null,
+            [FromQuery] int      page         = 1,
+            [FromQuery] int      limit        = 20,
+            CancellationToken    ct           = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.ContentModerate) && !userCtx.AdminRoles.Any())
+                return Results.Forbid();
+
+            if (page < 1) page = 1;
+            if (limit < 1) limit = 20;
+            if (limit > 100) limit = 100;
+            var offset = (page - 1) * limit;
+
+            var filters = new List<string>();
+            if (!string.IsNullOrWhiteSpace(status))
+                filters.Add("mq.status = @status");
+            if (!string.IsNullOrWhiteSpace(contentType))
+                filters.Add("mq.content_type = @contentType");
+
+            var whereClause = filters.Count > 0
+                ? "WHERE " + string.Join(" AND ", filters)
+                : "";
+
+            using var conn = db.CreateConnection();
+
+            var countSql = $"SELECT COUNT(*) FROM moderation_queue mq {whereClause}";
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                countSql, new { status, contentType }, cancellationToken: ct));
+
+            var dataSql = $"""
+                SELECT
+                    mq.id,
+                    mq.content_type,
+                    mq.content_id,
+                    mq.field_name,
+                    mq.content_text,
+                    mq.content_url,
+                    mq.reported_by,
+                    mq.reported_reason,
+                    mq.status,
+                    mq.reviewed_by,
+                    mq.reviewed_at,
+                    mq.review_notes,
+                    mq.auto_flagged,
+                    mq.created_at,
+                    rp.username   AS reporter_username,
+                    rp.full_name  AS reporter_full_name,
+                    rp.avatar_url AS reporter_avatar_url
+                FROM moderation_queue mq
+                LEFT JOIN profiles rp ON rp.id = mq.reported_by
+                {whereClause}
+                ORDER BY mq.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """;
+
+            var items = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                dataSql, new { status, contentType, limit, offset }, cancellationToken: ct));
+
+            return Results.Ok(new { items, total, page, limit });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/moderation-queue/stats ────────────────────────────────
+        app.MapGet("/api/admin/moderation-queue/stats", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.ContentModerate) && !userCtx.AdminRoles.Any())
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var row = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'pending')  AS pending,
+                    COUNT(*) FILTER (WHERE status = 'approved') AS approved,
+                    COUNT(*) FILTER (WHERE status = 'rejected') AS rejected,
+                    COUNT(*)                                    AS total
+                FROM moderation_queue
+                """, cancellationToken: ct));
+
+            return Results.Ok(new
+            {
+                pending  = (long)row.pending,
+                approved = (long)row.approved,
+                rejected = (long)row.rejected,
+                total    = (long)row.total
+            });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/admin/moderation-queue/{id}/review ─────────────────────────
+        app.MapPost("/api/admin/moderation-queue/{id}/review", async (
+            Guid                 id,
+            [FromBody] ModerationReviewRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.ContentModerate))
+                return Results.Forbid();
+
+            var action = req.Action?.ToLowerInvariant();
+            if (action is not "approve" and not "reject")
+                return Results.BadRequest(new { error = "Action must be 'approve' or 'reject'" });
+
+            using var conn = db.CreateConnection();
+
+            // Fetch the queue item
+            var item = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT id, content_type, content_id, field_name, status FROM moderation_queue WHERE id = @id",
+                new { id }, cancellationToken: ct));
+
+            if (item is null)
+                return Results.NotFound(new { error = "Moderation item not found" });
+
+            if ((string)item.status != "pending")
+                return Results.Conflict(new { error = "Item has already been reviewed" });
+
+            var newStatus = action == "approve" ? "approved" : "rejected";
+
+            // Update the queue item
+            await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE moderation_queue
+                SET status       = @newStatus,
+                    reviewed_by  = @reviewedBy,
+                    reviewed_at  = NOW(),
+                    review_notes = @notes
+                WHERE id = @id
+                """, new
+            {
+                id,
+                newStatus,
+                reviewedBy = userCtx.UserIdGuid,
+                notes      = req.Notes ?? ""
+            }, cancellationToken: ct));
+
+            // If rejected, take enforcement action based on content type
+            if (newStatus == "rejected")
+            {
+                var contentType = (string)item.content_type;
+                var contentId   = (Guid)item.content_id;
+                var fieldName   = (string)item.field_name;
+
+                switch (contentType)
+                {
+                    case "tournament":
+                        await conn.ExecuteAsync(new CommandDefinition(
+                            "UPDATE tournaments SET status = 'suspended' WHERE id = @contentId",
+                            new { contentId }, cancellationToken: ct));
+                        break;
+
+                    case "team":
+                        if (fieldName == "name")
+                            await conn.ExecuteAsync(new CommandDefinition(
+                                "UPDATE teams SET name = '[Moderated]' WHERE id = @contentId",
+                                new { contentId }, cancellationToken: ct));
+                        else if (fieldName == "description")
+                            await conn.ExecuteAsync(new CommandDefinition(
+                                "UPDATE teams SET description = '' WHERE id = @contentId",
+                                new { contentId }, cancellationToken: ct));
+                        break;
+
+                    case "profile":
+                        if (fieldName == "bio")
+                            await conn.ExecuteAsync(new CommandDefinition(
+                                "UPDATE profiles SET bio = '' WHERE id = @contentId",
+                                new { contentId }, cancellationToken: ct));
+                        else if (fieldName == "username")
+                            await conn.ExecuteAsync(new CommandDefinition(
+                                "UPDATE profiles SET username = '[Moderated]' WHERE id = @contentId",
+                                new { contentId }, cancellationToken: ct));
+                        break;
+
+                    case "match_evidence":
+                        // For match evidence, clear the URL/content
+                        await conn.ExecuteAsync(new CommandDefinition(
+                            "UPDATE match_results SET evidence_url = NULL WHERE id = @contentId",
+                            new { contentId }, cancellationToken: ct));
+                        break;
+                }
+            }
+
+            // Audit log
+            await audit.LogAsync(
+                userCtx.UserIdGuid,
+                userCtx.Email,
+                newStatus == "approved" ? ActionType.Approve : ActionType.Reject,
+                TargetType.System,
+                id,
+                $"moderation:{item.content_type}/{item.content_id}",
+                new { action = newStatus, notes = req.Notes ?? "", content_type = (string)item.content_type, field_name = (string)item.field_name },
+                ct: ct);
+
+            return Results.Ok(new { success = true, status = newStatus });
+        }).RequireAuthorization("Admin");
+
+        // ── DELETE /api/admin/moderation-queue/{id} ──────────────────────────────
+        app.MapDelete("/api/admin/moderation-queue/{id}", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AuditService         audit,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.ContentModerate))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var item = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+                "SELECT id, content_type, content_id FROM moderation_queue WHERE id = @id",
+                new { id }, cancellationToken: ct));
+
+            if (item is null)
+                return Results.NotFound(new { error = "Moderation item not found" });
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM moderation_queue WHERE id = @id",
+                new { id }, cancellationToken: ct));
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid,
+                userCtx.Email,
+                ActionType.Delete,
+                TargetType.System,
+                id,
+                $"moderation:{item.content_type}/{item.content_id}",
+                new { dismissed = true, content_type = (string)item.content_type },
+                ct: ct);
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Admin");
+
+        // ── POST /api/report-content ─────────────────────────────────────────────
+        // Public-facing endpoint: any authenticated user can report content
+        app.MapPost("/api/report-content", async (
+            [FromBody] ReportContentRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            AdminAlertService    alerts,
+            CancellationToken    ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            // Validate content type
+            var allowedTypes = new[] { "tournament", "team", "profile", "match_evidence" };
+            var contentType = req.ContentType?.ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(contentType) || !allowedTypes.Contains(contentType))
+                return Results.BadRequest(new { error = "Invalid content_type. Must be one of: tournament, team, profile, match_evidence" });
+
+            if (req.ContentId == Guid.Empty)
+                return Results.BadRequest(new { error = "content_id is required" });
+
+            using var conn = db.CreateConnection();
+
+            // Prevent duplicate reports (same user + content_id + field_name within 24h)
+            var fieldName = req.FieldName ?? "";
+            var duplicate = await conn.ExecuteScalarAsync<bool>(new CommandDefinition("""
+                SELECT EXISTS (
+                    SELECT 1 FROM moderation_queue
+                    WHERE reported_by = @reportedBy
+                      AND content_id  = @contentId
+                      AND field_name  = @fieldName
+                      AND created_at  > NOW() - INTERVAL '24 hours'
+                )
+                """, new { reportedBy = userCtx.UserIdGuid, contentId = req.ContentId, fieldName },
+                cancellationToken: ct));
+
+            if (duplicate)
+                return Results.Conflict(new { error = "You have already reported this content within the last 24 hours" });
+
+            // Fetch the actual content text for context
+            string? contentText = null;
+            switch (contentType)
+            {
+                case "tournament":
+                    contentText = fieldName switch
+                    {
+                        "name" => await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+                            "SELECT name FROM tournaments WHERE id = @id", new { id = req.ContentId }, cancellationToken: ct)),
+                        "description" => await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+                            "SELECT description FROM tournaments WHERE id = @id", new { id = req.ContentId }, cancellationToken: ct)),
+                        _ => null
+                    };
+                    break;
+                case "team":
+                    contentText = fieldName switch
+                    {
+                        "name" => await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+                            "SELECT name FROM teams WHERE id = @id", new { id = req.ContentId }, cancellationToken: ct)),
+                        "description" => await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+                            "SELECT description FROM teams WHERE id = @id", new { id = req.ContentId }, cancellationToken: ct)),
+                        _ => null
+                    };
+                    break;
+                case "profile":
+                    contentText = fieldName switch
+                    {
+                        "bio" => await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+                            "SELECT bio FROM profiles WHERE id = @id", new { id = req.ContentId }, cancellationToken: ct)),
+                        "username" => await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+                            "SELECT username FROM profiles WHERE id = @id", new { id = req.ContentId }, cancellationToken: ct)),
+                        _ => null
+                    };
+                    break;
+            }
+
+            var reportId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                INSERT INTO moderation_queue (content_type, content_id, field_name, content_text, reported_by, reported_reason)
+                VALUES (@contentType, @contentId, @fieldName, @contentText, @reportedBy, @reason)
+                RETURNING id
+                """, new
+            {
+                contentType,
+                contentId   = req.ContentId,
+                fieldName,
+                contentText,
+                reportedBy  = userCtx.UserIdGuid,
+                reason      = req.Reason ?? ""
+            }, cancellationToken: ct));
+
+            // Generate admin alert
+            await alerts.CreateAsync(
+                "content_report",
+                AlertSeverity.Warning,
+                $"Content reported: {contentType}",
+                $"User reported {contentType} ({req.ContentId}) field '{fieldName}'. Reason: {req.Reason ?? "No reason provided"}",
+                new { report_id = reportId, content_type = contentType, content_id = req.ContentId, field_name = fieldName },
+                ct);
+
+            return Results.Ok(new { id = reportId, success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/admin/entity-history/{targetType}/{targetId} ────────────────
         app.MapGet("/api/admin/entity-history/{targetType}/{targetId}", async (
             string               targetType,
@@ -4578,3 +4931,9 @@ public sealed record CreateAdminAlertRequest(
 public sealed record BulkAlertActionRequest(Guid[] AlertIds);
 public sealed record UpdateSystemSettingsRequest(SystemSettingEntry[] Settings);
 public sealed record SystemSettingEntry(string Key, string Value);
+public sealed record ModerationReviewRequest(string Action, string? Notes);
+public sealed record ReportContentRequest(
+    [property: JsonPropertyName("content_type")] string ContentType,
+    [property: JsonPropertyName("content_id")] Guid ContentId,
+    [property: JsonPropertyName("field_name")] string? FieldName,
+    string? Reason);
