@@ -1897,14 +1897,14 @@ public static class AdminEndpoints
 
             var isSuperAdmin = userCtx.AdminRoles.Contains("super_admin");
 
-            var rows = await conn.QueryAsync<dynamic>(
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT key, value, category, label, description,
                        data_type, is_sensitive, updated_at
                 FROM system_settings
                 WHERE (@category IS NULL OR category = @category)
                 ORDER BY category, key
-                """, new { category });
+                """, new { category }, cancellationToken: ct));
 
             var result = rows.Select(r =>
             {
@@ -1937,13 +1937,13 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            var row = await conn.QueryFirstOrDefaultAsync<dynamic>(
+            var row = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
                 """
                 SELECT key, value, category, label, description,
                        data_type, is_sensitive, updated_at
                 FROM system_settings
                 WHERE key = @key
-                """, new { key });
+                """, new { key }, cancellationToken: ct));
 
             if (row is null) return Results.NotFound(new { error = $"Setting '{key}' not found." });
 
@@ -1992,10 +1992,20 @@ public static class AdminEndpoints
 
             // Validate values by data_type
             var errors = new List<string>();
+            var isSuperAdmin = userCtx.AdminRoles.Contains("super_admin");
+
             foreach (var setting in req.Settings)
             {
                 var meta = existing[setting.Key];
                 string dataType = (string)meta.data_type;
+                bool sensitive  = (bool)meta.is_sensitive;
+
+                // Sensitive settings require super_admin
+                if (sensitive && !isSuperAdmin)
+                {
+                    errors.Add($"'{setting.Key}' requires super_admin role to modify.");
+                    continue;
+                }
 
                 switch (dataType)
                 {
@@ -2008,14 +2018,28 @@ public static class AdminEndpoints
                                 System.Globalization.CultureInfo.InvariantCulture, out _))
                             errors.Add($"'{setting.Key}' must be a valid number.");
                         break;
+                    case "email":
+                        if (!string.IsNullOrEmpty(setting.Value) &&
+                            !System.Net.Mail.MailAddress.TryCreate(setting.Value, out _))
+                            errors.Add($"'{setting.Key}' must be a valid email address.");
+                        break;
+                    case "url":
+                        if (!string.IsNullOrEmpty(setting.Value) &&
+                            !(Uri.TryCreate(setting.Value, UriKind.Absolute, out var uri) &&
+                              (uri.Scheme == "https" || uri.Scheme == "http")))
+                            errors.Add($"'{setting.Key}' must be a valid HTTP(S) URL.");
+                        break;
                 }
             }
 
             if (errors.Count > 0)
                 return Results.BadRequest(new { error = "Validation failed.", details = errors });
 
-            // Build audit diff and apply updates
+            // Build audit diff and apply updates in a transaction
             var changes = new List<object>();
+            conn.Open();
+            using var txn = conn.BeginTransaction();
+
             foreach (var setting in req.Settings)
             {
                 var meta       = existing[setting.Key];
@@ -2028,7 +2052,8 @@ public static class AdminEndpoints
                     SET value = @value, updated_by = @updatedBy, updated_at = NOW()
                     WHERE key = @key
                     """,
-                    new { key = setting.Key, value = setting.Value, updatedBy = userCtx.UserIdGuid });
+                    new { key = setting.Key, value = setting.Value, updatedBy = userCtx.UserIdGuid },
+                    transaction: txn);
 
                 if (oldValue != setting.Value)
                 {
@@ -2040,6 +2065,8 @@ public static class AdminEndpoints
                     });
                 }
             }
+
+            txn.Commit();
 
             // Audit log
             if (changes.Count > 0)

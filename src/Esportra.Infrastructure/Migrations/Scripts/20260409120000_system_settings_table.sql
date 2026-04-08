@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 -- ── RLS ────────────────────────────────────────────────────────────────────
 ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 
--- Public read for non-sensitive settings (needed by SponsorEndpoints branding query)
+-- Non-sensitive settings readable by public (SponsorEndpoints branding query)
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies WHERE policyname = 'system_settings_public_read_non_sensitive' AND tablename = 'system_settings'
@@ -36,7 +36,7 @@ DO $$ BEGIN
   ) THEN
     CREATE POLICY "system_settings_authenticated_read" ON system_settings
       FOR SELECT TO authenticated
-      USING (TRUE);
+      USING (is_sensitive = FALSE);
   END IF;
 END; $$;
 
