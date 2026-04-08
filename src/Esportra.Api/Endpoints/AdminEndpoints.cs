@@ -5872,6 +5872,7 @@ public static class AdminEndpoints
                     gr.requested_at       AS "requestedAt",
                     gr.processed_at       AS "processedAt",
                     gr.processed_by       AS "processedBy",
+                    pb.username            AS "processedByUsername",
                     gr.notes,
                     gr.download_url       AS "downloadUrl",
                     gr.expires_at         AS "expiresAt",
@@ -5879,14 +5880,15 @@ public static class AdminEndpoints
                     p.email,
                     p.full_name           AS "fullName"
                 FROM gdpr_requests gr
-                LEFT JOIN profiles p ON p.id = gr.user_id
+                LEFT JOIN profiles p  ON p.id  = gr.user_id
+                LEFT JOIN profiles pb ON pb.id = gr.processed_by
                 {conditions}
                 ORDER BY gr.requested_at DESC
                 LIMIT @limit OFFSET @offset
                 """;
             var items = await conn.QueryAsync<dynamic>(new CommandDefinition(querySql, p, cancellationToken: ct));
 
-            return Results.Ok(new { items, total, page, limit });
+            return Results.Ok(new { requests = items, total, page, limit });
         }).RequireAuthorization("Admin");
 
         // POST /api/admin/gdpr/requests/{id}/process — approve or reject
@@ -5915,10 +5917,6 @@ public static class AdminEndpoints
 
             if (gdprReq is null) return Results.NotFound(new { error = "GDPR request not found." });
 
-            string currentStatus = (string)gdprReq.status;
-            if (currentStatus is "completed" or "failed" or "cancelled")
-                return Results.Conflict(new { error = $"Request is already {currentStatus} and cannot be reprocessed." });
-
             Guid   targetUserId   = (Guid)gdprReq.user_id;
             string requestType    = (string)gdprReq.request_type;
 
@@ -5926,7 +5924,7 @@ public static class AdminEndpoints
             {
                 await conn.ExecuteAsync(new CommandDefinition("""
                     UPDATE gdpr_requests
-                    SET status       = 'cancelled',
+                    SET status       = 'rejected',
                         processed_at = NOW(),
                         processed_by = @adminId,
                         notes        = @notes
@@ -5941,16 +5939,19 @@ public static class AdminEndpoints
                     new { gdpr_request_id = id, request_type = requestType },
                     ct: ct);
 
-                return Results.Ok(new { success = true, status = "cancelled" });
+                return Results.Ok(new { success = true, status = "rejected" });
             }
 
             // ── Approve ──────────────────────────────────────────────────────
-            // Mark as processing immediately
-            await conn.ExecuteAsync(new CommandDefinition("""
-                UPDATE gdpr_requests
-                SET status = 'processing'
-                WHERE id = @id
-                """, new { id }, cancellationToken: ct));
+            // Atomically claim the request; guards against concurrent admin actions
+            var claimedId = await conn.QueryFirstOrDefaultAsync<Guid?>(new CommandDefinition("""
+                UPDATE gdpr_requests SET status = 'processing', processed_by = @adminId
+                WHERE id = @id AND status = 'pending'
+                RETURNING id
+                """, new { id, adminId = userCtx.UserIdGuid }, cancellationToken: ct));
+
+            if (claimedId is null)
+                return Results.Conflict(new { error = "Request has already been processed" });
 
             try
             {
@@ -5958,7 +5959,12 @@ public static class AdminEndpoints
                 {
                     // Collect user data from multiple tables
                     var profile = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
-                        "SELECT * FROM profiles WHERE id = @uid",
+                        """
+                        SELECT id, username, email, full_name, bio, location, country_code,
+                               date_of_birth, riot_tag, faceit_nickname, social_links,
+                               avatar_url, card_image_url, banner_url, created_at
+                        FROM profiles WHERE id = @uid
+                        """,
                         new { uid = targetUserId }, cancellationToken: ct));
 
                     var tournaments = await conn.QueryAsync<dynamic>(new CommandDefinition("""
@@ -6046,14 +6052,20 @@ public static class AdminEndpoints
 
                 await conn.ExecuteAsync(new CommandDefinition("""
                     UPDATE profiles
-                    SET username   = @username,
-                        full_name  = 'Deleted User',
-                        bio        = '',
-                        avatar_url = NULL,
-                        is_deleted = TRUE,
-                        updated_at = NOW()
-                    WHERE id = @uid
-                    """, new { username = anonUsername, uid = targetUserId },
+                    SET username          = @anonUsername,
+                        bio               = '',
+                        avatar_url        = NULL,
+                        card_image_url    = NULL,
+                        banner_url        = NULL,
+                        date_of_birth     = NULL,
+                        location          = NULL,
+                        country_code      = NULL,
+                        riot_tag          = NULL,
+                        faceit_nickname   = NULL,
+                        social_links      = NULL,
+                        is_deleted        = TRUE
+                    WHERE id = @targetUserId
+                    """, new { anonUsername, targetUserId },
                     cancellationToken: ct));
 
                 // Remove sensitive consent records
@@ -6085,10 +6097,11 @@ public static class AdminEndpoints
             {
                 await conn.ExecuteAsync(new CommandDefinition("""
                     UPDATE gdpr_requests
-                    SET status = 'failed',
-                        notes  = @notes
+                    SET status       = 'failed',
+                        processed_by = @adminId,
+                        notes        = @notes
                     WHERE id = @id
-                    """, new { id, notes = $"Processing failed: {ex.Message}" },
+                    """, new { id, adminId = userCtx.UserIdGuid, notes = $"Processing failed: {ex.Message}" },
                     cancellationToken: ct));
 
                 return Results.Problem("GDPR request processing failed. The request has been marked as failed.");
@@ -6115,9 +6128,12 @@ public static class AdminEndpoints
                     COUNT(*) FILTER (WHERE request_type = 'export')                                  AS "exportRequests",
                     COUNT(*) FILTER (WHERE request_type = 'deletion')                                AS "deletionRequests",
                     COALESCE(
-                        AVG(
-                            EXTRACT(EPOCH FROM (processed_at - requested_at)) / 86400.0
-                        ) FILTER (WHERE status = 'completed' AND processed_at IS NOT NULL),
+                        ROUND(
+                            AVG(
+                                EXTRACT(EPOCH FROM (processed_at - requested_at)) / 86400.0
+                            ) FILTER (WHERE status = 'completed' AND processed_at IS NOT NULL),
+                            1
+                        ),
                         0
                     )                                                                                AS "avgProcessingDays"
                 FROM gdpr_requests
@@ -6192,7 +6208,7 @@ public static class AdminEndpoints
                 """;
             var items = await conn.QueryAsync<dynamic>(new CommandDefinition(querySql, p, cancellationToken: ct));
 
-            return Results.Ok(new { items, total, page, limit });
+            return Results.Ok(new { records = items, total, page, limit });
         }).RequireAuthorization("Admin");
 
         // POST /api/gdpr/request — user submits own GDPR request
@@ -6223,12 +6239,20 @@ public static class AdminEndpoints
             if (existing > 0)
                 return Results.Conflict(new { error = $"A {req.RequestType} request is already pending or in progress." });
 
-            var newId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
-                INSERT INTO gdpr_requests (user_id, request_type)
-                VALUES (@userId, @requestType)
-                RETURNING id
-                """, new { userId = userCtx.UserIdGuid, requestType = req.RequestType },
-                cancellationToken: ct));
+            Guid newId;
+            try
+            {
+                newId = await conn.ExecuteScalarAsync<Guid>(new CommandDefinition("""
+                    INSERT INTO gdpr_requests (user_id, request_type)
+                    VALUES (@userId, @requestType)
+                    RETURNING id
+                    """, new { userId = userCtx.UserIdGuid, requestType = req.RequestType },
+                    cancellationToken: ct));
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+            {
+                return Results.Conflict(new { error = $"A {req.RequestType} request is already pending or in progress." });
+            }
 
             return Results.Created($"/api/gdpr/request/{newId}", new { id = newId, status = "pending" });
         }).RequireAuthorization("Authenticated");
