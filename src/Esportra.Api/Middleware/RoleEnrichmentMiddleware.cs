@@ -33,15 +33,6 @@ public sealed class RoleEnrichmentMiddleware(
                     async ct => await FetchUserContextAsync(context, userId, ct),
                     new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) });
 
-                // Always use the live AAL from the current JWT, not the cached value.
-                // After MFA verification the JWT carries aal2 but the cached UserContext
-                // may still say aal1, which would trap the user in a redirect loop.
-                var liveAal = context.User.FindFirstValue("aal") ?? "aal1";
-                if (userCtx!.Aal != liveAal)
-                {
-                    userCtx = userCtx with { Aal = liveAal };
-                }
-
                 context.Items["UserContext"] = userCtx;
             }
         }
@@ -101,42 +92,8 @@ public sealed class RoleEnrichmentMiddleware(
                  ?? context.User.FindFirstValue("email")
                  ?? string.Empty;
 
-        // Extract Authenticator Assurance Level from Supabase JWT
-        var aal = context.User.FindFirstValue("aal") ?? "aal1";
-
-        // Determine if 2FA is required for any of this user's admin roles
-        bool mfaRequired = false;
-        if (adminRoles.Length > 0)
-        {
-            try
-            {
-                var enforcementEnabled = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<string>(conn,
-                    "SELECT value FROM system_settings WHERE key = 'security.2fa_enforcement_enabled'");
-
-                if (enforcementEnabled == "true")
-                {
-                    var requiredRolesJson = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<string>(conn,
-                        "SELECT value FROM system_settings WHERE key = 'security.2fa_required_roles'");
-
-                    if (!string.IsNullOrEmpty(requiredRolesJson))
-                    {
-                        var requiredRoles = System.Text.Json.JsonSerializer.Deserialize<string[]>(requiredRolesJson);
-                        if (requiredRoles != null)
-                        {
-                            mfaRequired = adminRoles.Any(r => requiredRoles.Contains(r));
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "[RoleEnrichment] MFA requirement check failed for {UserId}, defaulting to REQUIRED", userId);
-                mfaRequired = true; // fail-closed: assume MFA is required when we can't verify
-            }
-        }
-
-        logger.LogDebug("[RoleEnrichment] userId={UserId} roles=[{Roles}] adminRoles=[{AdminRoles}] aal={Aal} mfaRequired={MfaRequired}",
-            userId, string.Join(",", roles), string.Join(",", adminRoles), aal, mfaRequired);
+        logger.LogDebug("[RoleEnrichment] userId={UserId} roles=[{Roles}] adminRoles=[{AdminRoles}]",
+            userId, string.Join(",", roles), string.Join(",", adminRoles));
 
         return new UserContext
         {
@@ -145,8 +102,6 @@ public sealed class RoleEnrichmentMiddleware(
             Roles       = roles,
             AdminRoles  = adminRoles,
             Permissions = permissions,
-            Aal         = aal,
-            MfaRequired = mfaRequired,
         };
     }
 }

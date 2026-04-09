@@ -230,39 +230,4 @@ public sealed class SupabaseAdminClient(
 
         logger.LogInformation("[SupabaseAdmin] Force-logged-out user {UserId} (ban/unban cycle)", userId);
     }
-
-    public async Task<JsonElement> GetUserMfaFactorsAsync(Guid userId, CancellationToken ct = default)
-    {
-        var req = BuildRequest(HttpMethod.Get, $"/users/{userId}/factors");
-        var res = await http.SendAsync(req, ct);
-        var body = await res.Content.ReadAsStringAsync(ct);
-
-        if (!res.IsSuccessStatusCode)
-        {
-            logger.LogWarning("[SupabaseAdmin] GetUserMfaFactors failed for {UserId}: {Body}", userId, body);
-            // Return an empty array element on 404 (user has no factors or user not found)
-            if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
-                return JsonDocument.Parse("[]").RootElement.Clone();
-            throw new InvalidOperationException($"GetUserMfaFactors failed: {body}");
-        }
-
-        using var doc = JsonDocument.Parse(body);
-        return doc.RootElement.Clone();
-    }
-
-    public async Task DeleteUserMfaFactorAsync(Guid userId, string factorId, CancellationToken ct = default)
-    {
-        var req = BuildRequest(HttpMethod.Delete, $"/users/{userId}/factors/{factorId}");
-        var res = await http.SendAsync(req, ct);
-
-        if (!res.IsSuccessStatusCode)
-        {
-            var body = await res.Content.ReadAsStringAsync(ct);
-            logger.LogWarning("[SupabaseAdmin] DeleteUserMfaFactor failed for user {UserId} factor {FactorId}: {Body}",
-                userId, factorId, body);
-            throw new InvalidOperationException($"DeleteUserMfaFactor failed: {body}");
-        }
-
-        logger.LogInformation("[SupabaseAdmin] Deleted MFA factor {FactorId} for user {UserId}", factorId, userId);
-    }
 }
