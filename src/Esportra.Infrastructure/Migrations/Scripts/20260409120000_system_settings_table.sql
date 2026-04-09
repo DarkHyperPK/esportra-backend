@@ -15,7 +15,43 @@ CREATE TABLE IF NOT EXISTS system_settings (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── Ensure columns exist (table may pre-exist from earlier migration) ────
+-- ── Reconcile pre-existing table (may have different schema) ─────────────
+-- Old table had: id UUID, key TEXT, value JSONB, description TEXT, updated_by, updated_at
+-- New table needs: key TEXT PK, value TEXT, category, label, description, data_type, is_sensitive
+
+-- Convert value from JSONB to TEXT if needed (strip JSON quotes from existing values)
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'system_settings'
+      AND column_name = 'value' AND data_type = 'jsonb'
+  ) THEN
+    -- Add a temp text column, copy data, drop old, rename
+    ALTER TABLE system_settings ADD COLUMN value_text TEXT;
+    UPDATE system_settings SET value_text = value #>> '{}';
+    ALTER TABLE system_settings DROP COLUMN value;
+    ALTER TABLE system_settings RENAME COLUMN value_text TO value;
+    ALTER TABLE system_settings ALTER COLUMN value SET NOT NULL;
+    ALTER TABLE system_settings ALTER COLUMN value SET DEFAULT '';
+  END IF;
+END; $$;
+
+-- Drop legacy id column if it exists (old table had UUID id, new uses key as PK)
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'system_settings' AND column_name = 'id'
+  ) THEN
+    -- Drop old PK constraint first, then the column
+    ALTER TABLE system_settings DROP CONSTRAINT IF EXISTS system_settings_pkey;
+    ALTER TABLE system_settings DROP COLUMN id;
+    -- Drop old UNIQUE on key, then make key the PK
+    ALTER TABLE system_settings DROP CONSTRAINT IF EXISTS system_settings_key_key;
+    ALTER TABLE system_settings ADD PRIMARY KEY (key);
+  END IF;
+END; $$;
+
+-- Ensure all required columns exist
 ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS category     TEXT NOT NULL DEFAULT 'general';
 ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS label        TEXT NOT NULL DEFAULT '';
 ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS description  TEXT DEFAULT '';
