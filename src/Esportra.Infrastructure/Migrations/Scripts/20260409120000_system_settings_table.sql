@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 
 -- ── Ensure columns exist (table may pre-exist from earlier migration) ────
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS category     TEXT NOT NULL DEFAULT 'general';
 ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS label        TEXT NOT NULL DEFAULT '';
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS description  TEXT DEFAULT '';
 ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS data_type    TEXT NOT NULL DEFAULT 'string';
 ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS is_sensitive BOOLEAN NOT NULL DEFAULT FALSE;
 
