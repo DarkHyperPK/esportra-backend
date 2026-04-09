@@ -1320,7 +1320,7 @@ public static class AdminEndpoints
                 return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
 
             var roleId = Guid.NewGuid();
-            conn.Open();
+            if (conn.State != System.Data.ConnectionState.Open) conn.Open();
             using var txn = conn.BeginTransaction();
 
             try
@@ -1429,7 +1429,7 @@ public static class AdminEndpoints
                 new { roleId },
                 cancellationToken: ct))).ToArray();
 
-            conn.Open();
+            if (conn.State != System.Data.ConnectionState.Open) conn.Open();
             using var txn = conn.BeginTransaction();
 
             try
@@ -1522,7 +1522,7 @@ public static class AdminEndpoints
             if (assignedCount > 0)
                 return Results.Conflict(new { error = $"Cannot delete role: {assignedCount} user(s) are still assigned to it." });
 
-            conn.Open();
+            if (conn.State != System.Data.ConnectionState.Open) conn.Open();
             using var txn = conn.BeginTransaction();
 
             try
@@ -2390,7 +2390,7 @@ public static class AdminEndpoints
 
             // Build audit diff and apply updates in a transaction
             var changes = new List<object>();
-            conn.Open();
+            if (conn.State != System.Data.ConnectionState.Open) conn.Open();
             using var txn = conn.BeginTransaction();
 
             foreach (var setting in req.Settings)
