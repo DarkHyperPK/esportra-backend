@@ -12,7 +12,8 @@ public static class DapperJsonbHelper
     private static readonly HashSet<string> JsonbColumns = new(StringComparer.OrdinalIgnoreCase)
     {
         "match_data", "screenshot_urls", "metadata", "match_details",
-        "proposal_data", "match", "data", "evidence_urls", "media"
+        "proposal_data", "match", "data", "evidence_urls", "media",
+        "details", "filters"
     };
 
     public static void FixJsonb(IEnumerable<dynamic> rows)

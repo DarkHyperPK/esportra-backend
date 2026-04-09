@@ -5749,8 +5749,14 @@ public static class AdminEndpoints
                     new { runId, rowCount },
                     ct: ct);
 
-                var runLog = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
-                    "SELECT * FROM report_run_log WHERE id = @runId", new { runId }, cancellationToken: ct));
+                var runLog = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                    SELECT id, schedule_id AS "scheduleId", status,
+                           started_at AS "startedAt", completed_at AS "completedAt",
+                           row_count AS "rowCount", file_size_bytes AS "fileSizeBytes",
+                           error_message AS "errorMessage", download_url AS "downloadUrl",
+                           triggered_by AS "triggeredBy"
+                    FROM report_run_log WHERE id = @runId
+                    """, new { runId }, cancellationToken: ct));
 
                 return Results.Ok(runLog);
             }
@@ -5765,8 +5771,14 @@ public static class AdminEndpoints
                     WHERE id = @runId
                     """, new { runId, err = ex.Message }, cancellationToken: ct));
 
-                var failedLog = await conn.QuerySingleAsync<dynamic>(new CommandDefinition(
-                    "SELECT * FROM report_run_log WHERE id = @runId", new { runId }, cancellationToken: ct));
+                var failedLog = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                    SELECT id, schedule_id AS "scheduleId", status,
+                           started_at AS "startedAt", completed_at AS "completedAt",
+                           row_count AS "rowCount", file_size_bytes AS "fileSizeBytes",
+                           error_message AS "errorMessage", download_url AS "downloadUrl",
+                           triggered_by AS "triggeredBy"
+                    FROM report_run_log WHERE id = @runId
+                    """, new { runId }, cancellationToken: ct));
 
                 return Results.Ok(failedLog);
             }
