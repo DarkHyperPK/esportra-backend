@@ -38,6 +38,19 @@ public interface ISupabaseAdminClient
     /// then immediately unbans them — effectively invalidating all sessions.
     /// </summary>
     Task LogoutUserAsync(string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// List all MFA factors enrolled for a user.
+    /// Calls GET /auth/v1/admin/users/{userId}/factors.
+    /// Returns the raw JSON element for flexible parsing.
+    /// </summary>
+    Task<System.Text.Json.JsonElement> GetUserMfaFactorsAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Force-unenroll (delete) a specific MFA factor for a user.
+    /// Calls DELETE /auth/v1/admin/users/{userId}/factors/{factorId}.
+    /// </summary>
+    Task DeleteUserMfaFactorAsync(Guid userId, string factorId, CancellationToken ct = default);
 }
 
 public sealed record GeneratedLink(string TokenHash, string ActionLink);
