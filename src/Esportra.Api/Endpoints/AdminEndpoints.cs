@@ -1181,6 +1181,21 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
+        // ── GET /api/admin/my-context ─────────────────────────────────────────
+        // Returns the current user's resolved admin roles and permissions from DB.
+        // Used by the frontend AdminContext instead of hardcoded permission maps.
+        app.MapGet("/api/admin/my-context", (HttpContext ctx) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            return Results.Ok(new
+            {
+                adminRoles  = userCtx.AdminRoles,
+                permissions = userCtx.Permissions,
+            });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/admin/roles ──────────────────────────────────────────────
         // Returns the admin_roles catalog with permission/user counts. Supports optional ?q= filter.
         app.MapGet("/api/admin/roles", async (
@@ -1632,6 +1647,15 @@ public static class AdminEndpoints
                     await conn.ExecuteAsync(
                         "INSERT INTO admin_user_roles (user_id, role_id) VALUES (@userId, @roleId) ON CONFLICT DO NOTHING",
                         new { userId, roleId }, txn);
+
+                // Sync profiles.admin_roles TEXT[] with the resolved role keys
+                var roleKeys = (await conn.QueryAsync<string>(
+                    "SELECT ar.key FROM admin_user_roles aur JOIN admin_roles ar ON ar.id = aur.role_id WHERE aur.user_id = @userId",
+                    new { userId }, txn)).ToArray();
+
+                await conn.ExecuteAsync(
+                    "UPDATE profiles SET admin_roles = @roleKeys, is_admin = @isAdmin WHERE id = @userId",
+                    new { userId, roleKeys, isAdmin = roleKeys.Length > 0 }, txn);
             }
 
             txn.Commit();
