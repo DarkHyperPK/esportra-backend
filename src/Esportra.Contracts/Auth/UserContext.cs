@@ -13,6 +13,18 @@ public sealed record UserContext
     public string[] Permissions { get; init; } = [];  // e.g. ["users:ban","disputes:resolve"]
 
     /// <summary>
+    /// Authenticator Assurance Level from the Supabase JWT.
+    /// "aal1" = password only, "aal2" = password + TOTP verified.
+    /// </summary>
+    public string Aal { get; init; } = "aal1";
+
+    /// <summary>
+    /// Whether this user's admin role(s) require MFA per the 2FA enforcement settings.
+    /// When true and Aal != "aal2", admin endpoints will deny access with a specific error.
+    /// </summary>
+    public bool MfaRequired { get; init; } = false;
+
+    /// <summary>
     /// UserId parsed as Guid — use this when passing to Dapper so Npgsql
     /// sends the parameter as uuid type (not text), avoiding "operator does not exist: uuid = text".
     /// </summary>

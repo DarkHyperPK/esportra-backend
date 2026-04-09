@@ -6888,6 +6888,28 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         // ══════════════════════════════════════════════════════════════════════
+        // ── MFA status for the current user (accessible WITHOUT admin gate) ──
+        // ══════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/auth/mfa/status ──────────────────────────────────────────
+        // Any authenticated user can check their own MFA enforcement status.
+        // This is intentionally NOT behind "Admin" policy — blocked admins need it.
+        app.MapGet("/api/auth/mfa/status", (HttpContext ctx) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null)
+                return Results.Unauthorized();
+
+            return Results.Ok(new
+            {
+                mfaRequired = userCtx.MfaRequired,
+                currentAal  = userCtx.Aal,
+                isCompliant = !userCtx.MfaRequired || userCtx.Aal == "aal2",
+                adminRoles  = userCtx.AdminRoles,
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ══════════════════════════════════════════════════════════════════════
         // ── Phase 16: 2FA Enforcement ─────────────────────────────────────────
         // ══════════════════════════════════════════════════════════════════════
 
@@ -7141,6 +7163,10 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+
+            // Only super_admin can modify 2FA enforcement settings (privilege escalation guard)
+            if (!userCtx.AdminRoles.Contains("super_admin"))
+                return Results.Json(new { error = "Only super administrators can modify 2FA enforcement settings." }, statusCode: 403);
 
             if (req.RequiredRoles is null)
                 return Results.BadRequest(new { error = "requiredRoles must be provided (use [] for none)." });

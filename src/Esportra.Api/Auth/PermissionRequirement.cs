@@ -15,6 +15,8 @@ public sealed class PermissionRequirement(string permission) : IAuthorizationReq
 /// <summary>
 /// Evaluates whether the current user's enriched context contains the required permission.
 /// The UserContext is populated by RoleEnrichmentMiddleware and stored in HttpContext.Items.
+/// Also enforces MFA when required — admin permissions derive from admin roles,
+/// so the same 2FA enforcement applies.
 /// </summary>
 public sealed class PermissionHandler : AuthorizationHandler<PermissionRequirement>
 {
@@ -27,7 +29,16 @@ public sealed class PermissionHandler : AuthorizationHandler<PermissionRequireme
             obj is UserContext userCtx)
         {
             if (userCtx.Permissions.Contains(requirement.Permission))
+            {
+                // Permissions derive from admin roles — enforce MFA the same way
+                if (userCtx.MfaRequired && userCtx.Aal != "aal2")
+                {
+                    httpContext.Items["MfaEnforcementBlocked"] = true;
+                    return Task.CompletedTask;
+                }
+
                 context.Succeed(requirement);
+            }
         }
 
         return Task.CompletedTask;
@@ -51,6 +62,13 @@ public sealed class AdminHandler : AuthorizationHandler<AdminRequirement>
             obj is UserContext userCtx &&
             userCtx.AdminRoles.Length > 0)
         {
+            // If MFA is required for this user's role but they only have aal1, deny access
+            if (userCtx.MfaRequired && userCtx.Aal != "aal2")
+            {
+                httpContext.Items["MfaEnforcementBlocked"] = true;
+                return Task.CompletedTask;
+            }
+
             context.Succeed(requirement);
         }
 

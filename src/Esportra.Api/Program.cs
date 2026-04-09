@@ -386,6 +386,31 @@ app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
 
+// ── MFA enforcement error handler ─────────────────────────────────────────────
+// Returns a structured JSON response when an admin is blocked due to missing 2FA.
+app.Use(async (context, next) =>
+{
+    await next();
+
+    if (context.Response.StatusCode == 403 &&
+        context.Items.ContainsKey("MfaEnforcementBlocked"))
+    {
+        if (!context.Response.HasStarted)
+        {
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = "mfa_required",
+                message = "Two-factor authentication is required for your admin role. Please enroll in 2FA to continue."
+            });
+        }
+        else
+        {
+            app.Logger.LogWarning("MFA enforcement response could not be written — response already started for {Path}", context.Request.Path);
+        }
+    }
+});
+
 // ── JWT validation probe ───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>
 {
