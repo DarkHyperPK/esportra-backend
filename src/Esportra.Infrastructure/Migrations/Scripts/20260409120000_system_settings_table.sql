@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS system_settings (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── Ensure columns exist (table may pre-exist from earlier migration) ────
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS label        TEXT NOT NULL DEFAULT '';
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS data_type    TEXT NOT NULL DEFAULT 'string';
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS is_sensitive BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- ── RLS ────────────────────────────────────────────────────────────────────
 ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 
