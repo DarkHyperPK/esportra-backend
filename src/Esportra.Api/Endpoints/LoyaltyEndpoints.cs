@@ -210,6 +210,9 @@ public static class LoyaltyEndpoints
             if (req.Points <= 0)
                 return Results.BadRequest(new { error = "Points must be greater than zero." });
 
+            if (req.Points > 10_000)
+                return Results.BadRequest(new { error = "Points per transaction cannot exceed 10,000." });
+
             if (!Guid.TryParse(req.UserId, out var targetUserId))
                 return Results.BadRequest(new { error = "Invalid userId." });
 
@@ -221,6 +224,13 @@ public static class LoyaltyEndpoints
                 "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
+
+            // Verify venue loyalty program is active before awarding points
+            var loyaltyActive = await conn.QuerySingleOrDefaultAsync<bool?>(
+                "SELECT is_active FROM venue_loyalty_config WHERE venue_id = @venueId LIMIT 1",
+                new { venueId });
+            if (loyaltyActive != true)
+                return Results.BadRequest(new { error = "Loyalty program is not active for this venue." });
 
             using var tx = conn.BeginTransaction();
             try
@@ -554,8 +564,8 @@ public static class LoyaltyEndpoints
         }
         catch (Exception ex)
         {
-            // Don't crash the caller, but log the failure so it's diagnosable
-            Console.WriteLine($"[Loyalty] ResolveTier failed: {ex.Message}");
+            // Don't crash the caller — static method can't use ILogger, use trace diagnostics
+            System.Diagnostics.Trace.TraceWarning($"[Loyalty] ResolveTier failed: {ex.Message}");
             return "bronze"; // safe fallback
         }
     }

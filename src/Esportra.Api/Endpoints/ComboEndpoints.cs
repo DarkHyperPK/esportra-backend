@@ -34,6 +34,7 @@ public static class ComboEndpoints
                 WHERE venue_id     = @venueId
                   AND is_available = true
                 ORDER BY category, sort_order
+                LIMIT 200
                 """,
                 new { venueId });
 
@@ -186,6 +187,7 @@ public static class ComboEndpoints
                 WHERE venue_id  = @venueId
                   AND is_active = true
                 ORDER BY sort_order
+                LIMIT 100
                 """,
                 new { venueId });
 
