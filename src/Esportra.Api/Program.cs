@@ -422,8 +422,12 @@ app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
 app.MapSponsorEndpoints();
 app.MapSitemapEndpoints();
+app.MapWalletEndpoints();
+app.MapLoyaltyEndpoints();
+app.MapAnnouncementEndpoints();
+app.MapComboEndpoints();
 
-// ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
+// ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
 app.MapHub<MatchHub>("/hubs/match");
 app.MapHub<VetoHub>("/hubs/veto");
