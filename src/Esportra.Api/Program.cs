@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
 using StackExchange.Redis;
 
 Console.WriteLine("[STARTUP] Creating builder...");
@@ -49,10 +50,35 @@ var jwtAudience = builder.Configuration["Supabase:JwtAudience"] ?? "authenticate
 var jwtIssuer   = builder.Configuration["Supabase:JwtIssuer"];
 var validateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer);
 
-// ── Authentication — Supabase HS256 JWT ───────────────────────────────────────
+// ── Authentication — Dual scheme: Supabase JWT + Internal Service JWT ─────────
+var internalSecret = builder.Configuration["VenueHub:InternalSecret"] ?? "";
+var hasInternalAuth = !string.IsNullOrWhiteSpace(internalSecret);
+
 builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(opts =>
+    .AddAuthentication("Composite")
+    .AddPolicyScheme("Composite", "Supabase + Internal Service", options =>
+    {
+        options.ForwardDefaultSelector = context =>
+        {
+            // Check if this is an internal service JWT by reading the issuer
+            var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
+            if (authHeader is not null && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                var token = authHeader["Bearer ".Length..];
+                try
+                {
+                    // Quick peek at issuer without full validation
+                    var handler = new JwtSecurityTokenHandler();
+                    var jwt = handler.ReadJwtToken(token);
+                    if (jwt.Issuer == "esportra-venue-hub")
+                        return "InternalService";
+                }
+                catch { /* Not a valid JWT — fall through to Supabase scheme */ }
+            }
+            return JwtBearerDefaults.AuthenticationScheme;
+        };
+    })
+    .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, opts =>
     {
         opts.TokenValidationParameters = new TokenValidationParameters
         {
@@ -81,6 +107,21 @@ builder.Services
                 ctx.HttpContext.Response.Headers["X-Auth-Error"] = "authentication_failed";
                 return Task.CompletedTask;
             },
+        };
+    })
+    .AddJwtBearer("InternalService", opts =>
+    {
+        if (!hasInternalAuth) return;
+        opts.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(internalSecret)),
+            ValidateIssuer = true,
+            ValidIssuer = "esportra-venue-hub",
+            ValidateAudience = true,
+            ValidAudience = "esportra-backend",
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
         };
     });
 
