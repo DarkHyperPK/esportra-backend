@@ -184,13 +184,14 @@ public static class ComboEndpoints
                 new { userId = userCtx.UserIdGuid, venueId });
             if (ownerCheck == 0) return Results.Unauthorized();
 
-            // Check if any active combos reference this menu item
+            // Check if any active combos reference this menu item via JSONB
             var comboRef = await conn.ExecuteScalarAsync<bool>(
                 """
                 SELECT EXISTS(
-                    SELECT 1 FROM venue_combos
+                    SELECT 1 FROM venue_combos,
+                    LATERAL jsonb_array_elements(items) AS item
                     WHERE venue_id = @venueId AND is_active = true
-                      AND items::text LIKE '%' || @id::text || '%'
+                      AND (item->>'menu_item_id')::uuid = @id
                 )
                 """,
                 new { venueId, id });

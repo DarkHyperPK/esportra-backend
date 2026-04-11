@@ -110,7 +110,7 @@ public static class AnnouncementEndpoints
                     title     = req.Title.Trim(),
                     body      = req.Body?.Trim() ?? "",
                     type      = req.Type.Trim(),
-                    priority  = Math.Clamp(req.Priority ?? 0, 0, 100),
+                    priority  = req.Priority ?? 0,
                     startsAt  = req.StartsAt,
                     expiresAt = req.ExpiresAt,
                     createdBy = userCtx.UserIdGuid
@@ -167,7 +167,7 @@ public static class AnnouncementEndpoints
                     title     = req.Title.Trim(),
                     body      = req.Body?.Trim() ?? "",
                     type      = req.Type.Trim(),
-                    priority  = Math.Clamp(req.Priority ?? 0, 0, 100),
+                    priority  = req.Priority ?? 0,
                     startsAt  = req.StartsAt,
                     expiresAt = req.ExpiresAt
                 });
