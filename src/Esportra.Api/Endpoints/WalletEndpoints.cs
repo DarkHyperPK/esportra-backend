@@ -139,8 +139,9 @@ public static class WalletEndpoints
                 {
                     walletId = await conn.QuerySingleAsync<Guid>(
                         """
-                        INSERT INTO customer_wallets (user_id, venue_id, balance)
-                        VALUES (@targetUserId, @venueId, 0)
+                        INSERT INTO customer_wallets (user_id, venue_id, balance, currency)
+                        VALUES (@targetUserId, @venueId, 0,
+                                COALESCE((SELECT currency FROM venue_billing_config WHERE venue_id = @venueId LIMIT 1), 'SAR'))
                         ON CONFLICT (user_id, venue_id) DO UPDATE SET updated_at = now()
                         RETURNING id
                         """,
@@ -404,8 +405,9 @@ public static class WalletEndpoints
 
             var wallet = await conn.QuerySingleAsync<dynamic>(
                 """
-                INSERT INTO customer_wallets (user_id, venue_id, balance)
-                VALUES (@targetUserId, @venueId, 0)
+                INSERT INTO customer_wallets (user_id, venue_id, balance, currency)
+                VALUES (@targetUserId, @venueId, 0,
+                        COALESCE((SELECT currency FROM venue_billing_config WHERE venue_id = @venueId LIMIT 1), 'SAR'))
                 ON CONFLICT (user_id, venue_id) DO UPDATE SET updated_at = now()
                 RETURNING id, user_id, venue_id, balance, currency, is_active, created_at, updated_at
                 """,

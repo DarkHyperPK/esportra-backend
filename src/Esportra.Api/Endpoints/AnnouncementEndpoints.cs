@@ -13,14 +13,42 @@ public static class AnnouncementEndpoints
 {
     public static void MapAnnouncementEndpoints(this WebApplication app)
     {
-        // ── GET /api/venues/{venueId}/announcements — active announcements ──
+        // ── GET /api/venues/{venueId}/announcements — announcements ──────────
+        // ?staff=true returns ALL announcements (including inactive/expired) for management UI.
+        // Default returns only active, non-expired announcements (public/gamer view).
         app.MapGet("/api/venues/{venueId}/announcements", async (
             Guid                 venueId,
+            [FromQuery] bool     staff = false,
             HttpContext          ctx = null!,
             IDbConnectionFactory db  = null!,
             CancellationToken    ct  = default) =>
         {
             using var conn = db.CreateConnection();
+
+            if (staff)
+            {
+                // Staff view: return all announcements for management
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                if (userCtx is null) return Results.Unauthorized();
+
+                var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    new { userId = userCtx.UserIdGuid, venueId });
+                if (staffCheck == 0) return Results.Unauthorized();
+
+                var all = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, venue_id, title, body, type, priority,
+                           is_active, starts_at, expires_at, created_by,
+                           created_at, updated_at
+                    FROM venue_announcements
+                    WHERE venue_id = @venueId
+                    ORDER BY priority DESC, created_at DESC
+                    LIMIT 100
+                    """,
+                    new { venueId });
+                return Results.Ok(all);
+            }
 
             var rows = await conn.QueryAsync<dynamic>(
                 """

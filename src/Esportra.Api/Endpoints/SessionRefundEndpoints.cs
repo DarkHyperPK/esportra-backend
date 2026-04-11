@@ -36,6 +36,8 @@ public static class SessionRefundEndpoints
             // 2. Validate input
             if (req.Amount <= 0)
                 return Results.BadRequest(new { error = "Refund amount must be greater than zero." });
+            if (req.Amount != Math.Round(req.Amount, 2))
+                return Results.BadRequest(new { error = "Amount can have at most 2 decimal places." });
             if (string.IsNullOrWhiteSpace(req.Reason))
                 return Results.BadRequest(new { error = "A reason is required for every refund." });
             if (req.Method is not ("wallet" or "cash"))
@@ -261,6 +263,10 @@ public static class SessionRefundEndpoints
                 conditions.Add("(vs.station_id ILIKE @q OR u.email ILIKE @q OR u.raw_user_meta_data->>'display_name' ILIKE @q)");
             var where = string.Join(" AND ", conditions);
 
+            var totalCount = await conn.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*) FROM venue_sessions vs LEFT JOIN auth.users u ON u.id = vs.user_id WHERE {where}",
+                new { id, q = $"%{search}%" });
+
             var sessions = await conn.QueryAsync<dynamic>(
                 $"""
                 SELECT vs.id, vs.station_id, vs.session_type, vs.total_charged,
@@ -277,7 +283,7 @@ public static class SessionRefundEndpoints
                 """,
                 new { id, q = $"%{search}%", limit = safePageSize, offset });
 
-            return Results.Ok(sessions);
+            return Results.Ok(new { sessions, totalCount, page = Math.Max(1, page), pageSize = safePageSize });
         }).RequireAuthorization("Authenticated");
     }
 

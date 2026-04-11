@@ -17,14 +17,40 @@ public static class ComboEndpoints
         //  MENU ITEMS
         // ═══════════════════════════════════════════════════════════════════════
 
-        // ── GET /api/venues/{venueId}/menu — available menu items ────────────
+        // ── GET /api/venues/{venueId}/menu — menu items ──────────────────────
+        // ?staff=true returns ALL items (including unavailable) for management UI.
+        // Default returns only available items (public/gamer view).
         app.MapGet("/api/venues/{venueId}/menu", async (
             Guid                 venueId,
+            [FromQuery] bool     staff = false,
             HttpContext          ctx = null!,
             IDbConnectionFactory db  = null!,
             CancellationToken    ct  = default) =>
         {
             using var conn = db.CreateConnection();
+
+            if (staff)
+            {
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                if (userCtx is null) return Results.Unauthorized();
+
+                var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    new { userId = userCtx.UserIdGuid, venueId });
+                if (staffCheck == 0) return Results.Unauthorized();
+
+                var all = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, venue_id, name, category, price,
+                           is_available, sort_order, created_at, updated_at
+                    FROM venue_menu_items
+                    WHERE venue_id = @venueId
+                    ORDER BY category, sort_order
+                    LIMIT 200
+                    """,
+                    new { venueId });
+                return Results.Ok(all);
+            }
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
@@ -168,14 +194,42 @@ public static class ComboEndpoints
         //  COMBOS
         // ═══════════════════════════════════════════════════════════════════════
 
-        // ── GET /api/venues/{venueId}/combos — active combos ────────────────
+        // ── GET /api/venues/{venueId}/combos — combos ────────────────────────
+        // ?staff=true returns ALL combos (including inactive) for management UI.
+        // Default returns only active combos (public/gamer view).
         app.MapGet("/api/venues/{venueId}/combos", async (
             Guid                 venueId,
+            [FromQuery] bool     staff = false,
             HttpContext          ctx = null!,
             IDbConnectionFactory db  = null!,
             CancellationToken    ct  = default) =>
         {
             using var conn = db.CreateConnection();
+
+            if (staff)
+            {
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                if (userCtx is null) return Results.Unauthorized();
+
+                var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    new { userId = userCtx.UserIdGuid, venueId });
+                if (staffCheck == 0) return Results.Unauthorized();
+
+                var all = await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, venue_id, name, description, items,
+                           total_price, original_price,
+                           (original_price - total_price) AS savings,
+                           is_active, sort_order, created_at, updated_at
+                    FROM venue_combos
+                    WHERE venue_id = @venueId
+                    ORDER BY sort_order
+                    LIMIT 100
+                    """,
+                    new { venueId });
+                return Results.Ok(all);
+            }
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
