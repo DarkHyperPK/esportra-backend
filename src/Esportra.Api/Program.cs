@@ -410,6 +410,7 @@ app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapVenueEndpoints();
 app.MapVenueStaffEndpoints();
+app.MapSessionRefundEndpoints();
 app.MapOrganizationEndpoints();
 app.MapNotificationEndpoints();
 app.MapStageEndpoints();
