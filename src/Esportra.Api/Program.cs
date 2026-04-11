@@ -409,6 +409,7 @@ app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapVenueEndpoints();
+app.MapVenueStaffEndpoints();
 app.MapOrganizationEndpoints();
 app.MapNotificationEndpoints();
 app.MapStageEndpoints();
