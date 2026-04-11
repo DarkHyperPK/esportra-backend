@@ -127,6 +127,13 @@ public static class WalletEndpoints
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
+            // Verify target user exists
+            var userExists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = @targetUserId)",
+                new { targetUserId });
+            if (!userExists)
+                return Results.BadRequest(new { error = "User not found." });
+
             using var tx = conn.BeginTransaction();
             try
             {
@@ -402,6 +409,13 @@ public static class WalletEndpoints
                 "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
+
+            // Verify target user exists
+            var userExists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = @targetUserId)",
+                new { targetUserId });
+            if (!userExists)
+                return Results.BadRequest(new { error = "User not found." });
 
             var wallet = await conn.QuerySingleAsync<dynamic>(
                 """

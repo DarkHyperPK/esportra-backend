@@ -158,8 +158,47 @@ public static class LoyaltyEndpoints
             if (req.MinSessionMinutes < 0)
                 return Results.BadRequest(new { error = "minSessionMinutes must be >= 0." });
 
+            // Validate tiers JSON structure
             var tiersJson   = req.Tiers?.GetRawText();
             var rewardsJson = req.Rewards?.GetRawText();
+
+            if (tiersJson is not null)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(tiersJson);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                        return Results.BadRequest(new { error = "Tiers must be a JSON array." });
+                    foreach (var tier in doc.RootElement.EnumerateArray())
+                    {
+                        if (!tier.TryGetProperty("name", out _) || !tier.TryGetProperty("min_points", out _))
+                            return Results.BadRequest(new { error = "Each tier must have 'name' and 'min_points'." });
+                    }
+                }
+                catch (JsonException)
+                {
+                    return Results.BadRequest(new { error = "Invalid tiers JSON." });
+                }
+            }
+
+            if (rewardsJson is not null)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(rewardsJson);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                        return Results.BadRequest(new { error = "Rewards must be a JSON array." });
+                    foreach (var reward in doc.RootElement.EnumerateArray())
+                    {
+                        if (!reward.TryGetProperty("name", out _) || !reward.TryGetProperty("points_cost", out _) || !reward.TryGetProperty("type", out _))
+                            return Results.BadRequest(new { error = "Each reward must have 'name', 'points_cost', and 'type'." });
+                    }
+                }
+                catch (JsonException)
+                {
+                    return Results.BadRequest(new { error = "Invalid rewards JSON." });
+                }
+            }
 
             var config = await conn.QuerySingleAsync<dynamic>(
                 """

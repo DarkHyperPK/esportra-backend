@@ -2,6 +2,7 @@ using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace Esportra.Api.Endpoints;
 
@@ -183,6 +184,19 @@ public static class ComboEndpoints
                 new { userId = userCtx.UserIdGuid, venueId });
             if (ownerCheck == 0) return Results.Unauthorized();
 
+            // Check if any active combos reference this menu item
+            var comboRef = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM venue_combos
+                    WHERE venue_id = @venueId AND is_active = true
+                      AND items::text LIKE '%' || @id::text || '%'
+                )
+                """,
+                new { venueId, id });
+            if (comboRef)
+                return Results.Conflict(new { error = "Cannot delete: this item is used in one or more active combos. Deactivate the combos first." });
+
             var deleted = await conn.ExecuteAsync(
                 "DELETE FROM venue_menu_items WHERE id = @id AND venue_id = @venueId",
                 new { id, venueId });
@@ -266,6 +280,21 @@ public static class ComboEndpoints
             if (req.OriginalPrice < 0)
                 return Results.BadRequest(new { error = "Original price must be zero or greater." });
 
+            // Validate items JSON
+            if (!string.IsNullOrWhiteSpace(req.Items))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(req.Items);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                        return Results.BadRequest(new { error = "Items must be a JSON array." });
+                }
+                catch (JsonException)
+                {
+                    return Results.BadRequest(new { error = "Invalid items JSON." });
+                }
+            }
+
             using var conn = db.CreateConnection();
 
             // Venue staff gate
@@ -316,6 +345,21 @@ public static class ComboEndpoints
                 return Results.BadRequest(new { error = "Total price must be zero or greater." });
             if (req.OriginalPrice < 0)
                 return Results.BadRequest(new { error = "Original price must be zero or greater." });
+
+            // Validate items JSON
+            if (!string.IsNullOrWhiteSpace(req.Items))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(req.Items);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                        return Results.BadRequest(new { error = "Items must be a JSON array." });
+                }
+                catch (JsonException)
+                {
+                    return Results.BadRequest(new { error = "Invalid items JSON." });
+                }
+            }
 
             using var conn = db.CreateConnection();
 

@@ -83,6 +83,8 @@ public static class AnnouncementEndpoints
                 return Results.BadRequest(new { error = "Title is required." });
             if (string.IsNullOrWhiteSpace(req.Type))
                 return Results.BadRequest(new { error = "Type is required." });
+            if (req.Priority is not null && (req.Priority < 0 || req.Priority > 100))
+                return Results.BadRequest(new { error = "Priority must be between 0 and 100." });
 
             using var conn = db.CreateConnection();
 
@@ -108,7 +110,7 @@ public static class AnnouncementEndpoints
                     title     = req.Title.Trim(),
                     body      = req.Body?.Trim() ?? "",
                     type      = req.Type.Trim(),
-                    priority  = req.Priority ?? 0,
+                    priority  = Math.Clamp(req.Priority ?? 0, 0, 100),
                     startsAt  = req.StartsAt,
                     expiresAt = req.ExpiresAt,
                     createdBy = userCtx.UserIdGuid
@@ -133,6 +135,8 @@ public static class AnnouncementEndpoints
                 return Results.BadRequest(new { error = "Title is required." });
             if (string.IsNullOrWhiteSpace(req.Type))
                 return Results.BadRequest(new { error = "Type is required." });
+            if (req.Priority is not null && (req.Priority < 0 || req.Priority > 100))
+                return Results.BadRequest(new { error = "Priority must be between 0 and 100." });
 
             using var conn = db.CreateConnection();
 
@@ -163,7 +167,7 @@ public static class AnnouncementEndpoints
                     title     = req.Title.Trim(),
                     body      = req.Body?.Trim() ?? "",
                     type      = req.Type.Trim(),
-                    priority  = req.Priority ?? 0,
+                    priority  = Math.Clamp(req.Priority ?? 0, 0, 100),
                     startsAt  = req.StartsAt,
                     expiresAt = req.ExpiresAt
                 });

@@ -80,14 +80,15 @@ public static class VenueStaffEndpoints
             var venueName = await conn.ExecuteScalarAsync<string>(
                 "SELECT name FROM venues WHERE id = @id", new { id }) ?? "your venue";
 
-            // 6. Create invite record
+            // 6. Create invite record with token
+            var inviteToken = Guid.NewGuid().ToString("N");
             var inviteId = await conn.ExecuteScalarAsync<Guid>(
                 """
-                INSERT INTO venue_staff_invites (venue_id, email, role, invited_by)
-                VALUES (@venueId, @email, @role, @invitedBy)
+                INSERT INTO venue_staff_invites (venue_id, email, role, invited_by, token)
+                VALUES (@venueId, @email, @role, @invitedBy, @token)
                 RETURNING id
                 """,
-                new { venueId = id, email = normalizedEmail, role = req.Role, invitedBy = userCtx.UserIdGuid });
+                new { venueId = id, email = normalizedEmail, role = req.Role, invitedBy = userCtx.UserIdGuid, token = inviteToken });
 
             // 7. Send recovery link so staff can set their password
             try
