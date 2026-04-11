@@ -3,10 +3,10 @@
 
 -- 1. Add refund columns to venue_sessions
 ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refund_amount   NUMERIC(10,2) DEFAULT 0;
-ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refund_method   TEXT CHECK (refund_method IN ('wallet', 'cash', NULL));
+ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refund_method   TEXT;
 ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refund_reason   TEXT;
 ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refunded_at     TIMESTAMPTZ;
-ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refunded_by     UUID REFERENCES auth.users(id);
+ALTER TABLE venue_sessions ADD COLUMN IF NOT EXISTS refunded_by     UUID;
 
 CREATE INDEX IF NOT EXISTS idx_venue_sessions_refunded ON venue_sessions(venue_id) WHERE refunded_at IS NOT NULL;
 
