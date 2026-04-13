@@ -3,6 +3,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Match;
 using Esportra.Api.Hubs;
+using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -130,6 +131,11 @@ public static class VetoEndpoints
             HttpContext                ctx,
             VetoDbService              veto,
             IHubContext<VetoHub>       hub,
+            IDbConnectionFactory       db,
+            IDatHostService            dathost,
+            IHubContext<MatchHub>      matchHub,
+            IConfiguration             config,
+            ILogger<DatHostService>    serverLogger,
             CancellationToken         ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -142,8 +148,14 @@ public static class VetoEndpoints
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
 
                 if (result.Status == "completed")
+                {
                     await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                         .SendAsync(VetoHubEvents.VetoComplete, result, ct);
+
+                    // Auto-provision game server for CS2 matches
+                    _ = Task.Run(() => GameServerEndpoints.AutoProvisionServerAsync(
+                        matchId, db, dathost, matchHub, config, serverLogger, ct), ct);
+                }
 
                 return Results.Ok(result);
             }
@@ -166,6 +178,11 @@ public static class VetoEndpoints
             HttpContext                   ctx,
             VetoDbService                 veto,
             IHubContext<VetoHub>          hub,
+            IDbConnectionFactory          db,
+            IDatHostService               dathost,
+            IHubContext<MatchHub>         matchHub,
+            IConfiguration                config,
+            ILogger<DatHostService>       serverLogger,
             CancellationToken            ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -178,8 +195,14 @@ public static class VetoEndpoints
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
 
                 if (result.Status == "completed")
+                {
                     await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                         .SendAsync(VetoHubEvents.VetoComplete, result, ct);
+
+                    // Auto-provision game server for CS2 matches
+                    _ = Task.Run(() => GameServerEndpoints.AutoProvisionServerAsync(
+                        matchId, db, dathost, matchHub, config, serverLogger, ct), ct);
+                }
 
                 return Results.Ok(result);
             }

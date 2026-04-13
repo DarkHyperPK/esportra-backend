@@ -3,8 +3,10 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -445,6 +447,11 @@ public static class MatchSystemEndpoints
                                         logger.LogInformation(
                                             "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
                                             id, winnerId, team1Wins, team2Wins, bestOf);
+
+                                        // Auto-delete game server after match finalized
+                                        _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
+                                            id, db, ctx.RequestServices.GetRequiredService<IDatHostService>(),
+                                            matchHub, logger, ct), ct);
 
                                         // Check if all matches in this stage are now completed → set stage + tournament winner
                                         try

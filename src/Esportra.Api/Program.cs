@@ -237,6 +237,7 @@ builder.Services.AddHttpClient<RiotApiClient>();
 builder.Services.AddHttpClient<FaceitApiClient>();
 builder.Services.AddHttpClient<RawgApiClient>();
 builder.Services.AddHttpClient<IgdbApiClient>();
+builder.Services.AddHttpClient<IDatHostService, DatHostService>();
 
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()
@@ -429,6 +430,7 @@ app.MapWalletEndpoints();
 app.MapLoyaltyEndpoints();
 app.MapAnnouncementEndpoints();
 app.MapComboEndpoints();
+app.MapGameServerEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
