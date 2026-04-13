@@ -411,8 +411,51 @@ public static class VenueEndpoints
                 WHERE venue_id = @id
                 """,
                 new { id });
-            return row is null ? Results.NotFound() : Results.Ok(row);
+            // Return default offline status for venues without live-status data
+            if (row is null)
+                return Results.Ok(new { seats_total = 0, seats_occupied = 0, is_open = false, updated_at = (DateTime?)null });
+            return Results.Ok(row);
         });
+
+        // ── GET /api/venues/{id}/stations——————————————————————————————————
+        app.MapGet("/api/venues/{id}/stations", async (
+            Guid                 id,
+            HttpContext           ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify caller is venue owner or staff member
+            var isOwnerOrStaff = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM venues
+                    WHERE id = @id AND deleted_at IS NULL AND owner_id = @userId
+                    UNION ALL
+                    SELECT 1 FROM venue_staff
+                    WHERE venue_id = @id AND user_id = @userId
+                )
+                """,
+                new { id, userId = userCtx.UserIdGuid });
+
+            if (!isOwnerOrStaff)
+                return Results.Forbid();
+
+            var stations = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, venue_id, station_id, label, zone, pos_x, pos_y, created_at
+                FROM venue_stations
+                WHERE venue_id = @id
+                ORDER BY label, station_id
+                """,
+                new { id });
+
+            return Results.Ok(stations);
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/venues/{id}/availability ——————————————————————————————
         app.MapGet("/api/venues/{id}/availability", async (
