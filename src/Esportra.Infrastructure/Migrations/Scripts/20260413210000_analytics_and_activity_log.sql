@@ -38,8 +38,8 @@ DO $$ BEGIN
   ) THEN
     CREATE POLICY "daily_stats_owner_staff_select" ON daily_stats
       FOR SELECT USING (
-        EXISTS (SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid())
-        OR EXISTS (SELECT 1 FROM venue_staff WHERE venue_id = daily_stats.venue_id AND user_id = auth.uid() AND status = 'active')
+        EXISTS (SELECT 1 FROM venues WHERE venues.id = daily_stats.venue_id AND venues.owner_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM venue_staff vs WHERE vs.venue_id = daily_stats.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active')
       );
   END IF;
 END; $$;
@@ -95,8 +95,8 @@ DO $$ BEGIN
   ) THEN
     CREATE POLICY "activity_log_owner_staff_select" ON activity_log
       FOR SELECT USING (
-        EXISTS (SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid())
-        OR EXISTS (SELECT 1 FROM venue_staff WHERE venue_id = activity_log.venue_id AND user_id = auth.uid() AND status = 'active')
+        EXISTS (SELECT 1 FROM venues WHERE venues.id = activity_log.venue_id AND venues.owner_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM venue_staff vs WHERE vs.venue_id = activity_log.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active')
       );
   END IF;
 END; $$;
@@ -108,8 +108,8 @@ DO $$ BEGIN
   ) THEN
     CREATE POLICY "activity_log_owner_staff_insert" ON activity_log
       FOR INSERT WITH CHECK (
-        EXISTS (SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid())
-        OR EXISTS (SELECT 1 FROM venue_staff WHERE venue_id = activity_log.venue_id AND user_id = auth.uid() AND status = 'active')
+        EXISTS (SELECT 1 FROM venues WHERE venues.id = activity_log.venue_id AND venues.owner_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM venue_staff vs WHERE vs.venue_id = activity_log.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active')
       );
   END IF;
 END; $$;

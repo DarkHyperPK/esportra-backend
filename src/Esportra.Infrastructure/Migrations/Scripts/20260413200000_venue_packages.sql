@@ -90,10 +90,10 @@ DO $$ BEGIN
         CREATE POLICY "venue_packages_owner_staff_insert" ON venue_packages
             FOR INSERT WITH CHECK (
                 EXISTS (
-                    SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid()
+                    SELECT 1 FROM venues WHERE venues.id = venue_packages.venue_id AND venues.owner_id = auth.uid()
                 )
                 OR EXISTS (
-                    SELECT 1 FROM venue_staff WHERE venue_id = venue_packages.venue_id AND user_id = auth.uid() AND status = 'active'
+                    SELECT 1 FROM venue_staff vs WHERE vs.venue_id = venue_packages.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active'
                 )
             );
     END IF;
@@ -107,10 +107,10 @@ DO $$ BEGIN
         CREATE POLICY "venue_packages_owner_staff_update" ON venue_packages
             FOR UPDATE USING (
                 EXISTS (
-                    SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid()
+                    SELECT 1 FROM venues WHERE venues.id = venue_packages.venue_id AND venues.owner_id = auth.uid()
                 )
                 OR EXISTS (
-                    SELECT 1 FROM venue_staff WHERE venue_id = venue_packages.venue_id AND user_id = auth.uid() AND status = 'active'
+                    SELECT 1 FROM venue_staff vs WHERE vs.venue_id = venue_packages.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active'
                 )
             );
     END IF;
@@ -124,10 +124,10 @@ DO $$ BEGIN
         CREATE POLICY "member_packages_owner_staff_read" ON member_packages
             FOR SELECT USING (
                 EXISTS (
-                    SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid()
+                    SELECT 1 FROM venues WHERE venues.id = member_packages.venue_id AND venues.owner_id = auth.uid()
                 )
                 OR EXISTS (
-                    SELECT 1 FROM venue_staff WHERE venue_id = member_packages.venue_id AND user_id = auth.uid() AND status = 'active'
+                    SELECT 1 FROM venue_staff vs WHERE vs.venue_id = member_packages.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active'
                 )
             );
     END IF;
@@ -141,10 +141,10 @@ DO $$ BEGIN
         CREATE POLICY "member_packages_owner_staff_insert" ON member_packages
             FOR INSERT WITH CHECK (
                 EXISTS (
-                    SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid()
+                    SELECT 1 FROM venues WHERE venues.id = member_packages.venue_id AND venues.owner_id = auth.uid()
                 )
                 OR EXISTS (
-                    SELECT 1 FROM venue_staff WHERE venue_id = member_packages.venue_id AND user_id = auth.uid() AND status = 'active'
+                    SELECT 1 FROM venue_staff vs WHERE vs.venue_id = member_packages.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active'
                 )
             );
     END IF;
@@ -158,10 +158,10 @@ DO $$ BEGIN
         CREATE POLICY "member_packages_owner_staff_update" ON member_packages
             FOR UPDATE USING (
                 EXISTS (
-                    SELECT 1 FROM venues WHERE id = venue_id AND owner_id = auth.uid()
+                    SELECT 1 FROM venues WHERE venues.id = member_packages.venue_id AND venues.owner_id = auth.uid()
                 )
                 OR EXISTS (
-                    SELECT 1 FROM venue_staff WHERE venue_id = member_packages.venue_id AND user_id = auth.uid() AND status = 'active'
+                    SELECT 1 FROM venue_staff vs WHERE vs.venue_id = member_packages.venue_id AND vs.user_id = auth.uid() AND vs.status = 'active'
                 )
             );
     END IF;
