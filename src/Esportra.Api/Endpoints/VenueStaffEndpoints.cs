@@ -132,11 +132,17 @@ public static class VenueStaffEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Must be a staff member to view the list
-            var isMember = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active')",
+            // Must be owner or active staff to view the list
+            var isOwnerOrStaff = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                  SELECT 1 FROM venues WHERE id = @id AND owner_id = @userId
+                  UNION ALL
+                  SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active'
+                )
+                """,
                 new { id, userId = userCtx.UserIdGuid });
-            if (!isMember) return Results.Forbid();
+            if (!isOwnerOrStaff) return Results.Forbid();
 
             var staff = await conn.QueryAsync<dynamic>(
                 """
