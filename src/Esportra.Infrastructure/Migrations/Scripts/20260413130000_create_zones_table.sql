@@ -35,7 +35,7 @@ DO $$ BEGIN
           SELECT 1 FROM venues WHERE venues.id = zones.venue_id AND venues.owner_id = auth.uid()
         )
         OR EXISTS (
-          SELECT 1 FROM venue_staff WHERE venue_staff.venue_id = zones.venue_id AND venue_staff.user_id = auth.uid() AND venue_staff.status = 'active'
+          SELECT 1 FROM venue_staff WHERE venue_staff.venue_id = zones.venue_id AND venue_staff.user_id = auth.uid() AND venue_staff.accepted_at IS NOT NULL
         )
       );
   END IF;
