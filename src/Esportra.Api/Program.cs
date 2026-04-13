@@ -439,6 +439,7 @@ app.MapBookingRulesEndpoints();
 app.MapWalkInEndpoints();
 app.MapPOSEndpoints();
 app.MapPackageEndpoints();
+app.MapVenueAnalyticsEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
