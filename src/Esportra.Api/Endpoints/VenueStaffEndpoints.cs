@@ -408,6 +408,34 @@ public static class VenueStaffEndpoints
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
+
+        // ── DELETE /api/venues/{id}/staff/invites/{inviteId} ──────────────────
+        // Owner cancels a pending invite.
+        app.MapDelete("/api/venues/{id}/staff/invites/{inviteId}", async (
+            Guid                 id,
+            Guid                 inviteId,
+            HttpContext           ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND accepted_at IS NOT NULL)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
+            var deleted = await conn.ExecuteAsync(
+                "DELETE FROM venue_staff_invites WHERE id = @inviteId AND venue_id = @id AND used_at IS NULL",
+                new { inviteId, id });
+
+            if (deleted == 0) return Results.NotFound(new { error = "Invite not found or already used." });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
     }
 
     // ── Request DTOs ──────────────────────────────────────────────────────────

@@ -428,6 +428,8 @@ app.MapWalletEndpoints();
 app.MapLoyaltyEndpoints();
 app.MapAnnouncementEndpoints();
 app.MapComboEndpoints();
+app.MapBroadcastLicenseEndpoints();
+app.MapBroadcastLayoutEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
