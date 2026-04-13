@@ -258,6 +258,7 @@ builder.Services.AddHttpClient("VenueHub", http =>
     http.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.AddSingleton<Esportra.Api.Services.VenueHubService>();
+builder.Services.AddSingleton<Esportra.Api.Services.VenueConnectionTracker>();
 
 // ── Phase 2: Core services ────────────────────────────────────────────────────
 builder.Services.AddScoped<BracketPersistenceService>();
@@ -437,6 +438,7 @@ app.MapHub<ChatHub>("/hubs/chat");
 app.MapHub<ConversationHub>("/hubs/conversations");
 app.MapHub<NotificationHub>("/hubs/notifications");
 app.MapHub<LiveHub>("/hubs/live");
+app.MapHub<VenueSyncHub>("/hubs/venue-sync");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();

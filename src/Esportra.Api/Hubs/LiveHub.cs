@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -14,6 +15,8 @@ public sealed class LiveHub : Hub
 {
     private readonly IDbConnectionFactory _db;
     private readonly ILogger<LiveHub> _logger;
+    private readonly VenueConnectionTracker _tracker;
+    private readonly IHubContext<VenueSyncHub> _syncHub;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -21,10 +24,16 @@ public sealed class LiveHub : Hub
         PropertyNameCaseInsensitive = true,
     };
 
-    public LiveHub(IDbConnectionFactory db, ILogger<LiveHub> logger)
+    public LiveHub(
+        IDbConnectionFactory db,
+        ILogger<LiveHub> logger,
+        VenueConnectionTracker tracker,
+        IHubContext<VenueSyncHub> syncHub)
     {
         _db = db;
         _logger = logger;
+        _tracker = tracker;
+        _syncHub = syncHub;
     }
 
     // ── Client-callable methods ───────────────────────────────────────────────
@@ -924,6 +933,169 @@ public sealed class LiveHub : Hub
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  LOCAL HUB STATUS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Check whether a venue's Local Hub is connected and return status info.
+    /// Called by the web dashboard to show hub connectivity.
+    /// </summary>
+    public async Task<object?> GetHubStatus(string venueId)
+    {
+        var userId = GetUserId();
+        if (userId is null) { await SendError("Not authenticated."); return null; }
+
+        var vid = ParseGuid(venueId);
+        if (vid is null) { await SendError("Invalid venue ID."); return null; }
+
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        { await SendError("Forbidden."); return null; }
+
+        var connInfo = _tracker.GetConnectionInfo(venueId);
+        var isConnected = connInfo is not null;
+
+        return new
+        {
+            is_connected = isConnected,
+            connected_at = connInfo?.ConnectedAt,
+        };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  STATION COMMAND RELAY — Web Dashboard → Cloud → Local Hub
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    public async Task LockStation(string venueId, string stationId)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("LockStation", stationId);
+
+        _logger.LogInformation("[LiveHub] LockStation relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    public async Task UnlockStation(string venueId, string stationId, object? session = null)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("UnlockStation", stationId, session);
+
+        _logger.LogInformation("[LiveHub] UnlockStation relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    public async Task RestartStation(string venueId, string stationId)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("RestartStation", stationId);
+
+        _logger.LogInformation("[LiveHub] RestartStation relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    public async Task ForceShutdown(string venueId, string stationId)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("ForceShutdown", stationId);
+
+        _logger.LogInformation("[LiveHub] ForceShutdown relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    public async Task SendStationMessage(string venueId, string stationId, string message)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+        if (string.IsNullOrWhiteSpace(message) || message.Length > 500)
+        { await SendError("Message is required and must be under 500 characters."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("SendMessage", stationId, message);
+
+        _logger.LogInformation("[LiveHub] SendMessage relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    public async Task SetStationMaintenance(string venueId, string stationId, bool maintenance)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("SetStationMaintenance", stationId, maintenance);
+
+        _logger.LogInformation("[LiveHub] SetStationMaintenance relayed — venue={VenueId} station={StationId} maintenance={Maintenance}", venueId, stationId, maintenance);
+    }
+
+    public async Task EndSession(string venueId, string stationId)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("EndSession", stationId);
+
+        _logger.LogInformation("[LiveHub] EndSession relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    public async Task ExtendSession(string venueId, string stationId, int additionalMinutes)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+        if (additionalMinutes <= 0 || additionalMinutes > 1440)
+        { await SendError("Additional minutes must be between 1 and 1440."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("ExtendSession", stationId, additionalMinutes);
+
+        _logger.LogInformation("[LiveHub] ExtendSession relayed — venue={VenueId} station={StationId} minutes={Minutes}", venueId, stationId, additionalMinutes);
+    }
+
+    public async Task CreateSession(string venueId, string stationId, object sessionConfig)
+    {
+        if (string.IsNullOrWhiteSpace(stationId))
+        { await SendError("Station ID is required."); return; }
+
+        var connectionId = await AuthorizeAndGetHubConnection(venueId);
+        if (connectionId is null) return;
+
+        await _syncHub.Clients.Client(connectionId)
+            .SendAsync("CreateSession", stationId, sessionConfig);
+
+        _logger.LogInformation("[LiveHub] CreateSession relayed — venue={VenueId} station={StationId}", venueId, stationId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -954,6 +1126,43 @@ public sealed class LiveHub : Hub
 
     private async Task SendError(string message) =>
         await Clients.Caller.SendAsync(LiveHubEvents.Error, message);
+
+    // ── Station command relay helper ─────────────────────────────────────────
+
+    /// <summary>
+    /// Validates the caller is venue owner/staff and returns the Local Hub's
+    /// connection ID, or null (with error sent to caller) if unauthorized or offline.
+    /// </summary>
+    private async Task<string?> AuthorizeAndGetHubConnection(string venueId)
+    {
+        var userId = GetUserId();
+        if (userId is null)
+        {
+            await SendError("Not authenticated.");
+            return null;
+        }
+
+        var vid = ParseGuid(venueId);
+        if (vid is null)
+        {
+            await SendError("Invalid venue ID.");
+            return null;
+        }
+
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        {
+            await SendError("Forbidden.");
+            return null;
+        }
+
+        var connectionId = _tracker.GetConnectionId(venueId);
+        if (connectionId is null)
+        {
+            throw new HubException("Local Hub is offline");
+        }
+
+        return connectionId;
+    }
 
     // ── Date parsing ──────────────────────────────────────────────────────────
 
