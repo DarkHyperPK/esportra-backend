@@ -219,80 +219,85 @@ public static class PackageEndpoints
                 return Results.BadRequest(new { error = "package_id is required" });
 
             using var conn = db.CreateConnection();
+            conn.Open();
+            using var tx = conn.BeginTransaction();
 
-            // Fetch the package
-            var package = await conn.QueryFirstOrDefaultAsync<dynamic>(
-                """
-                SELECT id, venue_id, hours, price, validity_days, is_active
-                FROM venue_packages
-                WHERE id = @PackageId AND venue_id = @VenueId
-                """,
-                new { PackageId = req.PackageId, VenueId = venueId });
-
-            if (package is null)
-                return Results.NotFound(new { error = "Package not found" });
-
-            if (!(bool)package.is_active)
-                return Results.BadRequest(new { error = "Package is no longer available" });
-
-            // Verify member exists in this venue
-            var memberExists = await conn.QuerySingleAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM members WHERE id = @MemberId AND venue_id = @VenueId)",
-                new { MemberId = memberId, VenueId = venueId });
-
-            if (!memberExists)
-                return Results.NotFound(new { error = "Member not found" });
-
-            // If paying from balance, verify and deduct
-            if (string.Equals(req.PaymentMethod, "balance", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                var currentBalance = await conn.QuerySingleOrDefaultAsync<decimal?>(
-                    "SELECT balance FROM members WHERE id = @MemberId AND venue_id = @VenueId",
-                    new { MemberId = memberId, VenueId = venueId });
+                // Fetch the package
+                var package = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id, venue_id, hours, price, validity_days, is_active
+                    FROM venue_packages
+                    WHERE id = @PackageId AND venue_id = @VenueId
+                    """,
+                    new { PackageId = req.PackageId, VenueId = venueId }, tx);
 
-                if (currentBalance is null)
+                if (package is null)
+                    return Results.NotFound(new { error = "Package not found" });
+
+                if (!(bool)package.is_active)
+                    return Results.BadRequest(new { error = "Package is no longer available" });
+
+                // Verify member exists in this venue
+                var memberExists = await conn.QuerySingleAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM members WHERE id = @MemberId AND venue_id = @VenueId)",
+                    new { MemberId = memberId, VenueId = venueId }, tx);
+
+                if (!memberExists)
                     return Results.NotFound(new { error = "Member not found" });
 
-                if (currentBalance < (decimal)package.price)
-                    return Results.BadRequest(new { error = "Insufficient balance" });
-
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE members
-                    SET balance = balance - @Price, updated_at = NOW()
-                    WHERE id = @MemberId AND venue_id = @VenueId
-                    """,
-                    new { MemberId = memberId, VenueId = venueId, Price = (decimal)package.price });
-            }
-
-            // Create the member package
-            var memberPackageId = await conn.QuerySingleAsync<Guid>(
-                """
-                INSERT INTO member_packages
-                    (venue_id, member_id, package_id, hours_total, hours_remaining, expires_at)
-                VALUES
-                    (@VenueId, @MemberId, @PackageId, @HoursTotal, @HoursRemaining, NOW() + (@ValidityDays || ' days')::INTERVAL)
-                RETURNING id
-                """,
-                new
+                // If paying from balance, atomically check and deduct
+                if (string.Equals(req.PaymentMethod, "balance", StringComparison.OrdinalIgnoreCase))
                 {
-                    VenueId = venueId,
-                    MemberId = memberId,
-                    PackageId = req.PackageId,
-                    HoursTotal = (decimal)package.hours,
-                    HoursRemaining = (decimal)package.hours,
-                    ValidityDays = (int)package.validity_days
-                });
+                    var rowsAffected = await conn.ExecuteAsync(
+                        """
+                        UPDATE members
+                        SET balance = balance - @Price, updated_at = NOW()
+                        WHERE id = @MemberId AND venue_id = @VenueId AND balance >= @Price
+                        """,
+                        new { MemberId = memberId, VenueId = venueId, Price = (decimal)package.price }, tx);
 
-            return Results.Ok(new
+                    if (rowsAffected == 0)
+                        return Results.BadRequest(new { error = "Insufficient balance" });
+                }
+
+                // Create the member package
+                var memberPackageId = await conn.QuerySingleAsync<Guid>(
+                    """
+                    INSERT INTO member_packages
+                        (venue_id, member_id, package_id, hours_total, hours_remaining, expires_at)
+                    VALUES
+                        (@VenueId, @MemberId, @PackageId, @HoursTotal, @HoursRemaining, NOW() + (@ValidityDays || ' days')::INTERVAL)
+                    RETURNING id
+                    """,
+                    new
+                    {
+                        VenueId = venueId,
+                        MemberId = memberId,
+                        PackageId = req.PackageId,
+                        HoursTotal = (decimal)package.hours,
+                        HoursRemaining = (decimal)package.hours,
+                        ValidityDays = (int)package.validity_days
+                    }, tx);
+
+                tx.Commit();
+
+                return Results.Ok(new
+                {
+                    id = memberPackageId,
+                    package_id = req.PackageId,
+                    hours_total = (decimal)package.hours,
+                    hours_remaining = (decimal)package.hours,
+                    payment_method = req.PaymentMethod ?? "cash",
+                    price = (decimal)package.price
+                });
+            }
+            catch
             {
-                id = memberPackageId,
-                package_id = req.PackageId,
-                hours_total = (decimal)package.hours,
-                hours_remaining = (decimal)package.hours,
-                payment_method = req.PaymentMethod ?? "cash",
-                price = (decimal)package.price
-            });
+                tx.Rollback();
+                throw;
+            }
         })
         .RequireAuthorization("Authenticated")
         .WithTags("Packages");
@@ -355,53 +360,58 @@ public static class PackageEndpoints
                 return Results.BadRequest(new { error = "hours must be positive" });
 
             using var conn = db.CreateConnection();
+            conn.Open();
+            using var tx = conn.BeginTransaction();
 
-            // Fetch the member package
-            var mp = await conn.QueryFirstOrDefaultAsync<dynamic>(
-                """
-                SELECT id, hours_remaining, status, expires_at
-                FROM member_packages
-                WHERE id = @Id AND venue_id = @VenueId AND member_id = @MemberId
-                """,
-                new { Id = memberPackageId, VenueId = venueId, MemberId = memberId });
-
-            if (mp is null)
-                return Results.NotFound(new { error = "Member package not found" });
-
-            if ((string)mp.status != "active")
-                return Results.BadRequest(new { error = $"Package is {mp.status}" });
-
-            if ((DateTime)mp.expires_at < DateTime.UtcNow)
+            try
             {
-                // Auto-expire
-                await conn.ExecuteAsync(
-                    "UPDATE member_packages SET status = 'expired' WHERE id = @Id",
-                    new { Id = memberPackageId });
-                return Results.BadRequest(new { error = "Package has expired" });
+                // Atomically deduct hours with guard
+                var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                    """
+                    UPDATE member_packages
+                    SET hours_remaining = hours_remaining - @Hours,
+                        status = CASE WHEN hours_remaining - @Hours <= 0 THEN 'depleted' ELSE status END
+                    WHERE id = @Id AND venue_id = @VenueId AND member_id = @MemberId
+                      AND status = 'active' AND expires_at > NOW()
+                      AND hours_remaining >= @Hours
+                    RETURNING hours_remaining, status
+                    """,
+                    new { Id = memberPackageId, VenueId = venueId, MemberId = memberId, Hours = req.Hours }, tx);
+
+                if (updated is null)
+                {
+                    // Check why it failed
+                    var mp = await conn.QueryFirstOrDefaultAsync<dynamic>(
+                        "SELECT status, expires_at, hours_remaining FROM member_packages WHERE id = @Id AND venue_id = @VenueId AND member_id = @MemberId",
+                        new { Id = memberPackageId, VenueId = venueId, MemberId = memberId }, tx);
+
+                    if (mp is null)
+                        return Results.NotFound(new { error = "Member package not found" });
+                    if ((string)mp.status != "active")
+                        return Results.BadRequest(new { error = $"Package is {mp.status}" });
+                    if ((DateTime)mp.expires_at < DateTime.UtcNow)
+                    {
+                        await conn.ExecuteAsync("UPDATE member_packages SET status = 'expired' WHERE id = @Id", new { Id = memberPackageId }, tx);
+                        tx.Commit();
+                        return Results.BadRequest(new { error = "Package has expired" });
+                    }
+                    return Results.BadRequest(new { error = $"Only {(decimal)mp.hours_remaining} hours remaining" });
+                }
+
+                tx.Commit();
+
+                return Results.Ok(new
+                {
+                    hours_deducted = req.Hours,
+                    hours_remaining = (decimal)updated.hours_remaining,
+                    status = (string)updated.status
+                });
             }
-
-            decimal remaining = (decimal)mp.hours_remaining;
-            if (req.Hours > remaining)
-                return Results.BadRequest(new { error = $"Only {remaining} hours remaining" });
-
-            decimal newRemaining = remaining - req.Hours;
-            string newStatus = newRemaining <= 0 ? "depleted" : "active";
-
-            await conn.ExecuteAsync(
-                """
-                UPDATE member_packages
-                SET hours_remaining = @NewRemaining,
-                    status = @NewStatus
-                WHERE id = @Id
-                """,
-                new { Id = memberPackageId, NewRemaining = newRemaining, NewStatus = newStatus });
-
-            return Results.Ok(new
+            catch
             {
-                hours_deducted = req.Hours,
-                hours_remaining = newRemaining,
-                status = newStatus
-            });
+                tx.Rollback();
+                throw;
+            }
         })
         .RequireAuthorization("Authenticated")
         .WithTags("Packages");

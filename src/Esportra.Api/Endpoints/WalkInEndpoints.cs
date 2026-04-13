@@ -55,15 +55,6 @@ public static class WalkInEndpoints
                     return Results.BadRequest(new { error = "Zone not found in this venue" });
             }
 
-            // Calculate next position
-            var nextPosition = await conn.QuerySingleAsync<int>(
-                """
-                SELECT COALESCE(MAX(position), 0) + 1
-                FROM walk_in_queue
-                WHERE venue_id = @VenueId AND status = 'waiting'
-                """,
-                new { VenueId = id });
-
             var walkIn = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO walk_in_queue
@@ -71,7 +62,10 @@ public static class WalkInEndpoints
                      station_preference, requested_duration_minutes, position)
                 VALUES
                     (@VenueId, @MemberId, @CustomerName, @ZoneId,
-                     @StationPreference, @DurationMinutes, @Position)
+                     @StationPreference, @DurationMinutes,
+                     (SELECT COALESCE(MAX(position), 0) + 1
+                      FROM walk_in_queue
+                      WHERE venue_id = @VenueId AND status = 'waiting'))
                 RETURNING id, venue_id, member_id, customer_name, zone_id,
                           station_preference, requested_duration_minutes,
                           status, position, created_at
@@ -84,7 +78,6 @@ public static class WalkInEndpoints
                     req.ZoneId,
                     req.StationPreference,
                     DurationMinutes = req.DurationMinutes ?? 60,
-                    Position = nextPosition,
                 });
 
             return Results.Ok(walkIn);

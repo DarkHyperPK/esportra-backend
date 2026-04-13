@@ -412,8 +412,14 @@ public static class OrganizationEndpoints
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
-                "DELETE FROM staff_tournament_assignments WHERE id = @assignmentId",
-                new { assignmentId });
+                """
+                DELETE FROM staff_tournament_assignments
+                WHERE id = @assignmentId
+                  AND organization_staff_id IN (
+                    SELECT id FROM organization_staff WHERE organization_id = @orgId
+                  )
+                """,
+                new { assignmentId, orgId });
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId, new { });
             return Results.Ok(new { success = true });
@@ -436,7 +442,7 @@ public static class OrganizationEndpoints
                 """,
                 new { tournamentId });
             return Results.Ok(rows);
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/staff/permissions ──────────────────────────
         // Replaces getOrgStaffPermissionsForTournament (2 Supabase calls → 1 query).
@@ -724,8 +730,8 @@ public static class OrganizationEndpoints
 
             // CASCADE delete handles media
             await conn.ExecuteAsync(
-                "DELETE FROM organization_albums WHERE id = @albumId",
-                new { albumId });
+                "DELETE FROM organization_albums WHERE id = @albumId AND organization_id = @orgId",
+                new { albumId, orgId });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 

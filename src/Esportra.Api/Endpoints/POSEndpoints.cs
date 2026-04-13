@@ -326,79 +326,92 @@ public static class POSEndpoints
                 return Results.BadRequest(new { error = $"Invalid status. Must be one of: {string.Join(", ", ValidStatuses)}" });
 
             using var conn = db.CreateConnection();
+            conn.Open();
+            using var tx = conn.BeginTransaction();
 
-            var order = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT id, venue_id, station_id, status, items
-                FROM pos_orders
-                WHERE id = @OrderId AND venue_id = @VenueId
-                """,
-                new { OrderId = orderId, VenueId = venueId });
-
-            if (order is null)
-                return Results.NotFound(new { error = "Order not found." });
-
-            var currentStatus = (string)order.status;
-
-            // ── Validate status transitions ─────────────────────────────
-            // Forward only: pending → preparing → ready → delivered
-            // Cancel allowed from any non-terminal state
-            if (!IsValidTransition(currentStatus, newStatus))
-                return Results.BadRequest(new
-                {
-                    error = $"Cannot transition from '{currentStatus}' to '{newStatus}'.",
-                    current_status = currentStatus,
-                    requested_status = newStatus,
-                });
-
-            // ── If cancelling, restore stock ────────────────────────────
-            if (newStatus == "cancelled" && currentStatus != "cancelled")
+            try
             {
-                var itemsJson = (string)order.items;
-                var items = JsonSerializer.Deserialize<OrderLineItem[]>(itemsJson, JsonOpts);
-                if (items is not null)
-                {
-                    foreach (var item in items)
+                var order = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id, venue_id, station_id, status, items
+                    FROM pos_orders
+                    WHERE id = @OrderId AND venue_id = @VenueId
+                    FOR UPDATE
+                    """,
+                    new { OrderId = orderId, VenueId = venueId }, tx);
+
+                if (order is null)
+                    return Results.NotFound(new { error = "Order not found." });
+
+                var currentStatus = (string)order.status;
+
+                // ── Validate status transitions ─────────────────────────────
+                // Forward only: pending → preparing → ready → delivered
+                // Cancel allowed from any non-terminal state
+                if (!IsValidTransition(currentStatus, newStatus))
+                    return Results.BadRequest(new
                     {
-                        // Only restore if the menu item has tracked stock (stock_count IS NOT NULL)
-                        await conn.ExecuteAsync(
-                            """
-                            UPDATE venue_menu_items
-                            SET stock_count = stock_count + @Qty
-                            WHERE id = @ItemId AND venue_id = @VenueId
-                              AND stock_count IS NOT NULL
-                            """,
-                            new { Qty = item.Quantity, ItemId = item.ItemId, VenueId = venueId });
+                        error = $"Cannot transition from '{currentStatus}' to '{newStatus}'.",
+                        current_status = currentStatus,
+                        requested_status = newStatus,
+                    });
+
+                // ── If cancelling, restore stock ────────────────────────────
+                if (newStatus == "cancelled" && currentStatus != "cancelled")
+                {
+                    var itemsJson = (string)order.items;
+                    var items = JsonSerializer.Deserialize<OrderLineItem[]>(itemsJson, JsonOpts);
+                    if (items is not null)
+                    {
+                        foreach (var item in items)
+                        {
+                            // Only restore if the menu item has tracked stock (stock_count IS NOT NULL)
+                            await conn.ExecuteAsync(
+                                """
+                                UPDATE venue_menu_items
+                                SET stock_count = stock_count + @Qty
+                                WHERE id = @ItemId AND venue_id = @VenueId
+                                  AND stock_count IS NOT NULL
+                                """,
+                                new { Qty = item.Quantity, ItemId = item.ItemId, VenueId = venueId }, tx);
+                        }
                     }
                 }
+
+                // ── Update status ───────────────────────────────────────────
+                var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    UPDATE pos_orders
+                    SET status = @NewStatus
+                    WHERE id = @OrderId AND venue_id = @VenueId
+                    RETURNING id, venue_id, session_id, member_id, station_id, items,
+                              subtotal, tax, discount, total, payment_method,
+                              status, notes, created_by, created_at, updated_at
+                    """,
+                    new { NewStatus = newStatus, OrderId = orderId, VenueId = venueId }, tx);
+
+                tx.Commit();
+
+                // ── Broadcast status change ─────────────────────────────────
+                _ = hubContext.Clients
+                    .Group(LiveHub.VenueGroup(venueId.ToString()))
+                    .SendAsync(LiveHubEvents.POSOrderStatusChanged, new
+                    {
+                        order_id = orderId,
+                        venue_id = venueId,
+                        station_id = (string?)order.station_id,
+                        previous_status = currentStatus,
+                        status = newStatus,
+                        updated_at = DateTimeOffset.UtcNow,
+                    }, ct);
+
+                return Results.Ok(updated);
             }
-
-            // ── Update status ───────────────────────────────────────────
-            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                UPDATE pos_orders
-                SET status = @NewStatus
-                WHERE id = @OrderId AND venue_id = @VenueId
-                RETURNING id, venue_id, session_id, member_id, station_id, items,
-                          subtotal, tax, discount, total, payment_method,
-                          status, notes, created_by, created_at, updated_at
-                """,
-                new { NewStatus = newStatus, OrderId = orderId, VenueId = venueId });
-
-            // ── Broadcast status change ─────────────────────────────────
-            _ = hubContext.Clients
-                .Group(LiveHub.VenueGroup(venueId.ToString()))
-                .SendAsync(LiveHubEvents.POSOrderStatusChanged, new
-                {
-                    order_id = orderId,
-                    venue_id = venueId,
-                    station_id = (string?)order.station_id,
-                    previous_status = currentStatus,
-                    status = newStatus,
-                    updated_at = DateTimeOffset.UtcNow,
-                }, ct);
-
-            return Results.Ok(updated);
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         })
         .RequireAuthorization("Authenticated")
         .WithTags("POS");

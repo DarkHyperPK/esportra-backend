@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
@@ -6,6 +7,11 @@ namespace Esportra.Api.Endpoints;
 
 public static class StaffPermissionEndpoints
 {
+    // ── Rate limiting for PIN login ─────────────────────────────────────────
+    private static readonly ConcurrentDictionary<string, (int Count, DateTime WindowStart)> PinAttempts = new();
+    private const int MaxPinAttempts = 5;
+    private static readonly TimeSpan PinWindow = TimeSpan.FromMinutes(5);
+
     // ── All known permissions (source of truth) ─────────────────────────────
     private static readonly string[] AllPermissions =
     [
@@ -23,7 +29,7 @@ public static class StaffPermissionEndpoints
     private static readonly Dictionary<string, string[]> DefaultPermissions = new()
     {
         ["manager"] = AllPermissions,
-        ["cashier"] = AllPermissions,
+        ["cashier"] = ["stations.view", "sessions.start", "sessions.end", "members.view", "members.topup", "bookings.view", "bookings.create", "pos.orders", "pos.catalog"],
         ["staff"] = ["stations.view", "sessions.start", "sessions.end", "members.view", "bookings.view", "bookings.create", "pos.orders"],
         ["technician"] = ["stations.view", "stations.control", "sessions.start", "sessions.end", "bookings.view"],
     };
@@ -101,28 +107,40 @@ public static class StaffPermissionEndpoints
                 return Results.BadRequest(new { error = $"Unknown permissions: {string.Join(", ", invalid)}" });
 
             using var conn = db.CreateConnection();
+            conn.Open();
+            using var tx = conn.BeginTransaction();
 
-            // Delete existing permissions for this role in this venue
-            await conn.ExecuteAsync(
-                "DELETE FROM staff_permissions WHERE venue_id = @VenueId AND role = @Role",
-                new { VenueId = venueId, Role = req.Role });
-
-            // Insert new permissions
-            if (req.Permissions is { Length: > 0 })
+            try
             {
-                foreach (var perm in req.Permissions.Distinct())
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO staff_permissions (venue_id, role, permission)
-                        VALUES (@VenueId, @Role, @Permission)
-                        ON CONFLICT (venue_id, role, permission) DO NOTHING
-                        """,
-                        new { VenueId = venueId, Role = req.Role, Permission = perm });
-                }
-            }
+                // Delete existing permissions for this role in this venue
+                await conn.ExecuteAsync(
+                    "DELETE FROM staff_permissions WHERE venue_id = @VenueId AND role = @Role",
+                    new { VenueId = venueId, Role = req.Role }, tx);
 
-            return Results.Ok(new { updated = true, role = req.Role, permission_count = req.Permissions?.Distinct().Count() ?? 0 });
+                // Insert new permissions
+                if (req.Permissions is { Length: > 0 })
+                {
+                    foreach (var perm in req.Permissions.Distinct())
+                    {
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO staff_permissions (venue_id, role, permission)
+                            VALUES (@VenueId, @Role, @Permission)
+                            ON CONFLICT (venue_id, role, permission) DO NOTHING
+                            """,
+                            new { VenueId = venueId, Role = req.Role, Permission = perm }, tx);
+                    }
+                }
+
+                tx.Commit();
+
+                return Results.Ok(new { updated = true, role = req.Role, permission_count = req.Permissions?.Distinct().Count() ?? 0 });
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         })
         .RequireAuthorization("Authenticated")
         .WithTags("Staff Permissions");
@@ -185,6 +203,7 @@ public static class StaffPermissionEndpoints
         app.MapPost("/api/auth/staff-pin-login", async (
             [FromBody] StaffPinLoginRequest req,
             IDbConnectionFactory db,
+            HttpContext ctx,
             CancellationToken ct) =>
         {
             if (req.VenueId == Guid.Empty || string.IsNullOrWhiteSpace(req.Pin))
@@ -192,6 +211,24 @@ public static class StaffPermissionEndpoints
 
             if (req.Pin.Length < 4 || req.Pin.Length > 6 || !req.Pin.All(char.IsDigit))
                 return Results.BadRequest(new { error = "Invalid PIN format." });
+
+            // Rate limiting: max 5 attempts per venue+IP per 5 minutes
+            var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var rateLimitKey = $"{req.VenueId}:{ip}";
+
+            if (PinAttempts.TryGetValue(rateLimitKey, out var attempt))
+            {
+                if (DateTime.UtcNow - attempt.WindowStart < PinWindow)
+                {
+                    if (attempt.Count >= MaxPinAttempts)
+                        return Results.Json(new { error = "Too many PIN attempts. Try again later." }, statusCode: 429);
+                }
+                else
+                {
+                    // Window expired, reset
+                    PinAttempts.TryRemove(rateLimitKey, out _);
+                }
+            }
 
             using var conn = db.CreateConnection();
 
@@ -221,7 +258,16 @@ public static class StaffPermissionEndpoints
             }
 
             if (matched is null)
+            {
+                // Record failed attempt
+                PinAttempts.AddOrUpdate(rateLimitKey,
+                    _ => (1, DateTime.UtcNow),
+                    (_, existing) => (existing.Count + 1, existing.WindowStart));
                 return Results.Unauthorized();
+            }
+
+            // Successful login — clear attempts
+            PinAttempts.TryRemove(rateLimitKey, out _);
 
             // Fetch permissions for this staff's role
             var permissions = (await conn.QueryAsync<string>(
