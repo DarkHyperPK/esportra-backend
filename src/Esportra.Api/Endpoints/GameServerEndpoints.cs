@@ -8,6 +8,49 @@ namespace Esportra.Api.Endpoints;
 
 public static class GameServerEndpoints
 {
+    /// <summary>
+    /// Maps human-readable CS2 map names (from game_maps.map_name) to engine map names expected by DatHost.
+    /// </summary>
+    private static readonly Dictionary<string, string> Cs2EngineMapNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Anubis"] = "de_anubis",
+        ["Dust II"] = "de_dust2",
+        ["Mirage"] = "de_mirage",
+        ["Inferno"] = "de_inferno",
+        ["Nuke"] = "de_nuke",
+        ["Overpass"] = "de_overpass",
+        ["Vertigo"] = "de_vertigo",
+        ["Ancient"] = "de_ancient",
+        ["Cache"] = "de_cache",
+        ["Train"] = "de_train",
+    };
+
+    /// <summary>
+    /// Resolves the CS2 engine map name for a match by querying match_map_vetos + game_maps.
+    /// Priority: selected_map_id → team1_picked_maps[0] → team2_picked_maps[0].
+    /// Falls back to "de_dust2" if no veto data is found.
+    /// </summary>
+    private static async Task<string> ResolveCs2EngineMapAsync(System.Data.IDbConnection conn, Guid matchId)
+    {
+        // COALESCE tries selected_map_id first (BO1), then first pick from either team
+        var mapName = await conn.QuerySingleOrDefaultAsync<string?>(
+            @"SELECT gm.map_name
+              FROM match_map_vetos v
+              JOIN game_maps gm ON gm.id = COALESCE(
+                  v.selected_map_id,
+                  (v.team1_picked_maps->0->>'map_id')::uuid,
+                  (v.team2_picked_maps->0->>'map_id')::uuid
+              )
+              WHERE v.match_id = @matchId AND v.status = 'completed'
+              LIMIT 1",
+            new { matchId });
+
+        if (mapName is not null && Cs2EngineMapNames.TryGetValue(mapName, out var engineName))
+            return engineName;
+
+        return "de_dust2";
+    }
+
     public static void MapGameServerEndpoints(this WebApplication app)
     {
         // ── GET /api/dathost/regions ─────────────────────────────────────────
@@ -136,16 +179,8 @@ public static class GameServerEndpoints
                 !game.Equals("Counter-Strike 2", StringComparison.OrdinalIgnoreCase))
                 return Results.BadRequest(new { error = "Server provisioning is only available for CS2." });
 
-            // Get the first picked map from veto (if available)
-            var startMap = await conn.QuerySingleOrDefaultAsync<string?>(
-                @"SELECT picked_maps->0->>'map_id'
-                  FROM match_map_vetos
-                  WHERE match_id = @matchId AND status = 'completed'",
-                new { matchId }) ?? "de_dust2";
-
-            // Normalize map name
-            if (!startMap.StartsWith("de_") && !startMap.StartsWith("cs_") && !startMap.StartsWith("ar_"))
-                startMap = "de_" + startMap.ToLower().Replace(" ", "_");
+            // Resolve the CS2 engine map name from veto data
+            var startMap = await ResolveCs2EngineMapAsync(conn, matchId);
 
             var gslt = config["DatHost:Gslt"] ?? "";
             var rconPassword = Guid.NewGuid().ToString("N")[..12];
@@ -346,13 +381,8 @@ public static class GameServerEndpoints
             if (!DatHostRegions.All.Any(r => r.LocationId == region))
                 region = "amsterdam";
 
-            var startMap = await conn.QuerySingleOrDefaultAsync<string?>(
-                @"SELECT picked_maps->0->>'map_id'
-                  FROM match_map_vetos WHERE match_id = @matchId AND status = 'completed'",
-                new { matchId }) ?? "de_dust2";
-
-            if (!startMap.StartsWith("de_") && !startMap.StartsWith("cs_") && !startMap.StartsWith("ar_"))
-                startMap = "de_" + startMap.ToLower().Replace(" ", "_");
+            // Resolve the CS2 engine map name from veto data
+            var startMap = await ResolveCs2EngineMapAsync(conn, matchId);
 
             var gslt = config["DatHost:Gslt"] ?? "";
             var rconPassword = Guid.NewGuid().ToString("N")[..12];
