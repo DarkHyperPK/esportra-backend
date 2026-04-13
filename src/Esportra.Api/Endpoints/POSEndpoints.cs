@@ -382,7 +382,7 @@ public static class POSEndpoints
                 var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
                     UPDATE pos_orders
-                    SET status = @NewStatus
+                    SET status = @NewStatus, updated_at = NOW()
                     WHERE id = @OrderId AND venue_id = @VenueId
                     RETURNING id, venue_id, session_id, member_id, station_id, items,
                               subtotal, tax, discount, total, payment_method,
@@ -487,7 +487,7 @@ public static class POSEndpoints
             SELECT EXISTS (
                 SELECT 1 FROM venues WHERE id = @VenueId AND owner_id = @UserId
                 UNION ALL
-                SELECT 1 FROM venue_staff WHERE venue_id = @VenueId AND user_id = @UserId AND accepted_at IS NOT NULL
+                SELECT 1 FROM venue_staff WHERE venue_id = @VenueId AND user_id = @UserId AND status = 'active'
             )
             """,
             new { VenueId = venueId, UserId = userId });

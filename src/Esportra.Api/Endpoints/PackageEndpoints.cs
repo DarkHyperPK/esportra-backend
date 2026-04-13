@@ -391,7 +391,7 @@ public static class PackageEndpoints
                         return Results.BadRequest(new { error = $"Package is {mp.status}" });
                     if ((DateTime)mp.expires_at < DateTime.UtcNow)
                     {
-                        await conn.ExecuteAsync("UPDATE member_packages SET status = 'expired' WHERE id = @Id", new { Id = memberPackageId }, tx);
+                        await conn.ExecuteAsync("UPDATE member_packages SET status = 'expired' WHERE id = @Id AND venue_id = @VenueId AND member_id = @MemberId", new { Id = memberPackageId, VenueId = venueId, MemberId = memberId }, tx);
                         tx.Commit();
                         return Results.BadRequest(new { error = "Package has expired" });
                     }

@@ -12,6 +12,15 @@ public static class StaffPermissionEndpoints
     private const int MaxPinAttempts = 5;
     private static readonly TimeSpan PinWindow = TimeSpan.FromMinutes(5);
 
+    // Periodic cleanup of expired rate limit entries
+    private static readonly Timer PinCleanupTimer = new(_ =>
+    {
+        var cutoff = DateTime.UtcNow - PinWindow;
+        foreach (var kvp in PinAttempts)
+            if (kvp.Value.WindowStart < cutoff)
+                PinAttempts.TryRemove(kvp.Key, out (int, DateTime) _);
+    }, null, TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10));
+
     // ── All known permissions (source of truth) ─────────────────────────────
     private static readonly string[] AllPermissions =
     [
@@ -212,23 +221,18 @@ public static class StaffPermissionEndpoints
             if (req.Pin.Length < 4 || req.Pin.Length > 6 || !req.Pin.All(char.IsDigit))
                 return Results.BadRequest(new { error = "Invalid PIN format." });
 
-            // Rate limiting: max 5 attempts per venue+IP per 5 minutes
+            // Rate limiting: max 5 attempts per venue+IP per 5 minutes (atomic)
             var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             var rateLimitKey = $"{req.VenueId}:{ip}";
 
-            if (PinAttempts.TryGetValue(rateLimitKey, out var attempt))
-            {
-                if (DateTime.UtcNow - attempt.WindowStart < PinWindow)
-                {
-                    if (attempt.Count >= MaxPinAttempts)
-                        return Results.Json(new { error = "Too many PIN attempts. Try again later." }, statusCode: 429);
-                }
-                else
-                {
-                    // Window expired, reset
-                    PinAttempts.TryRemove(rateLimitKey, out _);
-                }
-            }
+            var current = PinAttempts.AddOrUpdate(rateLimitKey,
+                _ => (1, DateTime.UtcNow),
+                (_, existing) => DateTime.UtcNow - existing.WindowStart < PinWindow
+                    ? (existing.Count + 1, existing.WindowStart)
+                    : (1, DateTime.UtcNow));
+
+            if (current.Count > MaxPinAttempts)
+                return Results.Json(new { error = "Too many PIN attempts. Try again later." }, statusCode: 429);
 
             using var conn = db.CreateConnection();
 
@@ -258,13 +262,7 @@ public static class StaffPermissionEndpoints
             }
 
             if (matched is null)
-            {
-                // Record failed attempt
-                PinAttempts.AddOrUpdate(rateLimitKey,
-                    _ => (1, DateTime.UtcNow),
-                    (_, existing) => (existing.Count + 1, existing.WindowStart));
                 return Results.Unauthorized();
-            }
 
             // Successful login — clear attempts
             PinAttempts.TryRemove(rateLimitKey, out _);

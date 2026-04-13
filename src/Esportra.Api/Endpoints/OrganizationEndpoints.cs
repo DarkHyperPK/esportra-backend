@@ -51,6 +51,13 @@ public static class OrganizationEndpoints
             new { orgId, userId });
     }
 
+    private static async Task<bool> IsOrgOwner(IDbConnection conn, Guid orgId, Guid userId)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+            new { orgId, userId });
+    }
+
     public static void MapOrganizationEndpoints(this WebApplication app)
     {
         // ── GET /api/organizations/{orgId}/staff ───────────────────────────────
@@ -231,7 +238,7 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -261,7 +268,7 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -408,7 +415,7 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -434,8 +441,8 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT sta.*,
-                       to_jsonb(os) AS organization_staff
+                SELECT sta.id, sta.tournament_id, sta.role AS assignment_role, sta.created_at,
+                       os.user_id, os.role, os.status
                 FROM staff_tournament_assignments sta
                 LEFT JOIN organization_staff os ON os.id = sta.organization_staff_id
                 WHERE sta.tournament_id = @tournamentId
@@ -725,7 +732,7 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             // CASCADE delete handles media
