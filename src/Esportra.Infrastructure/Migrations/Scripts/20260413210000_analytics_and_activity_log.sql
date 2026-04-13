@@ -65,7 +65,7 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_daily_stats_updated_at') THEN
     CREATE TRIGGER trg_daily_stats_updated_at
       BEFORE UPDATE ON daily_stats
-      FOR EACH ROW EXECUTE FUNCTION moddatetime(updated_at);
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
   END IF;
 END; $$;
 
