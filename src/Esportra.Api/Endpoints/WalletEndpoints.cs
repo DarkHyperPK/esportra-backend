@@ -33,7 +33,7 @@ public static class WalletEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -93,7 +93,7 @@ public static class WalletEndpoints
             if (!isOwner)
             {
                 var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                     new { userId = userCtx.UserIdGuid, venueId });
                 if (staffCheck == 0) return Results.Unauthorized();
             }
@@ -123,7 +123,7 @@ public static class WalletEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -229,7 +229,7 @@ public static class WalletEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -368,7 +368,7 @@ public static class WalletEndpoints
             if (!isOwner)
             {
                 var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                     new { userId = userCtx.UserIdGuid, venueId });
                 if (staffCheck == 0) return Results.Unauthorized();
             }
@@ -406,7 +406,7 @@ public static class WalletEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 

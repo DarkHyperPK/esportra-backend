@@ -36,7 +36,7 @@ public static class ComboEndpoints
                 if (userCtx is null) return Results.Unauthorized();
 
                 var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                     new { userId = userCtx.UserIdGuid, venueId });
                 if (staffCheck == 0) return Results.Unauthorized();
 
@@ -90,7 +90,7 @@ public static class ComboEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -135,7 +135,7 @@ public static class ComboEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -180,7 +180,7 @@ public static class ComboEndpoints
 
             // Venue owner gate (role = 'owner')
             var ownerCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND role = 'owner' AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND role = 'owner' AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (ownerCheck == 0) return Results.Unauthorized();
 
@@ -227,7 +227,7 @@ public static class ComboEndpoints
                 if (userCtx is null) return Results.Unauthorized();
 
                 var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                    "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                     new { userId = userCtx.UserIdGuid, venueId });
                 if (staffCheck == 0) return Results.Unauthorized();
 
@@ -300,7 +300,7 @@ public static class ComboEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -366,7 +366,7 @@ public static class ComboEndpoints
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (staffCheck == 0) return Results.Unauthorized();
 
@@ -417,7 +417,7 @@ public static class ComboEndpoints
 
             // Venue owner gate (role = 'owner')
             var ownerCheck = await conn.QuerySingleOrDefaultAsync<int>(
-                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND role = 'owner' AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT 1 FROM venue_staff WHERE user_id = @userId AND venue_id = @venueId AND role = 'owner' AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid, venueId });
             if (ownerCheck == 0) return Results.Unauthorized();
 

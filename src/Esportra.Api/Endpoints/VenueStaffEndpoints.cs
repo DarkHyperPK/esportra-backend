@@ -30,7 +30,7 @@ public static class VenueStaffEndpoints
 
             // 1. Verify caller is venue owner
             var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isOwner) return Results.Forbid();
 
@@ -134,7 +134,7 @@ public static class VenueStaffEndpoints
 
             // Must be a staff member to view the list
             var isMember = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
@@ -180,7 +180,7 @@ public static class VenueStaffEndpoints
             using var conn = db.CreateConnection();
 
             var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isOwner) return Results.Forbid();
 
@@ -217,7 +217,7 @@ public static class VenueStaffEndpoints
             using var conn = db.CreateConnection();
 
             var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isOwner) return Results.Forbid();
 
@@ -339,7 +339,7 @@ public static class VenueStaffEndpoints
                        vs.role, vs.accepted_at
                 FROM venue_staff vs
                 JOIN venues v ON v.id = vs.venue_id AND v.deleted_at IS NULL
-                WHERE vs.user_id = @userId AND vs.accepted_at IS NOT NULL
+                WHERE vs.user_id = @userId AND vs.status = 'active'
                   AND v.owner_id != @userId
 
                 ORDER BY accepted_at DESC
@@ -383,7 +383,7 @@ public static class VenueStaffEndpoints
             using var conn = db.CreateConnection();
 
             var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND role = 'owner' AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isOwner) return Results.Forbid();
 

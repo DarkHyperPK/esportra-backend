@@ -27,7 +27,7 @@ public static class SessionRefundEndpoints
 
             // 1. Authorization: owner or manager only
             var staffRole = await conn.ExecuteScalarAsync<string?>(
-                "SELECT role FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT role FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active' LIMIT 1",
                 new { id, userId = userCtx.UserIdGuid });
 
             if (staffRole is not ("owner" or "manager"))
@@ -127,7 +127,7 @@ public static class SessionRefundEndpoints
             using var conn = db.CreateConnection();
 
             var isMember = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
@@ -167,7 +167,7 @@ public static class SessionRefundEndpoints
 
             // Only owner/manager can view venue-wide refund history
             var staffRole = await conn.ExecuteScalarAsync<string?>(
-                "SELECT role FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND accepted_at IS NOT NULL LIMIT 1",
+                "SELECT role FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active' LIMIT 1",
                 new { id, userId = userCtx.UserIdGuid });
             if (staffRole is not ("owner" or "manager"))
                 return Results.Forbid();
@@ -250,7 +250,7 @@ public static class SessionRefundEndpoints
             using var conn = db.CreateConnection();
 
             var isMember = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND accepted_at IS NOT NULL)",
+                "SELECT EXISTS(SELECT 1 FROM venue_staff WHERE venue_id = @id AND user_id = @userId AND status = 'active')",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
