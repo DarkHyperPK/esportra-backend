@@ -405,13 +405,13 @@ public static class TournamentEndpoints
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
-                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency
+                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
-                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency
+                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion
                     )
                     RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
@@ -452,6 +452,7 @@ public static class TournamentEndpoints
                         paymentInstructions  = req.PaymentInstructions,
                         region               = req.Region,
                         currency             = req.Currency ?? "USD",
+                        serverRegion         = req.ServerRegion,
                     },
                     tx);
 
@@ -3318,7 +3319,9 @@ public sealed record CreateTournamentRequest(
     string?       Rules             = null,
     List<string>? MapPoolIds        = null,
     string?    PaymentInstructions  = null,
-    string?    Currency             = null);
+    string?    Currency             = null,
+    string?    ServerRegion         = null,
+    string?    TournamentType       = null);
 
 public sealed record StageRequest(
     string  Name,
