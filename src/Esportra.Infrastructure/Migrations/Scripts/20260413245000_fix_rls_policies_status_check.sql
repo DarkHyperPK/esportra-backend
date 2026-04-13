@@ -21,7 +21,7 @@
 --            fix should be a deliberate, manual decision.
 -- ============================================================================
 
-BEGIN;
+-- DbUp wraps each script in a transaction automatically
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- 1. venue_menu_items  (3 policies)
@@ -396,4 +396,4 @@ CREATE POLICY pos_orders_staff_update ON pos_orders
     )
   );
 
-COMMIT;
+-- end of migration
