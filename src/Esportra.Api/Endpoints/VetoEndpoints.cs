@@ -152,9 +152,9 @@ public static class VetoEndpoints
                     await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                         .SendAsync(VetoHubEvents.VetoComplete, result, ct);
 
-                    // Auto-provision game server for CS2 matches
+                    // Auto-provision game server for CS2 matches (use CancellationToken.None — request scope dies after response)
                     _ = Task.Run(() => GameServerEndpoints.AutoProvisionServerAsync(
-                        matchId, db, dathost, matchHub, config, serverLogger, ct), ct);
+                        matchId, db, dathost, matchHub, config, serverLogger, CancellationToken.None));
                 }
 
                 return Results.Ok(result);
@@ -199,9 +199,9 @@ public static class VetoEndpoints
                     await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                         .SendAsync(VetoHubEvents.VetoComplete, result, ct);
 
-                    // Auto-provision game server for CS2 matches
+                    // Auto-provision game server for CS2 matches (use CancellationToken.None — request scope dies after response)
                     _ = Task.Run(() => GameServerEndpoints.AutoProvisionServerAsync(
-                        matchId, db, dathost, matchHub, config, serverLogger, ct), ct);
+                        matchId, db, dathost, matchHub, config, serverLogger, CancellationToken.None));
                 }
 
                 return Results.Ok(result);

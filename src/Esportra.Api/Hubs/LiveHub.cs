@@ -1056,13 +1056,73 @@ public sealed class LiveHub : Hub
         if (string.IsNullOrWhiteSpace(stationId))
         { await SendError("Station ID is required."); return; }
 
-        var connectionId = await AuthorizeAndGetHubConnection(venueId);
-        if (connectionId is null) return;
+        var userId = GetUserId();
+        if (userId is null) { await SendError("Not authenticated."); return; }
 
-        await _syncHub.Clients.Client(connectionId)
-            .SendAsync("EndSession", stationId);
+        var vid = ParseGuid(venueId);
+        if (vid is null) { await SendError("Invalid venue ID."); return; }
 
-        _logger.LogInformation("[LiveHub] EndSession relayed — venue={VenueId} station={StationId}", venueId, stationId);
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        { await SendError("Forbidden."); return; }
+
+        try
+        {
+            using var conn = _db.CreateConnection();
+
+            // Find and end active session in DB
+            var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT id, station_id, started_at
+                FROM venue_sessions
+                WHERE venue_id = @VenueId AND station_id = @StationId AND ended_at IS NULL
+                """,
+                new { VenueId = vid.Value, StationId = stationId });
+
+            if (session is not null)
+            {
+                var sessionId = (Guid)session.id;
+                var startedAt = (DateTimeOffset)session.started_at;
+                var durationMin = (int)Math.Ceiling((DateTimeOffset.UtcNow - startedAt).TotalMinutes);
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE venue_sessions
+                    SET ended_at = NOW(), ended_by = @EndedBy, duration_minutes = @Duration
+                    WHERE id = @Id
+                    """,
+                    new { Id = sessionId, EndedBy = Guid.Parse(userId), Duration = durationMin });
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO venue_session_events (session_id, event_type, metadata)
+                    VALUES (@SessionId, 'ended', @Metadata::jsonb)
+                    """,
+                    new
+                    {
+                        SessionId = sessionId,
+                        Metadata = JsonSerializer.Serialize(new { ended_by = userId, duration_minutes = durationMin }),
+                    });
+            }
+
+            // Relay lock command to agent
+            var connectionId = _tracker.GetConnectionId(venueId);
+            if (connectionId is not null)
+            {
+                await _syncHub.Clients.Client(connectionId)
+                    .SendAsync("EndSession", stationId);
+            }
+
+            // Notify dashboard
+            await Clients.Group(VenueGroup(venueId))
+                .SendAsync("SessionEnded", new { station_id = stationId, venue_id = venueId });
+
+            _logger.LogInformation("[LiveHub] EndSession — venue={VenueId} station={StationId}", venueId, stationId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "EndSession failed for venue {VenueId} station {StationId}", venueId, stationId);
+            await SendError("Failed to end session.");
+        }
     }
 
     public async Task ExtendSession(string venueId, string stationId, int additionalMinutes)
@@ -1072,13 +1132,57 @@ public sealed class LiveHub : Hub
         if (additionalMinutes <= 0 || additionalMinutes > 1440)
         { await SendError("Additional minutes must be between 1 and 1440."); return; }
 
-        var connectionId = await AuthorizeAndGetHubConnection(venueId);
-        if (connectionId is null) return;
+        var userId = GetUserId();
+        if (userId is null) { await SendError("Not authenticated."); return; }
 
-        await _syncHub.Clients.Client(connectionId)
-            .SendAsync("ExtendSession", stationId, additionalMinutes);
+        var vid = ParseGuid(venueId);
+        if (vid is null) { await SendError("Invalid venue ID."); return; }
 
-        _logger.LogInformation("[LiveHub] ExtendSession relayed — venue={VenueId} station={StationId} minutes={Minutes}", venueId, stationId, additionalMinutes);
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        { await SendError("Forbidden."); return; }
+
+        try
+        {
+            using var conn = _db.CreateConnection();
+
+            // Extend in DB
+            await conn.ExecuteAsync(
+                """
+                UPDATE venue_sessions
+                SET expires_at = GREATEST(expires_at, NOW()) + (@Minutes || ' minutes')::interval
+                WHERE venue_id = @VenueId AND station_id = @StationId AND ended_at IS NULL
+                """,
+                new { VenueId = vid.Value, StationId = stationId, Minutes = additionalMinutes.ToString() });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO venue_session_events (session_id, event_type, metadata)
+                SELECT id, 'extended', @Metadata::jsonb
+                FROM venue_sessions
+                WHERE venue_id = @VenueId AND station_id = @StationId AND ended_at IS NULL
+                """,
+                new
+                {
+                    VenueId = vid.Value,
+                    StationId = stationId,
+                    Metadata = JsonSerializer.Serialize(new { extended_by = userId, additional_minutes = additionalMinutes }),
+                });
+
+            // Relay to agent
+            var connectionId = _tracker.GetConnectionId(venueId);
+            if (connectionId is not null)
+            {
+                await _syncHub.Clients.Client(connectionId)
+                    .SendAsync("ExtendSession", stationId, additionalMinutes);
+            }
+
+            _logger.LogInformation("[LiveHub] ExtendSession — venue={VenueId} station={StationId} minutes={Minutes}", venueId, stationId, additionalMinutes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ExtendSession failed for venue {VenueId}", venueId);
+            await SendError("Failed to extend session.");
+        }
     }
 
     public async Task CreateSession(string venueId, string stationId, object sessionConfig)
@@ -1086,13 +1190,141 @@ public sealed class LiveHub : Hub
         if (string.IsNullOrWhiteSpace(stationId))
         { await SendError("Station ID is required."); return; }
 
-        var connectionId = await AuthorizeAndGetHubConnection(venueId);
-        if (connectionId is null) return;
+        var userId = GetUserId();
+        if (userId is null) { await SendError("Not authenticated."); return; }
 
-        await _syncHub.Clients.Client(connectionId)
-            .SendAsync("CreateSession", stationId, sessionConfig);
+        var vid = ParseGuid(venueId);
+        if (vid is null) { await SendError("Invalid venue ID."); return; }
 
-        _logger.LogInformation("[LiveHub] CreateSession relayed — venue={VenueId} station={StationId}", venueId, stationId);
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        { await SendError("Forbidden."); return; }
+
+        try
+        {
+            // Parse session config
+            var configJson = JsonSerializer.Serialize(sessionConfig);
+            var config = JsonSerializer.Deserialize<JsonElement>(configJson);
+
+            var sessionType = config.TryGetProperty("session_type", out var st) ? st.GetString() ?? "hourly" : "hourly";
+            var displayName = config.TryGetProperty("display_name", out var dn) ? dn.GetString() : null;
+            var durationMin = config.TryGetProperty("duration_minutes", out var dm) ? dm.GetInt32() : 0;
+            var notes = config.TryGetProperty("notes", out var n) ? n.GetString() : null;
+
+            var expiresAt = durationMin > 0
+                ? DateTimeOffset.UtcNow.AddMinutes(durationMin)
+                : DateTimeOffset.UtcNow.AddHours(24);
+
+            using var conn = _db.CreateConnection();
+
+            // Get zone rate if available
+            var zoneRate = await conn.QuerySingleOrDefaultAsync<decimal?>(
+                """
+                SELECT z.hourly_rate
+                FROM venue_stations vs
+                JOIN zones z ON z.id = vs.zone_id
+                WHERE vs.venue_id = @VenueId AND vs.station_id = @StationId
+                """,
+                new { VenueId = vid.Value, StationId = stationId });
+
+            var station = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT zone FROM venue_stations WHERE venue_id = @VenueId AND station_id = @StationId",
+                new { VenueId = vid.Value, StationId = stationId });
+
+            var sessionId = await conn.QuerySingleAsync<Guid>(
+                """
+                INSERT INTO venue_sessions
+                    (venue_id, station_id, session_type, started_at, expires_at,
+                     rate_per_hour, display_name, zone, staff_id, notes)
+                VALUES
+                    (@VenueId, @StationId, @SessionType, NOW(), @ExpiresAt,
+                     @RatePerHour, @DisplayName, @Zone, @StaffId, @Notes)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,
+                new
+                {
+                    VenueId = vid.Value,
+                    StationId = stationId,
+                    SessionType = sessionType,
+                    ExpiresAt = expiresAt,
+                    RatePerHour = zoneRate,
+                    DisplayName = displayName,
+                    Zone = (string?)station?.zone,
+                    StaffId = Guid.Parse(userId),
+                    Notes = notes,
+                });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO venue_session_events (session_id, event_type, metadata)
+                VALUES (@SessionId, 'started', @Metadata::jsonb)
+                """,
+                new
+                {
+                    SessionId = sessionId,
+                    Metadata = JsonSerializer.Serialize(new { started_by = userId, session_type = sessionType }),
+                });
+
+            // Relay unlock to agent
+            var connectionId = _tracker.GetConnectionId(venueId);
+            if (connectionId is not null)
+            {
+                await _syncHub.Clients.Client(connectionId)
+                    .SendAsync("CreateSession", stationId, sessionConfig);
+            }
+
+            // Notify dashboard
+            await Clients.Group(VenueGroup(venueId))
+                .SendAsync("SessionStarted", new { session_id = sessionId, station_id = stationId, venue_id = venueId });
+
+            _logger.LogInformation("[LiveHub] CreateSession — venue={VenueId} station={StationId} session={SessionId}", venueId, stationId, sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "CreateSession failed for venue {VenueId} station {StationId}", venueId, stationId);
+            await SendError("Failed to create session.");
+        }
+    }
+
+    /// <summary>Get all active sessions for a venue with elapsed time and zone info.</summary>
+    public async Task<object[]> GetActiveSessions(string venueId)
+    {
+        var userId = GetUserId();
+        if (userId is null) { await SendError("Not authenticated."); return []; }
+
+        var vid = ParseGuid(venueId);
+        if (vid is null) { await SendError("Invalid venue ID."); return []; }
+
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        { await SendError("Forbidden."); return []; }
+
+        try
+        {
+            using var conn = _db.CreateConnection();
+            var sessions = await conn.QueryAsync<dynamic>(
+                """
+                SELECT s.id, s.station_id, s.session_type, s.started_at, s.expires_at,
+                       s.rate_per_hour, s.total_charged, s.display_name, s.zone,
+                       s.member_id, s.staff_id, s.notes,
+                       EXTRACT(EPOCH FROM (NOW() - s.started_at)) / 60 AS elapsed_minutes,
+                       vs.label AS station_label,
+                       z.name AS zone_name, z.color AS zone_color, z.hourly_rate AS zone_rate
+                FROM venue_sessions s
+                LEFT JOIN venue_stations vs ON vs.venue_id = s.venue_id AND vs.station_id = s.station_id
+                LEFT JOIN zones z ON z.id = vs.zone_id
+                WHERE s.venue_id = @VenueId AND s.ended_at IS NULL
+                ORDER BY s.started_at DESC
+                """,
+                new { VenueId = vid.Value });
+
+            return sessions.Select(s => (object)s).ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetActiveSessions failed for venue {VenueId}", venueId);
+            await SendError("Failed to load active sessions.");
+            return [];
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

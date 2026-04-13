@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -27,7 +26,7 @@ public static class GameServerEndpoints
                     })
                 });
             return Results.Ok(grouped);
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/matches/{matchId}/server ────────────────────────────────
         app.MapGet("/api/matches/{matchId}/server", async (
@@ -89,9 +88,24 @@ public static class GameServerEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Check if server already exists for this match
+            // Authorization: must be tournament organizer or platform admin
+            var isAuthorized = await conn.QuerySingleOrDefaultAsync<bool>(
+                @"SELECT EXISTS(
+                    SELECT 1 FROM tournaments t
+                    JOIN tournament_stages s ON s.tournament_id = t.id
+                    JOIN brkt_versions v ON v.stage_id = s.id
+                    JOIN brkt_matches m ON m.version_id = v.id
+                    WHERE m.id = @matchId AND t.organizer_id = @userId
+                  UNION ALL
+                    SELECT 1 FROM admin_user_roles WHERE user_id = @userId
+                )",
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isAuthorized)
+                return Results.Json(new { error = "Only tournament organizers or admins can provision servers." }, statusCode: 403);
+
+            // Check if server already exists for this match (exclude failed — allow retry)
             var existing = await conn.QuerySingleOrDefaultAsync<string?>(
-                "SELECT status FROM game_servers WHERE match_id = @matchId AND deleted_at IS NULL LIMIT 1",
+                "SELECT status FROM game_servers WHERE match_id = @matchId AND deleted_at IS NULL AND status != 'failed' LIMIT 1",
                 new { matchId });
             if (existing is not null)
                 return Results.Conflict(new { error = "Server already provisioned for this match.", status = existing });
@@ -113,6 +127,10 @@ public static class GameServerEndpoints
             string region = (string?)match.server_region ?? "amsterdam";
             string game = (string?)match.game ?? "CS2";
 
+            // Validate region is a known DatHost location
+            if (!DatHostRegions.All.Any(r => r.LocationId == region))
+                region = "amsterdam";
+
             // Only provision for CS2
             if (!game.Equals("CS2", StringComparison.OrdinalIgnoreCase) &&
                 !game.Equals("Counter-Strike 2", StringComparison.OrdinalIgnoreCase))
@@ -126,12 +144,13 @@ public static class GameServerEndpoints
                 new { matchId }) ?? "de_dust2";
 
             // Normalize map name
-            if (!startMap.StartsWith("de_"))
+            if (!startMap.StartsWith("de_") && !startMap.StartsWith("cs_") && !startMap.StartsWith("ar_"))
                 startMap = "de_" + startMap.ToLower().Replace(" ", "_");
 
             var gslt = config["DatHost:Gslt"] ?? "";
             var rconPassword = Guid.NewGuid().ToString("N")[..12];
-            var serverName = $"Esportra-{match.tournament_name?[..Math.Min(20, ((string)match.tournament_name).Length)]}-M{matchId.ToString()[..8]}";
+            string tournamentName = ((string?)match.tournament_name) ?? "Tournament";
+            var serverName = $"Esportra-{tournamentName[..Math.Min(20, tournamentName.Length)]}-M{matchId.ToString()[..8]}";
 
             try
             {
@@ -151,6 +170,7 @@ public static class GameServerEndpoints
                 var serverId = await conn.QuerySingleAsync<Guid>(
                     @"INSERT INTO game_servers (match_id, tournament_id, provider, external_id, region, ip, raw_ip, port, gotv_port, rcon_password, map, status, cost_per_hour, server_name)
                       VALUES (@matchId, @tournamentId, 'dathost', @externalId, @region, @ip, @rawIp, @port, @gotvPort, @rcon, @map, 'provisioned', @cost, @name)
+                      ON CONFLICT DO NOTHING
                       RETURNING id",
                     new
                     {
@@ -210,10 +230,10 @@ public static class GameServerEndpoints
             {
                 logger.LogError(ex, "Failed to provision server for match {MatchId}", matchId);
 
-                // Record the failure
+                // Record the failure (mark deleted_at so it doesn't block retry)
                 await conn.ExecuteAsync(
-                    @"INSERT INTO game_servers (match_id, tournament_id, provider, external_id, region, status, error_message, server_name)
-                      VALUES (@matchId, @tournamentId, 'dathost', '', @region, 'failed', @error, @name)",
+                    @"INSERT INTO game_servers (match_id, tournament_id, provider, external_id, region, status, error_message, server_name, deleted_at)
+                      VALUES (@matchId, @tournamentId, 'dathost', '', @region, 'failed', @error, @name, now())",
                     new
                     {
                         matchId,
@@ -241,6 +261,21 @@ public static class GameServerEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            // Authorization: must be tournament organizer or platform admin
+            var isAuthorized = await conn.QuerySingleOrDefaultAsync<bool>(
+                @"SELECT EXISTS(
+                    SELECT 1 FROM tournaments t
+                    JOIN tournament_stages s ON s.tournament_id = t.id
+                    JOIN brkt_versions v ON v.stage_id = s.id
+                    JOIN brkt_matches m ON m.version_id = v.id
+                    WHERE m.id = @matchId AND t.organizer_id = @userId
+                  UNION ALL
+                    SELECT 1 FROM admin_user_roles WHERE user_id = @userId
+                )",
+                new { matchId, userId = userCtx.UserIdGuid });
+            if (!isAuthorized)
+                return Results.Json(new { error = "Only tournament organizers or admins can delete servers." }, statusCode: 403);
 
             var server = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id, external_id, status FROM game_servers WHERE match_id = @matchId AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
@@ -283,9 +318,9 @@ public static class GameServerEndpoints
         {
             using var conn = db.CreateConnection();
 
-            // Check if already provisioned
+            // Check if already provisioned (exclude failed — allow retry)
             var existing = await conn.QuerySingleOrDefaultAsync<string?>(
-                "SELECT status FROM game_servers WHERE match_id = @matchId AND deleted_at IS NULL LIMIT 1",
+                "SELECT status FROM game_servers WHERE match_id = @matchId AND deleted_at IS NULL AND status != 'failed' LIMIT 1",
                 new { matchId });
             if (existing is not null) return;
 
@@ -307,12 +342,16 @@ public static class GameServerEndpoints
 
             string region = (string?)match.server_region ?? "amsterdam";
 
+            // Validate region is a known DatHost location
+            if (!DatHostRegions.All.Any(r => r.LocationId == region))
+                region = "amsterdam";
+
             var startMap = await conn.QuerySingleOrDefaultAsync<string?>(
                 @"SELECT picked_maps->0->>'map_id'
                   FROM match_map_vetos WHERE match_id = @matchId AND status = 'completed'",
                 new { matchId }) ?? "de_dust2";
 
-            if (!startMap.StartsWith("de_"))
+            if (!startMap.StartsWith("de_") && !startMap.StartsWith("cs_") && !startMap.StartsWith("ar_"))
                 startMap = "de_" + startMap.ToLower().Replace(" ", "_");
 
             var gslt = config["DatHost:Gslt"] ?? "";
@@ -331,9 +370,11 @@ public static class GameServerEndpoints
                 EnableGotv = true,
             }, ct);
 
-            var serverId = await conn.QuerySingleAsync<Guid>(
+            // INSERT with ON CONFLICT to prevent race-condition duplicates
+            var serverId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 @"INSERT INTO game_servers (match_id, tournament_id, provider, external_id, region, ip, raw_ip, port, gotv_port, rcon_password, map, status, cost_per_hour, server_name, started_at)
                   VALUES (@matchId, @tournamentId, 'dathost', @externalId, @region, @ip, @rawIp, @port, @gotvPort, @rcon, @map, 'starting', @cost, @name, now())
+                  ON CONFLICT (match_id) WHERE deleted_at IS NULL DO NOTHING
                   RETURNING id",
                 new
                 {
@@ -350,6 +391,15 @@ public static class GameServerEndpoints
                     cost = server.CostPerHour,
                     name = serverName,
                 });
+
+            if (serverId is null)
+            {
+                // Race condition: another thread already inserted — clean up the DatHost server we just created
+                try { await dathost.DeleteServerAsync(server.Id, ct); }
+                catch { /* best-effort cleanup */ }
+                logger.LogWarning("Auto-provision race detected for match {MatchId} — duplicate server cleaned up", matchId);
+                return;
+            }
 
             await dathost.StartServerAsync(server.Id, ct);
 

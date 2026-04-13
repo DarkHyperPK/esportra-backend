@@ -269,6 +269,7 @@ builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
+builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
@@ -431,6 +432,8 @@ app.MapLoyaltyEndpoints();
 app.MapAnnouncementEndpoints();
 app.MapComboEndpoints();
 app.MapGameServerEndpoints();
+app.MapSessionEndpoints();
+app.MapZoneEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");

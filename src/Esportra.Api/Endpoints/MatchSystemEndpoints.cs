@@ -449,9 +449,10 @@ public static class MatchSystemEndpoints
                                             id, winnerId, team1Wins, team2Wins, bestOf);
 
                                         // Auto-delete game server after match finalized
+                                        var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
                                         _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
-                                            id, db, ctx.RequestServices.GetRequiredService<IDatHostService>(),
-                                            matchHub, logger, ct), ct);
+                                            id, db, dathostSvc,
+                                            matchHub, logger, CancellationToken.None));
 
                                         // Check if all matches in this stage are now completed → set stage + tournament winner
                                         try
