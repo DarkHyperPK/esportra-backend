@@ -1494,4 +1494,16 @@ public static class LiveHubEvents
 
     /// <summary>Error message to the caller.</summary>
     public const string Error = "Error";
+
+    /// <summary>
+    /// A new POS order was created.
+    /// Payload: { order_id, venue_id, station_id, status, total, item_count, created_at }
+    /// </summary>
+    public const string POSOrderCreated = "POSOrderCreated";
+
+    /// <summary>
+    /// A POS order status changed (preparing, ready, delivered, cancelled).
+    /// Payload: { order_id, venue_id, station_id, previous_status, status, updated_at }
+    /// </summary>
+    public const string POSOrderStatusChanged = "POSOrderStatusChanged";
 }
