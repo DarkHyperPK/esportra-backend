@@ -435,6 +435,8 @@ app.MapGameServerEndpoints();
 app.MapSessionEndpoints();
 app.MapZoneEndpoints();
 app.MapMemberEndpoints();
+app.MapBookingRulesEndpoints();
+app.MapWalkInEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
