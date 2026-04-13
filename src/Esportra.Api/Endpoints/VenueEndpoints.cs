@@ -750,50 +750,6 @@ public static class VenueEndpoints
             });
         }).RequireAuthorization("Authenticated");
 
-        // ── POST /api/venues/{id}/hub-heartbeat — Hub self-reports LAN URL + version
-        // Authenticated by the hub API key (plain key checked against bcrypt hash).
-        app.MapPost("/api/venues/{id}/hub-heartbeat", async (
-            Guid                 id,
-            HttpContext          ctx,
-            IDbConnectionFactory db,
-            CancellationToken    ct) =>
-        {
-            // Hub sends its API key in X-Hub-ApiKey header
-            var apiKey = ctx.Request.Headers["X-Hub-ApiKey"].FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(apiKey))
-                return Results.Unauthorized();
-
-            using var conn = db.CreateConnection();
-
-            var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
-                "SELECT id, hub_api_key_hash FROM venues WHERE id = @id AND deleted_at IS NULL",
-                new { id });
-
-            if (venue is null) return Results.NotFound();
-            if (venue.hub_api_key_hash is null) return Results.Forbid();
-
-            // Verify bcrypt hash
-            if (!BCrypt.Net.BCrypt.Verify(apiKey, (string)venue.hub_api_key_hash))
-                return Results.Forbid();
-
-            // Read heartbeat payload
-            var body = await ctx.Request.ReadFromJsonAsync<HubHeartbeatRequest>(ct);
-            if (body is null || string.IsNullOrWhiteSpace(body.LanUrl))
-                return Results.BadRequest(new { error = "lanUrl is required." });
-
-            await conn.ExecuteAsync(
-                """
-                UPDATE venues
-                SET hub_lan_url        = @lanUrl,
-                    hub_version        = @version,
-                    hub_last_heartbeat = NOW()
-                WHERE id = @id
-                """,
-                new { lanUrl = body.LanUrl.TrimEnd('/'), version = body.Version, id });
-
-            return Results.Ok(new { success = true });
-        }).AllowAnonymous(); // No JWT auth — uses API key header instead
-
         // ── GET /api/venues/{id}/hub-config — hub connection config for desktop app
         app.MapGet("/api/venues/{id}/hub-config", async (
             Guid                 id,
@@ -809,8 +765,7 @@ public static class VenueEndpoints
 
             var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
                 """
-                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at,
-                       hub_lan_url, hub_version, hub_last_heartbeat
+                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at
                 FROM venues
                 WHERE id = @id AND deleted_at IS NULL
                 """,
@@ -819,15 +774,15 @@ public static class VenueEndpoints
             if (venue is null) return Results.NotFound();
             if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
 
+            var hubUrl = config["VenueHub:Url"]?.TrimEnd('/') ?? "";
+
             return Results.Ok(new
             {
-                venueId         = id,
-                hubLanUrl       = (string?)venue.hub_lan_url,
-                hubVersion      = (string?)venue.hub_version,
-                hubLastHeartbeat = (DateTimeOffset?)venue.hub_last_heartbeat,
-                hasKey          = venue.hub_api_key_hash is not null,
-                keyIssuedAt     = (DateTimeOffset?)venue.hub_key_issued_at,
-                keyRotatedAt    = (DateTimeOffset?)venue.hub_key_rotated_at
+                venueId       = id,
+                hubUrl,
+                hasKey        = venue.hub_api_key_hash is not null,
+                keyIssuedAt   = (DateTimeOffset?)venue.hub_key_issued_at,
+                keyRotatedAt  = (DateTimeOffset?)venue.hub_key_rotated_at
             });
         }).RequireAuthorization("Authenticated");
     }
@@ -910,5 +865,3 @@ public sealed record CreateBookingRequest(
     string?  ContactEmail    = null);
 
 public sealed record TrackImpressionRequest(string EventType);
-
-public sealed record HubHeartbeatRequest(string LanUrl, string? Version = null);
