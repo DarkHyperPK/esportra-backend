@@ -1350,7 +1350,7 @@ public sealed class LiveHub : Hub
             SELECT EXISTS (
                 SELECT 1 FROM venues WHERE id = @VenueId AND owner_id = @UserId AND deleted_at IS NULL
                 UNION ALL
-                SELECT 1 FROM venue_staff WHERE venue_id = @VenueId AND user_id = @UserId AND accepted_at IS NOT NULL
+                SELECT 1 FROM venue_staff WHERE venue_id = @VenueId AND user_id = @UserId AND status = 'active'
             )
             """,
             new { VenueId = venueId, UserId = Guid.Parse(userId) });
