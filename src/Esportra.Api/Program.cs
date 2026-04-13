@@ -440,6 +440,7 @@ app.MapWalkInEndpoints();
 app.MapPOSEndpoints();
 app.MapPackageEndpoints();
 app.MapVenueAnalyticsEndpoints();
+app.MapStaffPermissionEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
