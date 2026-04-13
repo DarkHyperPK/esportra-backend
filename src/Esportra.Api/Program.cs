@@ -441,6 +441,7 @@ app.MapPOSEndpoints();
 app.MapPackageEndpoints();
 app.MapVenueAnalyticsEndpoints();
 app.MapStaffPermissionEndpoints();
+app.MapNotificationPreferenceEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket");
