@@ -326,12 +326,23 @@ public static class VenueStaffEndpoints
 
             var venues = await conn.QueryAsync<dynamic>(
                 """
+                -- Venues where user is direct owner
+                SELECT v.id, v.name, v.address, v.city, v.country, v.card_image,
+                       'owner' AS role, v.created_at AS accepted_at
+                FROM venues v
+                WHERE v.owner_id = @userId AND v.deleted_at IS NULL
+
+                UNION
+
+                -- Venues where user is staff member (manager/cashier)
                 SELECT v.id, v.name, v.address, v.city, v.country, v.card_image,
                        vs.role, vs.accepted_at
                 FROM venue_staff vs
                 JOIN venues v ON v.id = vs.venue_id AND v.deleted_at IS NULL
                 WHERE vs.user_id = @userId AND vs.accepted_at IS NOT NULL
-                ORDER BY vs.accepted_at DESC
+                  AND v.owner_id != @userId
+
+                ORDER BY accepted_at DESC
                 """,
                 new { userId = userCtx.UserIdGuid });
 
