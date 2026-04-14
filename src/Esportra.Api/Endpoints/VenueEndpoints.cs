@@ -1,6 +1,7 @@
 ﻿using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -447,7 +448,22 @@ public static class VenueEndpoints
 
             var stations = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, venue_id, station_id, label, zone, pos_x, pos_y, created_at
+                SELECT id,
+                       station_id,
+                       COALESCE(NULLIF(label, ''), station_id) AS name,
+                       ROW_NUMBER() OVER (ORDER BY label, station_id) AS station_number,
+                       CASE
+                           WHEN status = 'maintenance' THEN 'maintenance'
+                           WHEN status = 'offline' THEN 'offline'
+                           WHEN status = 'active' THEN 'available'
+                           ELSE COALESCE(status, 'available')
+                       END AS status,
+                       zone,
+                       pos_x, pos_y, width, height, rotation,
+                       NULL::text AS current_session,
+                       NULL::text AS hardware,
+                       NULL::text AS last_seen,
+                       created_at
                 FROM venue_stations
                 WHERE venue_id = @id
                 ORDER BY label, station_id
@@ -795,11 +811,12 @@ public static class VenueEndpoints
 
         // ── GET /api/venues/{id}/hub-config — hub connection config for desktop app
         app.MapGet("/api/venues/{id}/hub-config", async (
-            Guid                 id,
-            HttpContext          ctx,
-            IDbConnectionFactory db,
-            IConfiguration       config,
-            CancellationToken    ct) =>
+            Guid                     id,
+            HttpContext               ctx,
+            IDbConnectionFactory     db,
+            IConfiguration           config,
+            VenueConnectionTracker   tracker,
+            CancellationToken        ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -818,14 +835,17 @@ public static class VenueEndpoints
             if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
 
             var hubUrl = config["VenueHub:Url"]?.TrimEnd('/') ?? "";
+            var connInfo = tracker.GetConnectionInfo(id.ToString());
 
             return Results.Ok(new
             {
-                venueId       = id,
+                venueId        = id,
                 hubUrl,
-                hasKey        = venue.hub_api_key_hash is not null,
-                keyIssuedAt   = (DateTimeOffset?)venue.hub_key_issued_at,
-                keyRotatedAt  = (DateTimeOffset?)venue.hub_key_rotated_at
+                hasKey         = venue.hub_api_key_hash is not null,
+                keyIssuedAt    = (DateTimeOffset?)venue.hub_key_issued_at,
+                keyRotatedAt   = (DateTimeOffset?)venue.hub_key_rotated_at,
+                hubConnected   = connInfo is not null,
+                hubConnectedAt = connInfo?.ConnectedAt
             });
         }).RequireAuthorization("Authenticated");
 
