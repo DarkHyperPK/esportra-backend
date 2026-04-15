@@ -426,6 +426,7 @@ app.MapVetoEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
 app.MapSponsorEndpoints();
+app.MapTournamentSponsorEndpoints();
 app.MapSitemapEndpoints();
 app.MapWalletEndpoints();
 app.MapLoyaltyEndpoints();
