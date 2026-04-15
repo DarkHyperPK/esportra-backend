@@ -386,6 +386,7 @@ public static class GameServerEndpoints
 
             var gslt = config["DatHost:Gslt"] ?? "";
             var rconPassword = Guid.NewGuid().ToString("N")[..12];
+            var matchzySecret = Guid.NewGuid().ToString("N");
             var serverName = $"Esportra-M{matchId.ToString()[..8]}";
 
             var server = await dathost.CreateServerAsync(new DatHostCreateRequest
@@ -398,12 +399,13 @@ public static class GameServerEndpoints
                 Slots = 12,
                 Tickrate = 128,
                 EnableGotv = true,
+                EnableSourceMod = true,
             }, ct);
 
             // INSERT with ON CONFLICT to prevent race-condition duplicates
             var serverId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                @"INSERT INTO game_servers (match_id, tournament_id, provider, external_id, region, ip, raw_ip, port, gotv_port, rcon_password, map, status, cost_per_hour, server_name, started_at)
-                  VALUES (@matchId, @tournamentId, 'dathost', @externalId, @region, @ip, @rawIp, @port, @gotvPort, @rcon, @map, 'starting', @cost, @name, now())
+                @"INSERT INTO game_servers (match_id, tournament_id, provider, external_id, region, ip, raw_ip, port, gotv_port, rcon_password, map, status, cost_per_hour, server_name, started_at, matchzy_secret, auto_managed)
+                  VALUES (@matchId, @tournamentId, 'dathost', @externalId, @region, @ip, @rawIp, @port, @gotvPort, @rcon, @map, 'starting', @cost, @name, now(), @matchzySecret, TRUE)
                   ON CONFLICT (match_id) WHERE deleted_at IS NULL DO NOTHING
                   RETURNING id",
                 new
@@ -420,6 +422,7 @@ public static class GameServerEndpoints
                     map = startMap,
                     cost = server.CostPerHour,
                     name = serverName,
+                    matchzySecret,
                 });
 
             if (serverId is null)
@@ -432,6 +435,9 @@ public static class GameServerEndpoints
             }
 
             await dathost.StartServerAsync(server.Id, ct);
+
+            // Fire-and-forget: configure MatchZy after server boot (needs delay for server to be ready)
+            _ = ConfigureMatchZyAsync(server.Id, matchId, matchzySecret, dathost, config, logger);
 
             await matchHub.Clients.Group($"match:{matchId}")
                 .SendAsync("ServerProvisioned", new
@@ -451,6 +457,54 @@ public static class GameServerEndpoints
         catch (Exception ex)
         {
             logger.LogError(ex, "Auto-provision failed for match {MatchId}", matchId);
+        }
+    }
+
+    private static async Task ConfigureMatchZyAsync(
+        string datHostServerId,
+        Guid matchId,
+        string matchzySecret,
+        IDatHostService dathost,
+        IConfiguration config,
+        ILogger logger)
+    {
+        try
+        {
+            var baseUrl = config["App:BaseUrl"]?.TrimEnd('/') ?? "https://api-staging.esportra.com";
+
+            // Wait for server to be fully booted before sending RCON commands
+            // DatHost servers typically take 15-30 seconds to become responsive to RCON
+            await Task.Delay(TimeSpan.FromSeconds(20), CancellationToken.None);
+
+            // RCON commands to configure MatchZy
+            var commands = new[]
+            {
+                $"matchzy_remote_log_url \"{baseUrl}/api/matchzy/events\"",
+                $"matchzy_remote_log_header_key \"Authorization\"",
+                $"matchzy_remote_log_header_value \"Bearer {matchzySecret}\"",
+                "matchzy_kick_when_no_match_loaded true",
+                $"matchzy_loadmatch_url \"{baseUrl}/api/matchzy/config/{matchId}?secret={matchzySecret}\"",
+            };
+
+            // Send each command with a small delay between them for reliability
+            foreach (var cmd in commands)
+            {
+                try
+                {
+                    await dathost.SendConsoleCommandAsync(datHostServerId, cmd, CancellationToken.None);
+                    await Task.Delay(500, CancellationToken.None); // Small delay between commands
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "MatchZy RCON command failed for server {ServerId}: {Command}", datHostServerId, cmd);
+                }
+            }
+
+            logger.LogInformation("MatchZy configured for match {MatchId} on DatHost server {ServerId}", matchId, datHostServerId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to configure MatchZy for match {MatchId}", matchId);
         }
     }
 

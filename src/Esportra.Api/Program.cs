@@ -400,6 +400,7 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapIntegrationEndpoints();
+app.MapSteamAccountEndpoints();
 app.MapGameEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
@@ -433,6 +434,7 @@ app.MapLoyaltyEndpoints();
 app.MapAnnouncementEndpoints();
 app.MapComboEndpoints();
 app.MapGameServerEndpoints();
+app.MapMatchZyEndpoints();
 app.MapSessionEndpoints();
 app.MapZoneEndpoints();
 app.MapMemberEndpoints();

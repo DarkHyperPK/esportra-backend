@@ -53,6 +53,9 @@ public class DatHostService : IDatHostService
             ["autostop_minutes"] = "30",
         };
 
+        if (request.EnableSourceMod)
+            form["csgo_settings.enable_sourcemod"] = "true";
+
         var content = new FormUrlEncodedContent(form);
         var response = await _http.PostAsync($"{BaseUrl}/game-servers", content, ct);
 
@@ -149,6 +152,7 @@ public record DatHostCreateRequest
     public int Slots { get; init; } = 12;
     public int Tickrate { get; init; } = 128;
     public bool EnableGotv { get; init; } = true;
+    public bool EnableSourceMod { get; init; } = false;
     public string? ServerPassword { get; init; }
 }
 
