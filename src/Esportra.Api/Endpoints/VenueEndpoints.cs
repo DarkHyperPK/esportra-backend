@@ -825,7 +825,8 @@ public static class VenueEndpoints
 
             var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
                 """
-                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at
+                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at,
+                       hub_lan_url, hub_version, hub_last_heartbeat
                 FROM venues
                 WHERE id = @id AND deleted_at IS NULL
                 """,
@@ -839,15 +840,57 @@ public static class VenueEndpoints
 
             return Results.Ok(new
             {
-                venueId        = id,
+                venueId          = id,
                 hubUrl,
-                hasKey         = venue.hub_api_key_hash is not null,
-                keyIssuedAt    = (DateTimeOffset?)venue.hub_key_issued_at,
-                keyRotatedAt   = (DateTimeOffset?)venue.hub_key_rotated_at,
-                hubConnected   = connInfo is not null,
-                hubConnectedAt = connInfo?.ConnectedAt
+                hubLanUrl        = (string?)venue.hub_lan_url,
+                hubVersion       = (string?)venue.hub_version,
+                hubLastHeartbeat = (DateTimeOffset?)venue.hub_last_heartbeat,
+                hasKey           = venue.hub_api_key_hash is not null,
+                keyIssuedAt      = (DateTimeOffset?)venue.hub_key_issued_at,
+                keyRotatedAt     = (DateTimeOffset?)venue.hub_key_rotated_at,
+                hubConnected     = connInfo is not null,
+                hubConnectedAt   = connInfo?.ConnectedAt
             });
         }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/venues/{id}/hub-heartbeat — local hub reports its LAN URL & version
+        app.MapPost("/api/venues/{id}/hub-heartbeat", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            // Authenticate via X-Hub-ApiKey header (same key the hub uses for VenueSyncHub)
+            var apiKey = ctx.Request.Headers["X-Hub-ApiKey"].ToString();
+            if (string.IsNullOrEmpty(apiKey))
+                return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var hash = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT hub_api_key_hash FROM venues WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+
+            if (hash is null || !BCrypt.Net.BCrypt.Verify(apiKey, hash))
+                return Results.Unauthorized();
+
+            // Parse body
+            var body = await ctx.Request.ReadFromJsonAsync<HeartbeatPayload>(ct);
+            if (body is null)
+                return Results.BadRequest(new { error = "Invalid payload" });
+
+            // Update venue with hub info
+            await conn.ExecuteAsync(
+                """
+                UPDATE venues
+                SET hub_lan_url = @lanUrl,
+                    hub_version = @version,
+                    hub_last_heartbeat = NOW()
+                WHERE id = @id
+                """,
+                new { id, lanUrl = body.LanUrl, version = body.Version });
+
+            return Results.Ok(new { status = "ok" });
+        });
 
         // ── GET /api/venues/{id}/availability/slots — time-slot availability ─
         app.MapGet("/api/venues/{id}/availability/slots", async (
@@ -1196,3 +1239,5 @@ public sealed record CreateBookingRequest(
     string?  ContactEmail    = null);
 
 public sealed record TrackImpressionRequest(string EventType);
+
+public sealed record HeartbeatPayload(string? LanUrl, string? Version);
