@@ -2809,7 +2809,7 @@ public static class AdminEndpoints
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT id, username, email, full_name, avatar_url, bio, location, country_code,
-                       date_of_birth, riot_tag, faceit_nickname, social_links, card_image_url,
+                       date_of_birth, riot_tag, social_links, card_image_url,
                        banner_url, is_verified, is_admin, admin_roles, is_suspended,
                        suspension_reason, suspension_type, suspension_until, settings,
                        created_at, updated_at
@@ -5997,7 +5997,7 @@ public static class AdminEndpoints
                     var profile = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
                         """
                         SELECT id, username, email, full_name, bio, location, country_code,
-                               date_of_birth, riot_tag, faceit_nickname, social_links,
+                               date_of_birth, riot_tag, social_links,
                                avatar_url, card_image_url, banner_url, created_at
                         FROM profiles WHERE id = @uid
                         """,
@@ -6097,7 +6097,6 @@ public static class AdminEndpoints
                         location          = NULL,
                         country_code      = NULL,
                         riot_tag          = NULL,
-                        faceit_nickname   = NULL,
                         social_links      = NULL,
                         is_deleted        = TRUE
                     WHERE id = @targetUserId

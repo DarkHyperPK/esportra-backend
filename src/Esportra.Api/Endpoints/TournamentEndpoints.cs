@@ -1346,7 +1346,7 @@ public static class TournamentEndpoints
                 """
                 SELECT tp.*,
                        t.name AS team_name, t.logo_url AS team_logo,
-                       p.username, p.full_name, p.avatar_url, p.riot_tag, p.faceit_nickname
+                       p.username, p.full_name, p.avatar_url, p.riot_tag
                 FROM tournament_participants tp
                 LEFT JOIN teams    t ON t.id = tp.team_id
                 LEFT JOIN profiles p ON p.id = tp.user_id
@@ -1520,7 +1520,6 @@ public static class TournamentEndpoints
                        sp.username AS solo_username,
                        sp.full_name AS solo_full_name,
                        sp.riot_tag AS solo_riot_tag,
-                       sp.faceit_nickname AS solo_faceit_nickname,
                        sp.avatar_url AS solo_avatar_url
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
@@ -1560,7 +1559,6 @@ public static class TournamentEndpoints
                         solo_username = first.solo_username as string,
                         solo_full_name = first.solo_full_name as string,
                         solo_riot_tag = first.solo_riot_tag as string,
-                        solo_faceit_nickname = first.solo_faceit_nickname as string,
                         solo_avatar_url = first.solo_avatar_url as string,
                     };
                 })

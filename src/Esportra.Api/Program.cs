@@ -234,7 +234,6 @@ builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
 
 // ── External API clients ──────────────────────────────────────────────────────
 builder.Services.AddHttpClient<RiotApiClient>();
-builder.Services.AddHttpClient<FaceitApiClient>();
 builder.Services.AddHttpClient<RawgApiClient>();
 builder.Services.AddHttpClient<IgdbApiClient>();
 builder.Services.AddHttpClient<IDatHostService, DatHostService>();
@@ -244,7 +243,7 @@ builder.Services.AddDataProtection()
     .SetApplicationName("Esportra");
 builder.Services.AddSingleton<OAuthStateProtector>();
 
-// Generic HttpClient for use in endpoints (Riot/Faceit OAuth flows)
+// Generic HttpClient for use in endpoints (Riot OAuth flows)
 builder.Services.AddHttpClient();
 
 // Named GeoIP client for MetricEndpoints
