@@ -181,14 +181,18 @@ public static class VenueAnalyticsEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Station count + days — needed for hourly utilization %
+            var stationCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM venue_stations WHERE venue_id = @VenueId",
+                new { VenueId = venueId });
+            var daysInRange = toDate.DayNumber - fromDate.DayNumber + 1;
+
             // Daily utilization from daily_stats
+            // Field aliased as avg_utilization to match the frontend UtilizationResponse type.
             var daily = await conn.QueryAsync<dynamic>(
                 """
                 SELECT d.date,
-                       COALESCE(ds.avg_utilization, 0) AS utilization,
-                       COALESCE(ds.total_sessions, 0) AS total_sessions,
-                       COALESCE(ds.total_hours, 0) AS total_hours,
-                       ds.peak_hour
+                       COALESCE(ds.avg_utilization, 0) AS avg_utilization
                 FROM generate_series(@From::date, @To::date, '1 day'::interval) d(date)
                 LEFT JOIN daily_stats ds
                   ON ds.venue_id = @VenueId AND ds.date = d.date::date
@@ -198,10 +202,9 @@ public static class VenueAnalyticsEndpoints
 
             // Hourly breakdown — aggregate across the range
             // Optionally filter by zone via station join
-            var hourly = await conn.QueryAsync<dynamic>(
+            var hourlyRaw = await conn.QueryAsync<dynamic>(
                 """
                 SELECT EXTRACT(HOUR FROM s.started_at)::int AS hour,
-                       COUNT(*) AS session_count,
                        COALESCE(SUM(
                            EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at)) / 3600
                        ), 0) AS total_hours
@@ -217,10 +220,21 @@ public static class VenueAnalyticsEndpoints
                 """,
                 new { VenueId = venueId, From = from, To = to, ZoneId = zone_id });
 
+            // Compute avg_utilization % for each hour:
+            // (total_hours / (station_count * days_in_range)) * 100
+            var maxCapacity = stationCount * daysInRange;
+            var hourly = hourlyRaw.Select(h => new
+            {
+                hour = (int)h.hour,
+                avg_utilization = maxCapacity > 0
+                    ? Math.Round((double)h.total_hours / maxCapacity * 100, 1)
+                    : 0.0,
+            });
+
             return Results.Ok(new
             {
                 daily,
-                hourly_breakdown = hourly,
+                hourly,
             });
         })
         .RequireAuthorization("Authenticated")
