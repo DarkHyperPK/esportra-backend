@@ -73,9 +73,9 @@ public static class SteamAccountEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var backendUrl = ResolveBackendUrl(config);
-            var returnTo   = $"{backendUrl}/api/accounts/steam/callback?userId={userCtx.UserId}";
-            var realm      = backendUrl.EndsWith('/') ? backendUrl : $"{backendUrl}/";
+            var frontendUrl = ResolveFrontendUrl(config).TrimEnd('/');
+            var returnTo    = $"{frontendUrl}/auth/steam/callback?userId={userCtx.UserId}";
+            var realm       = $"{frontendUrl}/";
 
             var queryParams = new Dictionary<string, string>
             {
