@@ -412,10 +412,23 @@ public static class VenueEndpoints
                 WHERE venue_id = @id
                 """,
                 new { id });
-            // Return default offline status for venues without live-status data
-            if (row is null)
-                return Results.Ok(new { seats_total = 0, seats_occupied = 0, is_open = false, updated_at = (DateTime?)null });
-            return Results.Ok(row);
+
+            if (row is not null)
+                return Results.Ok(row);
+
+            // No live-status row (Desktop Agent not connected yet) — derive
+            // seats_total from venue_stations so the dashboard shows the real count.
+            var stationCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM venue_stations WHERE venue_id = @id",
+                new { id });
+
+            return Results.Ok(new
+            {
+                seats_total    = stationCount,
+                seats_occupied = 0,
+                is_open        = false,
+                updated_at     = (DateTime?)null,
+            });
         });
 
         // ── GET /api/venues/{id}/stations——————————————————————————————————
