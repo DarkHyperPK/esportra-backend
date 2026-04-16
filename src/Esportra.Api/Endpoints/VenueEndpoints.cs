@@ -454,9 +454,10 @@ public static class VenueEndpoints
                        ROW_NUMBER() OVER (ORDER BY label, station_id) AS station_number,
                        CASE
                            WHEN status = 'maintenance' THEN 'maintenance'
+                           WHEN status = 'decommissioned' THEN 'offline'
                            WHEN status = 'offline' THEN 'offline'
                            WHEN status = 'active' THEN 'available'
-                           ELSE COALESCE(status, 'available')
+                           ELSE 'available'
                        END AS status,
                        zone,
                        pos_x, pos_y, width, height, rotation,

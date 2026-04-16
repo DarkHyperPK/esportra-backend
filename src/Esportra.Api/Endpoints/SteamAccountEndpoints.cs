@@ -91,7 +91,7 @@ public static class SteamAccountEndpoints
                 string.Join("&", queryParams.Select(kv =>
                     $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
 
-            return Results.Redirect(redirectUrl);
+            return Results.Ok(new { url = redirectUrl });
         }).RequireAuthorization("Authenticated");
 
         // =====================================================================
