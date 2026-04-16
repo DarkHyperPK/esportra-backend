@@ -8,9 +8,10 @@ DROP TABLE IF EXISTS public.faceit_accounts CASCADE;
 -- Drop faceit_nickname column from profiles if it exists
 ALTER TABLE public.profiles DROP COLUMN IF EXISTS faceit_nickname;
 
--- Drop the old get_roster_members function that referenced faceit_nickname
--- and recreate without it (if it exists)
-CREATE OR REPLACE FUNCTION public.get_roster_members(p_team_id UUID)
+-- Drop and recreate get_roster_members without faceit_nickname in return type
+DROP FUNCTION IF EXISTS public.get_roster_members(UUID);
+
+CREATE FUNCTION public.get_roster_members(p_team_id UUID)
 RETURNS TABLE (
     user_id UUID,
     role TEXT,
