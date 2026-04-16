@@ -20,7 +20,7 @@ public static class SteamAccountEndpoints
         config["App:FrontendUrl"]
         ?? config["FrontendUrl"]
         ?? config["Frontend:BaseUrl"]
-        ?? "https://staging.esportra.com";
+        ?? "https://frontend-staging.esportra.com";
 
     private static string ResolveBackendUrl(IConfiguration config) =>
         config["App:BaseUrl"]
