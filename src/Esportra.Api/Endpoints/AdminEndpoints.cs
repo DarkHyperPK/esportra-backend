@@ -1760,7 +1760,7 @@ public static class AdminEndpoints
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT id, username, email, full_name, avatar_url, bio, location, country_code,
-                       date_of_birth, riot_tag, faceit_nickname, social_links, card_image_url,
+                       date_of_birth, riot_tag, social_links, card_image_url,
                        banner_url, is_verified, is_admin, admin_roles, is_suspended,
                        suspension_reason, suspension_type, suspension_until, settings,
                        created_at, updated_at

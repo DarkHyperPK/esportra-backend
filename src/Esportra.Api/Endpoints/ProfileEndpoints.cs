@@ -22,7 +22,7 @@ public static class ProfileEndpoints
         "username", "full_name", "avatar_url", "bio",
         "riot_tag", "steam_tag", "social_links",
         "card_image_url", "country_code", "banner_url",
-        "date_of_birth", "faceit_nickname"
+        "date_of_birth"
     ];
 
     public static void MapProfileEndpoints(this WebApplication app)
@@ -66,7 +66,7 @@ public static class ProfileEndpoints
                 return Results.Forbid();
 
             // Filter to allowed fields only (allow tag fields even if null/empty for clearing)
-            var tagFields = new HashSet<string> { "riot_tag", "steam_tag", "faceit_nickname" };
+            var tagFields = new HashSet<string> { "riot_tag", "steam_tag" };
             var valid = updates
                 .Where(kv => AllowedUpdateFields.Contains(kv.Key) && (kv.Value is not null || tagFields.Contains(kv.Key)))
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
@@ -115,7 +115,7 @@ public static class ProfileEndpoints
             parameters.Add("updated_at", DateTime.UtcNow);
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, faceit_nickname, created_at, updated_at",
+                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
                 parameters);
 
             if (row is null) return Results.NotFound();

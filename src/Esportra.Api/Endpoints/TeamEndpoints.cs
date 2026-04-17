@@ -773,12 +773,10 @@ public static class TeamEndpoints
                 """
                 SELECT tm.user_id, tm.role, p.username, p.email, p.avatar_url, p.card_image_url,
                        ra.puuid AS riot_puuid, ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
-                       fa.faceit_id, fa.nickname AS faceit_nickname,
                        vs.kd, vs.win_rate, vs.hs_percent, vs.latest_match_id
                 FROM team_members tm
                 JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN riot_accounts ra ON ra.user_id = tm.user_id
-                LEFT JOIN faceit_accounts fa ON fa.user_id = tm.user_id
                 LEFT JOIN leaderboard vs ON vs.user_id = tm.user_id AND vs.game = 'valorant'
                 WHERE tm.team_id = @id AND tm.is_active = true
                 ORDER BY tm.display_order, tm.role, p.username
