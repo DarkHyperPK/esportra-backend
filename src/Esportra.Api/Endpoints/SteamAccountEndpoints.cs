@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
@@ -74,7 +76,9 @@ public static class SteamAccountEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             var frontendUrl = ResolveFrontendUrl(config).TrimEnd('/');
-            var returnTo    = $"{frontendUrl}/auth/steam/callback?userId={userCtx.UserId}";
+            var jwtSecret   = config["Supabase:JwtSecret"] ?? "";
+            var state       = ComputeStateHmac(userCtx.UserId, jwtSecret);
+            var returnTo    = $"{frontendUrl}/auth/steam/callback?userId={userCtx.UserId}&state={state}";
             var realm       = $"{frontendUrl}/";
 
             var queryParams = new Dictionary<string, string>
@@ -114,6 +118,28 @@ public static class SteamAccountEndpoints
             {
                 logger.LogWarning("Steam callback: missing or invalid userId parameter");
                 return Results.Redirect($"{frontendUrl}/account/settings?steam=error&reason=invalid_user");
+            }
+
+            // ── Verify HMAC state — prevents userId tampering ────────────────
+            var state     = ctx.Request.Query["state"].FirstOrDefault();
+            var jwtSecret = config["Supabase:JwtSecret"] ?? "";
+            var expected  = ComputeStateHmac(userIdStr, jwtSecret);
+            if (string.IsNullOrEmpty(state) ||
+                !string.Equals(state, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogWarning("Steam callback: HMAC state mismatch for user {UserId} — possible tampering", userIdStr);
+                return Results.Redirect($"{frontendUrl}/account/settings?steam=error&reason=invalid_state");
+            }
+
+            // ── Verify openid.return_to matches expected callback URL ────────
+            var returnTo = ctx.Request.Query["openid.return_to"].FirstOrDefault();
+            var expectedReturnToPrefix = $"{frontendUrl.TrimEnd('/')}/auth/steam/callback";
+            if (string.IsNullOrEmpty(returnTo) ||
+                !returnTo.StartsWith(expectedReturnToPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogWarning("Steam callback: openid.return_to mismatch — got '{ReturnTo}', expected prefix '{Expected}'",
+                    returnTo, expectedReturnToPrefix);
+                return Results.Redirect($"{frontendUrl}/account/settings?steam=error&reason=invalid_return_to");
             }
 
             // ── Extract and validate openid.claimed_id ────────────────────────
@@ -312,6 +338,18 @@ public static class SteamAccountEndpoints
     // =====================================================================
     //  Private helpers
     // =====================================================================
+
+    /// <summary>
+    /// HMAC-SHA256 binding of userId to the server's JWT secret.
+    /// Prevents callback userId tampering — attacker cannot forge a valid state
+    /// without knowing the secret.
+    /// </summary>
+    private static string ComputeStateHmac(string userId, string secret)
+    {
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes($"steam_link:{userId}"));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
 
     /// <summary>
     /// Verifies a Steam OpenID 2.0 response by sending it back to Steam
