@@ -12,15 +12,11 @@ public static class BRGroupEndpoints
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
         // ── GET /api/stages/{stageId}/br/groups ─────────────────────────────
-        // List all groups for a BR stage with team counts.
+        // List all groups for a BR stage with team counts. Public endpoint.
         app.MapGet("/api/stages/{stageId}/br/groups", async (
             Guid              stageId,
-            HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
             using var conn = db.CreateConnection();
 
             var groups = await conn.QueryAsync<dynamic>(
@@ -34,7 +30,7 @@ public static class BRGroupEndpoints
                 new { stageId });
 
             return Results.Ok(groups);
-        }).RequireAuthorization("Authenticated");
+        });
 
         // ── POST /api/stages/{stageId}/br/groups ────────────────────────────
         // Create groups for a stage. Deletes existing groups first (fresh setup).
@@ -359,16 +355,13 @@ public static class BRGroupEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/rounds ────────────
-        // List rounds for a group.
+        // List rounds for a group. Public endpoint — lobby_code stripped for unauthenticated/non-staff.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/rounds", async (
             Guid              stageId,
             Guid              groupId,
             HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
             using var conn = db.CreateConnection();
 
             // Verify groupId belongs to this stageId
@@ -389,13 +382,15 @@ public static class BRGroupEndpoints
                 """,
                 new { groupId });
 
-            // Strip lobby_code for non-authorized users
-            var stageId2 = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT stage_id FROM br_groups WHERE id = @groupId", new { groupId });
-            var canSeeCode = stageId2.HasValue &&
-                (await StaffAuthHelper.CanActOnStageAsync(
-                    conn, userCtx.UserIdGuid, stageId2.Value, StaffAuthHelper.PermBracketEdit)
-                || StaffAuthHelper.IsPlatformAdmin(userCtx));
+            // Strip lobby_code unless user is authenticated staff/admin
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            var canSeeCode = false;
+            if (userCtx is not null)
+            {
+                canSeeCode = await StaffAuthHelper.CanActOnStageAsync(
+                        conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
+                    || StaffAuthHelper.IsPlatformAdmin(userCtx);
+            }
 
             if (!canSeeCode)
             {
@@ -409,7 +404,7 @@ public static class BRGroupEndpoints
             }
 
             return Results.Ok(rounds);
-        }).RequireAuthorization("Authenticated");
+        });
 
         // ── POST /api/stages/{stageId}/br/groups/{groupId}/rounds ───────────
         // Create a new round for a group. Auto-increments round_number.
@@ -690,16 +685,12 @@ public static class BRGroupEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/leaderboard ───────
-        // Aggregate leaderboard from all round results in a group.
+        // Aggregate leaderboard from all round results in a group. Public endpoint.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/leaderboard", async (
             Guid              stageId,
             Guid              groupId,
-            HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
             using var conn = db.CreateConnection();
 
             // Verify groupId belongs to this stageId
@@ -731,7 +722,7 @@ public static class BRGroupEndpoints
                 new { groupId });
 
             return Results.Ok(leaderboard);
-        }).RequireAuthorization("Authenticated");
+        });
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
