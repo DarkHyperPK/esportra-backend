@@ -56,11 +56,25 @@ public static class BRGroupEndpoints
 
             var groupCount = body.TryGetProperty("groupCount", out var gc) && gc.TryGetInt32(out var gcv) ? gcv : 0;
             var lobbySize  = body.TryGetProperty("lobbySize", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 20;
+            var force      = body.TryGetProperty("force", out var fp) && fp.ValueKind == JsonValueKind.True;
 
-            if (groupCount <= 0)
-                return Results.BadRequest(new { error = "groupCount must be greater than 0." });
-            if (lobbySize <= 0)
-                return Results.BadRequest(new { error = "lobbySize must be greater than 0." });
+            if (groupCount <= 0 || groupCount > 128)
+                return Results.BadRequest(new { error = "groupCount must be between 1 and 128." });
+            if (lobbySize <= 0 || lobbySize > 150)
+                return Results.BadRequest(new { error = "lobbySize must be between 1 and 150." });
+
+            // Check if existing groups have rounds (protect against accidental data loss)
+            var hasRounds = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM br_rounds r
+                    JOIN br_groups g ON g.id = r.group_id
+                    WHERE g.stage_id = @stageId
+                )
+                """,
+                new { stageId });
+            if (hasRounds && !force)
+                return Results.Conflict(new { error = "Groups already have rounds. Set force=true to delete all existing data." });
 
             using var tx = conn.BeginTransaction();
             try
@@ -182,8 +196,8 @@ public static class BRGroupEndpoints
                 return Results.Forbid();
 
             var method = body.TryGetProperty("method", out var m) ? m.GetString() ?? "random" : "random";
-            if (method is not ("random" or "seeded" or "snake"))
-                return Results.BadRequest(new { error = "method must be 'random', 'seeded', or 'snake'." });
+            if (method is not ("random" or "snake"))
+                return Results.BadRequest(new { error = "method must be 'random' or 'snake'." });
 
             // Get the stage's tournament_id
             var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -227,27 +241,22 @@ public static class BRGroupEndpoints
                     new { groupIds }, tx);
 
                 // Distribute teams based on method
-                var orderedTeams = method switch
-                {
-                    "random" => ShuffleTeams(teamIds),
-                    "seeded" => teamIds.OrderBy(t => t).ToArray(),
-                    "snake"  => teamIds.OrderBy(t => t).ToArray(),
-                    _        => teamIds
-                };
+                var orderedTeams = method == "random"
+                    ? ShuffleTeams(teamIds)
+                    : teamIds; // snake uses original order
 
                 var assignments = method == "snake"
                     ? BuildSnakeAssignments(orderedTeams, groupIds)
                     : BuildRoundRobinAssignments(orderedTeams, groupIds);
 
-                foreach (var (teamId, groupId, seedOrder) in assignments)
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO br_group_teams (group_id, team_id, seed_order)
-                        VALUES (@groupId, @teamId, @seedOrder)
-                        """,
-                        new { groupId, teamId, seedOrder }, tx);
-                }
+                // Batch insert all assignments
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_group_teams (group_id, team_id, seed_order)
+                    VALUES (@groupId, @teamId, @seedOrder)
+                    """,
+                    assignments.Select(a => new { groupId = a.groupId, teamId = a.teamId, seedOrder = a.seedOrder }),
+                    tx);
 
                 tx.Commit();
                 return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
@@ -299,6 +308,29 @@ public static class BRGroupEndpoints
                 teamIds.Add(parsed);
             }
 
+            // Validate teams are registered participants in this tournament
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+            if (tournamentId is null)
+                return Results.NotFound(new { error = "Stage not found." });
+
+            if (teamIds.Count > 0)
+            {
+                var validTeamIds = (await conn.QueryAsync<Guid>(
+                    """
+                    SELECT DISTINCT team_id FROM tournament_participants
+                    WHERE tournament_id = @tournamentId
+                      AND status IN ('accepted','approved')
+                      AND team_id = ANY(@teamIdArr)
+                    """,
+                    new { tournamentId, teamIdArr = teamIds.ToArray() })).ToHashSet();
+
+                var invalid = teamIds.Where(t => !validTeamIds.Contains(t)).ToList();
+                if (invalid.Count > 0)
+                    return Results.BadRequest(new { error = $"Teams not registered in tournament: {string.Join(", ", invalid)}" });
+            }
+
             using var tx = conn.BeginTransaction();
             try
             {
@@ -307,16 +339,14 @@ public static class BRGroupEndpoints
                     "DELETE FROM br_group_teams WHERE group_id = @groupId",
                     new { groupId }, tx);
 
-                // Insert new teams with sequential seed_order
-                for (var i = 0; i < teamIds.Count; i++)
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO br_group_teams (group_id, team_id, seed_order)
-                        VALUES (@groupId, @teamId, @seedOrder)
-                        """,
-                        new { groupId, teamId = teamIds[i], seedOrder = i + 1 }, tx);
-                }
+                // Batch insert new teams with sequential seed_order
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_group_teams (group_id, team_id, seed_order)
+                    VALUES (@groupId, @teamId, @seedOrder)
+                    """,
+                    teamIds.Select((tid, i) => new { groupId, teamId = tid, seedOrder = i + 1 }),
+                    tx);
 
                 tx.Commit();
                 return Results.Ok(new { assigned = teamIds.Count });
@@ -358,6 +388,25 @@ public static class BRGroupEndpoints
                 ORDER BY r.round_number
                 """,
                 new { groupId });
+
+            // Strip lobby_code for non-authorized users
+            var stageId2 = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT stage_id FROM br_groups WHERE id = @groupId", new { groupId });
+            var canSeeCode = stageId2.HasValue &&
+                (await StaffAuthHelper.CanActOnStageAsync(
+                    conn, userCtx.UserIdGuid, stageId2.Value, StaffAuthHelper.PermBracketEdit)
+                || StaffAuthHelper.IsPlatformAdmin(userCtx));
+
+            if (!canSeeCode)
+            {
+                var sanitized = rounds.Select(r =>
+                {
+                    var dict = (IDictionary<string, object>)r;
+                    dict["lobby_code"] = null!;
+                    return dict;
+                });
+                return Results.Ok(sanitized);
+            }
 
             return Results.Ok(rounds);
         }).RequireAuthorization("Authenticated");
@@ -483,11 +532,28 @@ public static class BRGroupEndpoints
                 if (newStatus is not ("pending" or "active" or "completed"))
                     return Results.BadRequest(new { error = "status must be 'pending', 'active', or 'completed'." });
 
+                // Enforce valid status transitions
+                var currentStatus = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT status FROM br_rounds WHERE id = @roundId",
+                    new { roundId });
+
+                var validTransition = (currentStatus, newStatus) switch
+                {
+                    ("pending", "active")       => true,
+                    ("active", "completed")      => true,
+                    ("completed", "active")      => true, // allow re-opening
+                    _ => false
+                };
+                if (!validTransition)
+                    return Results.BadRequest(new { error = $"Cannot transition from '{currentStatus}' to '{newStatus}'." });
+
                 setClauses.Add("status = @status");
                 parameters.Add("status", newStatus);
 
-                if (newStatus == "active")
+                if (newStatus == "active" && currentStatus == "pending")
                     setClauses.Add("started_at = NOW()");
+                else if (newStatus == "active" && currentStatus == "completed")
+                    setClauses.Add("completed_at = NULL"); // clear when re-opening
                 else if (newStatus == "completed")
                     setClauses.Add("completed_at = NOW()");
             }
@@ -567,48 +633,54 @@ public static class BRGroupEndpoints
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
-            var saved = 0;
+            // Parse and validate ALL results before opening transaction
+            var parsedResults = new List<(Guid teamId, int placement, int kills, int placementPoints, int killPoints)>();
+            foreach (var r in resultsElement.EnumerateArray())
+            {
+                var teamIdStr = r.TryGetProperty("teamId", out var tid) ? tid.GetString() : null;
+                if (teamIdStr is null || !Guid.TryParse(teamIdStr, out var teamId))
+                    return Results.BadRequest(new { error = $"Invalid teamId: {teamIdStr}" });
+
+                var placement       = r.TryGetProperty("placement", out var pl) && pl.TryGetInt32(out var plv) ? plv : 0;
+                var kills           = r.TryGetProperty("kills", out var kl) && kl.TryGetInt32(out var klv) ? klv : 0;
+                var placementPoints = r.TryGetProperty("placementPoints", out var pp) && pp.TryGetInt32(out var ppv) ? ppv : 0;
+                var killPoints      = r.TryGetProperty("killPoints", out var kp) && kp.TryGetInt32(out var kpv) ? kpv : 0;
+
+                if (placement < 1)
+                    return Results.BadRequest(new { error = $"placement must be >= 1 for team {teamIdStr}" });
+                if (kills < 0)
+                    return Results.BadRequest(new { error = $"kills must be >= 0 for team {teamIdStr}" });
+
+                parsedResults.Add((teamId, placement, kills, placementPoints, killPoints));
+            }
 
             using var tx = conn.BeginTransaction();
             try
             {
-                foreach (var r in resultsElement.EnumerateArray())
-                {
-                    var teamIdStr = r.TryGetProperty("teamId", out var tid) ? tid.GetString() : null;
-                    if (teamIdStr is null || !Guid.TryParse(teamIdStr, out var teamId))
-                        return Results.BadRequest(new { error = $"Invalid teamId: {teamIdStr}" });
-
-                    var placement       = r.TryGetProperty("placement", out var pl) && pl.TryGetInt32(out var plv) ? plv : 0;
-                    var kills           = r.TryGetProperty("kills", out var kl) && kl.TryGetInt32(out var klv) ? klv : 0;
-                    var placementPoints = r.TryGetProperty("placementPoints", out var pp) && pp.TryGetInt32(out var ppv) ? ppv : 0;
-                    var killPoints      = r.TryGetProperty("killPoints", out var kp) && kp.TryGetInt32(out var kpv) ? kpv : 0;
-
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
-                        VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
-                        ON CONFLICT (round_id, team_id) DO UPDATE
-                        SET placement        = EXCLUDED.placement,
-                            kills            = EXCLUDED.kills,
-                            placement_points = EXCLUDED.placement_points,
-                            kill_points      = EXCLUDED.kill_points,
-                            updated_at       = NOW()
-                        """,
-                        new
-                        {
-                            roundId,
-                            teamId,
-                            placement,
-                            kills,
-                            placementPoints,
-                            killPoints
-                        }, tx);
-
-                    saved++;
-                }
+                // Batch upsert all results
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
+                    VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
+                    ON CONFLICT (round_id, team_id) DO UPDATE
+                    SET placement        = EXCLUDED.placement,
+                        kills            = EXCLUDED.kills,
+                        placement_points = EXCLUDED.placement_points,
+                        kill_points      = EXCLUDED.kill_points
+                    """,
+                    parsedResults.Select(r => new
+                    {
+                        roundId,
+                        teamId = r.teamId,
+                        placement = r.placement,
+                        kills = r.kills,
+                        placementPoints = r.placementPoints,
+                        killPoints = r.killPoints
+                    }),
+                    tx);
 
                 tx.Commit();
-                return Results.Ok(new { saved });
+                return Results.Ok(new { saved = parsedResults.Count });
             }
             catch
             {

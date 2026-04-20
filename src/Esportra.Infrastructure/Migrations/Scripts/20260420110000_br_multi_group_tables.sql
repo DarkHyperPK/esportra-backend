@@ -253,6 +253,28 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- ── Trigger: auto-update updated_at on br_round_results ─────────────────────
+
+CREATE OR REPLACE FUNCTION update_br_round_results_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'trg_br_round_results_updated_at'
+    ) THEN
+        CREATE TRIGGER trg_br_round_results_updated_at
+            BEFORE UPDATE ON br_round_results
+            FOR EACH ROW
+            EXECUTE FUNCTION update_br_round_results_updated_at();
+    END IF;
+END $$;
+
 -- ── Grants ──────────────────────────────────────────────────────────────────
 
 GRANT ALL ON br_groups        TO service_role;
