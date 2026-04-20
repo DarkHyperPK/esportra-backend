@@ -417,6 +417,7 @@ app.MapSessionRefundEndpoints();
 app.MapOrganizationEndpoints();
 app.MapNotificationEndpoints();
 app.MapStageEndpoints();
+app.MapBRGroupEndpoints();
 app.MapReviewEndpoints();
 app.MapOrganizerEndpoints();
 app.MapPartnerEndpoints();
