@@ -723,6 +723,201 @@ public static class BRGroupEndpoints
 
             return Results.Ok(leaderboard);
         });
+
+        // ── POST /api/stages/{stageId}/br/advance ───────────────────────────
+        // Preview or execute advancement of top teams from each group to next stage.
+        // ?preview=true returns qualified teams without making changes.
+        app.MapPost("/api/stages/{stageId}/br/advance", async (
+            Guid                stageId,
+            [FromQuery] bool    preview,
+            [FromBody] JsonElement body,
+            HttpContext          ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermTeamsManage);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            // Get stage info
+            var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, tournament_id, name, stage_order, advancement_count, status FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+            if (stage is null)
+                return Results.NotFound(new { error = "Stage not found." });
+
+            // Optional override from body: { teamsPerGroup: 4 }
+            int teamsPerGroup = 0;
+            if (body.TryGetProperty("teamsPerGroup", out var tpg) && tpg.TryGetInt32(out var tpgVal))
+                teamsPerGroup = tpgVal;
+            if (teamsPerGroup <= 0)
+                teamsPerGroup = (int)(stage.advancement_count ?? 4);
+            if (teamsPerGroup <= 0)
+                return Results.BadRequest(new { error = "advancement_count not configured and teamsPerGroup not provided." });
+
+            // Get all groups with their leaderboards
+            var groups = (await conn.QueryAsync<dynamic>(
+                "SELECT id, name, group_order FROM br_groups WHERE stage_id = @stageId ORDER BY group_order",
+                new { stageId })).ToList();
+
+            if (groups.Count == 0)
+                return Results.BadRequest(new { error = "No groups exist in this stage." });
+
+            // Check all groups have at least one completed round
+            var incompleteGroups = await conn.QueryAsync<dynamic>(
+                """
+                SELECT g.name FROM br_groups g
+                WHERE g.stage_id = @stageId
+                AND NOT EXISTS (
+                    SELECT 1 FROM br_rounds r
+                    WHERE r.group_id = g.id AND r.status = 'completed'
+                )
+                """,
+                new { stageId });
+            var incompleteList = incompleteGroups.ToList();
+            if (incompleteList.Count > 0)
+            {
+                var names = string.Join(", ", incompleteList.Select(g => (string)g.name));
+                return Results.BadRequest(new { error = $"Groups with no completed rounds: {names}" });
+            }
+
+            // Build qualified teams per group
+            var qualifiedTeams = new List<dynamic>();
+            foreach (var group in groups)
+            {
+                Guid gid = group.id;
+                var leaderboard = (await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT rr.team_id, t.name AS team_name, t.logo_url,
+                           SUM(rr.total_points) AS total_points,
+                           SUM(rr.kills) AS total_kills,
+                           COUNT(*) FILTER (WHERE rr.placement = 1) AS wins
+                    FROM br_round_results rr
+                    JOIN br_rounds r ON r.id = rr.round_id
+                    JOIN teams t ON t.id = rr.team_id
+                    WHERE r.group_id = @gid
+                    GROUP BY rr.team_id, t.name, t.logo_url
+                    ORDER BY SUM(rr.total_points) DESC, COUNT(*) FILTER (WHERE rr.placement = 1) DESC, SUM(rr.kills) DESC
+                    LIMIT @teamsPerGroup
+                    """,
+                    new { gid, teamsPerGroup })).ToList();
+
+                foreach (var team in leaderboard)
+                {
+                    qualifiedTeams.Add(new
+                    {
+                        team_id    = (Guid)team.team_id,
+                        team_name  = (string)team.team_name,
+                        logo_url   = (string?)team.logo_url,
+                        from_group = (string)group.name,
+                        total_points = (long)team.total_points,
+                        total_kills  = (long)team.total_kills,
+                        wins         = (long)team.wins,
+                    });
+                }
+            }
+
+            if (preview)
+            {
+                return Results.Ok(new
+                {
+                    stage_name      = (string)stage.name,
+                    groups_count    = groups.Count,
+                    teams_per_group = teamsPerGroup,
+                    total_qualified = qualifiedTeams.Count,
+                    qualified_teams = qualifiedTeams,
+                });
+            }
+
+            // ── Execute advancement ──────────────────────────────────────────
+            // Find next stage
+            Guid tournamentId = stage.tournament_id;
+            int nextOrder = (int)stage.stage_order + 1;
+            var nextStage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, name FROM tournament_stages WHERE tournament_id = @tournamentId AND stage_order = @nextOrder",
+                new { tournamentId, nextOrder });
+
+            if (nextStage is null)
+                return Results.BadRequest(new { error = "No next stage exists. Create the finals stage first." });
+
+            Guid nextStageId = nextStage.id;
+
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                // Clear any existing groups in next stage (fresh advancement)
+                var existingNextGroups = await conn.QuerySingleOrDefaultAsync<long>(
+                    "SELECT COUNT(*) FROM br_groups WHERE stage_id = @nextStageId",
+                    new { nextStageId }, tx);
+
+                if (existingNextGroups > 0)
+                {
+                    // Delete existing groups (cascades to teams/rounds/results)
+                    await conn.ExecuteAsync(
+                        "DELETE FROM br_groups WHERE stage_id = @nextStageId", new { nextStageId }, tx);
+                }
+
+                // Create a single group in next stage for the finals
+                var finalsGroupId = Guid.NewGuid();
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_groups (id, stage_id, name, group_order, lobby_size)
+                    VALUES (@id, @stageId, @name, 0, @lobbySize)
+                    """,
+                    new
+                    {
+                        id = finalsGroupId,
+                        stageId = nextStageId,
+                        name = "Finals",
+                        lobbySize = qualifiedTeams.Count
+                    }, tx);
+
+                // Insert qualified teams into finals group
+                var teamInserts = qualifiedTeams.Select((t, i) => new
+                {
+                    id = Guid.NewGuid(),
+                    group_id = finalsGroupId,
+                    team_id = (Guid)t.team_id,
+                    seed_order = i + 1,
+                    assigned_at = DateTime.UtcNow,
+                }).ToList();
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_group_teams (id, group_id, team_id, seed_order, assigned_at)
+                    VALUES (@id, @group_id, @team_id, @seed_order, @assigned_at)
+                    """,
+                    teamInserts, tx);
+
+                // Update stage statuses
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+                    new { stageId }, tx);
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_stages SET status = 'active' WHERE id = @nextStageId",
+                    new { nextStageId }, tx);
+
+                tx.Commit();
+
+                return Results.Ok(new
+                {
+                    advanced = qualifiedTeams.Count,
+                    from_stage = (string)stage.name,
+                    to_stage = (string)nextStage.name,
+                    finals_group_id = finalsGroupId,
+                });
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+        }).RequireAuthorization("Authenticated");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
