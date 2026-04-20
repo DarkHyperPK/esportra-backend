@@ -751,6 +751,9 @@ public static class BRGroupEndpoints
             if (stage is null)
                 return Results.NotFound(new { error = "Stage not found." });
 
+            if ((string)stage.status == "completed")
+                return Results.Conflict(new { error = "This stage has already been advanced." });
+
             // Optional override from body: { teamsPerGroup: 4 }
             int teamsPerGroup = 0;
             if (body.TryGetProperty("teamsPerGroup", out var tpg) && tpg.TryGetInt32(out var tpgVal))
@@ -786,41 +789,43 @@ public static class BRGroupEndpoints
                 return Results.BadRequest(new { error = $"Groups with no completed rounds: {names}" });
             }
 
-            // Build qualified teams per group
-            var qualifiedTeams = new List<dynamic>();
-            foreach (var group in groups)
-            {
-                Guid gid = group.id;
-                var leaderboard = (await conn.QueryAsync<dynamic>(
-                    """
+            // Build qualified teams — single query with window function (no N+1)
+            var qualifiedRows = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT * FROM (
                     SELECT rr.team_id, t.name AS team_name, t.logo_url,
+                           g.name AS group_name,
                            SUM(rr.total_points) AS total_points,
                            SUM(rr.kills) AS total_kills,
-                           COUNT(*) FILTER (WHERE rr.placement = 1) AS wins
+                           COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY r.group_id
+                               ORDER BY SUM(rr.total_points) DESC,
+                                        COUNT(*) FILTER (WHERE rr.placement = 1) DESC,
+                                        SUM(rr.kills) DESC
+                           ) AS rank_in_group
                     FROM br_round_results rr
                     JOIN br_rounds r ON r.id = rr.round_id
+                    JOIN br_groups g ON g.id = r.group_id
                     JOIN teams t ON t.id = rr.team_id
-                    WHERE r.group_id = @gid
-                    GROUP BY rr.team_id, t.name, t.logo_url
-                    ORDER BY SUM(rr.total_points) DESC, COUNT(*) FILTER (WHERE rr.placement = 1) DESC, SUM(rr.kills) DESC
-                    LIMIT @teamsPerGroup
-                    """,
-                    new { gid, teamsPerGroup })).ToList();
+                    WHERE g.stage_id = @stageId
+                    GROUP BY rr.team_id, t.name, t.logo_url, g.name, r.group_id
+                ) ranked
+                WHERE rank_in_group <= @teamsPerGroup
+                ORDER BY group_name, rank_in_group
+                """,
+                new { stageId, teamsPerGroup })).ToList();
 
-                foreach (var team in leaderboard)
-                {
-                    qualifiedTeams.Add(new
-                    {
-                        team_id    = (Guid)team.team_id,
-                        team_name  = (string)team.team_name,
-                        logo_url   = (string?)team.logo_url,
-                        from_group = (string)group.name,
-                        total_points = (long)team.total_points,
-                        total_kills  = (long)team.total_kills,
-                        wins         = (long)team.wins,
-                    });
-                }
-            }
+            var qualifiedTeams = qualifiedRows.Select(r => new
+            {
+                team_id      = (Guid)r.team_id,
+                team_name    = (string)r.team_name,
+                logo_url     = (string?)r.logo_url,
+                from_group   = (string)r.group_name,
+                total_points = (long)r.total_points,
+                total_kills  = (long)r.total_kills,
+                wins         = (long)r.wins,
+            }).ToList();
 
             if (preview)
             {
@@ -850,7 +855,15 @@ public static class BRGroupEndpoints
             using var tx = conn.BeginTransaction();
             try
             {
-                // Clear any existing groups in next stage (fresh advancement)
+                // Lock the stage row to serialize concurrent advancement attempts
+                var currentStatus = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT status FROM tournament_stages WHERE id = @stageId FOR UPDATE",
+                    new { stageId }, tx);
+                if (currentStatus == "completed")
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = "This stage has already been advanced." });
+                }
                 var existingNextGroups = await conn.QuerySingleOrDefaultAsync<long>(
                     "SELECT COUNT(*) FROM br_groups WHERE stage_id = @nextStageId",
                     new { nextStageId }, tx);
@@ -867,7 +880,7 @@ public static class BRGroupEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO br_groups (id, stage_id, name, group_order, lobby_size)
-                    VALUES (@id, @stageId, @name, 0, @lobbySize)
+                    VALUES (@id, @stageId, @name, 1, @lobbySize)
                     """,
                     new
                     {
