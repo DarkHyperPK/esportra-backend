@@ -8,7 +8,9 @@ public sealed record StageDto(
     int?    BestOf           = 1,
     int?    Capacity         = null,
     int?    AdvancementCount = null,
-    System.Text.Json.JsonElement? Config = null);
+    System.Text.Json.JsonElement? Config = null,
+    string? StartsAt         = null,
+    string? EndsAt           = null);
 
 public sealed record SyncStagesRequest(StageDto[] Stages);
 

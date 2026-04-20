@@ -69,6 +69,8 @@ public static class StageEndpoints
                             best_of = @bestOf, capacity = @capacity,
                             advancement_count = @advancementCount,
                             config = CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE config END,
+                            starts_at = @startsAt,
+                            ends_at = @endsAt,
                             updated_at = NOW()
                         WHERE id = @id
                         """,
@@ -82,15 +84,18 @@ public static class StageEndpoints
                             capacity         = s.Capacity,
                             advancementCount = s.AdvancementCount,
                             config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                            startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
+                            endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
                         });
                 }
                 else
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, capacity, advancement_count, config)
+                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, capacity, advancement_count, config, starts_at, ends_at)
                         VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount,
-                                CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END)
+                                CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
+                                @startsAt, @endsAt)
                         """,
                         new
                         {
@@ -102,6 +107,8 @@ public static class StageEndpoints
                             capacity         = s.Capacity,
                             advancementCount = s.AdvancementCount,
                             config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                            startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
+                            endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
                         });
                 }
             }
