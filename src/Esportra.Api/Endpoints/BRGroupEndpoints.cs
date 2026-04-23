@@ -140,7 +140,7 @@ public static class BRGroupEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/teams ─────────────
-        // List teams in a group with team details.
+        // List teams/participants in a group with details.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/teams", async (
             Guid              stageId,
             Guid              groupId,
@@ -159,12 +159,19 @@ public static class BRGroupEndpoints
             if (!groupExists)
                 return Results.NotFound(new { error = "Group not found in this stage." });
 
+            // Unified query supporting both teams and solo participants
             var teams = await conn.QueryAsync<dynamic>(
                 """
-                SELECT gt.team_id, gt.seed_order, gt.assigned_at,
-                       t.name AS team_name, t.logo_url
+                SELECT
+                    COALESCE(gt.team_id, gt.participant_id) AS team_id,
+                    gt.seed_order,
+                    gt.assigned_at,
+                    CASE WHEN gt.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE WHEN gt.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
                 FROM br_group_teams gt
-                JOIN teams t ON t.id = gt.team_id
+                LEFT JOIN teams t ON t.id = gt.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = gt.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
                 WHERE gt.group_id = @groupId
                 ORDER BY gt.seed_order
                 """,
@@ -174,7 +181,7 @@ public static class BRGroupEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/stages/{stageId}/br/groups/assign ─────────────────────
-        // Auto-distribute registered teams into groups.
+        // Auto-distribute registered teams/participants into groups.
         app.MapPost("/api/stages/{stageId}/br/groups/assign", async (
             Guid                stageId,
             [FromBody] JsonElement body,
@@ -195,23 +202,20 @@ public static class BRGroupEndpoints
             if (method is not ("random" or "snake"))
                 return Results.BadRequest(new { error = "method must be 'random' or 'snake'." });
 
-            // Get the stage's tournament_id
-            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
+            // Get the stage's tournament_id AND team_size to detect solo
+            var tournamentInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ts.tournament_id, t.team_size
+                FROM tournament_stages ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE ts.id = @stageId
+                """,
                 new { stageId });
-            if (tournamentId is null)
+            if (tournamentInfo is null)
                 return Results.NotFound(new { error = "Stage not found." });
 
-            // Get all registered teams
-            var teamIds = (await conn.QueryAsync<Guid>(
-                """
-                SELECT DISTINCT team_id
-                FROM tournament_participants
-                WHERE tournament_id = @tournamentId
-                  AND status IN ('accepted','approved')
-                  AND team_id IS NOT NULL
-                """,
-                new { tournamentId })).ToArray();
+            Guid tournamentId = tournamentInfo.tournament_id;
+            bool isSolo = ((int?)tournamentInfo.team_size ?? 1) <= 1;
 
             // Get existing groups for this stage
             var groups = (await conn.QueryAsync<dynamic>(
@@ -236,26 +240,76 @@ public static class BRGroupEndpoints
                     "DELETE FROM br_group_teams WHERE group_id = ANY(@groupIds)",
                     new { groupIds }, tx);
 
-                // Distribute teams based on method
-                var orderedTeams = method == "random"
-                    ? ShuffleTeams(teamIds)
-                    : teamIds; // snake uses original order
+                if (isSolo)
+                {
+                    // Solo: query participant IDs directly
+                    var participantIds = (await conn.QueryAsync<Guid>(
+                        """
+                        SELECT DISTINCT id AS participant_id
+                        FROM tournament_participants
+                        WHERE tournament_id = @tournamentId
+                          AND status IN ('pending', 'approved')
+                        """,
+                        new { tournamentId })).ToArray();
 
-                var assignments = method == "snake"
-                    ? BuildSnakeAssignments(orderedTeams, groupIds)
-                    : BuildRoundRobinAssignments(orderedTeams, groupIds);
+                    if (participantIds.Length == 0)
+                        return Results.BadRequest(new { error = "No registered participants found. Ensure participants have status 'pending' or 'approved'." });
 
-                // Batch insert all assignments
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_group_teams (group_id, team_id, seed_order)
-                    VALUES (@groupId, @teamId, @seedOrder)
-                    """,
-                    assignments.Select(a => new { groupId = a.groupId, teamId = a.teamId, seedOrder = a.seedOrder }),
-                    tx);
+                    var orderedParticipants = method == "random"
+                        ? ShuffleTeams(participantIds)
+                        : participantIds;
 
-                tx.Commit();
-                return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
+                    var assignments = method == "snake"
+                        ? BuildSnakeAssignments(orderedParticipants, groupIds)
+                        : BuildRoundRobinAssignments(orderedParticipants, groupIds);
+
+                    // Insert with participant_id
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_group_teams (group_id, participant_id, seed_order)
+                        VALUES (@groupId, @participantId, @seedOrder)
+                        """,
+                        assignments.Select(a => new { groupId = a.groupId, participantId = a.teamId, seedOrder = a.seedOrder }),
+                        tx);
+
+                    tx.Commit();
+                    return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
+                }
+                else
+                {
+                    // Team-based: existing logic
+                    var teamIds = (await conn.QueryAsync<Guid>(
+                        """
+                        SELECT DISTINCT team_id
+                        FROM tournament_participants
+                        WHERE tournament_id = @tournamentId
+                          AND status IN ('accepted','approved')
+                          AND team_id IS NOT NULL
+                        """,
+                        new { tournamentId })).ToArray();
+
+                    if (teamIds.Length == 0)
+                        return Results.BadRequest(new { error = "No registered teams found. Ensure participants have status 'accepted' or 'approved'." });
+
+                    var orderedTeams = method == "random"
+                        ? ShuffleTeams(teamIds)
+                        : teamIds;
+
+                    var assignments = method == "snake"
+                        ? BuildSnakeAssignments(orderedTeams, groupIds)
+                        : BuildRoundRobinAssignments(orderedTeams, groupIds);
+
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_group_teams (group_id, team_id, seed_order)
+                        VALUES (@groupId, @teamId, @seedOrder)
+                        """,
+                        assignments.Select(a => new { groupId = a.groupId, teamId = a.teamId, seedOrder = a.seedOrder }),
+                        tx);
+
+                    tx.Commit();
+                    return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
+                }
             }
             catch
             {
@@ -304,27 +358,55 @@ public static class BRGroupEndpoints
                 teamIds.Add(parsed);
             }
 
-            // Validate teams are registered participants in this tournament
-            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
+            // Detect solo and validate accordingly
+            var tournamentInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ts.tournament_id, t.team_size
+                FROM tournament_stages ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE ts.id = @stageId
+                """,
                 new { stageId });
-            if (tournamentId is null)
+            if (tournamentInfo is null)
                 return Results.NotFound(new { error = "Stage not found." });
+
+            Guid tournamentId = tournamentInfo.tournament_id;
+            bool isSolo = ((int?)tournamentInfo.team_size ?? 1) <= 1;
 
             if (teamIds.Count > 0)
             {
-                var validTeamIds = (await conn.QueryAsync<Guid>(
-                    """
-                    SELECT DISTINCT team_id FROM tournament_participants
-                    WHERE tournament_id = @tournamentId
-                      AND status IN ('accepted','approved')
-                      AND team_id = ANY(@teamIdArr)
-                    """,
-                    new { tournamentId, teamIdArr = teamIds.ToArray() })).ToHashSet();
+                if (isSolo)
+                {
+                    // For solo: teamIds contains participant IDs — validate against tournament_participants
+                    var validParticipantIds = (await conn.QueryAsync<Guid>(
+                        """
+                        SELECT DISTINCT id FROM tournament_participants
+                        WHERE tournament_id = @tournamentId
+                          AND status IN ('pending', 'approved')
+                          AND id = ANY(@idsArr)
+                        """,
+                        new { tournamentId, idsArr = teamIds.ToArray() })).ToHashSet();
 
-                var invalid = teamIds.Where(t => !validTeamIds.Contains(t)).ToList();
-                if (invalid.Count > 0)
-                    return Results.BadRequest(new { error = $"Teams not registered in tournament: {string.Join(", ", invalid)}" });
+                    var invalid = teamIds.Where(t => !validParticipantIds.Contains(t)).ToList();
+                    if (invalid.Count > 0)
+                        return Results.BadRequest(new { error = $"Participants not registered in tournament: {string.Join(", ", invalid)}" });
+                }
+                else
+                {
+                    // Team-based: validate against team_id in tournament_participants
+                    var validTeamIds = (await conn.QueryAsync<Guid>(
+                        """
+                        SELECT DISTINCT team_id FROM tournament_participants
+                        WHERE tournament_id = @tournamentId
+                          AND status IN ('accepted','approved')
+                          AND team_id = ANY(@teamIdArr)
+                        """,
+                        new { tournamentId, teamIdArr = teamIds.ToArray() })).ToHashSet();
+
+                    var invalid = teamIds.Where(t => !validTeamIds.Contains(t)).ToList();
+                    if (invalid.Count > 0)
+                        return Results.BadRequest(new { error = $"Teams not registered in tournament: {string.Join(", ", invalid)}" });
+                }
             }
 
             using var tx = conn.BeginTransaction();
@@ -335,14 +417,26 @@ public static class BRGroupEndpoints
                     "DELETE FROM br_group_teams WHERE group_id = @groupId",
                     new { groupId }, tx);
 
-                // Batch insert new teams with sequential seed_order
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_group_teams (group_id, team_id, seed_order)
-                    VALUES (@groupId, @teamId, @seedOrder)
-                    """,
-                    teamIds.Select((tid, i) => new { groupId, teamId = tid, seedOrder = i + 1 }),
-                    tx);
+                if (isSolo)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_group_teams (group_id, participant_id, seed_order)
+                        VALUES (@groupId, @participantId, @seedOrder)
+                        """,
+                        teamIds.Select((tid, i) => new { groupId, participantId = tid, seedOrder = i + 1 }),
+                        tx);
+                }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_group_teams (group_id, team_id, seed_order)
+                        VALUES (@groupId, @teamId, @seedOrder)
+                        """,
+                        teamIds.Select((tid, i) => new { groupId, teamId = tid, seedOrder = i + 1 }),
+                        tx);
+                }
 
                 tx.Commit();
                 return Results.Ok(new { assigned = teamIds.Count });
@@ -579,13 +673,19 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Use LEFT JOINs with COALESCE for unified team/solo display
             var results = await conn.QueryAsync<dynamic>(
                 """
-                SELECT rr.id, rr.team_id, rr.placement, rr.kills,
+                SELECT rr.id,
+                       COALESCE(rr.team_id, rr.participant_id) AS team_id,
+                       rr.placement, rr.kills,
                        rr.placement_points, rr.kill_points, rr.total_points,
-                       t.name AS team_name, t.logo_url
+                       CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                       CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
                 FROM br_round_results rr
-                JOIN teams t ON t.id = rr.team_id
+                LEFT JOIN teams t ON t.id = rr.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
                 WHERE rr.round_id = @roundId
                 ORDER BY rr.placement
                 """,
@@ -607,20 +707,25 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Resolve stageId from round for auth check
-            var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            // Resolve stageId AND detect solo from round → group → stage → tournament
+            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT g.stage_id
+                SELECT g.stage_id, t.team_size
                 FROM br_rounds r
                 JOIN br_groups g ON g.id = r.group_id
+                JOIN tournament_stages ts ON ts.id = g.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
                 WHERE r.id = @roundId
                 """,
                 new { roundId });
-            if (stageId is null)
+            if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
+            Guid stageId = roundInfo.stage_id;
+            bool isSolo = ((int?)roundInfo.team_size ?? 1) <= 1;
+
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
-                conn, userCtx.UserIdGuid, stageId.Value, StaffAuthHelper.PermScoresUpdate);
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermScoresUpdate);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
@@ -629,11 +734,11 @@ public static class BRGroupEndpoints
                 return Results.BadRequest(new { error = "results must be an array." });
 
             // Parse and validate ALL results before opening transaction
-            var parsedResults = new List<(Guid teamId, int placement, int kills, int placementPoints, int killPoints)>();
+            var parsedResults = new List<(Guid entityId, int placement, int kills, int placementPoints, int killPoints)>();
             foreach (var r in resultsElement.EnumerateArray())
             {
                 var teamIdStr = r.TryGetProperty("teamId", out var tid) ? tid.GetString() : null;
-                if (teamIdStr is null || !Guid.TryParse(teamIdStr, out var teamId))
+                if (teamIdStr is null || !Guid.TryParse(teamIdStr, out var entityId))
                     return Results.BadRequest(new { error = $"Invalid teamId: {teamIdStr}" });
 
                 var placement       = r.TryGetProperty("placement", out var pl) && pl.TryGetInt32(out var plv) ? plv : 0;
@@ -646,33 +751,60 @@ public static class BRGroupEndpoints
                 if (kills < 0)
                     return Results.BadRequest(new { error = $"kills must be >= 0 for team {teamIdStr}" });
 
-                parsedResults.Add((teamId, placement, kills, placementPoints, killPoints));
+                parsedResults.Add((entityId, placement, kills, placementPoints, killPoints));
             }
 
             using var tx = conn.BeginTransaction();
             try
             {
-                // Batch upsert all results
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
-                    VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
-                    ON CONFLICT (round_id, team_id) DO UPDATE
-                    SET placement        = EXCLUDED.placement,
-                        kills            = EXCLUDED.kills,
-                        placement_points = EXCLUDED.placement_points,
-                        kill_points      = EXCLUDED.kill_points
-                    """,
-                    parsedResults.Select(r => new
-                    {
-                        roundId,
-                        teamId = r.teamId,
-                        placement = r.placement,
-                        kills = r.kills,
-                        placementPoints = r.placementPoints,
-                        killPoints = r.killPoints
-                    }),
-                    tx);
+                if (isSolo)
+                {
+                    // Solo: teamId in request body is actually participant_id
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_results (round_id, participant_id, placement, kills, placement_points, kill_points)
+                        VALUES (@roundId, @participantId, @placement, @kills, @placementPoints, @killPoints)
+                        ON CONFLICT (round_id, participant_id) WHERE participant_id IS NOT NULL DO UPDATE
+                        SET placement        = EXCLUDED.placement,
+                            kills            = EXCLUDED.kills,
+                            placement_points = EXCLUDED.placement_points,
+                            kill_points      = EXCLUDED.kill_points
+                        """,
+                        parsedResults.Select(r => new
+                        {
+                            roundId,
+                            participantId = r.entityId,
+                            placement = r.placement,
+                            kills = r.kills,
+                            placementPoints = r.placementPoints,
+                            killPoints = r.killPoints
+                        }),
+                        tx);
+                }
+                else
+                {
+                    // Team-based: teamId is a real team UUID
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
+                        VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
+                        ON CONFLICT (round_id, team_id) WHERE team_id IS NOT NULL DO UPDATE
+                        SET placement        = EXCLUDED.placement,
+                            kills            = EXCLUDED.kills,
+                            placement_points = EXCLUDED.placement_points,
+                            kill_points      = EXCLUDED.kill_points
+                        """,
+                        parsedResults.Select(r => new
+                        {
+                            roundId,
+                            teamId = r.entityId,
+                            placement = r.placement,
+                            kills = r.kills,
+                            placementPoints = r.placementPoints,
+                            killPoints = r.killPoints
+                        }),
+                        tx);
+                }
 
                 tx.Commit();
                 return Results.Ok(new { saved = parsedResults.Count });
@@ -700,23 +832,29 @@ public static class BRGroupEndpoints
             if (!groupExists)
                 return Results.NotFound(new { error = "Group not found in this stage." });
 
+            // Unified leaderboard with COALESCE for team/solo
             var leaderboard = await conn.QueryAsync<dynamic>(
                 """
-                SELECT rr.team_id,
-                       t.name AS team_name,
-                       t.logo_url,
-                       COUNT(DISTINCT rr.round_id) AS games_played,
-                       SUM(rr.placement_points) AS total_placement_points,
-                       SUM(rr.kill_points) AS total_kill_points,
-                       SUM(rr.total_points) AS total_points,
-                       SUM(rr.kills) AS total_kills,
-                       COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
-                       MIN(rr.placement) AS best_placement
+                SELECT
+                    COALESCE(rr.team_id, rr.participant_id) AS team_id,
+                    CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
+                    COUNT(DISTINCT rr.round_id) AS games_played,
+                    SUM(rr.placement_points) AS total_placement_points,
+                    SUM(rr.kill_points) AS total_kill_points,
+                    SUM(rr.total_points) AS total_points,
+                    SUM(rr.kills) AS total_kills,
+                    COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
+                    MIN(rr.placement) AS best_placement
                 FROM br_round_results rr
                 JOIN br_rounds r ON r.id = rr.round_id
-                JOIN teams t ON t.id = rr.team_id
+                LEFT JOIN teams t ON t.id = rr.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
                 WHERE r.group_id = @groupId
-                GROUP BY rr.team_id, t.name, t.logo_url
+                GROUP BY COALESCE(rr.team_id, rr.participant_id),
+                         CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END,
+                         CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
                 ORDER BY total_points DESC, wins DESC, total_kills DESC
                 """,
                 new { groupId });
@@ -726,7 +864,6 @@ public static class BRGroupEndpoints
 
         // ── POST /api/stages/{stageId}/br/advance ───────────────────────────
         // Preview or execute advancement of top teams from each group to next stage.
-        // ?preview=true returns qualified teams without making changes.
         app.MapPost("/api/stages/{stageId}/br/advance", async (
             Guid                stageId,
             [FromQuery] bool    preview,
@@ -744,15 +881,23 @@ public static class BRGroupEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            // Get stage info
+            // Get stage info AND team_size for solo detection
             var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, tournament_id, name, stage_order, advancement_count, status FROM tournament_stages WHERE id = @stageId",
+                """
+                SELECT ts.id, ts.tournament_id, ts.name, ts.stage_order, ts.advancement_count, ts.status,
+                       t.team_size
+                FROM tournament_stages ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE ts.id = @stageId
+                """,
                 new { stageId });
             if (stage is null)
                 return Results.NotFound(new { error = "Stage not found." });
 
             if ((string)stage.status == "completed")
                 return Results.Conflict(new { error = "This stage has already been advanced." });
+
+            bool isSolo = ((int?)stage.team_size ?? 1) <= 1;
 
             // Optional override from body: { teamsPerGroup: 4 }
             int teamsPerGroup = 0;
@@ -789,27 +934,38 @@ public static class BRGroupEndpoints
                 return Results.BadRequest(new { error = $"Groups with no completed rounds: {names}" });
             }
 
-            // Build qualified teams — single query with window function (no N+1)
+            // Build qualified teams — unified query with COALESCE for solo/team
             var qualifiedRows = (await conn.QueryAsync<dynamic>(
                 """
                 SELECT * FROM (
-                    SELECT rr.team_id, t.name AS team_name, t.logo_url,
-                           g.name AS group_name,
-                           SUM(rr.total_points) AS total_points,
-                           SUM(rr.kills) AS total_kills,
-                           COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY r.group_id
-                               ORDER BY SUM(rr.total_points) DESC,
-                                        COUNT(*) FILTER (WHERE rr.placement = 1) DESC,
-                                        SUM(rr.kills) DESC
-                           ) AS rank_in_group
+                    SELECT
+                        COALESCE(rr.team_id, rr.participant_id) AS entity_id,
+                        rr.team_id,
+                        rr.participant_id,
+                        CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                        CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
+                        g.name AS group_name,
+                        SUM(rr.total_points) AS total_points,
+                        SUM(rr.kills) AS total_kills,
+                        COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY r.group_id
+                            ORDER BY SUM(rr.total_points) DESC,
+                                     COUNT(*) FILTER (WHERE rr.placement = 1) DESC,
+                                     SUM(rr.kills) DESC
+                        ) AS rank_in_group
                     FROM br_round_results rr
                     JOIN br_rounds r ON r.id = rr.round_id
                     JOIN br_groups g ON g.id = r.group_id
-                    JOIN teams t ON t.id = rr.team_id
+                    LEFT JOIN teams t ON t.id = rr.team_id
+                    LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
+                    LEFT JOIN profiles p ON p.id = tp.user_id
                     WHERE g.stage_id = @stageId
-                    GROUP BY rr.team_id, t.name, t.logo_url, g.name, r.group_id
+                    GROUP BY COALESCE(rr.team_id, rr.participant_id),
+                             rr.team_id, rr.participant_id,
+                             CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END,
+                             CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END,
+                             g.name, r.group_id
                 ) ranked
                 WHERE rank_in_group <= @teamsPerGroup
                 ORDER BY group_name, rank_in_group
@@ -818,13 +974,15 @@ public static class BRGroupEndpoints
 
             var qualifiedTeams = qualifiedRows.Select(r => new
             {
-                team_id      = (Guid)r.team_id,
-                team_name    = (string)r.team_name,
-                logo_url     = (string?)r.logo_url,
-                from_group   = (string)r.group_name,
-                total_points = (long)r.total_points,
-                total_kills  = (long)r.total_kills,
-                wins         = (long)r.wins,
+                team_id            = (Guid)r.entity_id,
+                raw_team_id        = (Guid?)r.team_id,
+                raw_participant_id = (Guid?)r.participant_id,
+                team_name          = (string)r.team_name,
+                logo_url           = (string?)r.logo_url,
+                from_group         = (string)r.group_name,
+                total_points       = (long)r.total_points,
+                total_kills        = (long)r.total_kills,
+                wins               = (long)r.wins,
             }).ToList();
 
             if (preview)
@@ -835,7 +993,16 @@ public static class BRGroupEndpoints
                     groups_count    = groups.Count,
                     teams_per_group = teamsPerGroup,
                     total_qualified = qualifiedTeams.Count,
-                    qualified_teams = qualifiedTeams,
+                    qualified_teams = qualifiedTeams.Select(qt => new
+                    {
+                        qt.team_id,
+                        qt.team_name,
+                        qt.logo_url,
+                        qt.from_group,
+                        qt.total_points,
+                        qt.total_kills,
+                        qt.wins,
+                    }),
                 });
             }
 
@@ -864,6 +1031,7 @@ public static class BRGroupEndpoints
                     tx.Rollback();
                     return Results.Conflict(new { error = "This stage has already been advanced." });
                 }
+
                 var existingNextGroups = await conn.QuerySingleOrDefaultAsync<long>(
                     "SELECT COUNT(*) FROM br_groups WHERE stage_id = @nextStageId",
                     new { nextStageId }, tx);
@@ -890,22 +1058,43 @@ public static class BRGroupEndpoints
                         lobbySize = qualifiedTeams.Count
                     }, tx);
 
-                // Insert qualified teams into finals group
-                var teamInserts = qualifiedTeams.Select((t, i) => new
+                // Insert qualified entities into finals group — solo vs. team
+                if (isSolo)
                 {
-                    id = Guid.NewGuid(),
-                    group_id = finalsGroupId,
-                    team_id = (Guid)t.team_id,
-                    seed_order = i + 1,
-                    assigned_at = DateTime.UtcNow,
-                }).ToList();
+                    var participantInserts = qualifiedTeams.Select((qt, i) => new
+                    {
+                        id = Guid.NewGuid(),
+                        group_id = finalsGroupId,
+                        participant_id = qt.raw_participant_id!.Value,
+                        seed_order = i + 1,
+                        assigned_at = DateTime.UtcNow,
+                    }).ToList();
 
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_group_teams (id, group_id, team_id, seed_order, assigned_at)
-                    VALUES (@id, @group_id, @team_id, @seed_order, @assigned_at)
-                    """,
-                    teamInserts, tx);
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_group_teams (id, group_id, participant_id, seed_order, assigned_at)
+                        VALUES (@id, @group_id, @participant_id, @seed_order, @assigned_at)
+                        """,
+                        participantInserts, tx);
+                }
+                else
+                {
+                    var teamInserts = qualifiedTeams.Select((qt, i) => new
+                    {
+                        id = Guid.NewGuid(),
+                        group_id = finalsGroupId,
+                        team_id = qt.raw_team_id!.Value,
+                        seed_order = i + 1,
+                        assigned_at = DateTime.UtcNow,
+                    }).ToList();
+
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_group_teams (id, group_id, team_id, seed_order, assigned_at)
+                        VALUES (@id, @group_id, @team_id, @seed_order, @assigned_at)
+                        """,
+                        teamInserts, tx);
+                }
 
                 // Update stage statuses
                 await conn.ExecuteAsync(
@@ -919,9 +1108,9 @@ public static class BRGroupEndpoints
 
                 return Results.Ok(new
                 {
-                    advanced = qualifiedTeams.Count,
-                    from_stage = (string)stage.name,
-                    to_stage = (string)nextStage.name,
+                    advanced        = qualifiedTeams.Count,
+                    from_stage      = (string)stage.name,
+                    to_stage        = (string)nextStage.name,
                     finals_group_id = finalsGroupId,
                 });
             }
