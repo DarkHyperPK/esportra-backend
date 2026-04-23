@@ -1,9 +1,11 @@
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
+using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
@@ -588,7 +590,8 @@ public static class BRGroupEndpoints
             Guid                roundId,
             [FromBody] JsonElement body,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -687,7 +690,88 @@ public static class BRGroupEndpoints
                 """;
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
-            return updated is not null ? Results.Ok(updated) : Results.NotFound();
+            if (updated is null) return Results.NotFound();
+
+            // ── Fire-and-forget notifications when a round goes active ───────
+            if (body.TryGetProperty("status", out var notifStatusProp) &&
+                notifStatusProp.GetString() == "active")
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var notifConn = db.CreateConnection();
+
+                        // Get round + group + tournament info for notification content
+                        var roundMeta = await notifConn.QuerySingleOrDefaultAsync<dynamic>(
+                            """
+                            SELECT r.group_id, r.round_number, r.lobby_code,
+                                   g.name AS group_name,
+                                   t.slug AS tournament_slug
+                            FROM br_rounds r
+                            JOIN br_groups g ON g.id = r.group_id
+                            JOIN tournament_stages ts ON ts.id = g.stage_id
+                            JOIN tournaments t ON t.id = ts.tournament_id
+                            WHERE r.id = @roundId
+                            """,
+                            new { roundId });
+
+                        if (roundMeta is null) return;
+
+                        Guid   groupIdForNotif  = roundMeta.group_id;
+                        int    roundNumber      = Convert.ToInt32(roundMeta.round_number);
+                        string groupName        = (string)roundMeta.group_name;
+                        string tournamentSlug   = (string)roundMeta.tournament_slug;
+
+                        // Get all participant user IDs in the group
+                        var userIds = (await notifConn.QueryAsync<string>(
+                            """
+                            SELECT DISTINCT tp.user_id::text
+                            FROM br_group_teams bgt
+                            JOIN tournament_participants tp ON (
+                                (tp.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
+                                OR (bgt.participant_id IS NOT NULL AND bgt.participant_id = tp.id)
+                            )
+                            WHERE bgt.group_id = @groupId
+                              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                            """,
+                            new { groupId = groupIdForNotif })).ToList();
+
+                        if (userIds.Count == 0) return;
+
+                        var title   = $"Round {roundNumber} is Live!";
+                        var message = $"Your group '{groupName}' has started a new round. Join the game room.";
+                        var link    = $"/tournaments/{tournamentSlug}/br-game-room";
+                        var type    = "br_round_active";
+
+                        // Bulk insert notifications
+                        await notifConn.ExecuteAsync(
+                            """
+                            INSERT INTO notifications (user_id, type, title, message, link, is_read)
+                            SELECT u.id::uuid, @type, @title, @message, @link, FALSE
+                            FROM unnest(@userIds::uuid[]) AS u(id)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            new { type, title, message, link, userIds = userIds.ToArray() });
+
+                        // Push real-time SignalR notification to each participant
+                        foreach (var userId in userIds)
+                        {
+                            await notifHub.Clients
+                                .Group(NotificationHub.UserGroup(userId))
+                                .SendAsync(NotificationHubEvents.NewNotification,
+                                    new { type, title, message, link });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Best-effort: log but don't fail the PATCH response
+                        Console.Error.WriteLine($"[BRGroupEndpoints] Notification error for round {roundId}: {ex.Message}");
+                    }
+                });
+            }
+
+            return Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/br/rounds/{roundId}/results ────────────────────────────
@@ -891,7 +975,112 @@ public static class BRGroupEndpoints
             return Results.Ok(leaderboard);
         });
 
-        // ── POST /api/stages/{stageId}/br/advance ───────────────────────────
+        // ── GET /api/tournaments/{tournamentId}/br/player-context ────────────
+        // Returns the calling user's group context within any BR stage of this
+        // tournament: which stage, which group, round counts, and the active round
+        // (including lobby code, but only for active rounds).
+        app.MapGet("/api/tournaments/{tournamentId}/br/player-context", async (
+            Guid              tournamentId,
+            HttpContext        ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // ── Find the user's group ────────────────────────────────────────
+            var groupRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ts.id AS stage_id, ts.name AS stage_name, ts.stage_order,
+                       g.id AS group_id, g.name AS group_name
+                FROM tournament_stages ts
+                JOIN br_groups g ON g.stage_id = ts.id
+                JOIN br_group_teams bgt ON bgt.group_id = g.id
+                JOIN tournament_participants tp ON (
+                    (tp.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
+                    OR (bgt.participant_id IS NOT NULL AND bgt.participant_id = tp.id)
+                )
+                WHERE ts.tournament_id = @tournamentId
+                  AND tp.user_id = @userId
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                ORDER BY ts.stage_order ASC
+                LIMIT 1
+                """,
+                new { tournamentId, userId = userCtx.UserIdGuid });
+
+            // Not in a group — return minimal response
+            if (groupRow is null)
+            {
+                return Results.Ok(new
+                {
+                    stageId          = (string?)null,
+                    stageName        = (string?)null,
+                    groupId          = (string?)null,
+                    groupName        = (string?)null,
+                    totalRounds      = 0,
+                    completedRounds  = 0,
+                    activeRound      = (object?)null,
+                });
+            }
+
+            Guid groupId = groupRow.group_id;
+
+            // ── Fetch rounds for the group ───────────────────────────────────
+            var rounds = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, round_number, lobby_code, status, scheduled_at, started_at, completed_at
+                FROM br_rounds
+                WHERE group_id = @groupId
+                ORDER BY round_number
+                """,
+                new { groupId })).ToList();
+
+            int totalRounds     = rounds.Count;
+            int completedRounds = rounds.Count(r => (string)r.status == "completed");
+
+            // ── Check if user is staff (staff see all data regardless of status) ──
+            bool isStaff = StaffAuthHelper.IsPlatformAdmin(userCtx);
+            if (!isStaff)
+            {
+                var stageIdForCheck = (Guid)groupRow.stage_id;
+                isStaff = await StaffAuthHelper.CanActOnStageAsync(
+                    conn, userCtx.UserIdGuid, stageIdForCheck, StaffAuthHelper.PermBracketEdit);
+            }
+
+            // ── Build active round payload ───────────────────────────────────
+            var activeRoundRow = rounds.FirstOrDefault(r => (string)r.status == "active");
+            object? activeRoundPayload = null;
+            if (activeRoundRow is not null)
+            {
+                // Lobby code is returned only if the round is active OR user is staff
+                var lobbyCode = isStaff || (string)activeRoundRow.status == "active"
+                    ? (string?)activeRoundRow.lobby_code
+                    : null;
+
+                activeRoundPayload = new
+                {
+                    id           = ((Guid)activeRoundRow.id).ToString(),
+                    roundNumber  = Convert.ToInt32(activeRoundRow.round_number),
+                    lobbyCode,
+                    status       = (string)activeRoundRow.status,
+                    scheduledAt  = activeRoundRow.scheduled_at is not null
+                        ? ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o")
+                        : (string?)null,
+                };
+            }
+
+            return Results.Ok(new
+            {
+                stageId         = ((Guid)groupRow.stage_id).ToString(),
+                stageName       = (string)groupRow.stage_name,
+                groupId         = ((Guid)groupRow.group_id).ToString(),
+                groupName       = (string)groupRow.group_name,
+                totalRounds,
+                completedRounds,
+                activeRound     = activeRoundPayload,
+            });
+        }).RequireAuthorization("Authenticated");
         // Preview or execute advancement of top teams from each group to next stage.
         app.MapPost("/api/stages/{stageId}/br/advance", async (
             Guid                stageId,
