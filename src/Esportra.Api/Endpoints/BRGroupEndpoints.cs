@@ -476,22 +476,27 @@ public static class BRGroupEndpoints
                 """,
                 new { groupId });
 
-            // Strip lobby_code unless user is authenticated staff/admin
+            // Lobby code visibility rules:
+            // - Staff/admin: see all codes (pending, active, completed)
+            // - Authenticated participants: see code only when round is 'active'
+            // - Unauthenticated: never see codes
             var userCtx = ctx.Items["UserContext"] as UserContext;
-            var canSeeCode = false;
+            var isStaff = false;
             if (userCtx is not null)
             {
-                canSeeCode = await StaffAuthHelper.CanActOnStageAsync(
-                        conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
-                    || StaffAuthHelper.IsPlatformAdmin(userCtx);
+                isStaff = await StaffAuthHelper.CanActOnStageAsync(
+                              conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
+                          || StaffAuthHelper.IsPlatformAdmin(userCtx);
             }
 
-            if (!canSeeCode)
+            if (!isStaff)
             {
+                // Non-staff see lobby_code only on active rounds; strip it otherwise
                 var sanitized = rounds.Select(r =>
                 {
                     var dict = (IDictionary<string, object>)r;
-                    dict["lobby_code"] = null!;
+                    if ((string?)dict["status"] != "active")
+                        dict["lobby_code"] = null!;
                     return dict;
                 });
                 return Results.Ok(sanitized);
