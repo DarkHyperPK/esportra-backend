@@ -215,7 +215,7 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Stage not found." });
 
             Guid tournamentId = tournamentInfo.tournament_id;
-            bool isSolo = ((int?)tournamentInfo.team_size ?? 1) <= 1;
+            bool isSolo = Convert.ToInt32(tournamentInfo.team_size ?? 1) == 1;
 
             // Get existing groups for this stage
             var groups = (await conn.QueryAsync<dynamic>(
@@ -283,13 +283,13 @@ public static class BRGroupEndpoints
                         SELECT DISTINCT team_id
                         FROM tournament_participants
                         WHERE tournament_id = @tournamentId
-                          AND status IN ('accepted','approved')
+                          AND status IN ('pending','approved')
                           AND team_id IS NOT NULL
                         """,
                         new { tournamentId })).ToArray();
 
                     if (teamIds.Length == 0)
-                        return Results.BadRequest(new { error = "No registered teams found. Ensure participants have status 'accepted' or 'approved'." });
+                        return Results.BadRequest(new { error = "No registered teams found. Ensure participants have status 'pending' or 'approved'." });
 
                     var orderedTeams = method == "random"
                         ? ShuffleTeams(teamIds)
@@ -371,7 +371,7 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Stage not found." });
 
             Guid tournamentId = tournamentInfo.tournament_id;
-            bool isSolo = ((int?)tournamentInfo.team_size ?? 1) <= 1;
+            bool isSolo = Convert.ToInt32(tournamentInfo.team_size ?? 1) == 1;
 
             if (teamIds.Count > 0)
             {
@@ -398,7 +398,7 @@ public static class BRGroupEndpoints
                         """
                         SELECT DISTINCT team_id FROM tournament_participants
                         WHERE tournament_id = @tournamentId
-                          AND status IN ('accepted','approved')
+                          AND status IN ('pending','approved')
                           AND team_id = ANY(@teamIdArr)
                         """,
                         new { tournamentId, teamIdArr = teamIds.ToArray() })).ToHashSet();
@@ -477,32 +477,56 @@ public static class BRGroupEndpoints
                 new { groupId });
 
             // Lobby code visibility rules:
-            // - Staff/admin: see all codes (pending, active, completed)
-            // - Authenticated participants: see code only when round is 'active'
-            // - Unauthenticated: never see codes
+            // - Staff/admin: see all codes (any round status)
+            // - Authenticated tournament participants: see code only when round is 'active'
+            // - All others (unauthenticated or non-participants): never see codes
             var userCtx = ctx.Items["UserContext"] as UserContext;
-            var isStaff = false;
-            if (userCtx is not null)
-            {
-                isStaff = await StaffAuthHelper.CanActOnStageAsync(
-                              conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
-                          || StaffAuthHelper.IsPlatformAdmin(userCtx);
-            }
 
-            if (!isStaff)
+            var isStaff = userCtx is not null
+                && (await StaffAuthHelper.CanActOnStageAsync(
+                        conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
+                    || StaffAuthHelper.IsPlatformAdmin(userCtx));
+
+            if (isStaff)
+                return Results.Ok(rounds);
+
+            // For non-staff: participants see active-round codes; everyone else sees nothing.
+            // Check participation ONCE outside the projection (avoids N queries).
+            var isParticipant = userCtx is not null
+                && await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM tournament_participants tp
+                        JOIN tournament_stages ts ON ts.tournament_id = tp.tournament_id
+                        JOIN br_groups g          ON g.stage_id        = ts.id
+                        WHERE g.id = @groupId
+                          AND tp.user_id = @userId
+                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                    )
+                    """,
+                    new { groupId, userId = userCtx.UserIdGuid });
+
+            // Materialize into typed objects to avoid mutating live Dapper rows
+            var roundsList = rounds.AsList();
+            var sanitized = roundsList.Select(r =>
             {
-                // Non-staff see lobby_code only on active rounds; strip it otherwise
-                var sanitized = rounds.Select(r =>
+                var d = (IDictionary<string, object>)r;
+                var isActive = (d["status"] as string) == "active";
+                return new
                 {
-                    var dict = (IDictionary<string, object>)r;
-                    if ((string?)dict["status"] != "active")
-                        dict["lobby_code"] = null!;
-                    return dict;
-                });
-                return Results.Ok(sanitized);
-            }
-
-            return Results.Ok(rounds);
+                    id           = d["id"],
+                    round_number = d["round_number"],
+                    // Only participants see the code, and only for the live round
+                    lobby_code   = (isParticipant && isActive) ? d["lobby_code"] : (object?)null,
+                    status       = d["status"],
+                    scheduled_at = d["scheduled_at"],
+                    started_at   = d["started_at"],
+                    completed_at = d["completed_at"],
+                    created_at   = d["created_at"],
+                    result_count = d["result_count"],
+                };
+            });
+            return Results.Ok(sanitized);
         });
 
         // ── POST /api/stages/{stageId}/br/groups/{groupId}/rounds ───────────
@@ -727,7 +751,7 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Round not found." });
 
             Guid stageId = roundInfo.stage_id;
-            bool isSolo = ((int?)roundInfo.team_size ?? 1) <= 1;
+            bool isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermScoresUpdate);
@@ -902,7 +926,7 @@ public static class BRGroupEndpoints
             if ((string)stage.status == "completed")
                 return Results.Conflict(new { error = "This stage has already been advanced." });
 
-            bool isSolo = ((int?)stage.team_size ?? 1) <= 1;
+            bool isSolo = Convert.ToInt32(stage.team_size ?? 1) == 1;
 
             // Optional override from body: { teamsPerGroup: 4 }
             int teamsPerGroup = 0;
