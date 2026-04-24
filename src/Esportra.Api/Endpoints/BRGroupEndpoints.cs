@@ -1308,6 +1308,24 @@ public static class BRGroupEndpoints
             if (teamId is null && participantId is null)
                 return Results.Forbid();
 
+            // Check if evidence has already been submitted — once submitted, it is locked.
+            bool alreadyExists;
+            if (isSolo)
+            {
+                alreadyExists = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS (SELECT 1 FROM br_round_evidence WHERE round_id = @roundId AND participant_id = @participantId)",
+                    new { roundId, participantId });
+            }
+            else
+            {
+                alreadyExists = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS (SELECT 1 FROM br_round_evidence WHERE round_id = @roundId AND team_id = @teamId)",
+                    new { roundId, teamId });
+            }
+
+            if (alreadyExists)
+                return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
+
             if (isSolo)
             {
                 await conn.ExecuteAsync(
@@ -1320,15 +1338,6 @@ public static class BRGroupEndpoints
                         @roundId, @participantId, @imageUrl, @submittedBy, NOW(),
                         @placement, @kills, FALSE, NULL, NULL
                     )
-                    ON CONFLICT (round_id, participant_id) WHERE participant_id IS NOT NULL DO UPDATE
-                    SET image_url = EXCLUDED.image_url,
-                        submitted_by = EXCLUDED.submitted_by,
-                        submitted_at = NOW(),
-                        placement = EXCLUDED.placement,
-                        kills = EXCLUDED.kills,
-                        reviewed = FALSE,
-                        reviewed_at = NULL,
-                        reviewed_by = NULL
                     """,
                     new
                     {
@@ -1352,15 +1361,6 @@ public static class BRGroupEndpoints
                         @roundId, @teamId, @imageUrl, @submittedBy, NOW(),
                         @placement, @kills, FALSE, NULL, NULL
                     )
-                    ON CONFLICT (round_id, team_id) WHERE team_id IS NOT NULL DO UPDATE
-                    SET image_url = EXCLUDED.image_url,
-                        submitted_by = EXCLUDED.submitted_by,
-                        submitted_at = NOW(),
-                        placement = EXCLUDED.placement,
-                        kills = EXCLUDED.kills,
-                        reviewed = FALSE,
-                        reviewed_at = NULL,
-                        reviewed_by = NULL
                     """,
                     new
                     {
