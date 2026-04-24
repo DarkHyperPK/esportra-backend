@@ -963,6 +963,74 @@ public static class BRGroupEndpoints
             return Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/br/rounds/{roundId}/reset ─────────────────────────────
+        // Clear all result/evidence state for a round and move it back to
+        // pending without deleting the round itself.
+        app.MapPost("/api/br/rounds/{roundId}/reset", async (
+            Guid                roundId,
+            HttpContext          ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.stage_id
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                WHERE r.id = @roundId
+                """,
+                new { roundId });
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            var stageId = (Guid)roundInfo.stage_id;
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                await conn.ExecuteAsync(
+                    "DELETE FROM br_round_results WHERE round_id = @roundId",
+                    new { roundId },
+                    tx);
+
+                await conn.ExecuteAsync(
+                    "DELETE FROM br_round_evidence WHERE round_id = @roundId",
+                    new { roundId },
+                    tx);
+
+                var round = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    UPDATE br_rounds
+                    SET status = 'pending',
+                        lobby_code = NULL,
+                        started_at = NULL,
+                        completed_at = NULL,
+                        queue_started_at = NULL
+                    WHERE id = @roundId
+                    RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
+                              queue_timer_minutes, queue_started_at
+                    """,
+                    new { roundId },
+                    tx);
+
+                tx.Commit();
+                return Results.Ok(round);
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/br/rounds/{roundId}/results ────────────────────────────
         // Get results for a round.
         app.MapGet("/api/br/rounds/{roundId}/results", async (
