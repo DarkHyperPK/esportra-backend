@@ -1566,7 +1566,8 @@ public static class BRGroupEndpoints
             if (roundStatus == "completed")
                 return Results.Conflict(new { error = "Completed rounds are locked. Re-open the round before editing results." });
 
-            if (!body.TryGetProperty("results", out var resultsElement) ||
+            if (body.ValueKind != JsonValueKind.Object ||
+                !body.TryGetProperty("results", out var resultsElement) ||
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
@@ -1689,6 +1690,12 @@ public static class BRGroupEndpoints
 
                 tx.Commit();
                 return Results.Ok(new { saved = parsedResults.Count });
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
+                                               && ex.ConstraintName == "uq_br_round_results_round_placement")
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = "Each placement can only be assigned once in a round." });
             }
             catch
             {
@@ -2245,50 +2252,57 @@ public static class BRGroupEndpoints
         var fallbackPresetKey = ResolveDefaultBrPresetKey(gameName);
         var fallback = ResolvePresetScoring(fallbackPresetKey);
 
-        if (!TryParseJsonElement(rawSettings, out var root))
-            return fallback;
-
-        var settingsRoot = ResolveBrSettingsRoot(root);
-
-        if (TryGetPropertyIgnoreCase(settingsRoot, "brCustomScoring", out var customScoring)
-            && customScoring.ValueKind == JsonValueKind.Object)
+        try
         {
-            var customPlacements = TryReadPlacementArray(customScoring);
-            if (customPlacements.Length > 0
-                && TryGetPropertyIgnoreCase(customScoring, "killPoints", out var customKillPointsEl)
-                && customKillPointsEl.TryGetInt32(out var customKillPoints)
-                && customKillPoints >= 0)
+            if (!TryParseJsonElement(rawSettings, out var root))
+                return fallback;
+
+            var settingsRoot = ResolveBrSettingsRoot(root);
+
+            if (TryGetPropertyIgnoreCase(settingsRoot, "brCustomScoring", out var customScoring)
+                && customScoring.ValueKind == JsonValueKind.Object)
             {
-                int? customKillCap = null;
-                if (TryGetPropertyIgnoreCase(customScoring, "killCap", out var customKillCapEl)
-                    && customKillCapEl.ValueKind != JsonValueKind.Null
-                    && customKillCapEl.TryGetInt32(out var parsedCustomKillCap)
-                    && parsedCustomKillCap > 0)
+                var customPlacements = TryReadPlacementArray(customScoring);
+                if (customPlacements.Length > 0
+                    && TryGetPropertyIgnoreCase(customScoring, "killPoints", out var customKillPointsEl)
+                    && customKillPointsEl.TryGetInt32(out var customKillPoints)
+                    && customKillPoints >= 0)
                 {
-                    customKillCap = parsedCustomKillCap;
+                    int? customKillCap = null;
+                    if (TryGetPropertyIgnoreCase(customScoring, "killCap", out var customKillCapEl)
+                        && customKillCapEl.ValueKind != JsonValueKind.Null
+                        && customKillCapEl.TryGetInt32(out var parsedCustomKillCap)
+                        && parsedCustomKillCap > 0)
+                    {
+                        customKillCap = parsedCustomKillCap;
+                    }
+
+                    return new BrScoringSettings(customPlacements, customKillPoints, customKillCap);
                 }
-
-                return new BrScoringSettings(customPlacements, customKillPoints, customKillCap);
             }
-        }
 
-        string? presetKey = null;
-        if (TryGetPropertyIgnoreCase(settingsRoot, "brScoringPreset", out var presetEl)
-            && presetEl.ValueKind == JsonValueKind.String)
+            string? presetKey = null;
+            if (TryGetPropertyIgnoreCase(settingsRoot, "brScoringPreset", out var presetEl)
+                && presetEl.ValueKind == JsonValueKind.String)
+            {
+                presetKey = presetEl.GetString();
+            }
+
+            var resolved = ResolvePresetScoring(presetKey ?? fallbackPresetKey);
+            if (TryGetPropertyIgnoreCase(settingsRoot, "brKillCap", out var killCapEl)
+                && killCapEl.ValueKind != JsonValueKind.Null
+                && killCapEl.TryGetInt32(out var killCap)
+                && killCap > 0)
+            {
+                resolved = resolved with { KillCap = killCap };
+            }
+
+            return resolved;
+        }
+        catch
         {
-            presetKey = presetEl.GetString();
+            return fallback;
         }
-
-        var resolved = ResolvePresetScoring(presetKey ?? fallbackPresetKey);
-        if (TryGetPropertyIgnoreCase(settingsRoot, "brKillCap", out var killCapEl)
-            && killCapEl.ValueKind != JsonValueKind.Null
-            && killCapEl.TryGetInt32(out var killCap)
-            && killCap > 0)
-        {
-            resolved = resolved with { KillCap = killCap };
-        }
-
-        return resolved;
     }
 
     private static BrScoringSettings ResolvePresetScoring(string? presetKey)
@@ -2421,10 +2435,10 @@ public static class BRGroupEndpoints
         switch (rawValue)
         {
             case JsonElement jsonElement:
-                element = jsonElement;
+                element = jsonElement.Clone();
                 return true;
             case JsonDocument jsonDocument:
-                element = jsonDocument.RootElement;
+                element = jsonDocument.RootElement.Clone();
                 return true;
             case string jsonText when !string.IsNullOrWhiteSpace(jsonText):
                 try
