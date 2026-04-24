@@ -583,7 +583,9 @@ public static class BRGroupEndpoints
                 SELECT r.id, r.round_number, r.lobby_code, r.status,
                        r.scheduled_at, r.started_at, r.completed_at, r.created_at,
                        r.queue_timer_minutes, r.queue_started_at,
-                       (SELECT COUNT(*) FROM br_round_results rr WHERE rr.round_id = r.id) AS result_count
+                       (SELECT COUNT(*) FROM br_round_results rr WHERE rr.round_id = r.id) AS result_count,
+                       (SELECT COUNT(*) FROM br_round_evidence re WHERE re.round_id = r.id) AS evidence_count,
+                       (SELECT COUNT(*) FROM br_round_evidence re WHERE re.round_id = r.id AND re.reviewed = FALSE) AS pending_evidence_count
                 FROM br_rounds r
                 WHERE r.group_id = @groupId
                 ORDER BY r.round_number
@@ -640,6 +642,8 @@ public static class BRGroupEndpoints
                     queue_timer_minutes = d["queue_timer_minutes"],
                     queue_started_at    = d["queue_started_at"],
                     result_count = d["result_count"],
+                    evidence_count = d["evidence_count"],
+                    pending_evidence_count = d["pending_evidence_count"],
                 };
             });
             return Results.Ok(sanitized);
@@ -990,6 +994,367 @@ public static class BRGroupEndpoints
                 new { roundId });
 
             return Results.Ok(results);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/br/rounds/{roundId}/evidence ───────────────────────────
+        // Staff see all submissions. Players only see their own submission for
+        // the active round in their assigned group.
+        app.MapGet("/api/br/rounds/{roundId}/evidence", async (
+            Guid                roundId,
+            HttpContext          ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.stage_id,
+                       ts.tournament_id,
+                       t.team_size
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                JOIN tournament_stages ts ON ts.id = g.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE r.id = @roundId
+                """,
+                new { roundId });
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            var stageId = (Guid)roundInfo.stage_id;
+            var tournamentId = (Guid)roundInfo.tournament_id;
+            var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+
+            var isStaff = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            isStaff = isStaff || StaffAuthHelper.IsPlatformAdmin(userCtx);
+
+            Guid? viewerTeamId = null;
+            Guid? viewerParticipantId = null;
+
+            if (!isStaff)
+            {
+                if (isSolo)
+                {
+                    viewerParticipantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                        """
+                        SELECT tp.id
+                        FROM br_rounds r
+                        JOIN br_groups g ON g.id = r.group_id
+                        JOIN br_group_teams bgt ON bgt.group_id = g.id
+                        JOIN tournament_participants tp ON tp.id = bgt.participant_id
+                        WHERE r.id = @roundId
+                          AND tp.tournament_id = @tournamentId
+                          AND tp.user_id = @userId
+                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                        LIMIT 1
+                        """,
+                        new { roundId, tournamentId, userId = userCtx.UserIdGuid });
+                }
+                else
+                {
+                    viewerTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                        """
+                        SELECT bgt.team_id
+                        FROM br_rounds r
+                        JOIN br_groups g ON g.id = r.group_id
+                        JOIN br_group_teams bgt ON bgt.group_id = g.id
+                        JOIN tournament_participants tp ON tp.team_id = bgt.team_id
+                        JOIN team_members tm ON tm.team_id = bgt.team_id
+                        WHERE r.id = @roundId
+                          AND tp.tournament_id = @tournamentId
+                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                          AND tm.user_id = @userId
+                          AND tm.is_active = TRUE
+                        LIMIT 1
+                        """,
+                        new { roundId, tournamentId, userId = userCtx.UserIdGuid });
+                }
+
+                if (viewerTeamId is null && viewerParticipantId is null)
+                    return Results.Forbid();
+            }
+
+            var evidence = await conn.QueryAsync<dynamic>(
+                """
+                SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
+                       CASE WHEN re.team_id IS NOT NULL THEN t.name ELSE p.username END AS entity_name,
+                       CASE WHEN re.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
+                       re.image_url,
+                       re.submitted_at,
+                       re.placement,
+                       re.kills,
+                       re.reviewed
+                FROM br_round_evidence re
+                LEFT JOIN teams t ON t.id = re.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE re.round_id = @roundId
+                  AND (
+                    @isStaff = TRUE
+                    OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
+                    OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
+                  )
+                ORDER BY re.submitted_at DESC
+                """,
+                new { roundId, isStaff, viewerTeamId, viewerParticipantId });
+
+            var payload = evidence.Select(row => new
+            {
+                teamId = ((Guid)row.entity_id).ToString(),
+                teamName = (string?)row.entity_name ?? "Unknown",
+                logoUrl = (string?)row.logo_url,
+                imageUrl = (string)row.image_url,
+                submittedAt = ((DateTimeOffset)row.submitted_at).ToString("o"),
+                placement = row.placement is not null ? Convert.ToInt32(row.placement) : (int?)null,
+                kills = row.kills is not null ? Convert.ToInt32(row.kills) : (int?)null,
+                reviewed = (bool)row.reviewed,
+            });
+
+            return Results.Ok(payload);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/br/rounds/{roundId}/evidence ───────────────────────────
+        // Stores evidence against the relational round so organizer review and
+        // multi-group BR stay aligned.
+        app.MapPut("/api/br/rounds/{roundId}/evidence", async (
+            Guid                roundId,
+            [FromBody] JsonElement body,
+            HttpContext          ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!body.TryGetProperty("imageUrl", out var imageUrlProp))
+                return Results.BadRequest(new { error = "imageUrl is required." });
+
+            var imageUrl = imageUrlProp.GetString()?.Trim();
+            if (string.IsNullOrWhiteSpace(imageUrl))
+                return Results.BadRequest(new { error = "imageUrl is required." });
+
+            int? placement = null;
+            if (body.TryGetProperty("placement", out var placementProp) && placementProp.ValueKind != JsonValueKind.Null)
+            {
+                if (!placementProp.TryGetInt32(out var placementValue) || placementValue < 1)
+                    return Results.BadRequest(new { error = "placement must be >= 1." });
+                placement = placementValue;
+            }
+
+            int? kills = null;
+            if (body.TryGetProperty("kills", out var killsProp) && killsProp.ValueKind != JsonValueKind.Null)
+            {
+                if (!killsProp.TryGetInt32(out var killsValue) || killsValue < 0)
+                    return Results.BadRequest(new { error = "kills must be >= 0." });
+                kills = killsValue;
+            }
+
+            using var conn = db.CreateConnection();
+
+            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.stage_id,
+                       ts.tournament_id,
+                       t.team_size
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                JOIN tournament_stages ts ON ts.id = g.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE r.id = @roundId
+                """,
+                new { roundId });
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            var tournamentId = (Guid)roundInfo.tournament_id;
+            var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+
+            Guid? teamId = null;
+            Guid? participantId = null;
+
+            if (isSolo)
+            {
+                participantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT tp.id
+                    FROM br_rounds r
+                    JOIN br_groups g ON g.id = r.group_id
+                    JOIN br_group_teams bgt ON bgt.group_id = g.id
+                    JOIN tournament_participants tp ON tp.id = bgt.participant_id
+                    WHERE r.id = @roundId
+                      AND tp.tournament_id = @tournamentId
+                      AND tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                    LIMIT 1
+                    """,
+                    new { roundId, tournamentId, userId = userCtx.UserIdGuid });
+            }
+            else
+            {
+                teamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT bgt.team_id
+                    FROM br_rounds r
+                    JOIN br_groups g ON g.id = r.group_id
+                    JOIN br_group_teams bgt ON bgt.group_id = g.id
+                    JOIN tournament_participants tp ON tp.team_id = bgt.team_id
+                    JOIN team_members tm ON tm.team_id = bgt.team_id
+                    WHERE r.id = @roundId
+                      AND tp.tournament_id = @tournamentId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND tm.user_id = @userId
+                      AND tm.is_active = TRUE
+                    LIMIT 1
+                    """,
+                    new { roundId, tournamentId, userId = userCtx.UserIdGuid });
+            }
+
+            if (teamId is null && participantId is null)
+                return Results.Forbid();
+
+            if (isSolo)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_round_evidence (
+                        round_id, participant_id, image_url, submitted_by, submitted_at,
+                        placement, kills, reviewed, reviewed_at, reviewed_by
+                    )
+                    VALUES (
+                        @roundId, @participantId, @imageUrl, @submittedBy, NOW(),
+                        @placement, @kills, FALSE, NULL, NULL
+                    )
+                    ON CONFLICT (round_id, participant_id) WHERE participant_id IS NOT NULL DO UPDATE
+                    SET image_url = EXCLUDED.image_url,
+                        submitted_by = EXCLUDED.submitted_by,
+                        submitted_at = NOW(),
+                        placement = EXCLUDED.placement,
+                        kills = EXCLUDED.kills,
+                        reviewed = FALSE,
+                        reviewed_at = NULL,
+                        reviewed_by = NULL
+                    """,
+                    new
+                    {
+                        roundId,
+                        participantId,
+                        imageUrl,
+                        submittedBy = userCtx.UserIdGuid,
+                        placement,
+                        kills
+                    });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_round_evidence (
+                        round_id, team_id, image_url, submitted_by, submitted_at,
+                        placement, kills, reviewed, reviewed_at, reviewed_by
+                    )
+                    VALUES (
+                        @roundId, @teamId, @imageUrl, @submittedBy, NOW(),
+                        @placement, @kills, FALSE, NULL, NULL
+                    )
+                    ON CONFLICT (round_id, team_id) WHERE team_id IS NOT NULL DO UPDATE
+                    SET image_url = EXCLUDED.image_url,
+                        submitted_by = EXCLUDED.submitted_by,
+                        submitted_at = NOW(),
+                        placement = EXCLUDED.placement,
+                        kills = EXCLUDED.kills,
+                        reviewed = FALSE,
+                        reviewed_at = NULL,
+                        reviewed_by = NULL
+                    """,
+                    new
+                    {
+                        roundId,
+                        teamId,
+                        imageUrl,
+                        submittedBy = userCtx.UserIdGuid,
+                        placement,
+                        kills
+                    });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PATCH /api/br/rounds/{roundId}/evidence/{entityId} ───────────────
+        // Organizer/staff review state for a submission.
+        app.MapPatch("/api/br/rounds/{roundId}/evidence/{entityId}", async (
+            Guid                roundId,
+            Guid                entityId,
+            [FromBody] JsonElement body,
+            HttpContext          ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!body.TryGetProperty("reviewed", out var reviewedProp) ||
+                (reviewedProp.ValueKind != JsonValueKind.True && reviewedProp.ValueKind != JsonValueKind.False))
+                return Results.BadRequest(new { error = "reviewed must be a boolean." });
+
+            var reviewed = reviewedProp.GetBoolean();
+
+            using var conn = db.CreateConnection();
+
+            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.stage_id,
+                       t.team_size
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                JOIN tournament_stages ts ON ts.id = g.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE r.id = @roundId
+                """,
+                new { roundId });
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            var stageId = (Guid)roundInfo.stage_id;
+            var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            var updated = await conn.ExecuteAsync(
+                isSolo
+                    ? """
+                      UPDATE br_round_evidence
+                      SET reviewed = @reviewed,
+                          reviewed_at = CASE WHEN @reviewed THEN NOW() ELSE NULL END,
+                          reviewed_by = CASE WHEN @reviewed THEN @reviewedBy ELSE NULL END
+                      WHERE round_id = @roundId
+                        AND participant_id = @entityId
+                      """
+                    : """
+                      UPDATE br_round_evidence
+                      SET reviewed = @reviewed,
+                          reviewed_at = CASE WHEN @reviewed THEN NOW() ELSE NULL END,
+                          reviewed_by = CASE WHEN @reviewed THEN @reviewedBy ELSE NULL END
+                      WHERE round_id = @roundId
+                        AND team_id = @entityId
+                      """,
+                new
+                {
+                    roundId,
+                    entityId,
+                    reviewed,
+                    reviewedBy = userCtx.UserIdGuid
+                });
+
+            if (updated == 0)
+                return Results.NotFound(new { error = "Evidence submission not found." });
+
+            return Results.Ok(new { success = true, reviewed });
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/br/rounds/{roundId}/results ────────────────────────────
