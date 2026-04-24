@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
@@ -6,11 +7,15 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Npgsql;
 
 namespace Esportra.Api.Endpoints;
 
 public static class BRGroupEndpoints
 {
+    private sealed record BrScoringSettings(int[] Placements, int KillPoints, int? KillCap);
+    private sealed record BrEntityAccess(Guid? TeamId, Guid? ParticipantId);
+
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
         // ── GET /api/stages/{stageId}/br/groups ─────────────────────────────
@@ -609,18 +614,7 @@ public static class BRGroupEndpoints
             // For non-staff: participants see active-round codes; everyone else sees nothing.
             // Check participation ONCE outside the projection (avoids N queries).
             var isParticipant = userCtx is not null
-                && await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM tournament_participants tp
-                        JOIN tournament_stages ts ON ts.tournament_id = tp.tournament_id
-                        JOIN br_groups g          ON g.stage_id        = ts.id
-                        WHERE g.id = @groupId
-                          AND tp.user_id = @userId
-                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                    )
-                    """,
-                    new { groupId, userId = userCtx.UserIdGuid });
+                && await IsUserAssignedToGroupAsync(conn, groupId, userCtx.UserIdGuid);
 
             // Materialize into typed objects to avoid mutating live Dapper rows
             var roundsList = rounds.AsList();
@@ -668,13 +662,6 @@ public static class BRGroupEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            // Verify groupId belongs to this stageId
-            var groupExists = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM br_groups WHERE id = @groupId AND stage_id = @stageId)",
-                new { groupId, stageId });
-            if (!groupExists)
-                return Results.NotFound(new { error = "Group not found in this stage." });
-
             var lobbyCode   = body.TryGetProperty("lobbyCode", out var lc) ? lc.GetString()?.Trim() : null;
             var scheduledAt = body.TryGetProperty("scheduledAt", out var sa) ? sa.GetString() : null;
             int? queueTimerMinutes = null;
@@ -694,22 +681,67 @@ public static class BRGroupEndpoints
                 parsedSchedule = dt;
             }
 
-            var round = await conn.QuerySingleAsync<dynamic>(
-                """
-                INSERT INTO br_rounds (group_id, round_number, lobby_code, scheduled_at, queue_timer_minutes)
-                VALUES (
-                    @groupId,
-                    (SELECT COALESCE(MAX(round_number), 0) + 1 FROM br_rounds WHERE group_id = @groupId),
-                    @lobbyCode,
-                    @scheduledAt,
-                    @queueTimerMinutes
-                )
-                RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
-                          queue_timer_minutes, queue_started_at
-                """,
-                new { groupId, lobbyCode, scheduledAt = parsedSchedule, queueTimerMinutes });
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                var lockedGroup = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id
+                    FROM br_groups
+                    WHERE id = @groupId
+                      AND stage_id = @stageId
+                    FOR UPDATE
+                    """,
+                    new { groupId, stageId },
+                    tx);
+                if (lockedGroup is null)
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Group not found in this stage." });
+                }
 
-            return Results.Ok(round);
+                var nextRoundNumber = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COALESCE(MAX(round_number), 0) + 1 FROM br_rounds WHERE group_id = @groupId",
+                    new { groupId },
+                    tx);
+
+                var round = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    INSERT INTO br_rounds (group_id, round_number, lobby_code, scheduled_at, queue_timer_minutes)
+                    VALUES (
+                        @groupId,
+                        @roundNumber,
+                        @lobbyCode,
+                        @scheduledAt,
+                        @queueTimerMinutes
+                    )
+                    RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
+                              queue_timer_minutes, queue_started_at
+                    """,
+                    new
+                    {
+                        groupId,
+                        roundNumber = nextRoundNumber,
+                        lobbyCode,
+                        scheduledAt = parsedSchedule,
+                        queueTimerMinutes
+                    },
+                    tx);
+
+                tx.Commit();
+                return Results.Ok(round);
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
+                                               && ex.ConstraintName == "br_rounds_group_id_round_number_key")
+            {
+                tx.Rollback();
+                return Results.Conflict(new { error = "Another round was created at the same time. Please try again." });
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/br/rounds/{roundId} ──────────────────────────────────
@@ -726,185 +758,248 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Resolve stage + current round state once so update logic is consistent.
-            var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT g.stage_id,
-                       g.id AS group_id,
-                       r.status,
-                       r.lobby_code,
-                       r.queue_timer_minutes,
-                       r.queue_started_at
-                FROM br_rounds r
-                JOIN br_groups g ON g.id = r.group_id
-                WHERE r.id = @roundId
-                """,
-                new { roundId });
-            if (currentRound is null)
-                return Results.NotFound(new { error = "Round not found." });
+            using var tx = conn.BeginTransaction();
 
-            var stageId = (Guid)currentRound.stage_id;
-            var groupId = (Guid)currentRound.group_id;
-            var currentStatus = (string)currentRound.status;
-            var currentLobbyCode = (string?)currentRound.lobby_code;
-            int? currentQueueTimerMinutes = currentRound.queue_timer_minutes is not null
-                ? Convert.ToInt32(currentRound.queue_timer_minutes)
-                : null;
-            var currentQueueStartedAt = currentRound.queue_started_at as DateTimeOffset?;
-
-            var allowed = await StaffAuthHelper.CanActOnStageAsync(
-                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
-                return Results.Forbid();
-
-            // Build dynamic SET clauses for provided fields
-            var setClauses = new List<string>();
-            var parameters = new DynamicParameters();
-            parameters.Add("roundId", roundId);
-            string? finalLobbyCode = currentLobbyCode;
-            var finalStatus = currentStatus;
-            int? finalQueueTimerMinutes = currentQueueTimerMinutes;
-
-            if (body.TryGetProperty("lobbyCode", out var lcProp))
+            dynamic? updated;
+            try
             {
-                finalLobbyCode = lcProp.ValueKind == JsonValueKind.Null ? null : lcProp.GetString()?.Trim();
-                if (string.IsNullOrWhiteSpace(finalLobbyCode))
-                    finalLobbyCode = null;
-                setClauses.Add("lobby_code = @lobbyCode");
-                parameters.Add("lobbyCode", finalLobbyCode);
-            }
-
-            if (body.TryGetProperty("scheduledAt", out var saProp))
-            {
-                if (saProp.ValueKind == JsonValueKind.Null)
+                var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT g.stage_id,
+                           g.id AS group_id,
+                           r.status,
+                           r.lobby_code,
+                           r.queue_timer_minutes,
+                           r.queue_started_at
+                    FROM br_rounds r
+                    JOIN br_groups g ON g.id = r.group_id
+                    WHERE r.id = @roundId
+                    FOR UPDATE OF r, g
+                    """,
+                    new { roundId },
+                    tx);
+                if (currentRound is null)
                 {
-                    setClauses.Add("scheduled_at = NULL");
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Round not found." });
                 }
-                else
+
+                var stageId = (Guid)currentRound.stage_id;
+                var groupId = (Guid)currentRound.group_id;
+                var currentStatus = (string)currentRound.status;
+                var currentLobbyCode = (string?)currentRound.lobby_code;
+                int? currentQueueTimerMinutes = currentRound.queue_timer_minutes is not null
+                    ? Convert.ToInt32(currentRound.queue_timer_minutes)
+                    : null;
+                var currentQueueStartedAt = currentRound.queue_started_at as DateTimeOffset?;
+
+                var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                    conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+                if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 {
-                    var saStr = saProp.GetString();
-                    if (saStr is not null && DateTimeOffset.TryParse(saStr, out var dt))
+                    tx.Rollback();
+                    return Results.Forbid();
+                }
+
+                var setClauses = new List<string>();
+                var parameters = new DynamicParameters();
+                parameters.Add("roundId", roundId);
+                string? finalLobbyCode = currentLobbyCode;
+                var finalStatus = currentStatus;
+                int? finalQueueTimerMinutes = currentQueueTimerMinutes;
+
+                if (body.TryGetProperty("lobbyCode", out var lcProp))
+                {
+                    finalLobbyCode = lcProp.ValueKind == JsonValueKind.Null ? null : lcProp.GetString()?.Trim();
+                    if (string.IsNullOrWhiteSpace(finalLobbyCode))
+                        finalLobbyCode = null;
+                    setClauses.Add("lobby_code = @lobbyCode");
+                    parameters.Add("lobbyCode", finalLobbyCode);
+                }
+
+                if (body.TryGetProperty("scheduledAt", out var saProp))
+                {
+                    if (saProp.ValueKind == JsonValueKind.Null)
                     {
-                        setClauses.Add("scheduled_at = @scheduledAt");
-                        parameters.Add("scheduledAt", dt);
+                        setClauses.Add("scheduled_at = NULL");
                     }
                     else
                     {
-                        return Results.BadRequest(new { error = "Invalid scheduledAt format." });
+                        var saStr = saProp.GetString();
+                        if (saStr is not null && DateTimeOffset.TryParse(saStr, out var dt))
+                        {
+                            setClauses.Add("scheduled_at = @scheduledAt");
+                            parameters.Add("scheduledAt", dt);
+                        }
+                        else
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = "Invalid scheduledAt format." });
+                        }
                     }
                 }
-            }
 
-            if (body.TryGetProperty("queueTimerMinutes", out var qtmProp))
-            {
-                if (qtmProp.ValueKind == JsonValueKind.Null)
+                if (body.TryGetProperty("queueTimerMinutes", out var qtmProp))
                 {
-                    finalQueueTimerMinutes = null;
-                    setClauses.Add("queue_timer_minutes = NULL");
-                }
-                else if (qtmProp.TryGetInt32(out var queueTimerMinutes) && queueTimerMinutes >= 0 && queueTimerMinutes <= 180)
-                {
-                    finalQueueTimerMinutes = queueTimerMinutes == 0 ? null : queueTimerMinutes;
-                    if (finalQueueTimerMinutes is null)
+                    if (qtmProp.ValueKind == JsonValueKind.Null)
                     {
+                        finalQueueTimerMinutes = null;
                         setClauses.Add("queue_timer_minutes = NULL");
                     }
+                    else if (qtmProp.TryGetInt32(out var queueTimerMinutes) && queueTimerMinutes >= 0 && queueTimerMinutes <= 180)
+                    {
+                        finalQueueTimerMinutes = queueTimerMinutes == 0 ? null : queueTimerMinutes;
+                        if (finalQueueTimerMinutes is null)
+                        {
+                            setClauses.Add("queue_timer_minutes = NULL");
+                        }
+                        else
+                        {
+                            setClauses.Add("queue_timer_minutes = @queueTimerMinutes");
+                            parameters.Add("queueTimerMinutes", finalQueueTimerMinutes.Value);
+                        }
+                    }
                     else
                     {
-                        setClauses.Add("queue_timer_minutes = @queueTimerMinutes");
-                        parameters.Add("queueTimerMinutes", finalQueueTimerMinutes.Value);
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "queueTimerMinutes must be between 0 and 180." });
                     }
+                }
+
+                if (body.TryGetProperty("status", out var stProp))
+                {
+                    var newStatus = stProp.GetString();
+                    if (newStatus is not ("pending" or "active" or "completed"))
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "status must be 'pending', 'active', or 'completed'." });
+                    }
+
+                    var validTransition = (currentStatus, newStatus) switch
+                    {
+                        ("pending", "active") => true,
+                        ("active", "completed") => true,
+                        ("completed", "active") => true,
+                        _ => false
+                    };
+                    if (!validTransition)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = $"Cannot transition from '{currentStatus}' to '{newStatus}'." });
+                    }
+
+                    if (newStatus == "active" && currentStatus != "active")
+                    {
+                        if (string.IsNullOrWhiteSpace(finalLobbyCode))
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = "Lobby code is required before starting a round." });
+                        }
+
+                        var existingActiveRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            """
+                            SELECT id, round_number
+                            FROM br_rounds
+                            WHERE group_id = @groupId
+                              AND status = 'active'
+                              AND id <> @roundId
+                            ORDER BY COALESCE(queue_started_at, started_at, created_at) DESC NULLS LAST, round_number DESC
+                            LIMIT 1
+                            """,
+                            new { groupId, roundId },
+                            tx);
+
+                        if (existingActiveRound is not null)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new
+                            {
+                                error = $"Round {Convert.ToInt32(existingActiveRound.round_number)} is already live. Complete, re-open, or reset it before starting another round."
+                            });
+                        }
+                    }
+
+                    if (newStatus == "completed")
+                    {
+                        var pendingEvidenceCount = await conn.ExecuteScalarAsync<int>(
+                            "SELECT COUNT(*) FROM br_round_evidence WHERE round_id = @roundId AND reviewed = FALSE",
+                            new { roundId },
+                            tx);
+                        if (pendingEvidenceCount > 0)
+                        {
+                            tx.Rollback();
+                            return Results.Conflict(new
+                            {
+                                error = "All submitted evidence must be reviewed before the round can be completed."
+                            });
+                        }
+                    }
+
+                    finalStatus = newStatus;
+                    setClauses.Add("status = @status");
+                    parameters.Add("status", newStatus);
+
+                    if (newStatus == "active" && currentStatus == "pending")
+                        setClauses.Add("started_at = NOW()");
+                    else if (newStatus == "active" && currentStatus == "completed")
+                        setClauses.Add("completed_at = NULL");
+                    else if (newStatus == "completed")
+                        setClauses.Add("completed_at = NOW()");
+                }
+
+                var hasLiveLobbyCode = finalStatus == "active" && !string.IsNullOrWhiteSpace(finalLobbyCode);
+                var hasQueueTimer = finalQueueTimerMinutes is > 0;
+
+                if (!hasLiveLobbyCode || !hasQueueTimer)
+                {
+                    setClauses.Add("queue_started_at = NULL");
                 }
                 else
                 {
-                    return Results.BadRequest(new { error = "queueTimerMinutes must be between 0 and 180." });
-                }
-            }
+                    var shouldStartQueueNow =
+                        currentQueueStartedAt is null
+                        || currentStatus != "active"
+                        || string.IsNullOrWhiteSpace(currentLobbyCode)
+                        || currentQueueTimerMinutes is null or <= 0;
 
-            if (body.TryGetProperty("status", out var stProp))
-            {
-                var newStatus = stProp.GetString();
-                if (newStatus is not ("pending" or "active" or "completed"))
-                    return Results.BadRequest(new { error = "status must be 'pending', 'active', or 'completed'." });
-
-                // Enforce valid status transitions
-                var validTransition = (currentStatus, newStatus) switch
-                {
-                    ("pending", "active")       => true,
-                    ("active", "completed")      => true,
-                    ("completed", "active")      => true, // allow re-opening
-                    _ => false
-                };
-                if (!validTransition)
-                    return Results.BadRequest(new { error = $"Cannot transition from '{currentStatus}' to '{newStatus}'." });
-
-                if (newStatus == "active" && currentStatus != "active")
-                {
-                    var existingActiveRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        """
-                        SELECT id, round_number
-                        FROM br_rounds
-                        WHERE group_id = @groupId
-                          AND status = 'active'
-                          AND id <> @roundId
-                        ORDER BY COALESCE(queue_started_at, started_at, created_at) DESC NULLS LAST, round_number DESC
-                        LIMIT 1
-                        """,
-                        new { groupId, roundId });
-
-                    if (existingActiveRound is not null)
-                    {
-                        return Results.BadRequest(new
-                        {
-                            error = $"Round {Convert.ToInt32(existingActiveRound.round_number)} is already live. Complete, re-open, or reset it before starting another round."
-                        });
-                    }
+                    if (shouldStartQueueNow)
+                        setClauses.Add("queue_started_at = NOW()");
                 }
 
-                finalStatus = newStatus;
-                setClauses.Add("status = @status");
-                parameters.Add("status", newStatus);
+                if (setClauses.Count == 0)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "No fields to update." });
+                }
 
-                if (newStatus == "active" && currentStatus == "pending")
-                    setClauses.Add("started_at = NOW()");
-                else if (newStatus == "active" && currentStatus == "completed")
-                    setClauses.Add("completed_at = NULL"); // clear when re-opening
-                else if (newStatus == "completed")
-                    setClauses.Add("completed_at = NOW()");
+                var sql = $"""
+                    UPDATE br_rounds
+                    SET {string.Join(", ", setClauses)}
+                    WHERE id = @roundId
+                    RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
+                              queue_timer_minutes, queue_started_at
+                    """;
+
+                updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters, tx);
+                if (updated is null)
+                {
+                    tx.Rollback();
+                    return Results.NotFound();
+                }
+
+                tx.Commit();
             }
-
-            var hasLiveLobbyCode = finalStatus == "active" && !string.IsNullOrWhiteSpace(finalLobbyCode);
-            var hasQueueTimer = finalQueueTimerMinutes is > 0;
-
-            if (!hasLiveLobbyCode || !hasQueueTimer)
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
+                                               && ex.ConstraintName == "uq_br_rounds_active_group")
             {
-                setClauses.Add("queue_started_at = NULL");
+                tx.Rollback();
+                return Results.Conflict(new { error = "Another round is already live for this group." });
             }
-            else
+            catch
             {
-                var shouldStartQueueNow =
-                    currentQueueStartedAt is null
-                    || currentStatus != "active"
-                    || string.IsNullOrWhiteSpace(currentLobbyCode)
-                    || currentQueueTimerMinutes is null or <= 0;
-
-                if (shouldStartQueueNow)
-                    setClauses.Add("queue_started_at = NOW()");
+                tx.Rollback();
+                throw;
             }
-
-            if (setClauses.Count == 0)
-                return Results.BadRequest(new { error = "No fields to update." });
-
-            var sql = $"""
-                UPDATE br_rounds
-                SET {string.Join(", ", setClauses)}
-                WHERE id = @roundId
-                RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
-                          queue_timer_minutes, queue_started_at
-                """;
-
-            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
-            if (updated is null) return Results.NotFound();
 
             // ── Fire-and-forget notifications when a round goes active ───────
             if (body.TryGetProperty("status", out var notifStatusProp) &&
@@ -940,14 +1035,24 @@ public static class BRGroupEndpoints
                         // Get all participant user IDs in the group
                         var userIds = (await notifConn.QueryAsync<string>(
                             """
-                            SELECT DISTINCT tp.user_id::text
-                            FROM br_group_teams bgt
-                            JOIN tournament_participants tp ON (
-                                (tp.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
-                                OR (bgt.participant_id IS NOT NULL AND bgt.participant_id = tp.id)
-                            )
-                            WHERE bgt.group_id = @groupId
-                              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                            SELECT DISTINCT recipients.user_id::text
+                            FROM (
+                                SELECT tp.user_id
+                                FROM br_group_teams bgt
+                                JOIN tournament_participants tp ON tp.id = bgt.participant_id
+                                WHERE bgt.group_id = @groupId
+                                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+
+                                UNION
+
+                                SELECT tm.user_id
+                                FROM br_group_teams bgt
+                                JOIN tournament_participants tp ON tp.team_id = bgt.team_id
+                                JOIN team_members tm ON tm.team_id = bgt.team_id
+                                WHERE bgt.group_id = @groupId
+                                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                                  AND tm.is_active = TRUE
+                            ) recipients
                             """,
                             new { groupId = groupIdForNotif })).ToList();
 
@@ -1021,6 +1126,17 @@ public static class BRGroupEndpoints
             using var tx = conn.BeginTransaction();
             try
             {
+                await conn.ExecuteAsync(
+                    """
+                    SELECT 1
+                    FROM br_rounds r
+                    JOIN br_groups g ON g.id = r.group_id
+                    WHERE r.id = @roundId
+                    FOR UPDATE OF r, g
+                    """,
+                    new { roundId },
+                    tx);
+
                 await conn.ExecuteAsync(
                     "DELETE FROM br_round_results WHERE round_id = @roundId",
                     new { roundId },
@@ -1130,42 +1246,14 @@ public static class BRGroupEndpoints
 
             if (!isStaff)
             {
-                if (isSolo)
-                {
-                    viewerParticipantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                        """
-                        SELECT tp.id
-                        FROM br_rounds r
-                        JOIN br_groups g ON g.id = r.group_id
-                        JOIN br_group_teams bgt ON bgt.group_id = g.id
-                        JOIN tournament_participants tp ON tp.id = bgt.participant_id
-                        WHERE r.id = @roundId
-                          AND tp.tournament_id = @tournamentId
-                          AND tp.user_id = @userId
-                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                        LIMIT 1
-                        """,
-                        new { roundId, tournamentId, userId = userCtx.UserIdGuid });
-                }
-                else
-                {
-                    viewerTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                        """
-                        SELECT bgt.team_id
-                        FROM br_rounds r
-                        JOIN br_groups g ON g.id = r.group_id
-                        JOIN br_group_teams bgt ON bgt.group_id = g.id
-                        JOIN tournament_participants tp ON tp.team_id = bgt.team_id
-                        JOIN team_members tm ON tm.team_id = bgt.team_id
-                        WHERE r.id = @roundId
-                          AND tp.tournament_id = @tournamentId
-                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                          AND tm.user_id = @userId
-                          AND tm.is_active = TRUE
-                        LIMIT 1
-                        """,
-                        new { roundId, tournamentId, userId = userCtx.UserIdGuid });
-                }
+                var viewerAccess = await ResolveRoundEntityAccessAsync(
+                    conn,
+                    roundId,
+                    tournamentId,
+                    userCtx.UserIdGuid,
+                    isSolo);
+                viewerTeamId = viewerAccess.TeamId;
+                viewerParticipantId = viewerAccess.ParticipantId;
 
                 if (viewerTeamId is null && viewerParticipantId is null)
                     return Results.Forbid();
@@ -1217,17 +1305,18 @@ public static class BRGroupEndpoints
             Guid                roundId,
             [FromBody] JsonElement body,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IConfiguration       config) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            if (!body.TryGetProperty("imageUrl", out var imageUrlProp))
-                return Results.BadRequest(new { error = "imageUrl is required." });
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(supabaseUrl))
+                return Results.BadRequest(new { error = "Supabase storage is not configured." });
 
-            var imageUrl = imageUrlProp.GetString()?.Trim();
-            if (string.IsNullOrWhiteSpace(imageUrl))
-                return Results.BadRequest(new { error = "imageUrl is required." });
+            if (!TryNormalizeEvidenceImageUrl(body, supabaseUrl, out var imageUrl, out var imageUrlError))
+                return Results.BadRequest(new { error = imageUrlError });
 
             int? placement = null;
             if (body.TryGetProperty("placement", out var placementProp) && placementProp.ValueKind != JsonValueKind.Null)
@@ -1251,7 +1340,8 @@ public static class BRGroupEndpoints
                 """
                 SELECT g.stage_id,
                        ts.tournament_id,
-                       t.team_size
+                       t.team_size,
+                       r.status
                 FROM br_rounds r
                 JOIN br_groups g ON g.id = r.group_id
                 JOIN tournament_stages ts ON ts.id = g.stage_id
@@ -1264,46 +1354,19 @@ public static class BRGroupEndpoints
 
             var tournamentId = (Guid)roundInfo.tournament_id;
             var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+            var roundStatus = (string)roundInfo.status;
 
-            Guid? teamId = null;
-            Guid? participantId = null;
+            if (roundStatus != "active")
+                return Results.Conflict(new { error = "Evidence can only be submitted while the round is live." });
 
-            if (isSolo)
-            {
-                participantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    """
-                    SELECT tp.id
-                    FROM br_rounds r
-                    JOIN br_groups g ON g.id = r.group_id
-                    JOIN br_group_teams bgt ON bgt.group_id = g.id
-                    JOIN tournament_participants tp ON tp.id = bgt.participant_id
-                    WHERE r.id = @roundId
-                      AND tp.tournament_id = @tournamentId
-                      AND tp.user_id = @userId
-                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                    LIMIT 1
-                    """,
-                    new { roundId, tournamentId, userId = userCtx.UserIdGuid });
-            }
-            else
-            {
-                teamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    """
-                    SELECT bgt.team_id
-                    FROM br_rounds r
-                    JOIN br_groups g ON g.id = r.group_id
-                    JOIN br_group_teams bgt ON bgt.group_id = g.id
-                    JOIN tournament_participants tp ON tp.team_id = bgt.team_id
-                    JOIN team_members tm ON tm.team_id = bgt.team_id
-                    WHERE r.id = @roundId
-                      AND tp.tournament_id = @tournamentId
-                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                      AND tm.user_id = @userId
-                      AND tm.is_active = TRUE
-                    LIMIT 1
-                    """,
-                    new { roundId, tournamentId, userId = userCtx.UserIdGuid });
-            }
+            var entityAccess = await ResolveRoundEntityAccessAsync(
+                conn,
+                roundId,
+                tournamentId,
+                userCtx.UserIdGuid,
+                isSolo);
+            var teamId = entityAccess.TeamId;
+            var participantId = entityAccess.ParticipantId;
 
             if (teamId is null && participantId is null)
                 return Results.Forbid();
@@ -1326,51 +1389,60 @@ public static class BRGroupEndpoints
             if (alreadyExists)
                 return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
 
-            if (isSolo)
+            try
             {
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_round_evidence (
-                        round_id, participant_id, image_url, submitted_by, submitted_at,
-                        placement, kills, reviewed, reviewed_at, reviewed_by
-                    )
-                    VALUES (
-                        @roundId, @participantId, @imageUrl, @submittedBy, NOW(),
-                        @placement, @kills, FALSE, NULL, NULL
-                    )
-                    """,
-                    new
-                    {
-                        roundId,
-                        participantId,
-                        imageUrl,
-                        submittedBy = userCtx.UserIdGuid,
-                        placement,
-                        kills
-                    });
+                if (isSolo)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_evidence (
+                            round_id, participant_id, image_url, submitted_by, submitted_at,
+                            placement, kills, reviewed, reviewed_at, reviewed_by
+                        )
+                        VALUES (
+                            @roundId, @participantId, @imageUrl, @submittedBy, NOW(),
+                            @placement, @kills, FALSE, NULL, NULL
+                        )
+                        """,
+                        new
+                        {
+                            roundId,
+                            participantId,
+                            imageUrl,
+                            submittedBy = userCtx.UserIdGuid,
+                            placement,
+                            kills
+                        });
+                }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_evidence (
+                            round_id, team_id, image_url, submitted_by, submitted_at,
+                            placement, kills, reviewed, reviewed_at, reviewed_by
+                        )
+                        VALUES (
+                            @roundId, @teamId, @imageUrl, @submittedBy, NOW(),
+                            @placement, @kills, FALSE, NULL, NULL
+                        )
+                        """,
+                        new
+                        {
+                            roundId,
+                            teamId,
+                            imageUrl,
+                            submittedBy = userCtx.UserIdGuid,
+                            placement,
+                            kills
+                        });
+                }
             }
-            else
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
+                                               && (ex.ConstraintName == "uq_br_round_evidence_team"
+                                                   || ex.ConstraintName == "uq_br_round_evidence_participant"))
             {
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_round_evidence (
-                        round_id, team_id, image_url, submitted_by, submitted_at,
-                        placement, kills, reviewed, reviewed_at, reviewed_by
-                    )
-                    VALUES (
-                        @roundId, @teamId, @imageUrl, @submittedBy, NOW(),
-                        @placement, @kills, FALSE, NULL, NULL
-                    )
-                    """,
-                    new
-                    {
-                        roundId,
-                        teamId,
-                        imageUrl,
-                        submittedBy = userCtx.UserIdGuid,
-                        placement,
-                        kills
-                    });
+                return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
             }
 
             return Results.Ok(new { success = true });
@@ -1463,10 +1535,14 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Resolve stageId AND detect solo from round → group → stage → tournament
             var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT g.stage_id, t.team_size
+                SELECT g.stage_id,
+                       g.id AS group_id,
+                       r.status,
+                       t.team_size,
+                       t.game,
+                       t.settings
                 FROM br_rounds r
                 JOIN br_groups g ON g.id = r.group_id
                 JOIN tournament_stages ts ON ts.id = g.stage_id
@@ -1478,86 +1554,135 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Round not found." });
 
             Guid stageId = roundInfo.stage_id;
+            Guid groupId = roundInfo.group_id;
             bool isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+            var roundStatus = (string)roundInfo.status;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermScoresUpdate);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
+            if (roundStatus == "completed")
+                return Results.Conflict(new { error = "Completed rounds are locked. Re-open the round before editing results." });
+
             if (!body.TryGetProperty("results", out var resultsElement) ||
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
-            // Parse and validate ALL results before opening transaction
-            var parsedResults = new List<(Guid entityId, int placement, int kills, int placementPoints, int killPoints)>();
+            var rosterEntityIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT COALESCE(team_id, participant_id) AS entity_id
+                FROM br_group_teams
+                WHERE group_id = @groupId
+                ORDER BY seed_order
+                """,
+                new { groupId })).ToList();
+            if (rosterEntityIds.Count == 0)
+                return Results.BadRequest(new { error = "This group has no assigned teams or participants." });
+
+            var scoring = ResolveBrScoringSettings((string?)roundInfo.game, roundInfo.settings);
+
+            var parsedResults = new List<(Guid EntityId, int Placement, int Kills)>();
+            var seenEntityIds = new HashSet<Guid>();
+            var seenPlacements = new HashSet<int>();
             foreach (var r in resultsElement.EnumerateArray())
             {
                 var teamIdStr = r.TryGetProperty("teamId", out var tid) ? tid.GetString() : null;
                 if (teamIdStr is null || !Guid.TryParse(teamIdStr, out var entityId))
                     return Results.BadRequest(new { error = $"Invalid teamId: {teamIdStr}" });
 
-                var placement       = r.TryGetProperty("placement", out var pl) && pl.TryGetInt32(out var plv) ? plv : 0;
-                var kills           = r.TryGetProperty("kills", out var kl) && kl.TryGetInt32(out var klv) ? klv : 0;
-                var placementPoints = r.TryGetProperty("placementPoints", out var pp) && pp.TryGetInt32(out var ppv) ? ppv : 0;
-                var killPoints      = r.TryGetProperty("killPoints", out var kp) && kp.TryGetInt32(out var kpv) ? kpv : 0;
+                if (!seenEntityIds.Add(entityId))
+                    return Results.BadRequest(new { error = $"Duplicate result submitted for entity {teamIdStr}." });
+
+                var placement = r.TryGetProperty("placement", out var pl) && pl.TryGetInt32(out var plv) ? plv : 0;
+                var kills = r.TryGetProperty("kills", out var kl) && kl.TryGetInt32(out var klv) ? klv : 0;
 
                 if (placement < 1)
                     return Results.BadRequest(new { error = $"placement must be >= 1 for team {teamIdStr}" });
                 if (kills < 0)
                     return Results.BadRequest(new { error = $"kills must be >= 0 for team {teamIdStr}" });
+                if (placement > rosterEntityIds.Count)
+                    return Results.BadRequest(new { error = $"placement must be between 1 and {rosterEntityIds.Count} for team {teamIdStr}" });
+                if (!seenPlacements.Add(placement))
+                    return Results.BadRequest(new { error = $"Duplicate placement submitted: {placement}." });
 
-                parsedResults.Add((entityId, placement, kills, placementPoints, killPoints));
+                parsedResults.Add((entityId, placement, kills));
             }
+
+            if (parsedResults.Count != rosterEntityIds.Count)
+                return Results.BadRequest(new
+                {
+                    error = $"Results must include every team or participant in the round ({rosterEntityIds.Count} required, received {parsedResults.Count})."
+                });
+
+            var rosterSet = rosterEntityIds.ToHashSet();
+            var unexpectedEntityIds = parsedResults
+                .Select(result => result.EntityId)
+                .Where(entityId => !rosterSet.Contains(entityId))
+                .Distinct()
+                .ToList();
+            if (unexpectedEntityIds.Count > 0)
+                return Results.BadRequest(new { error = "Results contain entities that are not assigned to this BR group." });
+
+            var requiredPlacements = Enumerable.Range(1, rosterEntityIds.Count).ToHashSet();
+            if (!requiredPlacements.SetEquals(parsedResults.Select(result => result.Placement)))
+                return Results.BadRequest(new { error = $"Placements must be a complete set from 1 to {rosterEntityIds.Count}." });
 
             using var tx = conn.BeginTransaction();
             try
             {
+                await conn.ExecuteAsync(
+                    "SELECT 1 FROM br_rounds WHERE id = @roundId FOR UPDATE",
+                    new { roundId },
+                    tx);
+
+                await conn.ExecuteAsync(
+                    "DELETE FROM br_round_results WHERE round_id = @roundId",
+                    new { roundId },
+                    tx);
+
                 if (isSolo)
                 {
-                    // Solo: teamId in request body is actually participant_id
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO br_round_results (round_id, participant_id, placement, kills, placement_points, kill_points)
                         VALUES (@roundId, @participantId, @placement, @kills, @placementPoints, @killPoints)
-                        ON CONFLICT (round_id, participant_id) WHERE participant_id IS NOT NULL DO UPDATE
-                        SET placement        = EXCLUDED.placement,
-                            kills            = EXCLUDED.kills,
-                            placement_points = EXCLUDED.placement_points,
-                            kill_points      = EXCLUDED.kill_points
                         """,
-                        parsedResults.Select(r => new
+                        parsedResults.Select(result =>
                         {
-                            roundId,
-                            participantId = r.entityId,
-                            placement = r.placement,
-                            kills = r.kills,
-                            placementPoints = r.placementPoints,
-                            killPoints = r.killPoints
+                            var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
+                            return new
+                            {
+                                roundId,
+                                participantId = result.EntityId,
+                                placement = result.Placement,
+                                kills = result.Kills,
+                                placementPoints = points.placementPoints,
+                                killPoints = points.killPoints
+                            };
                         }),
                         tx);
                 }
                 else
                 {
-                    // Team-based: teamId is a real team UUID
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
                         VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
-                        ON CONFLICT (round_id, team_id) WHERE team_id IS NOT NULL DO UPDATE
-                        SET placement        = EXCLUDED.placement,
-                            kills            = EXCLUDED.kills,
-                            placement_points = EXCLUDED.placement_points,
-                            kill_points      = EXCLUDED.kill_points
                         """,
-                        parsedResults.Select(r => new
+                        parsedResults.Select(result =>
                         {
-                            roundId,
-                            teamId = r.entityId,
-                            placement = r.placement,
-                            kills = r.kills,
-                            placementPoints = r.placementPoints,
-                            killPoints = r.killPoints
+                            var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
+                            return new
+                            {
+                                roundId,
+                                teamId = result.EntityId,
+                                placement = result.Placement,
+                                kills = result.Kills,
+                                placementPoints = points.placementPoints,
+                                killPoints = points.killPoints
+                            };
                         }),
                         tx);
                 }
@@ -1639,14 +1764,22 @@ public static class BRGroupEndpoints
                        g.id AS group_id, g.name AS group_name
                 FROM tournament_stages ts
                 JOIN br_groups g ON g.stage_id = ts.id
-                JOIN br_group_teams bgt ON bgt.group_id = g.id
-                JOIN tournament_participants tp ON (
-                    (tp.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
-                    OR (bgt.participant_id IS NOT NULL AND bgt.participant_id = tp.id)
-                )
                 WHERE ts.tournament_id = @tournamentId
-                  AND tp.user_id = @userId
-                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                  AND EXISTS (
+                      SELECT 1
+                      FROM br_group_teams bgt
+                      JOIN tournament_participants tp ON (
+                          (bgt.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
+                          OR (bgt.participant_id IS NOT NULL AND tp.id = bgt.participant_id)
+                      )
+                      LEFT JOIN team_members tm
+                        ON tm.team_id = bgt.team_id
+                       AND tm.user_id = @userId
+                       AND tm.is_active = TRUE
+                      WHERE bgt.group_id = g.id
+                        AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                        AND (tp.user_id = @userId OR tm.user_id IS NOT NULL)
+                  )
                 ORDER BY ts.stage_order ASC
                 LIMIT 1
                 """,
@@ -2015,6 +2148,319 @@ public static class BRGroupEndpoints
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private static async Task<bool> IsUserAssignedToGroupAsync(
+        System.Data.IDbConnection conn,
+        Guid groupId,
+        Guid userId,
+        IDbTransaction? tx = null)
+    {
+        return await conn.QuerySingleAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM br_group_teams bgt
+                JOIN tournament_participants tp ON (
+                    (bgt.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
+                    OR (bgt.participant_id IS NOT NULL AND tp.id = bgt.participant_id)
+                )
+                LEFT JOIN team_members tm
+                  ON tm.team_id = bgt.team_id
+                 AND tm.user_id = @userId
+                 AND tm.is_active = TRUE
+                WHERE bgt.group_id = @groupId
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                  AND (tp.user_id = @userId OR tm.user_id IS NOT NULL)
+            )
+            """,
+            new { groupId, userId },
+            tx);
+    }
+
+    private static async Task<BrEntityAccess> ResolveRoundEntityAccessAsync(
+        System.Data.IDbConnection conn,
+        Guid roundId,
+        Guid tournamentId,
+        Guid userId,
+        bool isSolo,
+        IDbTransaction? tx = null)
+    {
+        if (isSolo)
+        {
+            var participantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT tp.id
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                JOIN br_group_teams bgt ON bgt.group_id = g.id
+                JOIN tournament_participants tp ON tp.id = bgt.participant_id
+                WHERE r.id = @roundId
+                  AND tp.tournament_id = @tournamentId
+                  AND tp.user_id = @userId
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                LIMIT 1
+                """,
+                new { roundId, tournamentId, userId },
+                tx);
+
+            return new BrEntityAccess(null, participantId);
+        }
+
+        var teamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT bgt.team_id
+            FROM br_rounds r
+            JOIN br_groups g ON g.id = r.group_id
+            JOIN br_group_teams bgt ON bgt.group_id = g.id
+            JOIN tournament_participants tp ON tp.team_id = bgt.team_id
+            JOIN team_members tm ON tm.team_id = bgt.team_id
+            WHERE r.id = @roundId
+              AND tp.tournament_id = @tournamentId
+              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+              AND tm.user_id = @userId
+              AND tm.is_active = TRUE
+            LIMIT 1
+            """,
+            new { roundId, tournamentId, userId },
+            tx);
+
+        return new BrEntityAccess(teamId, null);
+    }
+
+    private static (int placementPoints, int killPoints, int totalPoints) CalculateBrPoints(
+        int placement,
+        int kills,
+        BrScoringSettings scoring)
+    {
+        var placementPoints = placement >= 1 && placement <= scoring.Placements.Length
+            ? scoring.Placements[placement - 1]
+            : 0;
+        var effectiveKills = scoring.KillCap is > 0 ? Math.Min(kills, scoring.KillCap.Value) : kills;
+        var killPoints = effectiveKills * scoring.KillPoints;
+        return (placementPoints, killPoints, placementPoints + killPoints);
+    }
+
+    private static BrScoringSettings ResolveBrScoringSettings(string? gameName, object? rawSettings)
+    {
+        var fallbackPresetKey = ResolveDefaultBrPresetKey(gameName);
+        var fallback = ResolvePresetScoring(fallbackPresetKey);
+
+        if (!TryParseJsonElement(rawSettings, out var root))
+            return fallback;
+
+        var settingsRoot = ResolveBrSettingsRoot(root);
+
+        if (TryGetPropertyIgnoreCase(settingsRoot, "brCustomScoring", out var customScoring)
+            && customScoring.ValueKind == JsonValueKind.Object)
+        {
+            var customPlacements = TryReadPlacementArray(customScoring);
+            if (customPlacements.Length > 0
+                && TryGetPropertyIgnoreCase(customScoring, "killPoints", out var customKillPointsEl)
+                && customKillPointsEl.TryGetInt32(out var customKillPoints)
+                && customKillPoints >= 0)
+            {
+                int? customKillCap = null;
+                if (TryGetPropertyIgnoreCase(customScoring, "killCap", out var customKillCapEl)
+                    && customKillCapEl.ValueKind != JsonValueKind.Null
+                    && customKillCapEl.TryGetInt32(out var parsedCustomKillCap)
+                    && parsedCustomKillCap > 0)
+                {
+                    customKillCap = parsedCustomKillCap;
+                }
+
+                return new BrScoringSettings(customPlacements, customKillPoints, customKillCap);
+            }
+        }
+
+        string? presetKey = null;
+        if (TryGetPropertyIgnoreCase(settingsRoot, "brScoringPreset", out var presetEl)
+            && presetEl.ValueKind == JsonValueKind.String)
+        {
+            presetKey = presetEl.GetString();
+        }
+
+        var resolved = ResolvePresetScoring(presetKey ?? fallbackPresetKey);
+        if (TryGetPropertyIgnoreCase(settingsRoot, "brKillCap", out var killCapEl)
+            && killCapEl.ValueKind != JsonValueKind.Null
+            && killCapEl.TryGetInt32(out var killCap)
+            && killCap > 0)
+        {
+            resolved = resolved with { KillCap = killCap };
+        }
+
+        return resolved;
+    }
+
+    private static BrScoringSettings ResolvePresetScoring(string? presetKey)
+    {
+        return presetKey?.Trim().ToLowerInvariant() switch
+        {
+            "fncs" => new BrScoringSettings([25, 22, 20, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], 1, null),
+            "algs" => new BrScoringSettings([12, 9, 7, 5, 4, 3, 3, 2, 2, 2, 1, 1, 1, 1, 1], 1, 6),
+            "pcs" => new BrScoringSettings([10, 6, 5, 4, 3, 2, 1, 1], 1, null),
+            _ => new BrScoringSettings([10, 6, 5, 4, 3, 2, 1, 1], 1, null),
+        };
+    }
+
+    private static string? ResolveDefaultBrPresetKey(string? gameName)
+    {
+        return gameName?.Trim().ToLowerInvariant() switch
+        {
+            "fortnite" => "fncs",
+            "apex legends" => "algs",
+            "pubg" => "pcs",
+            _ => null,
+        };
+    }
+
+    private static JsonElement ResolveBrSettingsRoot(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(root, "brSettings", out var brSettings)
+            && brSettings.ValueKind == JsonValueKind.Object)
+        {
+            return brSettings;
+        }
+
+        return root;
+    }
+
+    private static int[] TryReadPlacementArray(JsonElement scoringElement)
+    {
+        if (!TryGetPropertyIgnoreCase(scoringElement, "placements", out var placementsElement)
+            || placementsElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var placements = new List<int>();
+        foreach (var item in placementsElement.EnumerateArray())
+        {
+            if (!item.TryGetInt32(out var value) || value < 0)
+                return [];
+            placements.Add(value);
+        }
+
+        return placements.ToArray();
+    }
+
+    private static bool TryNormalizeEvidenceImageUrl(
+        JsonElement body,
+        string supabaseUrl,
+        out string? normalizedImageUrl,
+        out string? error)
+    {
+        const string bucket = "tournaments.results";
+        normalizedImageUrl = null;
+        error = null;
+
+        if (TryGetPropertyIgnoreCase(body, "imagePath", out var imagePathProp)
+            && imagePathProp.ValueKind == JsonValueKind.String)
+        {
+            var imagePath = imagePathProp.GetString()?.Trim();
+            if (string.IsNullOrWhiteSpace(imagePath))
+            {
+                error = "imagePath cannot be empty.";
+                return false;
+            }
+
+            if (!IsSafeStoragePath(imagePath))
+            {
+                error = "imagePath must reference a valid storage object.";
+                return false;
+            }
+
+            normalizedImageUrl = $"{supabaseUrl}/storage/v1/object/public/{bucket}/{imagePath}";
+            return true;
+        }
+
+        if (!TryGetPropertyIgnoreCase(body, "imageUrl", out var imageUrlProp)
+            || imageUrlProp.ValueKind != JsonValueKind.String)
+        {
+            error = "imageUrl is required.";
+            return false;
+        }
+
+        var imageUrl = imageUrlProp.GetString()?.Trim();
+        if (string.IsNullOrWhiteSpace(imageUrl))
+        {
+            error = "imageUrl is required.";
+            return false;
+        }
+
+        if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var parsedUrl))
+        {
+            error = "imageUrl must be an absolute URL.";
+            return false;
+        }
+
+        var expectedPrefix = $"{supabaseUrl}/storage/v1/object/public/{bucket}/";
+        if (!parsedUrl.AbsoluteUri.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "Evidence must come from the approved BR results storage bucket.";
+            return false;
+        }
+
+        normalizedImageUrl = parsedUrl.AbsoluteUri;
+        return true;
+    }
+
+    private static bool IsSafeStoragePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        return !path.StartsWith('/')
+               && !path.Contains('\\')
+               && !path.Contains("..", StringComparison.Ordinal)
+               && !path.Contains("://", StringComparison.Ordinal);
+    }
+
+    private static bool TryParseJsonElement(object? rawValue, out JsonElement element)
+    {
+        switch (rawValue)
+        {
+            case JsonElement jsonElement:
+                element = jsonElement;
+                return true;
+            case JsonDocument jsonDocument:
+                element = jsonDocument.RootElement;
+                return true;
+            case string jsonText when !string.IsNullOrWhiteSpace(jsonText):
+                try
+                {
+                    using var parsed = JsonDocument.Parse(jsonText);
+                    element = parsed.RootElement.Clone();
+                    return true;
+                }
+                catch
+                {
+                    element = default;
+                    return false;
+                }
+        }
+
+        element = default;
+        return false;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
+    }
 
     /// <summary>
     /// Generate group name from zero-based index: 0→A, 1→B, ..., 25→Z, 26→AA, 27→AB, etc.
