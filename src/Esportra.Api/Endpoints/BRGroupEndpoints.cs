@@ -15,6 +15,7 @@ public static class BRGroupEndpoints
 {
     private sealed record BrScoringSettings(int[] Placements, int KillPoints, int? KillCap);
     private sealed record BrEntityAccess(Guid? TeamId, Guid? ParticipantId);
+    private sealed record BrRoundRosterEntity(Guid EntityId, Guid? TeamId, Guid? ParticipantId);
 
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
@@ -1555,7 +1556,6 @@ public static class BRGroupEndpoints
 
             Guid stageId = roundInfo.stage_id;
             Guid groupId = roundInfo.group_id;
-            bool isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
             var roundStatus = (string)roundInfo.status;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
@@ -1571,16 +1571,36 @@ public static class BRGroupEndpoints
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
-            var rosterEntityIds = (await conn.QueryAsync<Guid>(
+            var rosterEntities = (await conn.QueryAsync<BrRoundRosterEntity>(
                 """
-                SELECT COALESCE(team_id, participant_id) AS entity_id
+                SELECT COALESCE(team_id, participant_id) AS EntityId,
+                       team_id AS TeamId,
+                       participant_id AS ParticipantId
                 FROM br_group_teams
                 WHERE group_id = @groupId
                 ORDER BY seed_order
                 """,
                 new { groupId })).ToList();
-            if (rosterEntityIds.Count == 0)
+            if (rosterEntities.Count == 0)
                 return Results.BadRequest(new { error = "This group has no assigned teams or participants." });
+
+            if (rosterEntities.Any(entity =>
+                    entity.EntityId == Guid.Empty
+                    || (entity.TeamId is null && entity.ParticipantId is null)
+                    || (entity.TeamId is not null && entity.ParticipantId is not null)))
+            {
+                return Results.Conflict(new { error = "This BR group has inconsistent roster data. Reassign the group roster and try again." });
+            }
+
+            var duplicateRosterEntityIds = rosterEntities
+                .GroupBy(entity => entity.EntityId)
+                .Where(group => group.Count() > 1)
+                .Select(group => group.Key)
+                .ToList();
+            if (duplicateRosterEntityIds.Count > 0)
+                return Results.Conflict(new { error = "This BR group contains duplicate roster entries. Reassign the group roster and try again." });
+
+            var rosterByEntityId = rosterEntities.ToDictionary(entity => entity.EntityId);
 
             var scoring = ResolveBrScoringSettings((string?)roundInfo.game, roundInfo.settings);
 
@@ -1603,32 +1623,31 @@ public static class BRGroupEndpoints
                     return Results.BadRequest(new { error = $"placement must be >= 1 for team {teamIdStr}" });
                 if (kills < 0)
                     return Results.BadRequest(new { error = $"kills must be >= 0 for team {teamIdStr}" });
-                if (placement > rosterEntityIds.Count)
-                    return Results.BadRequest(new { error = $"placement must be between 1 and {rosterEntityIds.Count} for team {teamIdStr}" });
+                if (placement > rosterEntities.Count)
+                    return Results.BadRequest(new { error = $"placement must be between 1 and {rosterEntities.Count} for team {teamIdStr}" });
                 if (!seenPlacements.Add(placement))
                     return Results.BadRequest(new { error = $"Duplicate placement submitted: {placement}." });
 
                 parsedResults.Add((entityId, placement, kills));
             }
 
-            if (parsedResults.Count != rosterEntityIds.Count)
+            if (parsedResults.Count != rosterEntities.Count)
                 return Results.BadRequest(new
                 {
-                    error = $"Results must include every team or participant in the round ({rosterEntityIds.Count} required, received {parsedResults.Count})."
+                    error = $"Results must include every team or participant in the round ({rosterEntities.Count} required, received {parsedResults.Count})."
                 });
 
-            var rosterSet = rosterEntityIds.ToHashSet();
             var unexpectedEntityIds = parsedResults
                 .Select(result => result.EntityId)
-                .Where(entityId => !rosterSet.Contains(entityId))
+                .Where(entityId => !rosterByEntityId.ContainsKey(entityId))
                 .Distinct()
                 .ToList();
             if (unexpectedEntityIds.Count > 0)
                 return Results.BadRequest(new { error = "Results contain entities that are not assigned to this BR group." });
 
-            var requiredPlacements = Enumerable.Range(1, rosterEntityIds.Count).ToHashSet();
+            var requiredPlacements = Enumerable.Range(1, rosterEntities.Count).ToHashSet();
             if (!requiredPlacements.SetEquals(parsedResults.Select(result => result.Placement)))
-                return Results.BadRequest(new { error = $"Placements must be a complete set from 1 to {rosterEntityIds.Count}." });
+                return Results.BadRequest(new { error = $"Placements must be a complete set from 1 to {rosterEntities.Count}." });
 
             using var tx = conn.BeginTransaction();
             try
@@ -1643,50 +1662,27 @@ public static class BRGroupEndpoints
                     new { roundId },
                     tx);
 
-                if (isSolo)
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO br_round_results (round_id, participant_id, placement, kills, placement_points, kill_points)
-                        VALUES (@roundId, @participantId, @placement, @kills, @placementPoints, @killPoints)
-                        """,
-                        parsedResults.Select(result =>
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO br_round_results (round_id, team_id, participant_id, placement, kills, placement_points, kill_points)
+                    VALUES (@roundId, @teamId, @participantId, @placement, @kills, @placementPoints, @killPoints)
+                    """,
+                    parsedResults.Select(result =>
+                    {
+                        var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
+                        var rosterEntity = rosterByEntityId[result.EntityId];
+                        return new
                         {
-                            var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
-                            return new
-                            {
-                                roundId,
-                                participantId = result.EntityId,
-                                placement = result.Placement,
-                                kills = result.Kills,
-                                placementPoints = points.placementPoints,
-                                killPoints = points.killPoints
-                            };
-                        }),
-                        tx);
-                }
-                else
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
-                        VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
-                        """,
-                        parsedResults.Select(result =>
-                        {
-                            var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
-                            return new
-                            {
-                                roundId,
-                                teamId = result.EntityId,
-                                placement = result.Placement,
-                                kills = result.Kills,
-                                placementPoints = points.placementPoints,
-                                killPoints = points.killPoints
-                            };
-                        }),
-                        tx);
-                }
+                            roundId,
+                            teamId = rosterEntity.TeamId,
+                            participantId = rosterEntity.ParticipantId,
+                            placement = result.Placement,
+                            kills = result.Kills,
+                            placementPoints = points.placementPoints,
+                            killPoints = points.killPoints
+                        };
+                    }),
+                    tx);
 
                 tx.Commit();
                 return Results.Ok(new { saved = parsedResults.Count });
@@ -1696,6 +1692,12 @@ public static class BRGroupEndpoints
             {
                 tx.Rollback();
                 return Results.BadRequest(new { error = "Each placement can only be assigned once in a round." });
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.ForeignKeyViolation
+                                               || ex.SqlState == PostgresErrorCodes.CheckViolation)
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = "The submitted results do not match the current BR roster. Refresh the page and try again." });
             }
             catch
             {
