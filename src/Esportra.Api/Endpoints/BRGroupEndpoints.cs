@@ -730,6 +730,7 @@ public static class BRGroupEndpoints
             var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT g.stage_id,
+                       g.id AS group_id,
                        r.status,
                        r.lobby_code,
                        r.queue_timer_minutes,
@@ -743,6 +744,7 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Round not found." });
 
             var stageId = (Guid)currentRound.stage_id;
+            var groupId = (Guid)currentRound.group_id;
             var currentStatus = (string)currentRound.status;
             var currentLobbyCode = (string?)currentRound.lobby_code;
             int? currentQueueTimerMinutes = currentRound.queue_timer_minutes is not null
@@ -835,6 +837,29 @@ public static class BRGroupEndpoints
                 };
                 if (!validTransition)
                     return Results.BadRequest(new { error = $"Cannot transition from '{currentStatus}' to '{newStatus}'." });
+
+                if (newStatus == "active" && currentStatus != "active")
+                {
+                    var existingActiveRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT id, round_number
+                        FROM br_rounds
+                        WHERE group_id = @groupId
+                          AND status = 'active'
+                          AND id <> @roundId
+                        ORDER BY COALESCE(queue_started_at, started_at, created_at) DESC NULLS LAST, round_number DESC
+                        LIMIT 1
+                        """,
+                        new { groupId, roundId });
+
+                    if (existingActiveRound is not null)
+                    {
+                        return Results.BadRequest(new
+                        {
+                            error = $"Round {Convert.ToInt32(existingActiveRound.round_number)} is already live. Complete, re-open, or reset it before starting another round."
+                        });
+                    }
+                }
 
                 finalStatus = newStatus;
                 setClauses.Add("status = @status");
@@ -1658,6 +1683,24 @@ public static class BRGroupEndpoints
             int totalRounds     = rounds.Count;
             int completedRounds = rounds.Count(r => (string)r.status == "completed");
 
+            static DateTimeOffset? ReadRoundTimestamp(dynamic round, string key)
+            {
+                var value = ((IDictionary<string, object>)round)[key];
+                return value switch
+                {
+                    DateTimeOffset dto => dto,
+                    DateTime dt => new DateTimeOffset(dt),
+                    string text when DateTimeOffset.TryParse(text, out var parsed) => parsed,
+                    _ => null
+                };
+            }
+
+            static bool HasRoundLobbyCode(dynamic round)
+            {
+                var value = ((IDictionary<string, object>)round)["lobby_code"] as string;
+                return !string.IsNullOrWhiteSpace(value);
+            }
+
             // ── Check if user is staff (staff see all data regardless of status) ──
             bool isStaff = StaffAuthHelper.IsPlatformAdmin(userCtx);
             if (!isStaff)
@@ -1668,7 +1711,13 @@ public static class BRGroupEndpoints
             }
 
             // ── Build active round payload ───────────────────────────────────
-            var activeRoundRow = rounds.FirstOrDefault(r => (string)r.status == "active");
+            var activeRoundRow = rounds
+                .Where(r => (string)r.status == "active")
+                .OrderByDescending(r => ReadRoundTimestamp(r, "queue_started_at") ?? DateTimeOffset.MinValue)
+                .ThenByDescending(r => HasRoundLobbyCode(r))
+                .ThenByDescending(r => ReadRoundTimestamp(r, "started_at") ?? DateTimeOffset.MinValue)
+                .ThenByDescending(r => Convert.ToInt32(r.round_number))
+                .FirstOrDefault();
             object? activeRoundPayload = null;
             if (activeRoundRow is not null)
             {
