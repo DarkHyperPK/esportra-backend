@@ -15,7 +15,6 @@ public static class BRGroupEndpoints
 {
     private sealed record BrScoringSettings(int[] Placements, int KillPoints, int? KillCap);
     private sealed record BrEntityAccess(Guid? TeamId, Guid? ParticipantId);
-    private sealed record BrRoundRosterEntity(Guid EntityId, Guid? TeamId, Guid? ParticipantId);
 
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
@@ -1571,16 +1570,21 @@ public static class BRGroupEndpoints
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
-            var rosterEntities = (await conn.QueryAsync<BrRoundRosterEntity>(
+            var rosterEntities = (await conn.QueryAsync<dynamic>(
                 """
-                SELECT COALESCE(team_id, participant_id) AS EntityId,
-                       team_id AS TeamId,
-                       participant_id AS ParticipantId
+                SELECT COALESCE(team_id, participant_id) AS entity_id,
+                       team_id,
+                       participant_id
                 FROM br_group_teams
                 WHERE group_id = @groupId
                 ORDER BY seed_order
                 """,
-                new { groupId })).ToList();
+                new { groupId }))
+                .Select(row => (
+                    EntityId: (Guid)row.entity_id,
+                    TeamId: (Guid?)row.team_id,
+                    ParticipantId: (Guid?)row.participant_id))
+                .ToList();
             if (rosterEntities.Count == 0)
                 return Results.BadRequest(new { error = "This group has no assigned teams or participants." });
 
@@ -1600,7 +1604,9 @@ public static class BRGroupEndpoints
             if (duplicateRosterEntityIds.Count > 0)
                 return Results.Conflict(new { error = "This BR group contains duplicate roster entries. Reassign the group roster and try again." });
 
-            var rosterByEntityId = rosterEntities.ToDictionary(entity => entity.EntityId);
+            var rosterByEntityId = rosterEntities.ToDictionary(
+                entity => entity.EntityId,
+                entity => (entity.TeamId, entity.ParticipantId));
 
             var scoring = ResolveBrScoringSettings((string?)roundInfo.game, roundInfo.settings);
 
@@ -1662,12 +1668,8 @@ public static class BRGroupEndpoints
                     new { roundId },
                     tx);
 
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO br_round_results (round_id, team_id, participant_id, placement, kills, placement_points, kill_points)
-                    VALUES (@roundId, @teamId, @participantId, @placement, @kills, @placementPoints, @killPoints)
-                    """,
-                    parsedResults.Select(result =>
+                var materializedResults = parsedResults
+                    .Select(result =>
                     {
                         var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
                         var rosterEntity = rosterByEntityId[result.EntityId];
@@ -1681,8 +1683,59 @@ public static class BRGroupEndpoints
                             placementPoints = points.placementPoints,
                             killPoints = points.killPoints
                         };
-                    }),
-                    tx);
+                    })
+                    .ToList();
+
+                var teamBackedResults = materializedResults
+                    .Where(result => result.teamId is not null)
+                    .Select(result => new
+                    {
+                        result.roundId,
+                        result.teamId,
+                        result.placement,
+                        result.kills,
+                        result.placementPoints,
+                        result.killPoints
+                    })
+                    .ToList();
+
+                if (teamBackedResults.Count > 0)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
+                        VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
+                        """,
+                        teamBackedResults,
+                        tx);
+                }
+
+                var participantBackedResults = materializedResults
+                    .Where(result => result.teamId is null && result.participantId is not null)
+                    .Select(result => new
+                    {
+                        result.roundId,
+                        result.participantId,
+                        result.placement,
+                        result.kills,
+                        result.placementPoints,
+                        result.killPoints
+                    })
+                    .ToList();
+
+                if (teamBackedResults.Count + participantBackedResults.Count != materializedResults.Count)
+                    return Results.Conflict(new { error = "This BR group has inconsistent roster data. Reassign the group roster and try again." });
+
+                if (participantBackedResults.Count > 0)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_results (round_id, participant_id, placement, kills, placement_points, kill_points)
+                        VALUES (@roundId, @participantId, @placement, @kills, @placementPoints, @killPoints)
+                        """,
+                        participantBackedResults,
+                        tx);
+                }
 
                 tx.Commit();
                 return Results.Ok(new { saved = parsedResults.Count });
@@ -1702,6 +1755,7 @@ public static class BRGroupEndpoints
             catch
             {
                 tx.Rollback();
+                Console.Error.WriteLine($"[BRGroupEndpoints] Failed to save results for round {roundId}.");
                 throw;
             }
         }).RequireAuthorization("Authenticated");
