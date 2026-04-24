@@ -55,6 +55,12 @@ public static class BRGroupEndpoints
 
             using var multi = await conn.QueryMultipleAsync(
                 """
+                SELECT g.id, g.name, g.group_order, g.lobby_size, g.created_at,
+                       (SELECT COUNT(*) FROM br_group_teams gt2 WHERE gt2.group_id = g.id) AS team_count
+                FROM br_groups g
+                WHERE g.stage_id = @stageId
+                ORDER BY g.group_order;
+
                 SELECT EXISTS(
                     SELECT 1 FROM br_rounds r
                     JOIN br_groups g ON g.id = r.group_id
@@ -78,6 +84,7 @@ public static class BRGroupEndpoints
                 """,
                 new { stageId });
 
+            var groups    = (await multi.ReadAsync<dynamic>()).ToList();
             var hasRounds = await multi.ReadSingleAsync<bool>();
             var rows      = (await multi.ReadAsync<dynamic>()).ToList();
 
@@ -100,7 +107,7 @@ public static class BRGroupEndpoints
                 });
             }
 
-            return Results.Ok(new { has_rounds = hasRounds, teams_by_group = teamsByGroup });
+            return Results.Ok(new { groups, has_rounds = hasRounds, teams_by_group = teamsByGroup });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/stages/{stageId}/br/groups ────────────────────────────
