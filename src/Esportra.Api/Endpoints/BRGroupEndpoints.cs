@@ -258,6 +258,41 @@ public static class BRGroupEndpoints
             return Results.Ok(teams);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/stages/{stageId}/br/groups/{groupId}/participants ───────
+        // Public lightweight roster for player-facing "view your group" screens.
+        app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/participants", async (
+            Guid              stageId,
+            Guid              groupId,
+            IDbConnectionFactory db) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var groupExists = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM br_groups WHERE id = @groupId AND stage_id = @stageId)",
+                new { groupId, stageId });
+            if (!groupExists)
+                return Results.NotFound(new { error = "Group not found in this stage." });
+
+            var participants = await conn.QueryAsync<dynamic>(
+                """
+                SELECT
+                    COALESCE(gt.team_id, gt.participant_id) AS team_id,
+                    gt.seed_order,
+                    gt.assigned_at,
+                    CASE WHEN gt.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE WHEN gt.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
+                FROM br_group_teams gt
+                LEFT JOIN teams t ON t.id = gt.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = gt.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE gt.group_id = @groupId
+                ORDER BY gt.seed_order
+                """,
+                new { groupId });
+
+            return Results.Ok(participants);
+        });
+
         // ── POST /api/stages/{stageId}/br/groups/assign ─────────────────────
         // Auto-distribute registered teams/participants into groups.
         app.MapPost("/api/stages/{stageId}/br/groups/assign", async (
@@ -547,6 +582,7 @@ public static class BRGroupEndpoints
                 """
                 SELECT r.id, r.round_number, r.lobby_code, r.status,
                        r.scheduled_at, r.started_at, r.completed_at, r.created_at,
+                       r.queue_timer_minutes, r.queue_started_at,
                        (SELECT COUNT(*) FROM br_round_results rr WHERE rr.round_id = r.id) AS result_count
                 FROM br_rounds r
                 WHERE r.group_id = @groupId
@@ -601,6 +637,8 @@ public static class BRGroupEndpoints
                     started_at   = d["started_at"],
                     completed_at = d["completed_at"],
                     created_at   = d["created_at"],
+                    queue_timer_minutes = d["queue_timer_minutes"],
+                    queue_started_at    = d["queue_started_at"],
                     result_count = d["result_count"],
                 };
             });
@@ -633,8 +671,16 @@ public static class BRGroupEndpoints
             if (!groupExists)
                 return Results.NotFound(new { error = "Group not found in this stage." });
 
-            var lobbyCode   = body.TryGetProperty("lobbyCode", out var lc) ? lc.GetString() : null;
+            var lobbyCode   = body.TryGetProperty("lobbyCode", out var lc) ? lc.GetString()?.Trim() : null;
             var scheduledAt = body.TryGetProperty("scheduledAt", out var sa) ? sa.GetString() : null;
+            int? queueTimerMinutes = null;
+            if (body.TryGetProperty("queueTimerMinutes", out var qtmProp) && qtmProp.ValueKind != JsonValueKind.Null)
+            {
+                if (!qtmProp.TryGetInt32(out var parsedQueueTimer) || parsedQueueTimer < 0 || parsedQueueTimer > 180)
+                    return Results.BadRequest(new { error = "queueTimerMinutes must be between 0 and 180." });
+
+                queueTimerMinutes = parsedQueueTimer == 0 ? null : parsedQueueTimer;
+            }
 
             DateTimeOffset? parsedSchedule = null;
             if (scheduledAt is not null)
@@ -646,16 +692,18 @@ public static class BRGroupEndpoints
 
             var round = await conn.QuerySingleAsync<dynamic>(
                 """
-                INSERT INTO br_rounds (group_id, round_number, lobby_code, scheduled_at)
+                INSERT INTO br_rounds (group_id, round_number, lobby_code, scheduled_at, queue_timer_minutes)
                 VALUES (
                     @groupId,
                     (SELECT COALESCE(MAX(round_number), 0) + 1 FROM br_rounds WHERE group_id = @groupId),
                     @lobbyCode,
-                    @scheduledAt
+                    @scheduledAt,
+                    @queueTimerMinutes
                 )
-                RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at
+                RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
+                          queue_timer_minutes, queue_started_at
                 """,
-                new { groupId, lobbyCode, scheduledAt = parsedSchedule });
+                new { groupId, lobbyCode, scheduledAt = parsedSchedule, queueTimerMinutes });
 
             return Results.Ok(round);
         }).RequireAuthorization("Authenticated");
@@ -674,20 +722,32 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Resolve stageId from round
-            var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            // Resolve stage + current round state once so update logic is consistent.
+            var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT g.stage_id
+                SELECT g.stage_id,
+                       r.status,
+                       r.lobby_code,
+                       r.queue_timer_minutes,
+                       r.queue_started_at
                 FROM br_rounds r
                 JOIN br_groups g ON g.id = r.group_id
                 WHERE r.id = @roundId
                 """,
                 new { roundId });
-            if (stageId is null)
+            if (currentRound is null)
                 return Results.NotFound(new { error = "Round not found." });
 
+            var stageId = (Guid)currentRound.stage_id;
+            var currentStatus = (string)currentRound.status;
+            var currentLobbyCode = (string?)currentRound.lobby_code;
+            int? currentQueueTimerMinutes = currentRound.queue_timer_minutes is not null
+                ? Convert.ToInt32(currentRound.queue_timer_minutes)
+                : null;
+            var currentQueueStartedAt = currentRound.queue_started_at as DateTimeOffset?;
+
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
-                conn, userCtx.UserIdGuid, stageId.Value, StaffAuthHelper.PermBracketEdit);
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
@@ -695,11 +755,17 @@ public static class BRGroupEndpoints
             var setClauses = new List<string>();
             var parameters = new DynamicParameters();
             parameters.Add("roundId", roundId);
+            string? finalLobbyCode = currentLobbyCode;
+            var finalStatus = currentStatus;
+            int? finalQueueTimerMinutes = currentQueueTimerMinutes;
 
             if (body.TryGetProperty("lobbyCode", out var lcProp))
             {
+                finalLobbyCode = lcProp.ValueKind == JsonValueKind.Null ? null : lcProp.GetString()?.Trim();
+                if (string.IsNullOrWhiteSpace(finalLobbyCode))
+                    finalLobbyCode = null;
                 setClauses.Add("lobby_code = @lobbyCode");
-                parameters.Add("lobbyCode", lcProp.ValueKind == JsonValueKind.Null ? null : lcProp.GetString());
+                parameters.Add("lobbyCode", finalLobbyCode);
             }
 
             if (body.TryGetProperty("scheduledAt", out var saProp))
@@ -723,6 +789,32 @@ public static class BRGroupEndpoints
                 }
             }
 
+            if (body.TryGetProperty("queueTimerMinutes", out var qtmProp))
+            {
+                if (qtmProp.ValueKind == JsonValueKind.Null)
+                {
+                    finalQueueTimerMinutes = null;
+                    setClauses.Add("queue_timer_minutes = NULL");
+                }
+                else if (qtmProp.TryGetInt32(out var queueTimerMinutes) && queueTimerMinutes >= 0 && queueTimerMinutes <= 180)
+                {
+                    finalQueueTimerMinutes = queueTimerMinutes == 0 ? null : queueTimerMinutes;
+                    if (finalQueueTimerMinutes is null)
+                    {
+                        setClauses.Add("queue_timer_minutes = NULL");
+                    }
+                    else
+                    {
+                        setClauses.Add("queue_timer_minutes = @queueTimerMinutes");
+                        parameters.Add("queueTimerMinutes", finalQueueTimerMinutes.Value);
+                    }
+                }
+                else
+                {
+                    return Results.BadRequest(new { error = "queueTimerMinutes must be between 0 and 180." });
+                }
+            }
+
             if (body.TryGetProperty("status", out var stProp))
             {
                 var newStatus = stProp.GetString();
@@ -730,10 +822,6 @@ public static class BRGroupEndpoints
                     return Results.BadRequest(new { error = "status must be 'pending', 'active', or 'completed'." });
 
                 // Enforce valid status transitions
-                var currentStatus = await conn.QuerySingleOrDefaultAsync<string>(
-                    "SELECT status FROM br_rounds WHERE id = @roundId",
-                    new { roundId });
-
                 var validTransition = (currentStatus, newStatus) switch
                 {
                     ("pending", "active")       => true,
@@ -744,6 +832,7 @@ public static class BRGroupEndpoints
                 if (!validTransition)
                     return Results.BadRequest(new { error = $"Cannot transition from '{currentStatus}' to '{newStatus}'." });
 
+                finalStatus = newStatus;
                 setClauses.Add("status = @status");
                 parameters.Add("status", newStatus);
 
@@ -755,6 +844,25 @@ public static class BRGroupEndpoints
                     setClauses.Add("completed_at = NOW()");
             }
 
+            var hasLiveLobbyCode = finalStatus == "active" && !string.IsNullOrWhiteSpace(finalLobbyCode);
+            var hasQueueTimer = finalQueueTimerMinutes is > 0;
+
+            if (!hasLiveLobbyCode || !hasQueueTimer)
+            {
+                setClauses.Add("queue_started_at = NULL");
+            }
+            else
+            {
+                var shouldStartQueueNow =
+                    currentQueueStartedAt is null
+                    || currentStatus != "active"
+                    || string.IsNullOrWhiteSpace(currentLobbyCode)
+                    || currentQueueTimerMinutes is null or <= 0;
+
+                if (shouldStartQueueNow)
+                    setClauses.Add("queue_started_at = NOW()");
+            }
+
             if (setClauses.Count == 0)
                 return Results.BadRequest(new { error = "No fields to update." });
 
@@ -762,7 +870,8 @@ public static class BRGroupEndpoints
                 UPDATE br_rounds
                 SET {string.Join(", ", setClauses)}
                 WHERE id = @roundId
-                RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at
+                RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
+                          queue_timer_minutes, queue_started_at
                 """;
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(sql, parameters);
@@ -1105,7 +1214,8 @@ public static class BRGroupEndpoints
             // ── Fetch rounds for the group ───────────────────────────────────
             var rounds = (await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, round_number, lobby_code, status, scheduled_at, started_at, completed_at
+                SELECT id, round_number, lobby_code, status, scheduled_at, started_at, completed_at,
+                       queue_timer_minutes, queue_started_at
                 FROM br_rounds
                 WHERE group_id = @groupId
                 ORDER BY round_number
@@ -1140,6 +1250,12 @@ public static class BRGroupEndpoints
                     roundNumber  = Convert.ToInt32(activeRoundRow.round_number),
                     lobbyCode,
                     status       = (string)activeRoundRow.status,
+                    queueTimerMinutes = activeRoundRow.queue_timer_minutes is not null
+                        ? Convert.ToInt32(activeRoundRow.queue_timer_minutes)
+                        : (int?)null,
+                    queueStartedAt = activeRoundRow.queue_started_at is not null
+                        ? ((DateTimeOffset)activeRoundRow.queue_started_at).ToString("o")
+                        : (string?)null,
                     scheduledAt  = activeRoundRow.scheduled_at is not null
                         ? ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o")
                         : (string?)null,
