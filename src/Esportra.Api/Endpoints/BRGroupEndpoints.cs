@@ -34,6 +34,75 @@ public static class BRGroupEndpoints
             return Results.Ok(groups);
         });
 
+        // ── GET /api/stages/{stageId}/br/groups/detail ──────────────────────
+        // Batch endpoint: returns all groups' teams + has_rounds flag in 2 queries.
+        // Replaces N×2 parallel fetches from the organizer UI group section.
+        app.MapGet("/api/stages/{stageId}/br/groups/detail", async (
+            Guid              stageId,
+            HttpContext        ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Auth: must be stage staff or platform admin
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermTeamsManage);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            using var multi = await conn.QueryMultipleAsync(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM br_rounds r
+                    JOIN br_groups g ON g.id = r.group_id
+                    WHERE g.stage_id = @stageId
+                ) AS has_rounds;
+
+                SELECT
+                    g.id AS group_id,
+                    COALESCE(gt.team_id, gt.participant_id) AS team_id,
+                    gt.seed_order,
+                    gt.assigned_at,
+                    CASE WHEN gt.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE WHEN gt.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
+                FROM br_groups g
+                JOIN br_group_teams gt ON gt.group_id = g.id
+                LEFT JOIN teams t ON t.id = gt.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = gt.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE g.stage_id = @stageId
+                ORDER BY g.group_order, gt.seed_order;
+                """,
+                new { stageId });
+
+            var hasRounds = await multi.ReadSingleAsync<bool>();
+            var rows      = (await multi.ReadAsync<dynamic>()).ToList();
+
+            var teamsByGroup = new Dictionary<string, List<object>>();
+            foreach (var row in rows)
+            {
+                var gid = ((Guid)row.group_id).ToString();
+                if (!teamsByGroup.TryGetValue(gid, out var list))
+                {
+                    list = [];
+                    teamsByGroup[gid] = list;
+                }
+                list.Add(new
+                {
+                    team_id    = (Guid)row.team_id,
+                    team_name  = (string?)row.team_name,
+                    logo_url   = (string?)row.logo_url,
+                    seed_order = Convert.ToInt32(row.seed_order),
+                    assigned_at= (DateTime?)row.assigned_at,
+                });
+            }
+
+            return Results.Ok(new { has_rounds = hasRounds, teams_by_group = teamsByGroup });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/stages/{stageId}/br/groups ────────────────────────────
         // Create groups for a stage. Deletes existing groups first (fresh setup).
         app.MapPost("/api/stages/{stageId}/br/groups", async (
