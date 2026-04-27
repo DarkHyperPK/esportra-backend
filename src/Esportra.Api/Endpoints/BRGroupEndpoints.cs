@@ -1567,9 +1567,24 @@ public static class BRGroupEndpoints
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
-            Guid stageId = roundInfo.stage_id;
-            Guid groupId = roundInfo.group_id;
-            var roundStatus = (string)roundInfo.status;
+            var roundInfoValues = (IDictionary<string, object>)roundInfo;
+            if (!TryReadGuidValue(roundInfoValues, "stage_id", out var stageIdValue) || stageIdValue is null
+                || !TryReadGuidValue(roundInfoValues, "group_id", out var groupIdValue) || groupIdValue is null)
+            {
+                return Results.Conflict(new { error = "This BR round has inconsistent metadata. Refresh and try again." });
+            }
+
+            var stageId = stageIdValue.Value;
+            var groupId = groupIdValue.Value;
+            var roundStatus = roundInfoValues.TryGetValue("status", out var roundStatusValue) && roundStatusValue is not DBNull
+                ? roundStatusValue?.ToString() ?? string.Empty
+                : string.Empty;
+            var gameName = roundInfoValues.TryGetValue("game", out var gameValue) && gameValue is not DBNull
+                ? gameValue?.ToString()
+                : null;
+            var rawSettings = roundInfoValues.TryGetValue("settings", out var settingsValue) && settingsValue is not DBNull
+                ? settingsValue
+                : null;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermScoresUpdate);
@@ -1646,7 +1661,7 @@ public static class BRGroupEndpoints
                 entity => entity.EntityId,
                 entity => (entity.TeamId, entity.ParticipantId));
 
-            var scoring = ResolveBrScoringSettings((string?)roundInfo.game, roundInfo.settings);
+            var scoring = ResolveBrScoringSettings(gameName, rawSettings);
 
             var parsedResults = new List<(Guid EntityId, int Placement, int Kills)>();
             var seenEntityIds = new HashSet<Guid>();
@@ -1709,7 +1724,7 @@ public static class BRGroupEndpoints
                 var materializedResults = parsedResults
                     .Select(result =>
                     {
-                        var (placementPoints, killPoints, _) = CalculateBrPoints(result.Placement, result.Kills, scoring);
+                        var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
                         var rosterEntity = rosterByEntityId[result.EntityId];
                         return new
                         {
@@ -1718,8 +1733,8 @@ public static class BRGroupEndpoints
                             participantId = rosterEntity.ParticipantId,
                             placement = result.Placement,
                             kills = result.Kills,
-                            placementPoints,
-                            killPoints
+                            placementPoints = points.Item1,
+                            killPoints = points.Item2
                         };
                     })
                     .ToList();
