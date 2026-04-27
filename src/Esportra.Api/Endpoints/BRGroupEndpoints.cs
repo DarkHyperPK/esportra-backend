@@ -40,10 +40,12 @@ public static class BRGroupEndpoints
         });
 
         // ── GET /api/stages/{stageId}/br/groups/detail ──────────────────────
-        // Batch endpoint: returns all groups' teams + has_rounds flag in 2 queries.
+        // Organizer endpoint: returns groups + has_rounds, and optionally all
+        // group rosters when includeTeams=true.
         // Replaces N×2 parallel fetches from the organizer UI group section.
         app.MapGet("/api/stages/{stageId}/br/groups/detail", async (
             Guid              stageId,
+            [FromQuery] bool? includeTeams,
             HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
@@ -58,20 +60,25 @@ public static class BRGroupEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            using var multi = await conn.QueryMultipleAsync(
-                """
+            var shouldIncludeTeams = includeTeams ?? true;
+
+            const string groupsSql = """
                 SELECT g.id, g.name, g.group_order, g.lobby_size, g.created_at,
                        (SELECT COUNT(*) FROM br_group_teams gt2 WHERE gt2.group_id = g.id) AS team_count
                 FROM br_groups g
                 WHERE g.stage_id = @stageId
                 ORDER BY g.group_order;
+                """;
 
+            const string hasRoundsSql = """
                 SELECT EXISTS(
                     SELECT 1 FROM br_rounds r
                     JOIN br_groups g ON g.id = r.group_id
                     WHERE g.stage_id = @stageId
                 ) AS has_rounds;
+                """;
 
+            const string teamsSql = """
                 SELECT
                     g.id AS group_id,
                     COALESCE(gt.team_id, gt.participant_id) AS team_id,
@@ -86,30 +93,39 @@ public static class BRGroupEndpoints
                 LEFT JOIN profiles p ON p.id = tp.user_id
                 WHERE g.stage_id = @stageId
                 ORDER BY g.group_order, gt.seed_order;
-                """,
-                new { stageId });
+                """;
+
+            var sql = shouldIncludeTeams
+                ? $"{groupsSql}\n{hasRoundsSql}\n{teamsSql}"
+                : $"{groupsSql}\n{hasRoundsSql}";
+
+            using var multi = await conn.QueryMultipleAsync(sql, new { stageId });
 
             var groups    = (await multi.ReadAsync<dynamic>()).ToList();
             var hasRounds = await multi.ReadSingleAsync<bool>();
-            var rows      = (await multi.ReadAsync<dynamic>()).ToList();
 
             var teamsByGroup = new Dictionary<string, List<object>>();
-            foreach (var row in rows)
+            if (shouldIncludeTeams)
             {
-                var gid = ((Guid)row.group_id).ToString();
-                if (!teamsByGroup.TryGetValue(gid, out var list))
+                var rows = (await multi.ReadAsync<dynamic>()).ToList();
+                foreach (var row in rows)
                 {
-                    list = [];
-                    teamsByGroup[gid] = list;
+                    var gid = ((Guid)row.group_id).ToString();
+                    if (!teamsByGroup.TryGetValue(gid, out var list))
+                    {
+                        list = [];
+                        teamsByGroup[gid] = list;
+                    }
+
+                    list.Add(new
+                    {
+                        team_id    = (Guid)row.team_id,
+                        team_name  = (string?)row.team_name,
+                        logo_url   = (string?)row.logo_url,
+                        seed_order = Convert.ToInt32(row.seed_order),
+                        assigned_at= (DateTime?)row.assigned_at,
+                    });
                 }
-                list.Add(new
-                {
-                    team_id    = (Guid)row.team_id,
-                    team_name  = (string?)row.team_name,
-                    logo_url   = (string?)row.logo_url,
-                    seed_order = Convert.ToInt32(row.seed_order),
-                    assigned_at= (DateTime?)row.assigned_at,
-                });
             }
 
             return Results.Ok(new { groups, has_rounds = hasRounds, teams_by_group = teamsByGroup });
