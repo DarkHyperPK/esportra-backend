@@ -1183,23 +1183,37 @@ public static class BRGroupEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_round_results", "participant_id");
 
             // Use LEFT JOINs with COALESCE for unified team/solo display
             var results = await conn.QueryAsync<dynamic>(
-                """
-                SELECT rr.id,
-                       COALESCE(rr.team_id, rr.participant_id) AS team_id,
-                       rr.placement, rr.kills,
-                       rr.placement_points, rr.kill_points, rr.total_points,
-                       CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
-                       CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
-                FROM br_round_results rr
-                LEFT JOIN teams t ON t.id = rr.team_id
-                LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
-                LEFT JOIN profiles p ON p.id = tp.user_id
-                WHERE rr.round_id = @roundId
-                ORDER BY rr.placement
-                """,
+                roundResultsHasParticipantId
+                    ? """
+                      SELECT rr.id,
+                             COALESCE(rr.team_id, rr.participant_id) AS team_id,
+                             rr.placement, rr.kills,
+                             rr.placement_points, rr.kill_points, rr.total_points,
+                             CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                             CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
+                      FROM br_round_results rr
+                      LEFT JOIN teams t ON t.id = rr.team_id
+                      LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
+                      LEFT JOIN profiles p ON p.id = tp.user_id
+                      WHERE rr.round_id = @roundId
+                      ORDER BY rr.placement
+                      """
+                    : """
+                      SELECT rr.id,
+                             rr.team_id AS team_id,
+                             rr.placement, rr.kills,
+                             rr.placement_points, rr.kill_points, rr.total_points,
+                             t.name AS team_name,
+                             t.logo_url AS logo_url
+                      FROM br_round_results rr
+                      LEFT JOIN teams t ON t.id = rr.team_id
+                      WHERE rr.round_id = @roundId
+                      ORDER BY rr.placement
+                      """,
                 new { roundId });
 
             return Results.Ok(results);
@@ -1570,21 +1584,43 @@ public static class BRGroupEndpoints
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
-            var rosterEntities = (await conn.QueryAsync<dynamic>(
-                """
-                SELECT COALESCE(team_id, participant_id) AS entity_id,
-                       team_id,
-                       participant_id
-                FROM br_group_teams
-                WHERE group_id = @groupId
-                ORDER BY seed_order
-                """,
-                new { groupId }))
-                .Select(row => (
-                    EntityId: (Guid)row.entity_id,
-                    TeamId:        row.team_id        is DBNull ? (Guid?)null : (Guid)row.team_id,
-                    ParticipantId: row.participant_id is DBNull ? (Guid?)null : (Guid)row.participant_id))
-                .ToList();
+            var groupTeamsHasParticipantId = await ColumnExistsAsync(conn, "br_group_teams", "participant_id");
+            var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_round_results", "participant_id");
+
+            var rosterRows = await conn.QueryAsync<dynamic>(
+                groupTeamsHasParticipantId
+                    ? """
+                      SELECT COALESCE(team_id, participant_id) AS entity_id,
+                             team_id,
+                             participant_id
+                      FROM br_group_teams
+                      WHERE group_id = @groupId
+                      ORDER BY seed_order
+                      """
+                    : """
+                      SELECT team_id AS entity_id,
+                             team_id,
+                             NULL::uuid AS participant_id
+                      FROM br_group_teams
+                      WHERE group_id = @groupId
+                      ORDER BY seed_order
+                      """,
+                new { groupId });
+
+            var rosterEntities = new List<(Guid EntityId, Guid? TeamId, Guid? ParticipantId)>();
+            foreach (var row in rosterRows)
+            {
+                var values = (IDictionary<string, object>)row;
+                if (!TryReadGuidValue(values, "entity_id", out var entityId)
+                    || !TryReadGuidValue(values, "team_id", out var teamId)
+                    || !TryReadGuidValue(values, "participant_id", out var participantId)
+                    || entityId is null)
+                {
+                    return Results.Conflict(new { error = "This BR group has inconsistent roster data. Reassign the group roster and try again." });
+                }
+
+                rosterEntities.Add((entityId.Value, teamId, participantId));
+            }
             if (rosterEntities.Count == 0)
                 return Results.BadRequest(new { error = "This group has no assigned teams or participants." });
 
@@ -1699,17 +1735,6 @@ public static class BRGroupEndpoints
                     })
                     .ToList();
 
-                if (teamBackedResults.Count > 0)
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
-                        VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
-                        """,
-                        teamBackedResults,
-                        tx);
-                }
-
                 var participantBackedResults = materializedResults
                     .Where(result => result.teamId is null && result.participantId is not null)
                     .Select(result => new
@@ -1723,10 +1748,80 @@ public static class BRGroupEndpoints
                     })
                     .ToList();
 
+                List<object>? participantFallbackTeamResults = null;
+                if (!roundResultsHasParticipantId && participantBackedResults.Count > 0)
+                {
+                    var participantIds = participantBackedResults
+                        .Select(result => result.participantId)
+                        .OfType<Guid>()
+                        .Distinct()
+                        .ToArray();
+
+                    var participantTeamRows = await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT id, team_id
+                        FROM tournament_participants
+                        WHERE id = ANY(@participantIds)
+                        """,
+                        new { participantIds },
+                        tx);
+
+                    var participantTeamMap = new Dictionary<Guid, Guid?>();
+                    foreach (var row in participantTeamRows)
+                    {
+                        var values = (IDictionary<string, object>)row;
+                        if (!TryReadGuidValue(values, "id", out var participantId)
+                            || !TryReadGuidValue(values, "team_id", out var teamId)
+                            || participantId is null)
+                        {
+                            return Results.Conflict(new { error = "The submitted BR roster could not be resolved to tournament participants." });
+                        }
+
+                        participantTeamMap[participantId.Value] = teamId;
+                    }
+
+                    if (participantIds.Length != participantTeamMap.Count
+                        || participantTeamMap.Any(entry => entry.Value is null))
+                    {
+                        return Results.Conflict(new
+                        {
+                            error = "This BR environment cannot save solo round results until the solo participant schema is fully available."
+                        });
+                    }
+
+                    participantFallbackTeamResults = participantBackedResults
+                        .Select(result => (object)new
+                        {
+                            result.roundId,
+                            teamId = participantTeamMap[result.participantId!.Value]!.Value,
+                            result.placement,
+                            result.kills,
+                            result.placementPoints,
+                            result.killPoints
+                        })
+                        .ToList();
+                }
+
+                var allTeamBackedResults = teamBackedResults
+                    .Cast<object>()
+                    .Concat(participantFallbackTeamResults ?? Enumerable.Empty<object>())
+                    .ToList();
+
+                if (allTeamBackedResults.Count > 0)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_round_results (round_id, team_id, placement, kills, placement_points, kill_points)
+                        VALUES (@roundId, @teamId, @placement, @kills, @placementPoints, @killPoints)
+                        """,
+                        allTeamBackedResults,
+                        tx);
+                }
+
                 if (teamBackedResults.Count + participantBackedResults.Count != materializedResults.Count)
                     return Results.Conflict(new { error = "This BR group has inconsistent roster data. Reassign the group roster and try again." });
 
-                if (participantBackedResults.Count > 0)
+                if (roundResultsHasParticipantId && participantBackedResults.Count > 0)
                 {
                     await conn.ExecuteAsync(
                         """
@@ -1776,31 +1871,53 @@ public static class BRGroupEndpoints
             if (!groupExists)
                 return Results.NotFound(new { error = "Group not found in this stage." });
 
+            var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_round_results", "participant_id");
+
             // Unified leaderboard with COALESCE for team/solo
             var leaderboard = await conn.QueryAsync<dynamic>(
-                """
-                SELECT
-                    COALESCE(rr.team_id, rr.participant_id) AS team_id,
-                    CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
-                    CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                    COUNT(DISTINCT rr.round_id) AS games_played,
-                    SUM(rr.placement_points) AS total_placement_points,
-                    SUM(rr.kill_points) AS total_kill_points,
-                    SUM(rr.total_points) AS total_points,
-                    SUM(rr.kills) AS total_kills,
-                    COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
-                    MIN(rr.placement) AS best_placement
-                FROM br_round_results rr
-                JOIN br_rounds r ON r.id = rr.round_id
-                LEFT JOIN teams t ON t.id = rr.team_id
-                LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
-                LEFT JOIN profiles p ON p.id = tp.user_id
-                WHERE r.group_id = @groupId
-                GROUP BY COALESCE(rr.team_id, rr.participant_id),
-                         CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END,
-                         CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
-                ORDER BY total_points DESC, wins DESC, total_kills DESC
-                """,
+                roundResultsHasParticipantId
+                    ? """
+                      SELECT
+                          COALESCE(rr.team_id, rr.participant_id) AS team_id,
+                          CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                          CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
+                          COUNT(DISTINCT rr.round_id) AS games_played,
+                          SUM(rr.placement_points) AS total_placement_points,
+                          SUM(rr.kill_points) AS total_kill_points,
+                          SUM(rr.total_points) AS total_points,
+                          SUM(rr.kills) AS total_kills,
+                          COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
+                          MIN(rr.placement) AS best_placement
+                      FROM br_round_results rr
+                      JOIN br_rounds r ON r.id = rr.round_id
+                      LEFT JOIN teams t ON t.id = rr.team_id
+                      LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
+                      LEFT JOIN profiles p ON p.id = tp.user_id
+                      WHERE r.group_id = @groupId
+                      GROUP BY COALESCE(rr.team_id, rr.participant_id),
+                               CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END,
+                               CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
+                      ORDER BY total_points DESC, wins DESC, total_kills DESC
+                      """
+                    : """
+                      SELECT
+                          rr.team_id AS team_id,
+                          t.name AS team_name,
+                          t.logo_url AS logo_url,
+                          COUNT(DISTINCT rr.round_id) AS games_played,
+                          SUM(rr.placement_points) AS total_placement_points,
+                          SUM(rr.kill_points) AS total_kill_points,
+                          SUM(rr.total_points) AS total_points,
+                          SUM(rr.kills) AS total_kills,
+                          COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
+                          MIN(rr.placement) AS best_placement
+                      FROM br_round_results rr
+                      JOIN br_rounds r ON r.id = rr.round_id
+                      LEFT JOIN teams t ON t.id = rr.team_id
+                      WHERE r.group_id = @groupId
+                      GROUP BY rr.team_id, t.name, t.logo_url
+                      ORDER BY total_points DESC, wins DESC, total_kills DESC
+                      """,
                 new { groupId });
 
             return Results.Ok(leaderboard);
@@ -2512,6 +2629,52 @@ public static class BRGroupEndpoints
 
         element = default;
         return false;
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        IDbConnection conn,
+        string tableName,
+        string columnName,
+        IDbTransaction? tx = null)
+    {
+        return await conn.QuerySingleAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = @tableName
+                  AND column_name = @columnName
+            )
+            """,
+            new { tableName, columnName },
+            tx);
+    }
+
+    private static bool TryReadGuidValue(
+        IDictionary<string, object> row,
+        string key,
+        out Guid? value)
+    {
+        value = null;
+
+        if (!row.TryGetValue(key, out var rawValue) || rawValue is null || rawValue is DBNull)
+            return true;
+
+        switch (rawValue)
+        {
+            case Guid guid:
+                value = guid;
+                return true;
+            case string text when Guid.TryParse(text, out var parsed):
+                value = parsed;
+                return true;
+            case byte[] bytes when bytes.Length == 16:
+                value = new Guid(bytes);
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
