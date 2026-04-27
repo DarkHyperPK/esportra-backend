@@ -1849,10 +1849,48 @@ public static class BRGroupEndpoints
                 tx.Rollback();
                 return Results.BadRequest(new { error = "The submitted results do not match the current BR roster. Refresh the page and try again." });
             }
-            catch
+            catch (PostgresException ex)
             {
                 tx.Rollback();
-                Console.Error.WriteLine($"[BRGroupEndpoints] Failed to save results for round {roundId}.");
+                Console.Error.WriteLine(
+                    $"[BRGroupEndpoints] Failed to save results for round {roundId}. " +
+                    $"Postgres {ex.SqlState} {ex.ConstraintName} {ex.TableName}.{ex.ColumnName} :: {ex.MessageText} :: {ex.Detail}");
+
+                var env = ctx.RequestServices.GetService<IWebHostEnvironment>();
+                if (env is not null && !env.IsProduction())
+                {
+                    return Results.Json(new
+                    {
+                        error = "BR results save failed.",
+                        exception = nameof(PostgresException),
+                        sqlState = ex.SqlState,
+                        constraint = ex.ConstraintName,
+                        table = ex.TableName,
+                        column = ex.ColumnName,
+                        detail = ex.Detail,
+                        message = ex.MessageText,
+                        hint = ex.Hint
+                    }, statusCode: StatusCodes.Status500InternalServerError);
+                }
+
+                throw;
+            }
+            catch (Exception ex)
+            {
+                tx.Rollback();
+                Console.Error.WriteLine($"[BRGroupEndpoints] Failed to save results for round {roundId}. {ex}");
+
+                var env = ctx.RequestServices.GetService<IWebHostEnvironment>();
+                if (env is not null && !env.IsProduction())
+                {
+                    return Results.Json(new
+                    {
+                        error = "BR results save failed.",
+                        exception = ex.GetType().FullName,
+                        message = ex.Message
+                    }, statusCode: StatusCodes.Status500InternalServerError);
+                }
+
                 throw;
             }
         }).RequireAuthorization("Authenticated");
