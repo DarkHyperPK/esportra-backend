@@ -1709,7 +1709,7 @@ public static class BRGroupEndpoints
                 var materializedResults = parsedResults
                     .Select(result =>
                     {
-                        var points = CalculateBrPoints(result.Placement, result.Kills, scoring);
+                        var (placementPoints, killPoints, _) = CalculateBrPoints(result.Placement, result.Kills, scoring);
                         var rosterEntity = rosterByEntityId[result.EntityId];
                         return new
                         {
@@ -1718,8 +1718,8 @@ public static class BRGroupEndpoints
                             participantId = rosterEntity.ParticipantId,
                             placement = result.Placement,
                             kills = result.Kills,
-                            placementPoints = points.placementPoints,
-                            killPoints = points.killPoints
+                            placementPoints,
+                            killPoints
                         };
                     })
                     .ToList();
