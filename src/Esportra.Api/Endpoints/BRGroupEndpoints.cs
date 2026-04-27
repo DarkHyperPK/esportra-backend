@@ -1586,6 +1586,8 @@ public static class BRGroupEndpoints
 
             var groupTeamsHasParticipantId = await ColumnExistsAsync(conn, "br_group_teams", "participant_id");
             var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_round_results", "participant_id");
+            var roundResultsTeamIdAllowsNull = await ColumnAllowsNullAsync(conn, "br_round_results", "team_id");
+            var canPersistParticipantBackedResults = roundResultsHasParticipantId && roundResultsTeamIdAllowsNull;
 
             var rosterRows = await conn.QueryAsync<dynamic>(
                 groupTeamsHasParticipantId
@@ -1749,7 +1751,7 @@ public static class BRGroupEndpoints
                     .ToList();
 
                 List<object>? participantFallbackTeamResults = null;
-                if (!roundResultsHasParticipantId && participantBackedResults.Count > 0)
+                if (!canPersistParticipantBackedResults && participantBackedResults.Count > 0)
                 {
                     var participantIds = participantBackedResults
                         .Select(result => result.participantId)
@@ -1821,7 +1823,7 @@ public static class BRGroupEndpoints
                 if (teamBackedResults.Count + participantBackedResults.Count != materializedResults.Count)
                     return Results.Conflict(new { error = "This BR group has inconsistent roster data. Reassign the group roster and try again." });
 
-                if (roundResultsHasParticipantId && participantBackedResults.Count > 0)
+                if (canPersistParticipantBackedResults && participantBackedResults.Count > 0)
                 {
                     await conn.ExecuteAsync(
                         """
@@ -2646,6 +2648,26 @@ public static class BRGroupEndpoints
                   AND table_name = @tableName
                   AND column_name = @columnName
             )
+            """,
+            new { tableName, columnName },
+            tx);
+    }
+
+    private static async Task<bool> ColumnAllowsNullAsync(
+        IDbConnection conn,
+        string tableName,
+        string columnName,
+        IDbTransaction? tx = null)
+    {
+        return await conn.QuerySingleOrDefaultAsync<bool>(
+            """
+            SELECT COALESCE((
+                SELECT is_nullable = 'YES'
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = @tableName
+                  AND column_name = @columnName
+            ), FALSE)
             """,
             new { tableName, columnName },
             tx);
