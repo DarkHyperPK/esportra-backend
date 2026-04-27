@@ -22,9 +22,67 @@ jobs:
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
 
+  # ── Phase 5: forward-reference linter ──────────────────────────────────────
+  migration-lint:
+    name: Migration Lint (forward-reference check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Check migrations for forward references
+        run: python .github/scripts/lint-migrations.py
+
+  # ── Phase 4: migration replay gate ─────────────────────────────────────────
+  # Must pass before Coolify is triggered. A clean full replay proves every
+  # script in the chain is safe to apply on a fresh database.
+  migration-replay:
+    name: Migration Replay (full replay from empty DB)
+    runs-on: ubuntu-latest
+    needs: [build, migration-lint]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: migrationtest
+          POSTGRES_DB: esportra_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run full migration replay
+        env:
+          ConnectionStrings__Postgres: >-
+            Host=localhost;Port=5432;Database=esportra_test;
+            Username=postgres;Password=migrationtest;
+            Trust Server Certificate=true;
+        run: >
+          dotnet run
+          --project src/Esportra.Migrator/Esportra.Migrator.csproj
+          -c Release
+
   deploy:
     name: Deploy to Coolify (Staging)
-    needs: build
+    needs: migration-replay
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Coolify staging deployment
@@ -42,3 +100,4 @@ jobs:
             exit 0
           fi
           curl --fail --silent --show-error -X GET "$WEBHOOK"
+
