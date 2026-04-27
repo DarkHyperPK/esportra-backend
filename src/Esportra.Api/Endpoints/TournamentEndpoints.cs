@@ -66,7 +66,8 @@ public static class TournamentEndpoints
         string?   OrganizerFullName,
         string?   WinnerTeamName = null,
         string?   VenueCity = null,
-        string?   VenueCountry = null
+        string?   VenueCountry = null,
+        string?   GameBackgroundImage = null
     );
 
     private const string TournamentListSql = """
@@ -85,12 +86,14 @@ public static class TournamentEndpoints
                p.full_name     AS organizer_full_name,
                wt.name  AS winner_team_name,
                v.city   AS venue_city,
-               v.country AS venue_country
+               v.country AS venue_country,
+               gm.background_image AS game_background_image
         FROM tournaments t
-        LEFT JOIN organizations o ON o.id = t.organization_id
-        LEFT JOIN profiles      p ON p.id = t.organizer_id
-        LEFT JOIN teams        wt ON wt.id = t.winner_id
-        LEFT JOIN venues        v ON v.id  = t.venue_id
+        LEFT JOIN organizations o  ON o.id  = t.organization_id
+        LEFT JOIN profiles      p  ON p.id  = t.organizer_id
+        LEFT JOIN teams        wt  ON wt.id = t.winner_id
+        LEFT JOIN venues        v  ON v.id  = t.venue_id
+        LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
         WHERE t.deleted_at IS NULL
           AND (t.is_public = TRUE OR t.organizer_id = @organizerGuid)
           AND (@status IS NULL OR t.status::text = @status)
@@ -156,12 +159,14 @@ public static class TournamentEndpoints
                            p.full_name     AS organizer_full_name,
                            wt.name  AS winner_team_name,
                            v.city   AS venue_city,
-                           v.country AS venue_country
+                           v.country AS venue_country,
+                           gm.background_image AS game_background_image
                     FROM tournaments t
-                    LEFT JOIN organizations o ON o.id = t.organization_id
-                    LEFT JOIN profiles      p ON p.id = t.organizer_id
-                    LEFT JOIN teams        wt ON wt.id = t.winner_id
-                    LEFT JOIN venues        v ON v.id  = t.venue_id
+                    LEFT JOIN organizations o  ON o.id  = t.organization_id
+                    LEFT JOIN profiles      p  ON p.id  = t.organizer_id
+                    LEFT JOIN teams        wt  ON wt.id = t.winner_id
+                    LEFT JOIN venues        v  ON v.id  = t.venue_id
+                    LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
                     WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
                     ORDER BY t.start_date ASC
                     """,
@@ -290,12 +295,14 @@ public static class TournamentEndpoints
                        o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
                        p.username   AS organizer_username,  p.avatar_url AS organizer_avatar,
                        v.name       AS venue_name,
-                       wt.name      AS winner_team_name,    wt.logo_url AS winner_team_logo
+                       wt.name      AS winner_team_name,    wt.logo_url AS winner_team_logo,
+                       gm.background_image AS game_background_image
                 FROM tournaments t
-                LEFT JOIN organizations o ON o.id = t.organization_id
-                LEFT JOIN profiles      p ON p.id = t.organizer_id
-                LEFT JOIN venues        v ON v.id = t.venue_id
-                LEFT JOIN teams        wt ON wt.id = t.winner_id
+                LEFT JOIN organizations o  ON o.id  = t.organization_id
+                LEFT JOIN profiles      p  ON p.id  = t.organizer_id
+                LEFT JOIN venues        v  ON v.id  = t.venue_id
+                LEFT JOIN teams        wt  ON wt.id = t.winner_id
+                LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
                 WHERE t.deleted_at IS NULL
                   AND (t.slug = @slugOrId
                     OR t.id::text = @slugOrId
@@ -405,13 +412,13 @@ public static class TournamentEndpoints
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
-                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency
+                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
-                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency
+                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion
                     )
                     RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
@@ -452,6 +459,7 @@ public static class TournamentEndpoints
                         paymentInstructions  = req.PaymentInstructions,
                         region               = req.Region,
                         currency             = req.Currency ?? "USD",
+                        serverRegion         = req.ServerRegion,
                     },
                     tx);
 
@@ -3150,6 +3158,7 @@ public static class TournamentEndpoints
         app.MapPost("/api/disputes", async (
             HttpContext                     ctx,
             IDbConnectionFactory            db,
+            Esportra.Core.Alerts.AdminAlertService alertService,
             CancellationToken               ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3198,6 +3207,16 @@ public static class TournamentEndpoints
                     evidenceUrl,
                     reason,
                 });
+
+            // Create admin alert for new dispute
+            await alertService.CreateAsync(
+                "dispute_filed",
+                Esportra.Core.Alerts.AlertSeverity.Warning,
+                $"Dispute filed — {(string)dispute.reference_number}",
+                $"{title ?? "Dispute"}: {reason ?? "No reason given"}",
+                new { dispute_id = (Guid)dispute.id, tournament_id = tournamentId, reference = (string)dispute.reference_number },
+                ct);
+
             return Results.Created($"/api/disputes/{dispute.id}", dispute);
         }).RequireAuthorization("Authenticated");
 
@@ -3305,7 +3324,9 @@ public sealed record CreateTournamentRequest(
     string?       Rules             = null,
     List<string>? MapPoolIds        = null,
     string?    PaymentInstructions  = null,
-    string?    Currency             = null);
+    string?    Currency             = null,
+    string?    ServerRegion         = null,
+    string?    TournamentType       = null);
 
 public sealed record StageRequest(
     string  Name,

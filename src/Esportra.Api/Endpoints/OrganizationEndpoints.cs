@@ -51,6 +51,13 @@ public static class OrganizationEndpoints
             new { orgId, userId });
     }
 
+    private static async Task<bool> IsOrgOwner(IDbConnection conn, Guid orgId, Guid userId)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+            new { orgId, userId });
+    }
+
     public static void MapOrganizationEndpoints(this WebApplication app)
     {
         // ── GET /api/organizations/{orgId}/staff ───────────────────────────────
@@ -231,7 +238,7 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -261,7 +268,7 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
@@ -408,12 +415,18 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             await conn.ExecuteAsync(
-                "DELETE FROM staff_tournament_assignments WHERE id = @assignmentId",
-                new { assignmentId });
+                """
+                DELETE FROM staff_tournament_assignments
+                WHERE id = @assignmentId
+                  AND organization_staff_id IN (
+                    SELECT id FROM organization_staff WHERE organization_id = @orgId
+                  )
+                """,
+                new { assignmentId, orgId });
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId, new { });
             return Results.Ok(new { success = true });
@@ -428,15 +441,15 @@ public static class OrganizationEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT sta.*,
-                       to_jsonb(os) AS organization_staff
+                SELECT sta.id, sta.tournament_id, sta.role AS assignment_role, sta.created_at,
+                       os.user_id, os.role, os.status
                 FROM staff_tournament_assignments sta
                 LEFT JOIN organization_staff os ON os.id = sta.organization_staff_id
                 WHERE sta.tournament_id = @tournamentId
                 """,
                 new { tournamentId });
             return Results.Ok(rows);
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/staff/permissions ──────────────────────────
         // Replaces getOrgStaffPermissionsForTournament (2 Supabase calls → 1 query).
@@ -719,13 +732,13 @@ public static class OrganizationEndpoints
 
             using var conn = db.CreateConnection();
 
-            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
             // CASCADE delete handles media
             await conn.ExecuteAsync(
-                "DELETE FROM organization_albums WHERE id = @albumId",
-                new { albumId });
+                "DELETE FROM organization_albums WHERE id = @albumId AND organization_id = @orgId",
+                new { albumId, orgId });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Organizer");
 
@@ -1062,6 +1075,279 @@ public static class OrganizationEndpoints
                 totalParticipants = (long)stats.total_participants
             });
         }).RequireAuthorization("Authenticated");
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Phase 11 — Multi-Venue Organization Endpoints
+        // ══════════════════════════════════════════════════════════════════════
+
+        // ── GET /api/organizations — list user's organizations (owned) ───────
+        app.MapGet("/api/organizations", async (
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            int                  limit  = 20,
+            int                  offset = 0,
+            CancellationToken    ct     = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            limit  = Math.Clamp(limit, 1, 100);
+            offset = Math.Max(offset, 0);
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT o.*,
+                       (SELECT COUNT(*) FROM venues v
+                        WHERE v.organization_id = o.id AND v.deleted_at IS NULL) AS venue_count
+                FROM organizations o
+                WHERE o.owner_id = @userId
+                ORDER BY o.created_at DESC
+                LIMIT @limit OFFSET @offset
+                """,
+                new { userId = userCtx.UserIdGuid, limit, offset });
+
+            foreach (var r in rows)
+                ParseOrgSocialLinks(r);
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated")
+          .WithTags("Organizations");
+
+        // ── GET /api/organizations/{orgId}/details — org with venue list ─────
+        app.MapGet("/api/organizations/{orgId}/details", async (
+            Guid                 orgId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify ownership
+            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM organizations WHERE id = @orgId AND owner_id = @userId",
+                new { orgId, userId = userCtx.UserIdGuid });
+            if (org is null) return Results.NotFound();
+
+            ParseOrgSocialLinks(org);
+
+            // Fetch venues linked to this organization
+            var venues = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, name, slug, venue_id, city, country, status,
+                       stations, price_per_hour, currency, card_image,
+                       subscription_tier, created_at
+                FROM venues
+                WHERE organization_id = @orgId AND deleted_at IS NULL
+                ORDER BY name ASC
+                """,
+                new { orgId });
+
+            return Results.Ok(new { organization = org, venues });
+        }).RequireAuthorization("Authenticated")
+          .WithTags("Organizations");
+
+        // ── POST /api/organizations/{orgId}/venues/{venueId} — add venue ─────
+        app.MapPost("/api/organizations/{orgId}/venues/{venueId}", async (
+            Guid                 orgId,
+            Guid                 venueId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify user owns the organization
+            var isOrgOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+                new { orgId, userId = userCtx.UserIdGuid });
+            if (!isOrgOwner) return Results.Forbid();
+
+            // Verify user owns the venue
+            var isVenueOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM venues WHERE id = @venueId AND owner_id = @userId AND deleted_at IS NULL)",
+                new { venueId, userId = userCtx.UserIdGuid });
+            if (!isVenueOwner)
+                return Results.BadRequest(new { error = "Venue not found or you do not own it." });
+
+            // Check if venue is already assigned to another org
+            var existingOrgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT organization_id FROM venues WHERE id = @venueId",
+                new { venueId });
+            if (existingOrgId is not null && existingOrgId != orgId)
+                return Results.Conflict(new { error = "Venue is already assigned to another organization." });
+
+            await conn.ExecuteAsync(
+                "UPDATE venues SET organization_id = @orgId WHERE id = @venueId",
+                new { orgId, venueId });
+
+            await LogAudit(conn, orgId, userCtx.UserIdGuid, "venue.add", "venue", venueId, new { venueId });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated")
+          .WithTags("Organizations");
+
+        // ── DELETE /api/organizations/{orgId}/venues/{venueId} — remove venue ─
+        app.MapDelete("/api/organizations/{orgId}/venues/{venueId}", async (
+            Guid                 orgId,
+            Guid                 venueId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify user owns the organization
+            var isOrgOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+                new { orgId, userId = userCtx.UserIdGuid });
+            if (!isOrgOwner) return Results.Forbid();
+
+            // Only unlink if venue belongs to this org
+            var affected = await conn.ExecuteAsync(
+                "UPDATE venues SET organization_id = NULL WHERE id = @venueId AND organization_id = @orgId",
+                new { venueId, orgId });
+
+            if (affected == 0)
+                return Results.NotFound(new { error = "Venue is not linked to this organization." });
+
+            await LogAudit(conn, orgId, userCtx.UserIdGuid, "venue.remove", "venue", venueId, new { venueId });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated")
+          .WithTags("Organizations");
+
+        // ── GET /api/organizations/{orgId}/analytics — aggregate across venues ─
+        app.MapGet("/api/organizations/{orgId}/analytics", async (
+            Guid                 orgId,
+            [FromQuery] string   from,
+            [FromQuery] string   to,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify ownership or active staff
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid)
+                && !userCtx.Roles.Contains("admin"))
+                return Results.Forbid();
+
+            if (!DateOnly.TryParse(from, out var fromDate) || !DateOnly.TryParse(to, out var toDate))
+                return Results.BadRequest(new { error = "Invalid date range. Use YYYY-MM-DD." });
+
+            if (toDate < fromDate)
+                return Results.BadRequest(new { error = "'to' must be >= 'from'." });
+
+            if (toDate.DayNumber - fromDate.DayNumber > 365)
+                return Results.BadRequest(new { error = "Date range cannot exceed 365 days." });
+
+            // Get all venue IDs in this org
+            var venueIds = (await conn.QueryAsync<Guid>(
+                "SELECT id FROM venues WHERE organization_id = @orgId AND deleted_at IS NULL",
+                new { orgId })).AsList();
+
+            if (venueIds.Count == 0)
+                return Results.Ok(new
+                {
+                    summary = new
+                    {
+                        total_revenue = 0m,
+                        session_revenue = 0m,
+                        pos_revenue = 0m,
+                        package_revenue = 0m,
+                        total_sessions = 0L,
+                        total_members = 0L,
+                        venue_count = 0,
+                    },
+                    venues = Array.Empty<object>(),
+                });
+
+            // Aggregate summary across all org venues
+            var summary = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    COALESCE(SUM(ds.session_revenue), 0) AS session_revenue,
+                    COALESCE(SUM(ds.pos_revenue), 0)     AS pos_revenue,
+                    COALESCE(SUM(ds.package_revenue), 0) AS package_revenue,
+                    COALESCE(SUM(ds.total_revenue), 0)   AS total_revenue,
+                    COALESCE(SUM(ds.total_sessions), 0)  AS total_sessions,
+                    COALESCE(SUM(ds.total_orders), 0)    AS total_orders
+                FROM daily_stats ds
+                WHERE ds.venue_id = ANY(@venueIds)
+                  AND ds.date >= @from::date
+                  AND ds.date <= @to::date
+                """,
+                new { venueIds = venueIds.ToArray(), from, to });
+
+            // Total unique members across org venues (in period)
+            var totalMembers = await conn.QuerySingleAsync<long>(
+                """
+                SELECT COUNT(DISTINCT member_id)
+                FROM venue_sessions
+                WHERE venue_id = ANY(@venueIds)
+                  AND started_at >= @from::date
+                  AND started_at < (@to::date + INTERVAL '1 day')
+                  AND member_id IS NOT NULL
+                """,
+                new { venueIds = venueIds.ToArray(), from, to });
+
+            // Per-venue breakdown
+            var perVenue = await conn.QueryAsync<dynamic>(
+                """
+                SELECT v.id AS venue_id,
+                       v.name AS venue_name,
+                       v.city,
+                       v.country,
+                       COALESCE(SUM(ds.session_revenue), 0) AS session_revenue,
+                       COALESCE(SUM(ds.pos_revenue), 0)     AS pos_revenue,
+                       COALESCE(SUM(ds.package_revenue), 0) AS package_revenue,
+                       COALESCE(SUM(ds.total_revenue), 0)   AS total_revenue,
+                       COALESCE(SUM(ds.total_sessions), 0)  AS total_sessions,
+                       COALESCE(SUM(ds.total_orders), 0)    AS total_orders,
+                       (SELECT COUNT(*) FROM members m
+                        WHERE m.venue_id = v.id) AS total_members
+                FROM venues v
+                LEFT JOIN daily_stats ds
+                  ON ds.venue_id = v.id
+                  AND ds.date >= @from::date
+                  AND ds.date <= @to::date
+                WHERE v.organization_id = @orgId
+                  AND v.deleted_at IS NULL
+                GROUP BY v.id, v.name, v.city, v.country
+                ORDER BY total_revenue DESC
+                """,
+                new { orgId, from, to });
+
+            return Results.Ok(new
+            {
+                summary = new
+                {
+                    total_revenue = (decimal)(summary.total_revenue ?? 0m),
+                    session_revenue = (decimal)(summary.session_revenue ?? 0m),
+                    pos_revenue = (decimal)(summary.pos_revenue ?? 0m),
+                    package_revenue = (decimal)(summary.package_revenue ?? 0m),
+                    total_sessions = (long)(summary.total_sessions ?? 0L),
+                    total_orders = (long)(summary.total_orders ?? 0L),
+                    total_members = totalMembers,
+                    venue_count = venueIds.Count,
+                },
+                venues = perVenue,
+            });
+        }).RequireAuthorization("Authenticated")
+          .WithTags("Organizations");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

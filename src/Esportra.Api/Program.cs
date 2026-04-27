@@ -49,12 +49,12 @@ var jwtAudience = builder.Configuration["Supabase:JwtAudience"] ?? "authenticate
 var jwtIssuer   = builder.Configuration["Supabase:JwtIssuer"];
 var validateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer);
 
-// ── Authentication — Supabase HS256 JWT ───────────────────────────────────────
+// ── Authentication — Supabase JWT ─────────────────────────────────────────────
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(opts =>
+    .AddJwtBearer(options =>
     {
-        opts.TokenValidationParameters = new TokenValidationParameters
+        options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
             IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
@@ -67,7 +67,7 @@ builder.Services
         };
 
         // Supabase JWT via Authorization header (standard) or query string (SignalR WS)
-        opts.Events = new JwtBearerEvents
+        options.Events = new JwtBearerEvents
         {
             OnMessageReceived = ctx =>
             {
@@ -212,9 +212,60 @@ builder.Services.AddSignalR(opts =>
 });
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
-var allowedOrigins = builder.Configuration
-    .GetSection("Cors:AllowedOrigins")
-    .Get<string[]>() ?? ["http://localhost:5173"];
+static string[] ResolveAllowedOrigins(IConfiguration config)
+{
+    var origins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    static IEnumerable<string> SplitOrigins(string raw) =>
+        raw.Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    static void AddOrigin(HashSet<string> set, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+
+        foreach (var rawOrigin in SplitOrigins(value))
+        {
+            if (!Uri.TryCreate(rawOrigin, UriKind.Absolute, out var uri)) continue;
+            set.Add(uri.GetLeftPart(UriPartial.Authority).TrimEnd('/'));
+        }
+    }
+
+    var originSection = config.GetSection("Cors:AllowedOrigins");
+    foreach (var child in originSection.GetChildren())
+        AddOrigin(origins, child.Value);
+
+    AddOrigin(origins, config["Cors:AllowedOrigins"]);
+    AddOrigin(origins, config["CORS_ALLOWED_ORIGINS"]);
+    AddOrigin(origins, config["FrontendUrl"]);
+    AddOrigin(origins, config["Frontend:BaseUrl"]);
+    AddOrigin(origins, config["PartnerUrl"]);
+
+    if (origins.Count == 0)
+    {
+        foreach (var fallback in new[]
+        {
+            "https://frontend-staging.esportra.com",
+            "https://staging.esportra.com",
+            "https://esportra.com",
+            "https://www.esportra.com",
+            "https://partner.esportra.com",
+            "https://partners.esportra.com",
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:4173",
+            "http://localhost:5173",
+            "http://localhost:5174",
+        })
+        {
+            AddOrigin(origins, fallback);
+        }
+    }
+
+    return origins.ToArray();
+}
+
+var allowedOrigins = ResolveAllowedOrigins(builder.Configuration);
+Console.WriteLine($"[STARTUP] CORS allowed origins: {string.Join(", ", allowedOrigins)}");
 
 builder.Services.AddCors(opts =>
 {
@@ -236,6 +287,7 @@ builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
 builder.Services.AddHttpClient<RiotApiClient>();
 builder.Services.AddHttpClient<RawgApiClient>();
 builder.Services.AddHttpClient<IgdbApiClient>();
+builder.Services.AddHttpClient<IDatHostService, DatHostService>();
 
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()
@@ -257,6 +309,7 @@ builder.Services.AddHttpClient("VenueHub", http =>
     http.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.AddSingleton<Esportra.Api.Services.VenueHubService>();
+builder.Services.AddSingleton<Esportra.Api.Services.VenueConnectionTracker>();
 
 // ── Phase 2: Core services ────────────────────────────────────────────────────
 builder.Services.AddScoped<BracketPersistenceService>();
@@ -265,6 +318,8 @@ builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
+builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
@@ -344,6 +399,7 @@ app.MapGet("/health", () => Results.Ok(new
     build     = "20260328-rbac-fix",
 }));
 
+app.UseRouting();
 app.UseCors("EsportraPolicy");
 app.UseStaticFiles();  // Serve wwwroot/ (email templates, etc.)
 
@@ -377,14 +433,12 @@ app.Use(async (ctx, next) =>
         }
     }
 });
-
-app.UseRouting();
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
 
-// ── JWT validation probe ───────────────────────────────────────────────────────
+// ── JWT validation probe───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>
 {
     var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -395,6 +449,7 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapIntegrationEndpoints();
+app.MapSteamAccountEndpoints();
 app.MapGameEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
@@ -407,9 +462,12 @@ app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapVenueEndpoints();
+app.MapVenueStaffEndpoints();
+app.MapSessionRefundEndpoints();
 app.MapOrganizationEndpoints();
 app.MapNotificationEndpoints();
 app.MapStageEndpoints();
+app.MapBRGroupEndpoints();
 app.MapReviewEndpoints();
 app.MapOrganizerEndpoints();
 app.MapPartnerEndpoints();
@@ -419,16 +477,34 @@ app.MapVetoEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
 app.MapSponsorEndpoints();
+app.MapTournamentSponsorEndpoints();
 app.MapSitemapEndpoints();
+app.MapWalletEndpoints();
+app.MapLoyaltyEndpoints();
+app.MapAnnouncementEndpoints();
+app.MapComboEndpoints();
+app.MapGameServerEndpoints();
+app.MapMatchZyEndpoints();
+app.MapSessionEndpoints();
+app.MapZoneEndpoints();
+app.MapMemberEndpoints();
+app.MapBookingRulesEndpoints();
+app.MapWalkInEndpoints();
+app.MapPOSEndpoints();
+app.MapPackageEndpoints();
+app.MapVenueAnalyticsEndpoints();
+app.MapStaffPermissionEndpoints();
+app.MapNotificationPreferenceEndpoints();
 
-// ── Phase 3: SignalR hubs ──────────────────────────────────────────────────────
-app.MapHub<BracketHub>("/hubs/bracket");
-app.MapHub<MatchHub>("/hubs/match");
-app.MapHub<VetoHub>("/hubs/veto");
-app.MapHub<ChatHub>("/hubs/chat");
-app.MapHub<ConversationHub>("/hubs/conversations");
-app.MapHub<NotificationHub>("/hubs/notifications");
-app.MapHub<LiveHub>("/hubs/live");
+// ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
+app.MapHub<BracketHub>("/hubs/bracket").RequireCors("EsportraPolicy");
+app.MapHub<MatchHub>("/hubs/match").RequireCors("EsportraPolicy");
+app.MapHub<VetoHub>("/hubs/veto").RequireCors("EsportraPolicy");
+app.MapHub<ChatHub>("/hubs/chat").RequireCors("EsportraPolicy");
+app.MapHub<ConversationHub>("/hubs/conversations").RequireCors("EsportraPolicy");
+app.MapHub<NotificationHub>("/hubs/notifications").RequireCors("EsportraPolicy");
+app.MapHub<LiveHub>("/hubs/live").RequireCors("EsportraPolicy");
+app.MapHub<VenueSyncHub>("/hubs/venue-sync").RequireCors("EsportraPolicy");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();

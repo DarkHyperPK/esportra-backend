@@ -8,12 +8,13 @@ namespace Esportra.Core.Audit;
 public enum ActionType
 {
     Create, Update, Delete,
-    Approve, Reject,
+    Approve, Reject, Cancel,
     Suspend, Unsuspend, Ban, Unban,
     Verify, Unverify,
     Resolve, Escalate,
     Login, Logout,
-    SettingsUpdate, RoleChange
+    SettingsUpdate, RoleChange,
+    Feature, Unfeature
 }
 
 public enum TargetType { User, Tournament, Venue, Payment, Team, Match, Dispute, System, Sponsor }
@@ -64,9 +65,11 @@ public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> 
     private static AuditSeverity GetSeverity(ActionType action) => action switch
     {
         ActionType.Ban    or ActionType.Delete                                    => AuditSeverity.Critical,
-        ActionType.Suspend or ActionType.Reject or ActionType.Escalate           => AuditSeverity.High,
+        ActionType.Suspend or ActionType.Reject or ActionType.Escalate
+            or ActionType.Cancel                                                 => AuditSeverity.High,
         ActionType.Approve or ActionType.Verify or ActionType.Resolve
-            or ActionType.RoleChange or ActionType.SettingsUpdate                => AuditSeverity.Medium,
+            or ActionType.RoleChange or ActionType.SettingsUpdate
+            or ActionType.Feature or ActionType.Unfeature                        => AuditSeverity.Medium,
         _                                                                         => AuditSeverity.Low,
     };
 }

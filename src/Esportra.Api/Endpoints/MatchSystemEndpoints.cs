@@ -3,8 +3,10 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -446,6 +448,12 @@ public static class MatchSystemEndpoints
                                             "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
                                             id, winnerId, team1Wins, team2Wins, bestOf);
 
+                                        // Auto-delete game server after match finalized
+                                        var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
+                                        _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
+                                            id, db, dathostSvc,
+                                            matchHub, logger, CancellationToken.None));
+
                                         // Check if all matches in this stage are now completed → set stage + tournament winner
                                         try
                                         {
@@ -587,6 +595,7 @@ public static class MatchSystemEndpoints
             HttpContext                       ctx,
             IDbConnectionFactory             db,
             IHubContext<MatchHub>            matchHub,
+            Esportra.Core.Alerts.AdminAlertService alertService,
             CancellationToken                ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -697,7 +706,16 @@ public static class MatchSystemEndpoints
 
                 tx.Commit();
 
-                // 7. Broadcast dispute event via SignalR (after commit)
+                // 7a. Create admin alert for new dispute
+                await alertService.CreateAsync(
+                    "dispute_filed",
+                    Esportra.Core.Alerts.AlertSeverity.Warning,
+                    $"Match dispute filed — {(string)dispute.reference_number}",
+                    $"A team has disputed match result. Reason: {req.Reason?[..Math.Min(req.Reason?.Length ?? 0, 100)]}",
+                    new { dispute_id = (Guid)dispute.id, match_id = id, reference = (string)dispute.reference_number },
+                    ct);
+
+                // 7b. Broadcast dispute event via SignalR (after commit)
                 await matchHub.Clients
                     .Group(MatchHub.MatchGroup(id.ToString()))
                     .SendAsync(MatchHubEvents.ReportDisputed,

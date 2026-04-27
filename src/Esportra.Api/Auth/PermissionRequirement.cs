@@ -27,7 +27,9 @@ public sealed class PermissionHandler : AuthorizationHandler<PermissionRequireme
             obj is UserContext userCtx)
         {
             if (userCtx.Permissions.Contains(requirement.Permission))
+            {
                 context.Succeed(requirement);
+            }
         }
 
         return Task.CompletedTask;

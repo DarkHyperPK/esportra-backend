@@ -4,6 +4,9 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Workaround: SDK 9.0.300 path-case bug on Windows — same file discovered twice (d:\ vs D:\)
+         causing DiscoverPrecompressedAssets and fingerprinting conflicts -->
+    <StaticWebAssetFingerprintingEnabled>false</StaticWebAssetFingerprintingEnabled>
   </PropertyGroup>
 
   <ItemGroup>

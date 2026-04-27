@@ -1,6 +1,7 @@
 ﻿using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -411,8 +412,80 @@ public static class VenueEndpoints
                 WHERE venue_id = @id
                 """,
                 new { id });
-            return row is null ? Results.NotFound() : Results.Ok(row);
+
+            if (row is not null)
+                return Results.Ok(row);
+
+            // No live-status row (Desktop Agent not connected yet) — derive
+            // seats_total from venue_stations so the dashboard shows the real count.
+            var stationCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM venue_stations WHERE venue_id = @id",
+                new { id });
+
+            return Results.Ok(new
+            {
+                seats_total    = stationCount,
+                seats_occupied = 0,
+                is_open        = false,
+                updated_at     = (DateTime?)null,
+            });
         });
+
+        // ── GET /api/venues/{id}/stations——————————————————————————————————
+        app.MapGet("/api/venues/{id}/stations", async (
+            Guid                 id,
+            HttpContext           ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            // Verify caller is venue owner or staff member
+            var isOwnerOrStaff = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM venues
+                    WHERE id = @id AND deleted_at IS NULL AND owner_id = @userId
+                    UNION ALL
+                    SELECT 1 FROM venue_staff
+                    WHERE venue_id = @id AND user_id = @userId
+                )
+                """,
+                new { id, userId = userCtx.UserIdGuid });
+
+            if (!isOwnerOrStaff)
+                return Results.Forbid();
+
+            var stations = await conn.QueryAsync<dynamic>(
+                """
+                SELECT id,
+                       station_id,
+                       COALESCE(NULLIF(label, ''), station_id) AS name,
+                       ROW_NUMBER() OVER (ORDER BY label, station_id) AS station_number,
+                       CASE
+                           WHEN status = 'maintenance' THEN 'maintenance'
+                           WHEN status = 'decommissioned' THEN 'offline'
+                           WHEN status = 'offline' THEN 'offline'
+                           WHEN status = 'active' THEN 'available'
+                           ELSE 'available'
+                       END AS status,
+                       zone,
+                       pos_x, pos_y, width, height, rotation,
+                       NULL::text AS current_session,
+                       NULL::text AS hardware,
+                       NULL::text AS last_seen,
+                       created_at
+                FROM venue_stations
+                WHERE venue_id = @id
+                ORDER BY label, station_id
+                """,
+                new { id });
+
+            return Results.Ok(stations);
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/venues/{id}/availability ——————————————————————————————
         app.MapGet("/api/venues/{id}/availability", async (
@@ -752,11 +825,12 @@ public static class VenueEndpoints
 
         // ── GET /api/venues/{id}/hub-config — hub connection config for desktop app
         app.MapGet("/api/venues/{id}/hub-config", async (
-            Guid                 id,
-            HttpContext          ctx,
-            IDbConnectionFactory db,
-            IConfiguration       config,
-            CancellationToken    ct) =>
+            Guid                     id,
+            HttpContext               ctx,
+            IDbConnectionFactory     db,
+            IConfiguration           config,
+            VenueConnectionTracker   tracker,
+            CancellationToken        ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -765,7 +839,8 @@ public static class VenueEndpoints
 
             var venue = await conn.QueryFirstOrDefaultAsync<dynamic>(
                 """
-                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at
+                SELECT id, owner_id, hub_api_key_hash, hub_key_issued_at, hub_key_rotated_at,
+                       hub_lan_url, hub_version, hub_last_heartbeat
                 FROM venues
                 WHERE id = @id AND deleted_at IS NULL
                 """,
@@ -775,16 +850,329 @@ public static class VenueEndpoints
             if ((Guid)venue.owner_id != userCtx.UserIdGuid) return Results.Forbid();
 
             var hubUrl = config["VenueHub:Url"]?.TrimEnd('/') ?? "";
+            var connInfo = tracker.GetConnectionInfo(id.ToString());
 
             return Results.Ok(new
             {
-                venueId       = id,
+                venueId          = id,
                 hubUrl,
-                hasKey        = venue.hub_api_key_hash is not null,
-                keyIssuedAt   = (DateTimeOffset?)venue.hub_key_issued_at,
-                keyRotatedAt  = (DateTimeOffset?)venue.hub_key_rotated_at
+                hubLanUrl        = (string?)venue.hub_lan_url,
+                hubVersion       = (string?)venue.hub_version,
+                hubLastHeartbeat = (DateTimeOffset?)venue.hub_last_heartbeat,
+                hasKey           = venue.hub_api_key_hash is not null,
+                keyIssuedAt      = (DateTimeOffset?)venue.hub_key_issued_at,
+                keyRotatedAt     = (DateTimeOffset?)venue.hub_key_rotated_at,
+                hubConnected     = connInfo is not null,
+                hubConnectedAt   = connInfo?.ConnectedAt
             });
         }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/venues/{id}/hub-heartbeat — local hub reports its LAN URL & version
+        app.MapPost("/api/venues/{id}/hub-heartbeat", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            // Authenticate via X-Hub-ApiKey header (same key the hub uses for VenueSyncHub)
+            var apiKey = ctx.Request.Headers["X-Hub-ApiKey"].ToString();
+            if (string.IsNullOrEmpty(apiKey))
+                return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var hash = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT hub_api_key_hash FROM venues WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+
+            if (hash is null || !BCrypt.Net.BCrypt.Verify(apiKey, hash))
+                return Results.Unauthorized();
+
+            // Parse body
+            var body = await ctx.Request.ReadFromJsonAsync<HeartbeatPayload>(ct);
+            if (body is null)
+                return Results.BadRequest(new { error = "Invalid payload" });
+
+            // Update venue with hub info
+            await conn.ExecuteAsync(
+                """
+                UPDATE venues
+                SET hub_lan_url = @lanUrl,
+                    hub_version = @version,
+                    hub_last_heartbeat = NOW()
+                WHERE id = @id
+                """,
+                new { id, lanUrl = body.LanUrl, version = body.Version });
+
+            return Results.Ok(new { status = "ok" });
+        });
+
+        // ── GET /api/venues/{id}/availability/slots — time-slot availability ─
+        app.MapGet("/api/venues/{id}/availability/slots", async (
+            Guid                 id,
+            string?              date,
+            Guid?                zone_id,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(date) || !DateOnly.TryParse(date, out var bookingDate))
+                return Results.BadRequest(new { error = "date query parameter is required (YYYY-MM-DD)" });
+
+            using var conn = db.CreateConnection();
+
+            // Get venue hours (JSON string like "09:00-23:00") or default 08:00-00:00
+            var venueHours = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT hours FROM venues WHERE id = @Id AND deleted_at IS NULL",
+                new { Id = id });
+
+            if (venueHours is null)
+                return Results.NotFound(new { error = "Venue not found" });
+
+            // Parse venue hours — expect "HH:mm-HH:mm" format
+            TimeOnly openTime = new(8, 0), closeTime = new(0, 0);
+            if (!string.IsNullOrWhiteSpace(venueHours))
+            {
+                var parts = venueHours.Split('-', 2);
+                if (parts.Length == 2)
+                {
+                    TimeOnly.TryParse(parts[0].Trim(), out openTime);
+                    TimeOnly.TryParse(parts[1].Trim(), out closeTime);
+                }
+            }
+            // If close == 00:00, treat as midnight (end of day)
+            bool closesAtMidnight = closeTime == new TimeOnly(0, 0);
+
+            // Count total stations (optionally filtered by zone)
+            var totalStations = await conn.QuerySingleAsync<int>(
+                """
+                SELECT COUNT(*)
+                FROM venue_stations
+                WHERE venue_id = @VenueId
+                  AND status = 'active'
+                  AND (@ZoneId IS NULL OR zone_id = @ZoneId)
+                """,
+                new { VenueId = id, ZoneId = zone_id });
+
+            // Get all bookings for the date (optionally filtered by zone)
+            var bookings = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT start_time, end_time, stations_booked
+                FROM venue_bookings
+                WHERE venue_id = @VenueId
+                  AND booking_date = @Date
+                  AND status NOT IN ('cancelled')
+                  AND (@ZoneId IS NULL OR zone_id = @ZoneId)
+                """,
+                new { VenueId = id, Date = bookingDate.ToString("yyyy-MM-dd"), ZoneId = zone_id })).ToList();
+
+            // Generate 30-minute slots from opening to closing
+            var slots = new List<object>();
+            var current = openTime;
+            var endLimit = closesAtMidnight ? new TimeOnly(23, 30) : closeTime.AddMinutes(-30);
+
+            while (current <= endLimit)
+            {
+                var slotEnd = current.AddMinutes(30);
+                if (closesAtMidnight && current == new TimeOnly(23, 30))
+                    slotEnd = new TimeOnly(0, 0);
+
+                // Count how many stations are booked during this slot
+                int stationsBooked = 0;
+                foreach (var b in bookings)
+                {
+                    var bStart = (TimeSpan)b.start_time;
+                    var bEnd = (TimeSpan)b.end_time;
+                    var slotStartSpan = current.ToTimeSpan();
+                    // Slot overlaps booking if slot_start < booking_end AND slot_end > booking_start
+                    bool overlaps;
+                    if (bEnd <= bStart) // crosses midnight
+                        overlaps = slotStartSpan < bEnd || current.ToTimeSpan() >= bStart;
+                    else
+                        overlaps = slotStartSpan < bEnd && slotEnd.ToTimeSpan() > bStart;
+
+                    if (overlaps)
+                        stationsBooked += (int)b.stations_booked;
+                }
+
+                var available = Math.Max(0, totalStations - stationsBooked);
+                slots.Add(new
+                {
+                    start_time = current.ToString("HH:mm"),
+                    end_time = slotEnd.ToString("HH:mm"),
+                    available_stations = available,
+                    total_stations = totalStations,
+                });
+
+                current = current.AddMinutes(30);
+                // Break before looping past midnight
+                if (current == new TimeOnly(0, 0)) break;
+            }
+
+            return Results.Ok(new
+            {
+                date = bookingDate.ToString("yyyy-MM-dd"),
+                zone_id,
+                slots,
+            });
+        })
+        .WithTags("Venues");
+
+        // ── POST /api/venues/{id}/bookings/{bookingId}/start-session — convert booking to session ─
+        app.MapPost("/api/venues/{id}/bookings/{bookingId}/start-session", async (
+            Guid                 id,
+            Guid                 bookingId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await IsOwnerOrStaff(db, userCtx.UserIdGuid, id))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            conn.Open();
+            using var tx = conn.BeginTransaction();
+
+            try
+            {
+                // Verify booking exists, belongs to venue, and is checked in
+                var booking = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id, venue_id, station_id, station_preference, zone_id,
+                           duration_hours, checked_in_at, session_id, status,
+                           member_id, user_id
+                    FROM venue_bookings
+                    WHERE id = @BookingId AND venue_id = @VenueId
+                    """,
+                    new { BookingId = bookingId, VenueId = id }, tx);
+
+                if (booking is null)
+                    return Results.NotFound(new { error = "Booking not found" });
+
+                if (booking.checked_in_at is null)
+                    return Results.BadRequest(new { error = "Booking must be checked in before starting a session" });
+
+                if (booking.session_id is not null)
+                    return Results.Conflict(new { error = "Booking already has an active session" });
+
+                // Resolve station — use assigned station_id or station_preference
+                string? stationId = (string?)booking.station_id ?? (string?)booking.station_preference;
+                if (string.IsNullOrWhiteSpace(stationId))
+                    return Results.BadRequest(new { error = "No station assigned to this booking" });
+
+                // Verify station exists
+                var station = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT station_id, zone, zone_id, status
+                    FROM venue_stations
+                    WHERE venue_id = @VenueId AND station_id = @StationId
+                    """,
+                    new { VenueId = id, StationId = stationId }, tx);
+
+                if (station is null)
+                    return Results.NotFound(new { error = "Assigned station not found" });
+
+                if ((string?)station.status == "maintenance")
+                    return Results.BadRequest(new { error = "Station is in maintenance mode" });
+
+                // Check no active session on this station
+                var existingSession = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT id FROM venue_sessions
+                    WHERE venue_id = @VenueId AND station_id = @StationId AND ended_at IS NULL
+                    """,
+                    new { VenueId = id, StationId = stationId }, tx);
+
+                if (existingSession is not null)
+                    return Results.Conflict(new { error = "Station already has an active session" });
+
+                // Resolve rate from zone
+                decimal? ratePerHour = null;
+                if (station.zone_id is not null)
+                {
+                    ratePerHour = await conn.QuerySingleOrDefaultAsync<decimal?>(
+                        "SELECT hourly_rate FROM zones WHERE id = @ZoneId",
+                        new { ZoneId = (Guid)station.zone_id }, tx);
+                }
+
+                int durationHours = (int?)booking.duration_hours ?? 1;
+                var expiresAt = DateTimeOffset.UtcNow.AddHours(durationHours);
+
+                // Get display name for the session
+                var displayName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT username FROM profiles WHERE id = @UserId",
+                    new { UserId = (Guid?)booking.user_id }, tx) ?? "Booking";
+
+                // Start session
+                var sessionId = await conn.QuerySingleAsync<Guid>(
+                    """
+                    INSERT INTO venue_sessions
+                        (venue_id, station_id, session_type, started_at, expires_at,
+                         rate_per_hour, display_name, zone, member_id, staff_id,
+                         booking_id, notes)
+                    VALUES
+                        (@VenueId, @StationId, 'booking', NOW(), @ExpiresAt,
+                         @RatePerHour, @DisplayName, @Zone, @MemberId, @StaffId,
+                         @BookingId, @Notes)
+                    RETURNING id
+                    """,
+                    new
+                    {
+                        VenueId = id,
+                        StationId = stationId,
+                        ExpiresAt = expiresAt,
+                        RatePerHour = ratePerHour,
+                        DisplayName = displayName,
+                        Zone = (string?)station.zone,
+                        MemberId = (Guid?)booking.member_id,
+                        StaffId = userCtx.UserIdGuid,
+                        BookingId = bookingId,
+                        Notes = $"Started from booking #{bookingId}",
+                    }, tx);
+
+                // Update booking with session_id
+                await conn.ExecuteAsync(
+                    "UPDATE venue_bookings SET session_id = @SessionId WHERE id = @BookingId",
+                    new { SessionId = sessionId, BookingId = bookingId }, tx);
+
+                tx.Commit();
+
+                return Results.Ok(new
+                {
+                    session_id = sessionId,
+                    booking_id = bookingId,
+                    station_id = stationId,
+                    display_name = displayName,
+                    session_type = "booking",
+                    started_at = DateTimeOffset.UtcNow,
+                    expires_at = expiresAt,
+                    rate_per_hour = ratePerHour,
+                });
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+        })
+        .RequireAuthorization("Authenticated")
+        .WithTags("Venues");
+    }
+
+    private static async Task<bool> IsOwnerOrStaff(IDbConnectionFactory db, Guid? userId, Guid venueId)
+    {
+        if (userId is null) return false;
+        using var conn = db.CreateConnection();
+        return await conn.QuerySingleOrDefaultAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM venues WHERE id = @VenueId AND owner_id = @UserId
+                UNION ALL
+                SELECT 1 FROM venue_staff WHERE venue_id = @VenueId AND user_id = @UserId AND status = 'active'
+            )
+            """,
+            new { VenueId = venueId, UserId = userId });
     }
 
     private static string GenerateBookingCode()
@@ -865,3 +1253,5 @@ public sealed record CreateBookingRequest(
     string?  ContactEmail    = null);
 
 public sealed record TrackImpressionRequest(string EventType);
+
+public sealed record HeartbeatPayload(string? LanUrl, string? Version);
