@@ -1582,8 +1582,8 @@ public static class BRGroupEndpoints
                 new { groupId }))
                 .Select(row => (
                     EntityId: (Guid)row.entity_id,
-                    TeamId: (Guid?)row.team_id,
-                    ParticipantId: (Guid?)row.participant_id))
+                    TeamId:        row.team_id        is DBNull ? (Guid?)null : (Guid)row.team_id,
+                    ParticipantId: row.participant_id is DBNull ? (Guid?)null : (Guid)row.participant_id))
                 .ToList();
             if (rosterEntities.Count == 0)
                 return Results.BadRequest(new { error = "This group has no assigned teams or participants." });
