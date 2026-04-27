@@ -338,11 +338,19 @@ Console.WriteLine("[STARTUP] Building app...");
 var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
 
-// ── Run database migrations ──────────────────────────────────────────────────
-// Migrations need supabase_admin (superuser) to issue GRANTs on tables it owns.
-// postgres user is NOT superuser in Supabase and GRANT silently no-ops.
-// Fallback to the regular connection string if no migration-specific one is set.
+// ── Run database migrations (development/legacy fallback only) ──────────────
+// Dedicated schema upgrades should run through Esportra.Migrator before the API
+// is rolled out. The app only keeps startup migrations for local development
+// and explicit legacy opt-in until deployment flow is fully aligned.
+var runMigrationsOnStartup =
+    builder.Environment.IsDevelopment()
+    || builder.Configuration.GetValue("Database:RunMigrationsOnStartup", false);
+
+if (runMigrationsOnStartup)
 {
+    // Migrations need supabase_admin (superuser) to issue GRANTs on tables it owns.
+    // postgres user is NOT superuser in Supabase and GRANT silently no-ops.
+    // Fallback to the regular connection string if no migration-specific one is set.
     var migrationConnStr = builder.Configuration.GetConnectionString("PostgresMigrations") ?? pgConnStr;
     var migrationLogger = app.Services.GetRequiredService<ILogger<Esportra.Infrastructure.Migrations.MigrationRunner>>();
     var migrationRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(migrationConnStr, migrationLogger);
@@ -351,6 +359,30 @@ Console.WriteLine("[STARTUP] App built successfully.");
         Console.Error.WriteLine("[STARTUP] Database migration failed. Aborting.");
         Environment.Exit(1);
     }
+}
+else
+{
+    // Phase 3: schema compatibility gate.
+    // When the dedicated migrator is responsible for schema upgrades, the API still
+    // verifies at startup that all embedded migration scripts have been applied.
+    // If the database is behind the code, the API refuses to start so a partially
+    // migrated database never serves requests.
+    Console.WriteLine("[STARTUP] Checking schema compatibility (dedicated migrator mode)...");
+    var compatCheckConnStr = builder.Configuration.GetConnectionString("PostgresMigrations") ?? pgConnStr;
+    var compatLogger = app.Services.GetRequiredService<ILogger<Esportra.Infrastructure.Migrations.MigrationRunner>>();
+    var compatRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(compatCheckConnStr, compatLogger);
+    var compat = compatRunner.CheckCompatibility();
+    if (!compat.IsCompatible)
+    {
+        Console.Error.WriteLine(
+            $"[STARTUP] ❌ Schema incompatibility: {compat.PendingScripts.Count} pending migration(s).");
+        Console.Error.WriteLine(
+            "[STARTUP] ❌ Run 'Esportra.Migrator' before starting the API.");
+        foreach (var script in compat.PendingScripts)
+            Console.Error.WriteLine($"[STARTUP]    - {script}");
+        Environment.Exit(1);
+    }
+    Console.WriteLine("[STARTUP] ✅ Schema compatibility check passed.");
 }
 // ═════════════════════════════════════════════════════════════════════════════
 

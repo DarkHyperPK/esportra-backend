@@ -1,14 +1,28 @@
 using System.Reflection;
 using DbUp;
+using DbUp.Engine;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace Esportra.Infrastructure.Migrations;
 
+/// <summary>Result of a schema compatibility check.</summary>
+public sealed record SchemaCompatibilityResult(
+    bool IsCompatible,
+    IReadOnlyList<string> PendingScripts)
+{
+    public static SchemaCompatibilityResult Compatible { get; } =
+        new(true, Array.Empty<string>());
+}
+
 public sealed class MigrationRunner
 {
     private readonly string _connectionString;
     private readonly ILogger<MigrationRunner> _logger;
+
+    // Migrations are embedded in THIS assembly (Esportra.Infrastructure), not the caller.
+    // Using typeof() guarantees the correct assembly regardless of which executable calls Run().
+    private static readonly Assembly MigrationsAssembly = typeof(MigrationRunner).Assembly;
 
     private const int MaxRetries = 15;
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(2);
@@ -32,15 +46,7 @@ public sealed class MigrationRunner
 
         EnsureDatabase.For.PostgresqlDatabase(_connectionString);
 
-        var upgrader = DeployChanges.To
-            .PostgresqlDatabase(_connectionString)
-            .WithScriptsEmbeddedInAssembly(
-                Assembly.GetExecutingAssembly(),
-                s => s.Contains(".Migrations.Scripts."))
-            .WithTransactionPerScript()
-            .WithVariablesDisabled()
-            .LogTo(new DbUpLogger(_logger))
-            .Build();
+        var upgrader = BuildUpgrader();
 
         if (!upgrader.IsUpgradeRequired())
         {
@@ -64,6 +70,42 @@ public sealed class MigrationRunner
 
         _logger.LogInformation("All migrations applied successfully.");
         return true;
+    }
+
+    /// <summary>
+    /// Checks whether the database schema is compatible with the current codebase.
+    /// Compatible means all embedded migration scripts have already been applied.
+    /// Does NOT apply any migrations — use Run() for that.
+    /// </summary>
+    public SchemaCompatibilityResult CheckCompatibility()
+    {
+        try
+        {
+            using var conn = new NpgsqlConnection(_connectionString);
+            conn.Open();
+        }
+        catch (Exception ex) when (ex is NpgsqlException or System.Net.Sockets.SocketException)
+        {
+            _logger.LogError(ex, "Schema compatibility check failed: cannot connect to database.");
+            return new SchemaCompatibilityResult(false, ["(could not connect to database)"]);
+        }
+
+        var upgrader = BuildUpgrader();
+
+        if (!upgrader.IsUpgradeRequired())
+            return SchemaCompatibilityResult.Compatible;
+
+        var pending = upgrader.GetScriptsToExecute()
+            .Select(s => s.Name)
+            .ToList();
+
+        _logger.LogError(
+            "Schema incompatibility: {Count} migration(s) have not been applied: {Scripts}. " +
+            "Run Esportra.Migrator before starting the API.",
+            pending.Count,
+            string.Join(", ", pending));
+
+        return new SchemaCompatibilityResult(false, pending);
     }
 
     /// <summary>
@@ -93,6 +135,17 @@ public sealed class MigrationRunner
 
         _logger.LogError("Database unreachable after {Max} attempts. Proceeding — migration will likely fail.", MaxRetries);
     }
+
+    private DbUp.Engine.UpgradeEngine BuildUpgrader() =>
+        DeployChanges.To
+            .PostgresqlDatabase(_connectionString)
+            .WithScriptsEmbeddedInAssembly(
+                MigrationsAssembly,
+                s => s.Contains(".Migrations.Scripts."))
+            .WithTransactionPerScript()
+            .WithVariablesDisabled()
+            .LogTo(new DbUpLogger(_logger))
+            .Build();
 
     /// <summary>Adapter to route DbUp log output through Microsoft.Extensions.Logging.</summary>
     private sealed class DbUpLogger : DbUp.Engine.Output.IUpgradeLog
