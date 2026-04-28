@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
+using Npgsql;
 
 namespace Esportra.Api.Endpoints;
 
@@ -316,23 +317,6 @@ public static class TournamentEndpoints
             var tournamentId = (Guid)tournament.id;
             var organizerId  = (Guid)tournament.organizer_id;
 
-            // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
-            var allParticipants = await conn.QueryAsync<dynamic>(
-                """
-                SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
-                       p.username AS gamer_tag
-                FROM tournament_participants tp
-                LEFT JOIN teams    ON teams.id = tp.team_id
-                LEFT JOIN profiles p ON p.id   = tp.user_id
-                WHERE tp.tournament_id = @tournamentId
-                ORDER BY tp.created_at ASC
-                """,
-                new { tournamentId });
-
-            var stages = await conn.QueryAsync<dynamic>(
-                "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order",
-                new { tournamentId });
-
             // Permission check for organizer/staff
             var userCtx = ctx.Items["UserContext"] as UserContext;
             bool isOrganizer = false;
@@ -362,13 +346,44 @@ public static class TournamentEndpoints
                     new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
             }
 
-            // Organizers see all participants (for payment management); others see only active
+            // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
             var participants = isOrganizer
-                ? allParticipants
-                : allParticipants.Where(p => {
-                    string status = (string)p.status;
-                    return status != "rejected" && status != "cancelled";
-                });
+                ? await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
+                           p.username AS gamer_tag
+                    FROM tournament_participants tp
+                    LEFT JOIN teams    ON teams.id = tp.team_id
+                    LEFT JOIN profiles p ON p.id   = tp.user_id
+                    WHERE tp.tournament_id = @tournamentId
+                    ORDER BY tp.created_at ASC
+                    """,
+                    new { tournamentId })
+                : await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT tp.id,
+                           tp.tournament_id,
+                           tp.user_id,
+                           tp.team_id,
+                           tp.participant_type,
+                           tp.status,
+                           tp.created_at,
+                           tp.checked_in_at,
+                           teams.name AS team_name,
+                           teams.logo_url AS team_logo,
+                           p.username AS gamer_tag
+                    FROM tournament_participants tp
+                    LEFT JOIN teams    ON teams.id = tp.team_id
+                    LEFT JOIN profiles p ON p.id   = tp.user_id
+                    WHERE tp.tournament_id = @tournamentId
+                      AND tp.status NOT IN ('rejected', 'cancelled')
+                    ORDER BY tp.created_at ASC
+                    """,
+                    new { tournamentId });
+
+            var stages = await conn.QueryAsync<dynamic>(
+                "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order",
+                new { tournamentId });
 
             return Results.Ok(new
             {
@@ -873,6 +888,12 @@ public static class TournamentEndpoints
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
             Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
             var   participantType = teamIdGuid is not null ? "team" : "solo";
+            var   effectiveCaptainId = captainIdGuid ?? userCtx.UserIdGuid;
+            var   resolvedTeamName = req.TeamName;
+            var   resolvedRosterName = req.RosterName;
+            var   resolvedTeamMembersJson = req.TeamMembers is not null
+                ? $"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]"
+                : "[]";
 
             // Auto-create a virtual team for solo participants so that
             // brkt_matches.team1_id / team2_id always references teams(id).
@@ -909,6 +930,242 @@ public static class TournamentEndpoints
                     new { teamId = vtId, userId = userCtx.UserIdGuid }, txn);
 
                 teamIdGuid = vtId;
+                effectiveCaptainId = userCtx.UserIdGuid;
+                resolvedTeamName = (string?)profile?.username ?? "Solo Player";
+            }
+            else
+            {
+                var teamRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT t.id,
+                           t.name,
+                           t.owner_id,
+                           EXISTS (
+                               SELECT 1
+                               FROM team_members tm
+                               WHERE tm.team_id = t.id
+                                 AND tm.user_id = @userId
+                                 AND tm.role = 'captain'
+                                 AND tm.is_active = TRUE
+                           ) AS is_captain
+                    FROM teams t
+                    WHERE t.id = @teamId
+                    """,
+                    new
+                    {
+                        teamId = teamIdGuid!.Value,
+                        userId = userCtx.UserIdGuid
+                    },
+                    txn);
+
+                if (teamRow is null)
+                {
+                    txn.Rollback();
+                    return Results.NotFound(new { error = "Team not found." });
+                }
+
+                var ownsTeam = (Guid)teamRow.owner_id == userCtx.UserIdGuid;
+                var isCaptain = (bool)teamRow.is_captain;
+                if (!ownsTeam && !isCaptain)
+                {
+                    txn.Rollback();
+                    return Results.Forbid();
+                }
+
+                var existingTeamRegistration = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT id
+                    FROM tournament_participants
+                    WHERE tournament_id = @tournamentId
+                      AND team_id = @teamId
+                      AND status NOT IN ('cancelled', 'rejected', 'disqualified')
+                    LIMIT 1
+                    """,
+                    new
+                    {
+                        tournamentId = id,
+                        teamId = teamIdGuid!.Value
+                    },
+                    txn);
+
+                if (existingTeamRegistration.HasValue)
+                {
+                    txn.Rollback();
+                    return Results.Conflict(new { error = "This team is already registered for this tournament." });
+                }
+
+                effectiveCaptainId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT tm.user_id
+                    FROM team_members tm
+                    WHERE tm.team_id = @teamId
+                      AND tm.role = 'captain'
+                      AND tm.is_active = TRUE
+                    ORDER BY tm.created_at
+                    LIMIT 1
+                    """,
+                    new { teamId = teamIdGuid!.Value },
+                    txn) ?? (Guid)teamRow.owner_id;
+
+                if (rosterIdGuid.HasValue)
+                {
+                    var roster = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT id, name
+                        FROM team_rosters
+                        WHERE id = @rosterId AND team_id = @teamId
+                        """,
+                        new
+                        {
+                            rosterId = rosterIdGuid.Value,
+                            teamId = teamIdGuid!.Value
+                        },
+                        txn);
+
+                    if (roster is null)
+                    {
+                        txn.Rollback();
+                        return Results.BadRequest(new { error = "Selected roster does not belong to this team." });
+                    }
+
+                    resolvedRosterName = (string)roster.name;
+                    var rosterMembers = (await conn.QueryAsync<Guid>(
+                        """
+                        SELECT user_id
+                        FROM team_roster_members
+                        WHERE roster_id = @rosterId
+                        ORDER BY user_id
+                        """,
+                        new { rosterId = rosterIdGuid.Value },
+                        txn)).Select(memberId => memberId.ToString()).ToArray();
+
+                    resolvedTeamMembersJson = JsonSerializer.Serialize(rosterMembers);
+                }
+                else
+                {
+                    var activeTeamMembers = (await conn.QueryAsync<Guid>(
+                        """
+                        SELECT user_id
+                        FROM team_members
+                        WHERE team_id = @teamId
+                          AND is_active = TRUE
+                        ORDER BY created_at
+                        """,
+                        new { teamId = teamIdGuid!.Value },
+                        txn)).Select(memberId => memberId.ToString()).ToArray();
+
+                    resolvedTeamMembersJson = JsonSerializer.Serialize(activeTeamMembers);
+                }
+
+                resolvedTeamName = (string)teamRow.name;
+            }
+
+            Guid? seasonId = null;
+            Guid? seasonNodeId = null;
+            Guid? lockGroupNodeId = null;
+            Guid? existingSeasonLockId = null;
+            var seasonLink = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT s.id AS season_id,
+                       s.name AS season_name,
+                       s.participant_mode,
+                       sn.id AS season_node_id,
+                       sn.parent_node_id AS lock_group_node_id
+                FROM season_nodes sn
+                JOIN seasons s ON s.id = sn.season_id
+                WHERE sn.linked_tournament_id = @tournamentId
+                LIMIT 1
+                """,
+                new { tournamentId = id },
+                txn);
+
+            if (seasonLink is not null)
+            {
+                var nationality = await conn.ExecuteScalarAsync<string?>(
+                    "SELECT nationality FROM profile_private_details WHERE user_id = @userId",
+                    new { userId = userCtx.UserIdGuid },
+                    txn);
+
+                if (string.IsNullOrWhiteSpace(nationality))
+                {
+                    txn.Rollback();
+                    return Results.BadRequest(new
+                    {
+                        error = "Complete your nationality on your profile before registering for this season event."
+                    });
+                }
+
+                var seasonParticipantMode = ((string)seasonLink.participant_mode).Trim().ToLowerInvariant();
+                if (!string.Equals(seasonParticipantMode, participantType, StringComparison.OrdinalIgnoreCase))
+                {
+                    txn.Rollback();
+                    return Results.BadRequest(new
+                    {
+                        error = seasonParticipantMode == "team"
+                            ? "This season branch accepts team registrations only."
+                            : "This season branch accepts solo registrations only."
+                    });
+                }
+
+                seasonId = (Guid)seasonLink.season_id;
+                seasonNodeId = (Guid)seasonLink.season_node_id;
+                lockGroupNodeId = seasonLink.lock_group_node_id is Guid resolvedLockGroupNodeId
+                    ? resolvedLockGroupNodeId
+                    : null;
+
+                if (lockGroupNodeId.HasValue)
+                {
+                    var existingLock = participantType == "team"
+                        ? await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            """
+                            SELECT id, season_node_id, linked_tournament_id
+                            FROM season_entry_locks
+                            WHERE season_id = @seasonId
+                              AND lock_group_node_id = @lockGroupNodeId
+                              AND team_id = @teamId
+                              AND status = 'locked'
+                            LIMIT 1
+                            """,
+                            new
+                            {
+                                seasonId,
+                                lockGroupNodeId,
+                                teamId = teamIdGuid
+                            },
+                            txn)
+                        : await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            """
+                            SELECT id, season_node_id, linked_tournament_id
+                            FROM season_entry_locks
+                            WHERE season_id = @seasonId
+                              AND lock_group_node_id = @lockGroupNodeId
+                              AND user_id = @userId
+                              AND status = 'locked'
+                            LIMIT 1
+                            """,
+                            new
+                            {
+                                seasonId,
+                                lockGroupNodeId,
+                                userId = userCtx.UserIdGuid
+                            },
+                            txn);
+
+                    if (existingLock is not null)
+                    {
+                        var existingLockSeasonNodeId = (Guid)existingLock.season_node_id;
+                        if (existingLockSeasonNodeId != seasonNodeId.Value)
+                        {
+                            txn.Rollback();
+                            return Results.Conflict(new
+                            {
+                                error = "This entry is already locked into another qualifier branch for this season phase."
+                            });
+                        }
+
+                        existingSeasonLockId = (Guid)existingLock.id;
+                    }
+                }
             }
 
             // Determine if this is a paid tournament
@@ -942,19 +1199,80 @@ public static class TournamentEndpoints
                     tournamentId     = id,
                     userId           = userCtx.UserIdGuid,
                     teamId           = teamIdGuid,
-                    teamCaptainId    = captainIdGuid ?? userCtx.UserIdGuid,
-                    teamName         = req.TeamName,
-                    teamMembers      = req.TeamMembers is not null ? $"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]" : "[]",
+                    teamCaptainId    = effectiveCaptainId,
+                    teamName         = resolvedTeamName,
+                    teamMembers      = resolvedTeamMembersJson,
                     teamContactEmail = req.TeamContactEmail,
                     rosterId         = rosterIdGuid,
-                    rosterName       = req.RosterName,
+                    rosterName       = resolvedRosterName,
                     regStatus,
                     participantType,
                     entryFeeAmount   = tournEntryFee,
                     entryFeePaid     = entryFeePaid,
                     paymentStatus    = paymentStatus,
-                    paymentReceiptUrl = req.PaymentReceiptUrl,
+                    paymentReceiptUrl = (string?)null,
                 }, txn);
+
+            if (seasonId.HasValue && seasonNodeId.HasValue && lockGroupNodeId.HasValue)
+            {
+                if (existingSeasonLockId.HasValue)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE season_entry_locks
+                        SET season_node_id = @seasonNodeId,
+                            linked_tournament_id = @linkedTournamentId,
+                            tournament_participant_id = @tournamentParticipantId,
+                            updated_at = NOW()
+                        WHERE id = @lockId
+                        """,
+                        new
+                        {
+                            seasonNodeId,
+                            lockId = existingSeasonLockId.Value,
+                            linkedTournamentId = id,
+                            tournamentParticipantId = (Guid)row.id
+                        },
+                        txn);
+                }
+                else
+                {
+                    try
+                    {
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO season_entry_locks (
+                                season_id, season_node_id, lock_group_node_id, linked_tournament_id,
+                                tournament_participant_id, participant_mode, team_id, user_id, status, locked_by
+                            )
+                            VALUES (
+                                @seasonId, @seasonNodeId, @lockGroupNodeId, @linkedTournamentId,
+                                @tournamentParticipantId, @participantMode, @teamId, @userId, 'locked', 'registration'
+                            )
+                            """,
+                            new
+                            {
+                                seasonId,
+                                seasonNodeId,
+                                lockGroupNodeId,
+                                linkedTournamentId = id,
+                                tournamentParticipantId = (Guid)row.id,
+                                participantMode = participantType,
+                                teamId = participantType == "team" ? teamIdGuid : (Guid?)null,
+                                userId = participantType == "solo" ? userCtx.UserIdGuid : (Guid?)null
+                            },
+                            txn);
+                    }
+                    catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+                    {
+                        txn.Rollback();
+                        return Results.Conflict(new
+                        {
+                            error = "This entry is already locked into another qualifier branch for this season phase."
+                        });
+                    }
+                }
+            }
 
             txn.Commit();
             return Results.Ok(row);
@@ -977,19 +1295,38 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var affected = await conn.ExecuteAsync(
+            using var txn = conn.BeginTransaction();
+
+            var withdrawnParticipantIds = (await conn.QueryAsync<Guid>(
                 """
                 UPDATE tournament_participants
                 SET status = 'cancelled'
                 WHERE tournament_id = @id
                   AND (user_id = @userId OR team_captain_id = @userId)
                   AND status NOT IN ('rejected', 'cancelled')
+                RETURNING id
                 """,
-                new { id, userId = userCtx.UserIdGuid });
+                new { id, userId = userCtx.UserIdGuid },
+                txn)).ToArray();
 
-            return affected > 0
-                ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "No active registration found to withdraw." });
+            if (withdrawnParticipantIds.Length == 0)
+            {
+                txn.Rollback();
+                return Results.NotFound(new { error = "No active registration found to withdraw." });
+            }
+
+            await conn.ExecuteAsync(
+                """
+                UPDATE season_entry_locks
+                SET tournament_participant_id = NULL,
+                    updated_at = NOW()
+                WHERE tournament_participant_id = ANY(@participantIds)
+                """,
+                new { participantIds = withdrawnParticipantIds },
+                txn);
+
+            txn.Commit();
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/participants/{participantId}/approve-payment ──
@@ -1129,7 +1466,7 @@ public static class TournamentEndpoints
 
             // Upload to Supabase storage
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            var serviceKey  = config["Supabase:ServiceKey"];
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
@@ -1170,7 +1507,7 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
 
         // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
-        // Returns the public receipt URL — only organizers can call this endpoint
+        // Returns a short-lived signed receipt URL — only organizers can call this endpoint
         app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
             Guid                 id,
             Guid                 participantId,
@@ -1195,11 +1532,51 @@ public static class TournamentEndpoints
             if (string.IsNullOrWhiteSpace(receiptRef)) return Results.NotFound(new { error = "No receipt found." });
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            if (string.IsNullOrWhiteSpace(supabaseUrl))
+            var serviceKey = config["Supabase:ServiceKey"];
+            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
-            var publicUrl = $"{supabaseUrl}/storage/v1/object/public/{receiptRef}";
-            return Results.Ok(new { url = publicUrl });
+            var firstSeparator = receiptRef.IndexOf('/');
+            if (firstSeparator <= 0 || firstSeparator == receiptRef.Length - 1)
+                return Results.Json(new { error = "Stored receipt reference is invalid." }, statusCode: 500);
+
+            var bucket = receiptRef[..firstSeparator];
+            var objectPath = receiptRef[(firstSeparator + 1)..];
+            var encodedObjectPath = string.Join("/",
+                objectPath
+                    .Split('/', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(Uri.EscapeDataString));
+
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
+            http.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+            using var signRequest = new StringContent(
+                JsonSerializer.Serialize(new { expiresIn = 3600 }),
+                System.Text.Encoding.UTF8,
+                "application/json");
+
+            var signUrl = $"{supabaseUrl}/storage/v1/object/sign/{bucket}/{encodedObjectPath}";
+            var signResponse = await http.PostAsync(signUrl, signRequest, ct);
+            if (!signResponse.IsSuccessStatusCode)
+                return Results.Json(new { error = "We couldn't prepare the receipt file right now. Please try again." }, statusCode: 500);
+
+            using var signPayload = JsonDocument.Parse(await signResponse.Content.ReadAsStringAsync(ct));
+            if (!signPayload.RootElement.TryGetProperty("signedURL", out var signedUrlElement)
+                && !signPayload.RootElement.TryGetProperty("signedUrl", out signedUrlElement))
+            {
+                return Results.Json(new { error = "Signed receipt response was invalid." }, statusCode: 500);
+            }
+
+            var signedUrl = signedUrlElement.GetString();
+            if (string.IsNullOrWhiteSpace(signedUrl))
+                return Results.Json(new { error = "Signed receipt URL was empty." }, statusCode: 500);
+
+            var resolvedUrl = signedUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                ? signedUrl
+                : $"{supabaseUrl}/{signedUrl.TrimStart('/')}";
+
+            return Results.Ok(new { url = resolvedUrl });
         }).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/check-in", async (
@@ -1446,13 +1823,52 @@ public static class TournamentEndpoints
         app.MapGet("/api/tournaments/{id}/participants/{pid}", async (
             Guid                 id,
             Guid                 pid,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM tournament_participants WHERE id = @pid AND tournament_id = @id",
-                new { pid, id });
+                """
+                SELECT tp.id,
+                       tp.tournament_id,
+                       tp.user_id,
+                       tp.team_id,
+                       tp.team_captain_id,
+                       tp.team_name,
+                       tp.team_members,
+                       tp.team_contact_email,
+                       tp.roster_id,
+                       tp.roster_name,
+                       tp.status,
+                       tp.participant_type,
+                       tp.entry_fee_amount,
+                       tp.entry_fee_paid,
+                       tp.payment_status,
+                       tp.payment_rejection_reason,
+                       tp.created_at,
+                       tp.checked_in_at
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE tp.id = @pid
+                  AND tp.tournament_id = @id
+                  AND (
+                        @isAdmin = TRUE
+                        OR t.organizer_id = @userId
+                        OR tp.user_id = @userId
+                        OR tp.team_captain_id = @userId
+                  )
+                """,
+                new
+                {
+                    pid,
+                    id,
+                    userId = userCtx.UserIdGuid,
+                    isAdmin = userCtx.Roles.Contains("admin")
+                });
             return row is null ? Results.NotFound() : Results.Ok(row);
         }).RequireAuthorization("Authenticated");
 
@@ -3138,19 +3554,55 @@ public static class TournamentEndpoints
         // ── GET /api/tournament-participants/{id} ─────────────────────────────
         app.MapGet("/api/tournament-participants/{id}", async (
             Guid                 id,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT tp.*, t.name AS team_name, t.logo_url AS team_logo,
+                SELECT tp.id,
+                       tp.tournament_id,
+                       tp.user_id,
+                       tp.team_id,
+                       tp.team_captain_id,
+                       tp.team_name,
+                       tp.team_members,
+                       tp.team_contact_email,
+                       tp.roster_id,
+                       tp.roster_name,
+                       tp.status,
+                       tp.participant_type,
+                       tp.entry_fee_amount,
+                       tp.entry_fee_paid,
+                       tp.payment_status,
+                       tp.payment_rejection_reason,
+                       tp.created_at,
+                       tp.checked_in_at,
+                       t.name AS current_team_name,
+                       t.logo_url AS team_logo,
                        p.username, p.avatar_url
                 FROM public.tournament_participants tp
+                JOIN public.tournaments tr ON tr.id = tp.tournament_id
                 LEFT JOIN public.teams t ON t.id = tp.team_id
                 LEFT JOIN public.profiles p ON p.id = tp.user_id
                 WHERE tp.id = @id
-                """, new { id });
+                  AND (
+                        @isAdmin = TRUE
+                        OR tr.organizer_id = @userId
+                        OR tp.user_id = @userId
+                        OR tp.team_captain_id = @userId
+                  )
+                """,
+                new
+                {
+                    id,
+                    userId = userCtx.UserIdGuid,
+                    isAdmin = userCtx.Roles.Contains("admin")
+                });
             return participant is null ? Results.NotFound() : Results.Ok(participant);
         }).RequireAuthorization("Authenticated");
 

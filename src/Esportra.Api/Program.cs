@@ -507,6 +507,7 @@ app.MapProfileResolveEndpoint();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
+app.MapSeasonEndpoints();
 app.MapVenueEndpoints();
 app.MapVenueStaffEndpoints();
 app.MapSessionRefundEndpoints();

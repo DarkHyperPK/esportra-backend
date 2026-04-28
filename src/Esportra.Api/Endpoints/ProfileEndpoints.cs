@@ -22,8 +22,14 @@ public static class ProfileEndpoints
         "username", "full_name", "avatar_url", "bio",
         "riot_tag", "steam_tag", "social_links",
         "card_image_url", "country_code", "banner_url",
-        "date_of_birth"
+        "date_of_birth", "nationality"
     ];
+
+    private const string PublicProfileColumns =
+        "p.id, p.username, p.full_name, p.avatar_url, p.is_verified, p.bio, p.location, p.social_links, p.country_code, p.card_image_url, p.banner_url, p.riot_tag, p.steam_tag, p.date_of_birth, p.created_at, p.updated_at";
+
+    private const string PrivateProfileColumns =
+        PublicProfileColumns + ", ppd.nationality";
 
     public static void MapProfileEndpoints(this WebApplication app)
     {
@@ -36,17 +42,20 @@ public static class ProfileEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            return await GetProfileResult(userCtx.UserIdGuid, db, cache, ct);
+            return await GetProfileResult(userCtx.UserIdGuid, includePrivate: true, db, cache, ct);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/{id} ────────────────────────────────────────────
         app.MapGet("/api/profiles/{id}", async (
             Guid                 id,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             HybridCache          cache,
             CancellationToken    ct) =>
         {
-            return await GetProfileResult(id, db, cache, ct);
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            var includePrivate = userCtx?.UserIdGuid == id || (userCtx?.Roles.Contains("admin") ?? false);
+            return await GetProfileResult(id, includePrivate, db, cache, ct);
         });
 
         // ── PUT /api/profiles/{id} ────────────────────────────────────────────
@@ -65,20 +74,20 @@ public static class ProfileEndpoints
             if (userCtx.UserIdGuid != id && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
-            // Filter to allowed fields only (allow tag fields even if null/empty for clearing)
-            var tagFields = new HashSet<string> { "riot_tag", "steam_tag" };
+            // Filter to allowed fields only (allow some string fields to be cleared)
+            var clearableFields = new HashSet<string> { "riot_tag", "steam_tag", "nationality" };
             var valid = updates
-                .Where(kv => AllowedUpdateFields.Contains(kv.Key) && (kv.Value is not null || tagFields.Contains(kv.Key)))
+                .Where(kv => AllowedUpdateFields.Contains(kv.Key) && (kv.Value is not null || clearableFields.Contains(kv.Key)))
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-            // Normalize empty tag fields to null (DB has unique partial index on non-empty values)
-            foreach (var tagField in tagFields)
+            // Normalize empty clearable fields to null
+            foreach (var clearableField in clearableFields)
             {
-                if (valid.TryGetValue(tagField, out var v))
+                if (valid.TryGetValue(clearableField, out var v))
                 {
                     if (v is null || (v is JsonElement je && (je.ValueKind == JsonValueKind.Null || je.GetString() is "" or null))
                         || (v is string s && string.IsNullOrWhiteSpace(s)))
-                        valid[tagField] = null;
+                        valid[clearableField] = null;
                 }
             }
 
@@ -86,44 +95,83 @@ public static class ProfileEndpoints
                 return Results.BadRequest(new { error = "No valid fields to update." });
 
             using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
 
             // Username uniqueness check
             if (valid.TryGetValue("username", out var newUsername) && newUsername is string uname)
             {
                 var taken = await conn.QuerySingleOrDefaultAsync<string>(
                     "SELECT id FROM profiles WHERE username = @uname AND id != @id LIMIT 1",
-                    new { uname, id });
+                    new { uname, id },
+                    tx);
                 if (taken is not null)
                     return Results.Conflict(new { error = "Username already taken." });
             }
 
+            var profileExists = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM profiles WHERE id = @id)",
+                new { id },
+                tx);
+
+            if (!profileExists)
+                return Results.NotFound();
+
+            valid.Remove("nationality", out var nationalityUpdate);
+
             // Build SET clause dynamically (safe — only allow-listed column names)
             var jsonbFields = new HashSet<string> { "social_links" };
-            var setClauses = string.Join(", ", valid.Keys.Select(k =>
-                jsonbFields.Contains(k) ? $"{k} = @{k}::jsonb" : $"{k} = @{k}"));
-            var parameters = new DynamicParameters();
-            foreach (var kv in valid)
+            if (valid.Count > 0)
             {
-                if (kv.Value is null)
-                    parameters.Add(kv.Key, null, System.Data.DbType.String);
-                else if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
-                    parameters.Add(kv.Key, je.GetRawText());
-                else
-                    parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
+                var setClauses = string.Join(", ", valid.Keys.Select(k =>
+                    jsonbFields.Contains(k) ? $"{k} = @{k}::jsonb" : $"{k} = @{k}"));
+                var parameters = new DynamicParameters();
+                foreach (var kv in valid)
+                {
+                    if (kv.Value is null)
+                        parameters.Add(kv.Key, null, System.Data.DbType.String);
+                    else if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
+                        parameters.Add(kv.Key, je.GetRawText());
+                    else
+                        parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
+                }
+                parameters.Add("id", id);
+                parameters.Add("updated_at", DateTime.UtcNow);
+
+                await conn.ExecuteAsync(
+                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id",
+                    parameters,
+                    tx);
             }
-            parameters.Add("id", id);
-            parameters.Add("updated_at", DateTime.UtcNow);
 
-            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
-                parameters);
+            if (updates.ContainsKey("nationality"))
+            {
+                var nationality = nationalityUpdate switch
+                {
+                    JsonElement je when je.ValueKind == JsonValueKind.Null => null,
+                    JsonElement je => string.IsNullOrWhiteSpace(je.ToString()) ? null : je.ToString(),
+                    string s => string.IsNullOrWhiteSpace(s) ? null : s.Trim(),
+                    null => null,
+                    _ => nationalityUpdate?.ToString()
+                };
 
-            if (row is null) return Results.NotFound();
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO profile_private_details (user_id, nationality)
+                    VALUES (@id, @nationality)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET nationality = EXCLUDED.nationality,
+                        updated_at = NOW()
+                    """,
+                    new { id, nationality },
+                    tx);
+            }
+
+            tx.Commit();
 
             // Invalidate cache
             await cache.RemoveAsync($"profile:{id}", ct);
 
-            return Results.Ok(row);
+            return await GetProfileResult(id, includePrivate: true, db, cache, ct);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/by-username/{username} ─────────────────────────
@@ -633,11 +681,16 @@ public static class ProfileEndpoints
     // ── Shared helper ─────────────────────────────────────────────────────────
 
     private static async Task<IResult> GetProfileResult(
-        Guid id, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
+        Guid id, bool includePrivate, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
     {
         using var conn = db.CreateConnection();
         var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT * FROM profiles WHERE id = @id",
+            $"""
+            SELECT {(includePrivate ? PrivateProfileColumns : PublicProfileColumns)}
+            FROM profiles p
+            LEFT JOIN profile_private_details ppd ON ppd.user_id = p.id
+            WHERE p.id = @id
+            """,
             new { id });
 
         return profile is null ? Results.NotFound() : Results.Ok(profile);
