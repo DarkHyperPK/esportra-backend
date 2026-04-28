@@ -12,9 +12,9 @@ before 20260521140000_br_round_evidence.sql created it.
 Stripping strategy before pattern matching:
   1. Remove -- line comments
   2. Remove /* */ block comments
-  3. Remove dollar-quoted string literals ($$ ... $$ and $tag$ ... $tag$)
-     so that DDL inside EXECUTE(...) strings is not flagged as a forward reference
-  4. Remove single-quoted string literals so that string payloads aren't matched
+  3. Remove dynamic EXECUTE payloads so guarded dynamic DDL is not treated as
+     normal migration source
+  4. Remove remaining single-quoted string literals so string payloads are not matched
 
 Exit 0 on pass, 1 on any forward reference found.
 """
@@ -23,7 +23,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = (
     REPO_ROOT / "src" / "Esportra.Infrastructure" / "Migrations" / "Scripts"
 )
@@ -71,23 +71,89 @@ EXTERNAL_SCHEMAS: frozenset[str] = frozenset(
 )
 
 # ── Noise stripping ──────────────────────────────────────────────────────────
-# Strip comments AND string literals before pattern matching so that DDL inside
-# EXECUTE('...') or EXECUTE($sql$...$sql$) payloads is not flagged.
+# Strip comments and dynamic EXECUTE payloads before pattern matching so that
+# guarded dynamic DDL is not flagged. Keep DO $$ ... $$ blocks themselves,
+# because many migrations perform real static ALTER/CREATE statements inside DO
+# blocks and those must still be linted.
 
 _LINE_COMMENT = re.compile(r"--[^\n]*")
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-# Matches $tag$...$tag$ dollar-quoted strings (includes $$...$$)
-_DOLLAR_QUOTE = re.compile(r"\$(\w*)\$.*?\$\1\$", re.DOTALL)
-# Matches 'single-quoted strings' with '' escape sequences handled
+# Dynamic SQL payloads inside EXECUTE statements that should not be linted as
+# normal DDL in the surrounding migration source.
+_EXECUTE_DOLLAR_QUOTE = re.compile(
+    r"\bEXECUTE\s+\$(\w*)\$.*?\$\1\$",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXECUTE_SINGLE_QUOTE = re.compile(
+    r"\bEXECUTE\s+'(?:[^']|'')*'",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXECUTE_FORMAT_START = re.compile(r"\bEXECUTE\s+format\s*\(", re.IGNORECASE)
+# Strip remaining ordinary string literals so references in predicates and
+# diagnostic text do not create false positives.
 _SINGLE_QUOTE = re.compile(r"'(?:[^']|'')*'")
 
 
+def strip_execute_format_calls(sql: str) -> str:
+    """Replace EXECUTE format(...) statements, handling nested parentheses safely."""
+    parts: list[str] = []
+    cursor = 0
+
+    while match := _EXECUTE_FORMAT_START.search(sql, cursor):
+        start = match.start()
+        pos = match.end()
+        depth = 1
+        in_single_quote = False
+
+        while pos < len(sql):
+            char = sql[pos]
+
+            if char == "'":
+                if in_single_quote and pos + 1 < len(sql) and sql[pos + 1] == "'":
+                    pos += 2
+                    continue
+
+                in_single_quote = not in_single_quote
+                pos += 1
+                continue
+
+            if in_single_quote:
+                pos += 1
+                continue
+
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    pos += 1
+                    while pos < len(sql) and sql[pos].isspace():
+                        pos += 1
+                    if pos < len(sql) and sql[pos] == ";":
+                        pos += 1
+
+                    parts.append(sql[cursor:start])
+                    parts.append("EXECUTE format();")
+                    cursor = pos
+                    break
+
+            pos += 1
+        else:
+            parts.append(sql[cursor:])
+            return "".join(parts)
+
+    parts.append(sql[cursor:])
+    return "".join(parts)
+
+
 def strip_noise(sql: str) -> str:
-    """Remove comments and string literals to avoid matching DDL inside EXECUTE()."""
+    """Remove comments and dynamic string payloads before DDL pattern matching."""
     sql = _LINE_COMMENT.sub("", sql)
     sql = _BLOCK_COMMENT.sub("", sql)
-    sql = _DOLLAR_QUOTE.sub("$$", sql)   # replace with empty dollar-quote placeholder
-    sql = _SINGLE_QUOTE.sub("''", sql)   # replace with empty string placeholder
+    sql = _EXECUTE_DOLLAR_QUOTE.sub("EXECUTE $$", sql)
+    sql = _EXECUTE_SINGLE_QUOTE.sub("EXECUTE ''", sql)
+    sql = strip_execute_format_calls(sql)
+    sql = _SINGLE_QUOTE.sub("''", sql)
     return sql
 
 

@@ -371,18 +371,32 @@ else
     var compatCheckConnStr = builder.Configuration.GetConnectionString("PostgresMigrations") ?? pgConnStr;
     var compatLogger = app.Services.GetRequiredService<ILogger<Esportra.Infrastructure.Migrations.MigrationRunner>>();
     var compatRunner = new Esportra.Infrastructure.Migrations.MigrationRunner(compatCheckConnStr, compatLogger);
-    var compat = compatRunner.CheckCompatibility();
-    if (!compat.IsCompatible)
+    try
     {
-        Console.Error.WriteLine(
-            $"[STARTUP] ❌ Schema incompatibility: {compat.PendingScripts.Count} pending migration(s).");
-        Console.Error.WriteLine(
-            "[STARTUP] ❌ Run 'Esportra.Migrator' before starting the API.");
-        foreach (var script in compat.PendingScripts)
-            Console.Error.WriteLine($"[STARTUP]    - {script}");
+        var compat = compatRunner.CheckCompatibility();
+        if (!compat.IsCompatible)
+        {
+            if (!string.IsNullOrWhiteSpace(compat.FailureReason))
+            {
+                Console.Error.WriteLine($"[STARTUP] ❌ {compat.FailureReason}");
+                Environment.Exit(1);
+            }
+
+            Console.Error.WriteLine(
+                $"[STARTUP] ❌ Schema incompatibility: {compat.PendingScripts.Count} pending migration(s).");
+            Console.Error.WriteLine(
+                "[STARTUP] ❌ Run 'Esportra.Migrator' before starting the API.");
+            foreach (var script in compat.PendingScripts)
+                Console.Error.WriteLine($"[STARTUP]    - {script}");
+            Environment.Exit(1);
+        }
+        Console.WriteLine("[STARTUP] ✅ Schema compatibility check passed.");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[STARTUP] ❌ Schema compatibility check failed unexpectedly: {ex.Message}");
         Environment.Exit(1);
     }
-    Console.WriteLine("[STARTUP] ✅ Schema compatibility check passed.");
 }
 // ═════════════════════════════════════════════════════════════════════════════
 

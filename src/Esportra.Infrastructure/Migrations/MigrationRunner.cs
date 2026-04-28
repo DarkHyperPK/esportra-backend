@@ -9,7 +9,8 @@ namespace Esportra.Infrastructure.Migrations;
 /// <summary>Result of a schema compatibility check.</summary>
 public sealed record SchemaCompatibilityResult(
     bool IsCompatible,
-    IReadOnlyList<string> PendingScripts)
+    IReadOnlyList<string> PendingScripts,
+    string? FailureReason = null)
 {
     public static SchemaCompatibilityResult Compatible { get; } =
         new(true, Array.Empty<string>());
@@ -25,6 +26,7 @@ public sealed class MigrationRunner
     private static readonly Assembly MigrationsAssembly = typeof(MigrationRunner).Assembly;
 
     private const int MaxRetries = 15;
+    private const int CompatibilityCheckMaxRetries = 5;
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(2);
     private const double BackoffMultiplier = 1.5;
 
@@ -42,7 +44,13 @@ public sealed class MigrationRunner
     {
         _logger.LogInformation("Starting database migration check...");
 
-        WaitForDatabase();
+        if (!WaitForDatabase(
+                operation: "migration execution",
+                maxRetries: MaxRetries,
+                failureMessage: "Database unreachable after {Max} attempts. Migration execution cannot continue."))
+        {
+            return false;
+        }
 
         EnsureDatabase.For.PostgresqlDatabase(_connectionString);
 
@@ -79,15 +87,15 @@ public sealed class MigrationRunner
     /// </summary>
     public SchemaCompatibilityResult CheckCompatibility()
     {
-        try
+        if (!WaitForDatabase(
+                operation: "schema compatibility check",
+                maxRetries: CompatibilityCheckMaxRetries,
+                failureMessage: "Database unreachable after {Max} attempts. Schema compatibility cannot be verified."))
         {
-            using var conn = new NpgsqlConnection(_connectionString);
-            conn.Open();
-        }
-        catch (Exception ex) when (ex is NpgsqlException or System.Net.Sockets.SocketException)
-        {
-            _logger.LogError(ex, "Schema compatibility check failed: cannot connect to database.");
-            return new SchemaCompatibilityResult(false, ["(could not connect to database)"]);
+            return new SchemaCompatibilityResult(
+                false,
+                Array.Empty<string>(),
+                "Could not connect to the database to verify schema compatibility.");
         }
 
         var upgrader = BuildUpgrader();
@@ -112,28 +120,42 @@ public sealed class MigrationRunner
     /// Waits for the Postgres server to accept connections, retrying with exponential backoff.
     /// Prevents crash when the backend starts before the database container is ready.
     /// </summary>
-    private void WaitForDatabase()
+    private bool WaitForDatabase(string operation, int maxRetries, string failureMessage)
     {
         var delay = InitialDelay;
-        for (int attempt = 1; attempt <= MaxRetries; attempt++)
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
             try
             {
                 using var conn = new NpgsqlConnection(_connectionString);
                 conn.Open();
-                _logger.LogInformation("Database is reachable (attempt {Attempt}).", attempt);
-                return;
+                _logger.LogInformation(
+                    "Database is reachable for {Operation} (attempt {Attempt}).",
+                    operation,
+                    attempt);
+                return true;
             }
             catch (Exception ex) when (ex is NpgsqlException or System.Net.Sockets.SocketException)
             {
-                _logger.LogWarning("Database not ready (attempt {Attempt}/{Max}): {Message}. Retrying in {Delay}s...",
-                    attempt, MaxRetries, ex.Message, delay.TotalSeconds);
+                _logger.LogWarning(
+                    "Database not ready for {Operation} (attempt {Attempt}/{Max}): {Message}. Retrying in {Delay}s...",
+                    operation,
+                    attempt,
+                    maxRetries,
+                    ex.Message,
+                    delay.TotalSeconds);
+                if (attempt == maxRetries)
+                {
+                    break;
+                }
+
                 Thread.Sleep(delay);
                 delay = TimeSpan.FromSeconds(delay.TotalSeconds * BackoffMultiplier);
             }
         }
 
-        _logger.LogError("Database unreachable after {Max} attempts. Proceeding — migration will likely fail.", MaxRetries);
+        _logger.LogError(failureMessage, maxRetries);
+        return false;
     }
 
     private DbUp.Engine.UpgradeEngine BuildUpgrader() =>

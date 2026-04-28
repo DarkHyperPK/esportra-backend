@@ -1,0 +1,5 @@
+-- Historical no-op placeholder.
+-- The real status-based RLS policy update was reissued in
+-- 20260413245000_fix_rls_policies_status_check.sql after
+-- 20260413220000_staff_permissions_and_shifts.sql introduced
+-- venue_staff.status.

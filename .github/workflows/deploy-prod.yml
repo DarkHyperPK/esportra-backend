@@ -37,27 +37,13 @@ jobs:
       - name: Check migrations for forward references
         run: python .github/scripts/lint-migrations.py
 
-  # ── Phase 4: migration replay gate ─────────────────────────────────────────
-  # Must pass before Coolify is triggered. A clean full replay proves every
-  # script in the chain is safe to apply on a fresh database.
-  migration-replay:
-    name: Migration Replay (full replay from empty DB)
+  # ── Phase 6: pre-deploy migration step ─────────────────────────────────────
+  # Run the dedicated migrator against the real production database before the
+  # API rollout is triggered. This separates migration failure from app boot.
+  migrate:
+    name: Migrate production schema
     runs-on: ubuntu-latest
     needs: [build, migration-lint]
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: migrationtest
-          POSTGRES_DB: esportra_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
     steps:
       - uses: actions/checkout@v4
 
@@ -69,20 +55,37 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
-      - name: Run full migration replay
+      - name: Validate production migration secret
         env:
-          ConnectionStrings__Postgres: >-
-            Host=localhost;Port=5432;Database=esportra_test;
-            Username=postgres;Password=migrationtest;
-            Trust Server Certificate=true;
+          CONNECTION: ${{ secrets.PROD_POSTGRES_MIGRATIONS_CONNECTION }}
+        run: |
+          if [ -z "$CONNECTION" ]; then
+            echo "Missing required secret: PROD_POSTGRES_MIGRATIONS_CONNECTION" >&2
+            exit 1
+          fi
+
+      - name: Apply pending migrations
+        env:
+          ConnectionStrings__PostgresMigrations: ${{ secrets.PROD_POSTGRES_MIGRATIONS_CONNECTION }}
         run: >
           dotnet run
           --project src/Esportra.Migrator/Esportra.Migrator.csproj
           -c Release
 
+      - name: Verify production schema compatibility
+        env:
+          ConnectionStrings__PostgresMigrations: ${{ secrets.PROD_POSTGRES_MIGRATIONS_CONNECTION }}
+        run: >
+          dotnet run
+          --project src/Esportra.Migrator/Esportra.Migrator.csproj
+          -c Release
+          --no-build
+          --
+          --check-compatibility
+
   deploy:
     name: Deploy to Coolify (Production)
-    needs: migration-replay
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Coolify production deployment
@@ -91,6 +94,7 @@ jobs:
         #   1. Coolify → prod app → Deployments tab → copy Webhook URL
         #   2. GitHub → Settings → Secrets → Actions → add COOLIFY_PROD_WEBHOOK
         #   3. Coolify → prod app → disable "Auto Deploy on push"
+        #   4. GitHub → Settings → Secrets → Actions → add PROD_POSTGRES_MIGRATIONS_CONNECTION
         env:
           WEBHOOK: ${{ secrets.COOLIFY_PROD_WEBHOOK }}
         run: |
