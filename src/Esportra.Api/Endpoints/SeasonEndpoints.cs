@@ -43,17 +43,18 @@ public static class SeasonEndpoints
     public static void MapSeasonEndpoints(this WebApplication app)
     {
         app.MapGet("/api/seasons", async (
-            bool                   mine,
+            bool?                  mine,
             IDbConnectionFactory   db,
             HttpContext            ctx,
             CancellationToken      ct) =>
         {
+            var mineOnly = mine ?? false;
             var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (mine && userCtx is null) return Results.Unauthorized();
+            if (mineOnly && userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            if (mine)
+            if (mineOnly)
             {
                 var rows = await conn.QueryAsync<dynamic>(
                     """
