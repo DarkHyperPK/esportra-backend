@@ -118,7 +118,7 @@ public static class SponsorEndpoints
             {
                 var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "GET /api/sponsors/me failed");
-                return Results.Json(new { error = "We couldn't load your sponsor profile. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Failed to load sponsor data", detail = ex.Message }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -142,32 +142,6 @@ public static class SponsorEndpoints
 
             if (sponsorId is null)
                 return Results.Forbid();
-
-            // Fetch current tier for permission enforcement
-            var currentTier = (await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT tier FROM sponsors WHERE id = @id", new { id = sponsorId.Value }))?.ToLowerInvariant() ?? "partner";
-            // Map legacy tiers
-            if (currentTier == "standard" || currentTier == "diamond") currentTier = "partner";
-            var isHighTier = currentTier == "ascendant" || currentTier == "radiant";
-
-            // Tier enforcement: partner tier cannot set banner, gallery, or detail deck
-            if (!isHighTier)
-            {
-                if (req.BannerImageUrl is not null && req.BannerImageUrl != "")
-                    return Results.Json(new { error = "Banner uploads require Ascendant or Radiant tier." }, statusCode: 403);
-                if (req.GalleryImages is not null && req.GalleryImages.Length > 0)
-                    return Results.Json(new { error = "Gallery uploads require Ascendant or Radiant tier." }, statusCode: 403);
-                if (req.DetailDeckUrl is not null && req.DetailDeckUrl != "")
-                    return Results.Json(new { error = "Detail deck uploads require Ascendant or Radiant tier." }, statusCode: 403);
-            }
-
-            // Gallery image count enforcement
-            if (req.GalleryImages is not null)
-            {
-                var maxImages = currentTier == "radiant" ? 8 : currentTier == "ascendant" ? 5 : 0;
-                if (req.GalleryImages.Length > maxImages)
-                    return Results.Json(new { error = $"Your tier allows a maximum of {maxImages} gallery images." }, statusCode: 403);
-            }
 
             // Build SET clause from non-null fields
             var sets = new List<string>();
@@ -199,7 +173,7 @@ public static class SponsorEndpoints
             {
                 var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "PUT /api/sponsors/me failed for sponsor {SponsorId}", sponsorId);
-                return Results.Json(new { error = "We couldn't save your changes. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Update failed", detail = ex.Message }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -243,7 +217,7 @@ public static class SponsorEndpoints
                     var root = doc.RootElement;
 
                     var country = root.TryGetProperty("country", out var c) ? c.GetString() ?? "Unknown" : "Unknown";
-                    var ageGroup = root.TryGetProperty("age_group", out var a) ? a.GetString() ?? "Unknown" : "Unknown";
+                    var ageGroup = root.TryGetProperty("age_group", out var a) ? a.GetString() ?? "unknown" : "unknown";
 
                     countryMap[country] = countryMap.GetValueOrDefault(country) + 1;
                     ageMap[ageGroup] = ageMap.GetValueOrDefault(ageGroup) + 1;
@@ -342,7 +316,7 @@ public static class SponsorEndpoints
                 new { userId = userCtx.UserIdGuid, meta = updatedJson });
 
             if (updated is null)
-                return Results.Json(new { error = "We couldn't save your changes. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Update failed." }, statusCode: 500);
 
             return Results.Ok(new { success = true, meta = JsonSerializer.Deserialize<object>(updatedJson) });
         }).RequireAuthorization("Authenticated");

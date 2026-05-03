@@ -42,9 +42,6 @@ public static class BracketEndpoints
             };
 
             var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
-            if (teams.Count < 2)
-                return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
-
             var config = new BracketConfig(
                 DailyStartTime:      req.DailyStartTime,
                 TournamentStartDate: req.TournamentStartDate,
@@ -204,7 +201,7 @@ public static class BracketEndpoints
             }
             catch (Exception)
             {
-                return Results.Json(new { error = "We couldn't delete the bracket. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Failed to delete bracket." }, statusCode: 500);
             }
         }).RequireAuthorization("Organizer");
 
@@ -284,7 +281,7 @@ public static class BracketEndpoints
                 "SELECT stage_id FROM public.brkt_versions WHERE id = @versionId",
                 new { versionId });
 
-            if (stageId is null) return Results.NotFound(new { error = "Bracket not found." });
+            if (stageId is null) return Results.NotFound(new { error = "Version not found." });
 
             var standings = await standingsSvc.CalculateStandingsAsync(stageId.Value, groupId, ct);
             return Results.Ok(standings);
@@ -355,7 +352,7 @@ public static class BracketEndpoints
                 new { stageId });
 
             if (versionId is null)
-                return Results.NotFound(new { error = "No bracket found for this stage." });
+                return Results.NotFound(new { error = "No bracket version found for this stage." });
 
             // Delete all matches for the given version and round_number
             var deleted = await conn.ExecuteAsync(
@@ -491,7 +488,7 @@ public static class BracketEndpoints
                 new { versionId });
 
             if (cached is null)
-                return Results.NotFound(new { error = "Bracket not found." });
+                return Results.NotFound(new { error = "Bracket version not found." });
 
             var doc = JsonDocument.Parse(cached);
             return Results.Ok(doc.RootElement);
@@ -509,7 +506,7 @@ public static class BracketEndpoints
             var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT * FROM brkt_versions WHERE id = @versionId",
                 new { versionId });
-            if (version is null) return Results.NotFound(new { error = "Bracket not found." });
+            if (version is null) return Results.NotFound(new { error = "Version not found." });
 
             var nodes = await conn.QueryAsync<dynamic>(
                 """
@@ -594,7 +591,7 @@ public static class BracketEndpoints
                 return Results.Ok(rows);
             }
 
-            return Results.BadRequest(new { error = "Please provide a version or stage identifier." });
+            return Results.BadRequest(new { error = "version_id or stage_id required" });
         });
 
         // ── GET /api/brackets/matches/{id} ────────────────────────────────────
@@ -651,7 +648,7 @@ public static class BracketEndpoints
                 return Results.Ok(rows);
             }
 
-            return Results.BadRequest(new { error = "Please provide a match or version identifier." });
+            return Results.BadRequest(new { error = "match_id or version_id required" });
         });
 
         // ── GET /api/brackets/match-games ─────────────────────────────────────
@@ -725,7 +722,7 @@ public static class BracketEndpoints
 
             var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT * FROM brkt_versions WHERE id = @id", new { id });
-            if (version is null) return Results.NotFound(new { error = "Bracket not found." });
+            if (version is null) return Results.NotFound(new { error = "Version not found." });
 
             var nodes = await conn.QueryAsync<dynamic>(
                 """

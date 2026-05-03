@@ -30,6 +30,18 @@ public static class SeasonEndpoints
     private static readonly HashSet<string> AllowedQualificationRecordStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "earned", "confirmed", "invited", "accepted", "declined", "revoked", "overridden" };
 
+    private static readonly HashSet<string> AllowedTournamentFormats = new(StringComparer.OrdinalIgnoreCase)
+        { "single_elimination", "double_elimination", "round_robin", "swiss", "groups_playoffs", "battle_royale" };
+
+    private static readonly HashSet<string> AllowedRegistrationTypes = new(StringComparer.OrdinalIgnoreCase)
+        { "open", "invite", "qualifier_feed" };
+
+    private static readonly HashSet<string> AllowedAdvancementRuleTypes = new(StringComparer.OrdinalIgnoreCase)
+        { "top_n", "top_percentage", "points_threshold", "manual_selection" };
+
+    private static readonly HashSet<string> AllowedAdvancementSeedModes = new(StringComparer.OrdinalIgnoreCase)
+        { "preserve_seed", "reseed_by_points", "randomize", "manual" };
+
     private static string MapSeasonStatusToNodeStatus(string seasonStatus) => seasonStatus switch
     {
         "draft" => "draft",
@@ -119,7 +131,8 @@ public static class SeasonEndpoints
             return Results.Ok(publicRows);
         });
 
-        app.MapPost("/api/seasons", async (
+        // POST /api/seasons/draft (as per season plan)
+        app.MapPost("/api/seasons/draft", async (
             [FromBody] CreateSeasonRequest req,
             HttpContext                   ctx,
             IDbConnectionFactory         db,
@@ -137,8 +150,8 @@ public static class SeasonEndpoints
             if (!AllowedParticipantModes.Contains(req.ParticipantMode))
                 return Results.BadRequest(new { error = "Participant mode must be 'team' or 'solo'." });
 
-            if (!AllowedSeasonStatuses.Contains(req.Status))
-                return Results.BadRequest(new { error = "Invalid season status." });
+            // Force draft status for draft endpoint
+            req.Status = "draft";
 
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
@@ -159,12 +172,12 @@ public static class SeasonEndpoints
                 INSERT INTO seasons (
                     id, name, slug, description, game, participant_mode, status,
                     owner_user_id, organization_id, is_public, allow_manual_overrides,
-                    start_date, end_date, settings
+                    start_date, end_date, visibility, created_by, settings, created_at, updated_at
                 )
                 VALUES (
                     @id, @name, @slug, @description, @game, @participantMode, @status,
                     @ownerUserId, @organizationId, @isPublic, @allowManualOverrides,
-                    @startDate, @endDate, COALESCE(@settings::jsonb, '{}'::jsonb)
+                    @startDate, @endDate, 'private', @actorId, COALESCE(@settings::jsonb, '{}'::jsonb), NOW(), NOW()
                 )
                 """,
                 new
@@ -182,6 +195,7 @@ public static class SeasonEndpoints
                     allowManualOverrides = req.AllowManualOverrides,
                     startDate = req.StartDate,
                     endDate = req.EndDate,
+                    actorId = userCtx.UserIdGuid,
                     settings = req.Settings?.GetRawText()
                 },
                 tx);
@@ -273,15 +287,49 @@ public static class SeasonEndpoints
                        sn.starts_at,
                        sn.ends_at,
                        sn.metadata,
+                       sn.tournament_format,
+                       sn.team_size,
+                       sn.max_teams,
+                       sn.min_teams,
+                       sn.best_of,
+                       sn.registration_type,
+                       sn.entry_fee,
+                       sn.prize_pool,
+                       sn.check_in_minutes_before,
+                       sn.registration_opens_at,
+                       sn.published_tournament_id,
                        sn.created_at,
                        sn.updated_at,
                        t.name AS linked_tournament_name,
-                       ts.name AS linked_stage_name
+                       ts.name AS linked_stage_name,
+                       pt.name AS published_tournament_name,
+                       pt.slug AS published_tournament_slug
                 FROM season_nodes sn
                 LEFT JOIN tournaments t ON t.id = sn.linked_tournament_id
                 LEFT JOIN tournament_stages ts ON ts.id = sn.linked_stage_id
+                LEFT JOIN tournaments pt ON pt.id = sn.published_tournament_id
                 WHERE sn.season_id = @id
                 ORDER BY sn.display_order, sn.created_at
+                """,
+                new { id });
+
+            var advancementConnections = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sac.id,
+                       sac.season_id,
+                       sac.from_node_id,
+                       sac.to_node_id,
+                       sac.rule_type,
+                       sac.rule_value,
+                       sac.seed_mode,
+                       sac.label,
+                       sac.display_order,
+                       sac.metadata,
+                       sac.created_at,
+                       sac.updated_at
+                FROM season_advancement_connections sac
+                WHERE sac.season_id = @id
+                ORDER BY sac.from_node_id, sac.display_order, sac.created_at
                 """,
                 new { id });
 
@@ -357,6 +405,7 @@ public static class SeasonEndpoints
                 nodes,
                 tree,
                 rules,
+                advancement_connections = advancementConnections,
                 staff,
                 permissions = new
                 {
@@ -671,6 +720,33 @@ public static class SeasonEndpoints
                 }
             }
 
+            // ── Validate inline tournament config ranges (server-side
+            // defense-in-depth; DB check constraints are the ultimate source
+            // of truth but returning a nice BadRequest is better than a 500) ─
+            foreach (var node in nodes)
+            {
+                if (node.TournamentFormat is not null && !AllowedTournamentFormats.Contains(node.TournamentFormat))
+                    return Results.BadRequest(new { error = $"Invalid tournament format '{node.TournamentFormat}'." });
+                if (node.RegistrationType is not null && !AllowedRegistrationTypes.Contains(node.RegistrationType))
+                    return Results.BadRequest(new { error = $"Invalid registration type '{node.RegistrationType}'." });
+                if (node.TeamSize is not null && (node.TeamSize < 1 || node.TeamSize > 20))
+                    return Results.BadRequest(new { error = "team_size must be between 1 and 20." });
+                if (node.MaxTeams is not null && (node.MaxTeams < 2 || node.MaxTeams > 4096))
+                    return Results.BadRequest(new { error = "max_teams must be between 2 and 4096." });
+                if (node.MinTeams is not null && node.MinTeams < 2)
+                    return Results.BadRequest(new { error = "min_teams must be at least 2." });
+                if (node.MinTeams is not null && node.MaxTeams is not null && node.MinTeams > node.MaxTeams)
+                    return Results.BadRequest(new { error = "min_teams cannot exceed max_teams." });
+                if (node.BestOf is not null && (node.BestOf < 1 || node.BestOf > 9))
+                    return Results.BadRequest(new { error = "best_of must be between 1 and 9." });
+                if (node.EntryFee is not null && node.EntryFee < 0)
+                    return Results.BadRequest(new { error = "entry_fee cannot be negative." });
+                if (node.PrizePool is not null && node.PrizePool < 0)
+                    return Results.BadRequest(new { error = "prize_pool cannot be negative." });
+                if (node.CheckInMinutesBefore is not null && node.CheckInMinutesBefore < 0)
+                    return Results.BadRequest(new { error = "check_in_minutes_before cannot be negative." });
+            }
+
             foreach (var normalizedNode in normalizedNodes)
             {
                 var node = normalizedNode.Node;
@@ -698,6 +774,16 @@ public static class SeasonEndpoints
                             starts_at = @startsAt,
                             ends_at = @endsAt,
                             metadata = COALESCE(@metadata::jsonb, '{}'::jsonb),
+                            tournament_format = @tournamentFormat,
+                            team_size = @teamSize,
+                            max_teams = @maxTeams,
+                            min_teams = @minTeams,
+                            best_of = @bestOf,
+                            registration_type = @registrationType,
+                            entry_fee = @entryFee,
+                            prize_pool = @prizePool,
+                            check_in_minutes_before = @checkInMinutesBefore,
+                            registration_opens_at = @registrationOpensAt,
                             updated_at = NOW()
                         WHERE id = @id AND season_id = @seasonId
                         """,
@@ -719,7 +805,17 @@ public static class SeasonEndpoints
                             registrationDeadline = node.RegistrationDeadline,
                             startsAt = node.StartsAt,
                             endsAt = node.EndsAt,
-                            metadata = node.Metadata?.GetRawText()
+                            metadata = node.Metadata?.GetRawText(),
+                            tournamentFormat = node.TournamentFormat,
+                            teamSize = node.TeamSize,
+                            maxTeams = node.MaxTeams,
+                            minTeams = node.MinTeams,
+                            bestOf = node.BestOf,
+                            registrationType = node.RegistrationType,
+                            entryFee = node.EntryFee,
+                            prizePool = node.PrizePool,
+                            checkInMinutesBefore = node.CheckInMinutesBefore,
+                            registrationOpensAt = node.RegistrationOpensAt
                         },
                         tx);
                 }
@@ -730,13 +826,19 @@ public static class SeasonEndpoints
                         INSERT INTO season_nodes (
                             id, season_id, parent_node_id, name, slug, node_type, display_order,
                             region, city, country, linked_tournament_id, linked_stage_id,
-                            status, registration_deadline, starts_at, ends_at, metadata
+                            status, registration_deadline, starts_at, ends_at, metadata,
+                            tournament_format, team_size, max_teams, min_teams, best_of,
+                            registration_type, entry_fee, prize_pool,
+                            check_in_minutes_before, registration_opens_at
                         )
                         VALUES (
                             @id, @seasonId, @parentNodeId, @name, @slug, @nodeType, @displayOrder,
                             @region, @city, @country, @linkedTournamentId, @linkedStageId,
                             @status, @registrationDeadline, @startsAt, @endsAt,
-                            COALESCE(@metadata::jsonb, '{}'::jsonb)
+                            COALESCE(@metadata::jsonb, '{}'::jsonb),
+                            @tournamentFormat, @teamSize, @maxTeams, @minTeams, @bestOf,
+                            @registrationType, @entryFee, @prizePool,
+                            @checkInMinutesBefore, @registrationOpensAt
                         )
                         """,
                         new
@@ -757,7 +859,17 @@ public static class SeasonEndpoints
                             registrationDeadline = node.RegistrationDeadline,
                             startsAt = node.StartsAt,
                             endsAt = node.EndsAt,
-                            metadata = node.Metadata?.GetRawText()
+                            metadata = node.Metadata?.GetRawText(),
+                            tournamentFormat = node.TournamentFormat,
+                            teamSize = node.TeamSize,
+                            maxTeams = node.MaxTeams,
+                            minTeams = node.MinTeams,
+                            bestOf = node.BestOf,
+                            registrationType = node.RegistrationType,
+                            entryFee = node.EntryFee,
+                            prizePool = node.PrizePool,
+                            checkInMinutesBefore = node.CheckInMinutesBefore,
+                            registrationOpensAt = node.RegistrationOpensAt
                         },
                         tx);
                 }
@@ -771,8 +883,571 @@ public static class SeasonEndpoints
                     tx);
             }
 
+            // ── Replace advancement connections per node ───────────────────
+            // Only nodes that explicitly set OutgoingAdvancement (non-null)
+            // have their outgoing edges replaced. Nodes that leave it null
+            // keep their existing edges untouched — this lets the caller
+            // do partial updates.
+            var nodesWithOutgoing = normalizedNodes
+                .Where(n => n.Node.OutgoingAdvancement is not null)
+                .ToArray();
+
+            if (nodesWithOutgoing.Length > 0)
+            {
+                var fromNodeIds = nodesWithOutgoing.Select(n => n.ResolvedId).ToArray();
+
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM season_advancement_connections
+                    WHERE season_id = @seasonId AND from_node_id = ANY(@fromNodeIds)
+                    """,
+                    new { seasonId = id, fromNodeIds },
+                    tx);
+
+                var liveNodeIds = incomingIds;
+
+                foreach (var fromNode in nodesWithOutgoing)
+                {
+                    var outgoing = fromNode.Node.OutgoingAdvancement!;
+                    if (outgoing.Length == 0) continue;
+
+                    for (var i = 0; i < outgoing.Length; i++)
+                    {
+                        var conn2 = outgoing[i];
+                        if (!liveNodeIds.Contains(conn2.ToNodeId))
+                            return Results.BadRequest(new { error = "An advancement connection targets a node that is not part of this season." });
+                        if (conn2.ToNodeId == fromNode.ResolvedId)
+                            return Results.BadRequest(new { error = "An advancement connection cannot point a node to itself." });
+                        if (!AllowedAdvancementRuleTypes.Contains(conn2.RuleType))
+                            return Results.BadRequest(new { error = $"Invalid advancement rule type '{conn2.RuleType}'." });
+                        if (!AllowedAdvancementSeedModes.Contains(conn2.SeedMode))
+                            return Results.BadRequest(new { error = $"Invalid advancement seed mode '{conn2.SeedMode}'." });
+                        if (conn2.RuleValue <= 0)
+                            return Results.BadRequest(new { error = "advancement rule_value must be greater than zero." });
+
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO season_advancement_connections (
+                                id, season_id, from_node_id, to_node_id,
+                                rule_type, rule_value, seed_mode, label, display_order, metadata
+                            )
+                            VALUES (
+                                @id, @seasonId, @fromNodeId, @toNodeId,
+                                @ruleType, @ruleValue, @seedMode, @label, @displayOrder,
+                                COALESCE(@metadata::jsonb, '{}'::jsonb)
+                            )
+                            """,
+                            new
+                            {
+                                id = conn2.Id ?? Guid.NewGuid(),
+                                seasonId = id,
+                                fromNodeId = fromNode.ResolvedId,
+                                toNodeId = conn2.ToNodeId,
+                                ruleType = conn2.RuleType.Trim().ToLowerInvariant(),
+                                ruleValue = conn2.RuleValue,
+                                seedMode = conn2.SeedMode.Trim().ToLowerInvariant(),
+                                label = string.IsNullOrWhiteSpace(conn2.Label) ? null : conn2.Label.Trim(),
+                                displayOrder = conn2.DisplayOrder == 0 ? i : conn2.DisplayOrder,
+                                metadata = conn2.Metadata?.GetRawText()
+                            },
+                            tx);
+                    }
+                }
+            }
+
             tx.Commit();
             return Results.Ok(new { success = true, count = nodes.Length });
+        }).RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/seasons/{id}/publish", async (
+            Guid                    id,
+            [FromBody] PublishSeasonRequest req,
+            HttpContext             ctx,
+            IDbConnectionFactory    db,
+            CancellationToken       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
+
+            var access = await GetSeasonAccessAsync(conn, id, userCtx.UserIdGuid, tx);
+            if (access is null) return Results.NotFound();
+            if (!access.CanManage) return Results.Forbid();
+
+            if (string.Equals(access.Status, "published", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(access.Status, "active", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest(new { error = "Season has already been published. Use the management workspace to edit tournaments directly." });
+            }
+
+            // Load all non-root nodes with their inline tournament config
+            var nodes = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sn.id,
+                       sn.season_id,
+                       sn.name,
+                       sn.node_type,
+                       sn.status,
+                       sn.region,
+                       sn.city,
+                       sn.country,
+                       sn.starts_at,
+                       sn.ends_at,
+                       sn.registration_deadline,
+                       sn.tournament_format,
+                       sn.team_size,
+                       sn.max_teams,
+                       sn.min_teams,
+                       sn.best_of,
+                       sn.registration_type,
+                       sn.entry_fee,
+                       sn.prize_pool,
+                       sn.check_in_minutes_before,
+                       sn.registration_opens_at,
+                       sn.published_tournament_id
+                FROM season_nodes sn
+                WHERE sn.season_id = @seasonId
+                  AND sn.node_type <> 'root'
+                ORDER BY sn.display_order, sn.created_at
+                """,
+                new { seasonId = id },
+                tx);
+
+            var nodeIds = nodes.Select(n => (Guid)n.id).ToHashSet();
+            var warnings = new List<string>();
+
+            // Validate tournament config completeness unless AllowIncomplete is true
+            if (!req.AllowIncomplete)
+            {
+                var incomplete = nodes.Where(n =>
+                    string.IsNullOrWhiteSpace((string?)n.tournament_format) ||
+                    n.team_size is null ||
+                    n.max_teams is null ||
+                    string.IsNullOrWhiteSpace((string?)n.registration_type)).ToList();
+
+                if (incomplete.Count > 0)
+                {
+                    var names = incomplete.Select(n => (string)n.name).Take(3);
+                    var suffix = incomplete.Count > 3 ? $" and {incomplete.Count - 3} others" : "";
+                    return Results.BadRequest(new
+                    {
+                        error = $"One or more tournaments are missing required configuration (format, team size, max teams, registration type). Incomplete: {string.Join(", ", names)}{suffix}."
+                    });
+                }
+            }
+
+            // Load advancement connections to detect cycles
+            var connections = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sac.id,
+                       sac.from_node_id,
+                       sac.to_node_id,
+                       sac.rule_type,
+                       sac.rule_value,
+                       sac.seed_mode
+                FROM season_advancement_connections sac
+                WHERE sac.season_id = @seasonId
+                """,
+                new { seasonId = id },
+                tx);
+
+            // Build adjacency map for cycle detection
+            var adjacency = connections.ToDictionary(
+                c => (Guid)c.from_node_id,
+                c => ((Guid)c.to_node_id, (string)c.rule_type, (decimal)c.rule_value));
+
+            // Detect cycles in the advancement graph (DFS with explicit color map)
+            var colors = new Dictionary<Guid, int>(); // 0=unvisited, 1=visiting, 2=visited
+            bool HasCycle(Guid nodeId)
+            {
+                if (!colors.TryGetValue(nodeId, out var color))
+                    color = 0;
+
+                if (color == 1) return true; // back edge → cycle
+                if (color == 2) return false; // already fully processed
+
+                colors[nodeId] = 1;
+                if (adjacency.TryGetValue(nodeId, out var adj) && nodeIds.Contains(adj.Item1))
+                {
+                    if (HasCycle(adj.Item1))
+                        return true;
+                }
+                colors[nodeId] = 2;
+                return false;
+            }
+
+            foreach (var nodeId in nodeIds)
+            {
+                colors.TryGetValue(nodeId, out var color);
+                if (color == 0 && HasCycle(nodeId))
+                    return Results.BadRequest(new { error = "Advancement graph contains a cycle. Tournaments cannot advance to themselves or form a circular chain." });
+            }
+
+            // Identify terminal nodes (no outgoing connections)
+            var fromNodeIds = connections.Select(c => (Guid)c.from_node_id).ToHashSet();
+            var terminalNodeIds = nodeIds.Except(fromNodeIds).ToHashSet();
+
+            // Warn if there are no terminals (unless it's a trivial single-node season)
+            if (terminalNodeIds.Count == 0 && nodeIds.Count > 1)
+            {
+                warnings.Add("No terminal tournaments found (tournaments with no outgoing advancement). All tournaments have outgoing paths, which may indicate a missing finals node.");
+            }
+
+            // Materialise tournaments
+            var publishedTournaments = new List<PublishedTournamentDto>();
+            var tournamentsCreated = 0;
+            var tournamentsLinked = 0;
+
+            foreach (var node in nodes)
+            {
+                var nodeId = (Guid)node.id;
+                var nodeName = (string)node.name;
+
+                // If already published (e.g. from a partial publish attempt), skip
+                if (node.published_tournament_id is Guid existingTournamentId)
+                {
+                    publishedTournaments.Add(new PublishedTournamentDto(nodeId, nodeName, existingTournamentId, "", false));
+                    tournamentsLinked++;
+                    continue;
+                }
+
+                // Require config for materialisation
+                if (string.IsNullOrWhiteSpace((string?)node.tournament_format) ||
+                    node.team_size is null ||
+                    node.max_teams is null ||
+                    string.IsNullOrWhiteSpace((string?)node.registration_type))
+                {
+                    warnings.Add($"Skipping tournament '{nodeName}' due to missing configuration. It will not be materialised.");
+                    continue;
+                }
+
+                // Generate slug: season-slug-node-name-hex
+                var seasonSlug = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT slug FROM seasons WHERE id = @seasonId",
+                    new { seasonId = id },
+                    tx) ?? "season";
+
+                var baseSlug = $"{seasonSlug}-{Slugify(nodeName)}";
+                var slug = baseSlug;
+                var suffix = 0;
+                while (await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM tournaments WHERE slug = @slug)",
+                    new { slug },
+                    tx))
+                {
+                    suffix++;
+                    slug = $"{baseSlug}-{suffix}";
+                }
+
+                // Determine registration deadline from node or season
+                var registrationDeadline = node.registration_deadline is DateTimeOffset rd
+                    ? rd
+                    : await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+                        "SELECT start_date FROM seasons WHERE id = @seasonId",
+                        new { seasonId = id },
+                        tx);
+
+                // Create the tournament
+                var tournamentId = await conn.ExecuteScalarAsync<Guid>(
+                    """
+                    INSERT INTO tournaments (
+                        name, description, slug, game, format, max_teams, min_teams, team_size,
+                        entry_fee, prize_pool, start_date, end_date, registration_deadline,
+                        status, organizer_id, region, is_public
+                    )
+                    VALUES (
+                        @name, @description, @slug, @game, @format, @maxTeams, @minTeams, @teamSize,
+                        @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
+                        @status::tournament_status, @organizerId, @region, @isPublic
+                    )
+                    RETURNING id
+                    """,
+                    new
+                    {
+                        name = nodeName,
+                        description = $"Part of season: {seasonSlug}",
+                        slug,
+                        game = await conn.QuerySingleOrDefaultAsync<string>(
+                            "SELECT game FROM seasons WHERE id = @seasonId",
+                            new { seasonId = id },
+                            tx) ?? "generic",
+                        format = (string)node.tournament_format,
+                        maxTeams = (int)node.max_teams,
+                        minTeams = node.min_teams ?? 2,
+                        teamSize = (int)node.team_size,
+                        entryFee = node.entry_fee ?? 0m,
+                        prizePool = node.prize_pool ?? 0m,
+                        startDate = node.starts_at ?? registrationDeadline?.AddDays(-1),
+                        endDate = node.ends_at,
+                        registrationDeadline,
+                        status = "draft",
+                        organizerId = access.OwnerUserId,
+                        region = node.region,
+                        isPublic = false // tournaments remain private until explicitly opened
+                    },
+                    tx);
+
+                // Create a default stage (single-stage tournament)
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO tournament_stages (
+                        tournament_id, name, format, stage_order, best_of, capacity, advancement_count
+                    )
+                    VALUES (
+                        @tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount
+                    )
+                    """,
+                    new
+                    {
+                        tournamentId,
+                        name = nodeName,
+                        format = (string)node.tournament_format,
+                        stageOrder = 0,
+                        bestOf = node.best_of ?? 1,
+                        capacity = (int)node.max_teams,
+                        advancementCount = 0 // will be determined by incoming connections
+                    },
+                    tx);
+
+                // Link the node to the published tournament
+                await conn.ExecuteAsync(
+                    "UPDATE season_nodes SET published_tournament_id = @tournamentId WHERE id = @nodeId",
+                    new { tournamentId, nodeId },
+                    tx);
+
+                publishedTournaments.Add(new PublishedTournamentDto(nodeId, nodeName, tournamentId, slug, true));
+                tournamentsCreated++;
+            }
+
+            // Update season status
+            var newSeasonStatus = req.Activate ? "active" : "published";
+            await conn.ExecuteAsync(
+                "UPDATE seasons SET status = @status, updated_at = NOW() WHERE id = @seasonId",
+                new { seasonId = id, status = newSeasonStatus },
+                tx);
+
+            tx.Commit();
+
+            return Results.Ok(new PublishSeasonResponse(
+                Success: true,
+                SeasonId: id,
+                SeasonStatus: newSeasonStatus,
+                TournamentsCreated: tournamentsCreated,
+                TournamentsLinked: tournamentsLinked,
+                ConnectionsWired: connections.Count(),
+                Tournaments: publishedTournaments,
+                Warnings: warnings
+            ));
+        }).RequireAuthorization("Authenticated");
+
+        app.MapGet("/api/seasons/{id}/validate", async (
+            Guid                    id,
+            HttpContext             ctx,
+            IDbConnectionFactory    db,
+            CancellationToken       ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
+
+            var access = await GetSeasonAccessAsync(conn, id, userCtx.UserIdGuid, tx);
+            if (access is null) return Results.NotFound();
+            if (!access.CanManage) return Results.Forbid();
+
+            // Load all non-root nodes with their inline tournament config
+            var nodes = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sn.id,
+                       sn.season_id,
+                       sn.name,
+                       sn.node_type,
+                       sn.status,
+                       sn.region,
+                       sn.city,
+                       sn.country,
+                       sn.starts_at,
+                       sn.ends_at,
+                       sn.registration_deadline,
+                       sn.tournament_format,
+                       sn.team_size,
+                       sn.max_teams,
+                       sn.min_teams,
+                       sn.best_of,
+                       sn.registration_type,
+                       sn.entry_fee,
+                       sn.prize_pool,
+                       sn.check_in_minutes_before,
+                       sn.registration_opens_at,
+                       sn.published_tournament_id
+                FROM season_nodes sn
+                WHERE sn.season_id = @seasonId
+                  AND sn.node_type <> 'root'
+                ORDER BY sn.display_order, sn.created_at
+                """,
+                new { seasonId = id },
+                tx);
+
+            var nodeIds = nodes.Select(n => (Guid)n.id).ToHashSet();
+            var errors = new List<string>();
+            var warnings = new List<string>();
+
+            // Validate tournament config completeness
+            var incomplete = nodes.Where(n =>
+                string.IsNullOrWhiteSpace((string?)n.tournament_format) ||
+                n.team_size is null ||
+                n.max_teams is null ||
+                string.IsNullOrWhiteSpace((string?)n.registration_type)).ToList();
+
+            if (incomplete.Count > 0)
+            {
+                var names = incomplete.Select(n => (string)n.name).Take(3);
+                var suffix = incomplete.Count > 3 ? $" and {incomplete.Count - 3} others" : "";
+                errors.Add($"One or more tournaments are missing required configuration (format, team size, max teams, registration type). Incomplete: {string.Join(", ", names)}{suffix}.");
+            }
+
+            // Validate tournament config values
+            foreach (var node in nodes)
+            {
+                var format = (string?)node.tournament_format;
+                if (format is not null && !AllowedTournamentFormats.Contains(format))
+                    errors.Add($"Node '{node.name}' has invalid tournament format '{format}'. Allowed: {string.Join(", ", AllowedTournamentFormats)}.");
+
+                var regType = (string?)node.registration_type;
+                if (regType is not null && !AllowedRegistrationTypes.Contains(regType))
+                    errors.Add($"Node '{node.name}' has invalid registration type '{regType}'. Allowed: {string.Join(", ", AllowedRegistrationTypes)}.");
+
+                if (node.team_size is not null && (int)node.team_size < 1)
+                    errors.Add($"Node '{node.name}' has invalid team size '{node.team_size}'. Must be at least 1.");
+
+                if (node.max_teams is not null && (int)node.max_teams < 1)
+                    errors.Add($"Node '{node.name}' has invalid max teams '{node.max_teams}'. Must be at least 1.");
+
+                if (node.min_teams is not null && (int)node.min_teams < 1)
+                    errors.Add($"Node '{node.name}' has invalid min teams '{node.min_teams}'. Must be at least 1.");
+
+                if (node.min_teams is not null && node.max_teams is not null && (int)node.min_teams > (int)node.max_teams)
+                    errors.Add($"Node '{node.name}' has min_teams greater than max_teams.");
+
+                if (node.best_of is not null && (int)node.best_of < 1)
+                    errors.Add($"Node '{node.name}' has invalid best_of '{node.best_of}'. Must be at least 1.");
+
+                if (node.entry_fee is not null && (decimal)node.entry_fee < 0)
+                    errors.Add($"Node '{node.name}' has invalid entry_fee '{node.entry_fee}'. Must be non-negative.");
+
+                if (node.prize_pool is not null && (decimal)node.prize_pool < 0)
+                    errors.Add($"Node '{node.name}' has invalid prize_pool '{node.prize_pool}'. Must be non-negative.");
+            }
+
+            // Load advancement connections to detect cycles
+            var connections = await conn.QueryAsync<dynamic>(
+                """
+                SELECT sac.id,
+                       sac.from_node_id,
+                       sac.to_node_id,
+                       sac.rule_type,
+                       sac.rule_value,
+                       sac.seed_mode
+                FROM season_advancement_connections sac
+                WHERE sac.season_id = @seasonId
+                """,
+                new { seasonId = id },
+                tx);
+
+            // Validate advancement connection values
+            foreach (var connItem in connections)
+            {
+                var ruleType = (string?)connItem.rule_type;
+                if (ruleType is not null && !AllowedAdvancementRuleTypes.Contains(ruleType))
+                    errors.Add($"Advancement connection has invalid rule_type '{ruleType}'. Allowed: {string.Join(", ", AllowedAdvancementRuleTypes)}.");
+
+                var seedMode = (string?)connItem.seed_mode;
+                if (seedMode is not null && !AllowedAdvancementSeedModes.Contains(seedMode))
+                    errors.Add($"Advancement connection has invalid seed_mode '{seedMode}'. Allowed: {string.Join(", ", AllowedAdvancementSeedModes)}.");
+
+                if (connItem.rule_value is not null && (decimal)connItem.rule_value < 0)
+                    errors.Add($"Advancement connection has invalid rule_value '{connItem.rule_value}'. Must be non-negative.");
+
+                var fromNodeId = (Guid)connItem.from_node_id;
+                var toNodeId = (Guid)connItem.to_node_id;
+
+                if (!nodeIds.Contains(fromNodeId))
+                    errors.Add($"Advancement connection references non-existent from_node_id '{fromNodeId}'.");
+
+                if (!nodeIds.Contains(toNodeId))
+                    errors.Add($"Advancement connection references non-existent to_node_id '{toNodeId}'.");
+
+                if (fromNodeId == toNodeId)
+                    errors.Add($"Advancement connection from_node_id and to_node_id are the same ('{fromNodeId}'). Self-advancement is not allowed.");
+            }
+
+            // Build adjacency map for cycle detection
+            var adjacency = connections.ToDictionary(
+                c => (Guid)c.from_node_id,
+                c => ((Guid)c.to_node_id, (string)c.rule_type, (decimal)c.rule_value));
+
+            // Detect cycles in the advancement graph (DFS with explicit color map)
+            var colors = new Dictionary<Guid, int>(); // 0=unvisited, 1=visiting, 2=visited
+            bool HasCycle(Guid nodeId)
+            {
+                if (!colors.TryGetValue(nodeId, out var color))
+                    color = 0;
+
+                if (color == 1) return true; // back edge → cycle
+                if (color == 2) return false; // already fully processed
+
+                colors[nodeId] = 1;
+                if (adjacency.TryGetValue(nodeId, out var adj) && nodeIds.Contains(adj.Item1))
+                {
+                    if (HasCycle(adj.Item1))
+                        return true;
+                }
+                colors[nodeId] = 2;
+                return false;
+            }
+
+            foreach (var nodeId in nodeIds)
+            {
+                colors.TryGetValue(nodeId, out var color);
+                if (color == 0 && HasCycle(nodeId))
+                    errors.Add("Advancement graph contains a cycle. Tournaments cannot advance to themselves or form a circular chain.");
+            }
+
+            // Identify terminal nodes (no outgoing connections)
+            var fromNodeIds = connections.Select(c => (Guid)c.from_node_id).ToHashSet();
+            var terminalNodeIds = nodeIds.Except(fromNodeIds).ToHashSet();
+
+            // Warn if there are no terminals (unless it's a trivial single-node season)
+            if (terminalNodeIds.Count == 0 && nodeIds.Count > 1)
+            {
+                warnings.Add("No terminal tournaments found (tournaments with no outgoing advancement). All tournaments have outgoing paths, which may indicate a missing finals node.");
+            }
+
+            // Warn if there are orphaned nodes (no incoming connections and not the first node)
+            var toNodeIds = connections.Select(c => (Guid)c.to_node_id).ToHashSet();
+            var orphanedNodeIds = nodeIds.Except(toNodeIds).Except(terminalNodeIds).ToHashSet();
+            if (orphanedNodeIds.Count > 0)
+            {
+                var orphanedNames = nodes.Where(n => orphanedNodeIds.Contains((Guid)n.id)).Select(n => (string)n.name).Take(3);
+                var suffix = orphanedNodeIds.Count > 3 ? $" and {orphanedNodeIds.Count - 3} others" : "";
+                warnings.Add($"One or more tournaments have no incoming advancement paths: {string.Join(", ", orphanedNames)}{suffix}. These may be unreachable from qualifiers.");
+            }
+
+            tx.Commit();
+
+            var isValid = errors.Count == 0;
+            return Results.Ok(new
+            {
+                valid = isValid,
+                season_id = id,
+                node_count = nodeIds.Count,
+                connection_count = connections.Count(),
+                errors,
+                warnings
+            });
         }).RequireAuthorization("Authenticated");
 
         app.MapPut("/api/seasons/{id}/points-rules", async (
@@ -2055,6 +2730,7 @@ public static class SeasonEndpoints
                    s.owner_user_id AS OwnerUserId,
                    s.is_public AS IsPublic,
                    s.participant_mode AS ParticipantMode,
+                   s.status AS Status,
                    s.allow_manual_overrides AS AllowManualOverrides,
                    CASE
                      WHEN @userId IS NULL THEN FALSE
@@ -2423,6 +3099,815 @@ public static class SeasonEndpoints
         string? LinkedTournamentName,
         string? LinkedStageName);
 
+    // ============================================================================
+    // Additional Enterprise Season Endpoints
+    // ============================================================================
+
+    // POST /api/seasons/:id/archive
+    app.MapPost("/api/seasons/{id}/archive", async (
+        string id,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        await conn.ExecuteAsync(
+            "UPDATE seasons SET status = 'archived', archived_at = NOW(), updated_at = NOW() WHERE id = @id AND status = 'completed'",
+            new { id = seasonId }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true, status = "archived" });
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/cancel
+    app.MapPost("/api/seasons/{id}/cancel", async (
+        string id,
+        [FromBody] CancelSeasonRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        await conn.ExecuteAsync(
+            "UPDATE seasons SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW() WHERE id = @id AND status IN ('draft', 'published', 'active')",
+            new { id = seasonId }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true, status = "cancelled" });
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/duplicate
+    app.MapPost("/api/seasons/{id}/duplicate", async (
+        string id,
+        [FromBody] DuplicateSeasonRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var sourceSeasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = sourceSeasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        // Check slug uniqueness
+        var slugExists = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE slug = @slug AND deleted_at IS NULL",
+            new { slug = req.NewSlug }, cancellationToken: ct);
+
+        if (slugExists) return Results.BadRequest(new { error = "Slug already exists" });
+
+        // Duplicate season (simplified - in production use SeasonService.DuplicateAsync)
+        var newSeasonId = Guid.NewGuid();
+        await conn.ExecuteAsync(@"
+            INSERT INTO seasons (id, name, slug, description, game, participant_mode, status, owner_user_id, organization_id, is_public, allow_manual_overrides, start_date, end_date, created_at, updated_at)
+            SELECT @newId, @newName, @newSlug, description, game, participant_mode, 'draft', owner_user_id, organization_id, is_public, allow_manual_overrides, start_date, end_date, NOW(), NOW()
+            FROM seasons WHERE id = @sourceId
+            ", new { newId = newSeasonId, newName = req.NewName, newSlug = req.NewSlug, sourceId }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true, seasonId = newSeasonId });
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/tournaments (add tournament to season)
+    app.MapPost("/api/seasons/{id}/tournaments", async (
+        string id,
+        [FromBody] AddSeasonTournamentRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        var seasonTournamentId = Guid.NewGuid();
+        await conn.ExecuteAsync(@"
+            INSERT INTO season_tournaments (id, season_id, tournament_id, role, region, display_name, sort_order, status, created_at, updated_at)
+            VALUES (@id, @seasonId, @tournamentId, @role, @region, @displayName, @sortOrder, 'draft', NOW(), NOW())
+            ", new { id = seasonTournamentId, seasonId, tournamentId = req.TournamentId, role = req.Role, region = req.Region, displayName = req.DisplayName, sortOrder = req.SortOrder }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true, seasonTournamentId });
+    }).RequireAuthorization();
+
+    // PUT /api/seasons/:id/tournaments/:seasonTournamentId
+    app.MapPut("/api/seasons/{id}/tournaments/{seasonTournamentId}", async (
+        string id,
+        string seasonTournamentId,
+        [FromBody] UpdateSeasonTournamentRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+        var stId = Guid.Parse(seasonTournamentId);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        await conn.ExecuteAsync(@"
+            UPDATE season_tournaments
+            SET role = COALESCE(@role, role),
+                region = @region,
+                display_name = @displayName,
+                updated_at = NOW()
+            WHERE id = @id AND season_id = @seasonId
+            ", new { id = stId, seasonId, role = req.Role, region = req.Region, displayName = req.DisplayName }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true });
+    }).RequireAuthorization();
+
+    // DELETE /api/seasons/:id/tournaments/:seasonTournamentId
+    app.MapDelete("/api/seasons/{id}/tournaments/{seasonTournamentId}", async (
+        string id,
+        string seasonTournamentId,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+        var stId = Guid.Parse(seasonTournamentId);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        await conn.ExecuteAsync(
+            "DELETE FROM season_tournaments WHERE id = @id AND season_id = @seasonId",
+            new { id = stId, seasonId }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true });
+    }).RequireAuthorization();
+
+    // PATCH /api/seasons/:id/tournaments/reorder
+    app.MapPatch("/api/seasons/{id}/tournaments/reorder", async (
+        string id,
+        [FromBody] ReorderSeasonTournamentsRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        foreach (var (stId, sortOrder) in req.SortOrderUpdates)
+        {
+            await conn.ExecuteAsync(
+                "UPDATE season_tournaments SET sort_order = @sortOrder, updated_at = NOW() WHERE id = @id AND season_id = @seasonId",
+                new { id = stId, sortOrder, seasonId }, cancellationToken: ct);
+        }
+
+        return Results.Ok(new { success = true });
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/tournaments/bulk-config
+    app.MapPost("/api/seasons/{id}/tournaments/bulk-config", async (
+        string id,
+        [FromBody] BulkConfigSeasonTournamentsRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        foreach (var stId in req.SeasonTournamentIds)
+        {
+            var setClauses = new List<string>();
+            var parameters = new Dictionary<string, object> { { "id", stId }, { "seasonId", seasonId } };
+
+            if (req.ConfigUpdates.ContainsKey("region"))
+            {
+                setClauses.Add("region = @region");
+                parameters["region"] = req.ConfigUpdates["region"];
+            }
+
+            if (req.ConfigUpdates.ContainsKey("displayName"))
+            {
+                setClauses.Add("display_name = @displayName");
+                parameters["displayName"] = req.ConfigUpdates["displayName"];
+            }
+
+            if (setClauses.Count > 0)
+            {
+                var sql = $"""
+                    UPDATE season_tournaments
+                    SET {string.Join(", ", setClauses)}, updated_at = NOW()
+                    WHERE id = @id AND season_id = @seasonId
+                    """;
+                await conn.ExecuteAsync(new CommandDefinition(sql, parameters, cancellationToken: ct));
+            }
+        }
+
+        return Results.Ok(new { success = true });
+    }).RequireAuthorization();
+
+    // GET /api/seasons/:id/advancement
+    app.MapGet("/api/seasons/{id}/advancement", async (
+        string id,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify access
+        var hasAccess = await conn.ExecuteScalarAsync<bool>(
+            @"SELECT 1 FROM seasons s
+             WHERE s.id = @id AND (s.owner_user_id = @userId OR s.is_public = TRUE OR EXISTS (
+                 SELECT 1 FROM season_staff ss WHERE ss.season_id = s.id AND ss.user_id = @userId
+             ))",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!hasAccess) return Results.Forbid();
+
+        var connections = await conn.QueryAsync(@"
+            SELECT sac.*, fn.name as from_node_name, tn.name as to_node_name
+            FROM season_advancement_connections sac
+            JOIN season_nodes fn ON fn.id = sac.from_node_id
+            JOIN season_nodes tn ON tn.id = sac.to_node_id
+            WHERE sac.season_id = @seasonId
+            ORDER BY sac.display_order ASC
+            ", new { seasonId }, cancellationToken: ct);
+
+        return Results.Ok(connections);
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/advancement/process
+    app.MapPost("/api/seasons/{id}/advancement/process", async (
+        string id,
+        [FromBody] ProcessAdvancementRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership
+        var isOwner = await conn.ExecuteScalarAsync<bool>(
+            "SELECT 1 FROM seasons WHERE id = @id AND owner_user_id = @userId",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isOwner) return Results.Forbid();
+
+        // Call AdvancementProcessor.ProcessTournamentCompletionAsync for the specified tournament
+        var advancementProcessor = new AdvancementProcessor(db, new SeasonAuditService(db));
+        await advancementProcessor.ProcessTournamentCompletionAsync(req.TournamentId, userCtx, ct);
+
+        return Results.Ok(new { success = true, message = "Advancement processing completed" });
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/advancement/validate
+    app.MapPost("/api/seasons/{id}/advancement/validate", async (
+        string id,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify access
+        var hasAccess = await conn.ExecuteScalarAsync<bool>(
+            @"SELECT 1 FROM seasons s
+             WHERE s.id = @id AND (s.owner_user_id = @userId OR EXISTS (
+                 SELECT 1 FROM season_staff ss WHERE ss.season_id = s.id AND ss.user_id = @userId
+             ))",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!hasAccess) return Results.Forbid();
+
+        // Get all nodes in the season
+        var nodes = await conn.QueryAsync<dynamic>(
+            "SELECT id, node_type FROM season_nodes WHERE season_id = @seasonId",
+            new { seasonId }, cancellationToken: ct);
+
+        var nodeIds = nodes.Select(n => (Guid)n.id).ToHashSet();
+
+        // Get all advancement connections
+        var connections = await conn.QueryAsync<dynamic>(
+            "SELECT id, from_node_id, to_node_id, rule_type, rule_value FROM season_advancement_connections WHERE season_id = @seasonId",
+            new { seasonId }, cancellationToken: ct);
+
+        // Build adjacency map for cycle detection
+        var adjacency = new Dictionary<Guid, Guid>();
+        foreach (var conn in connections)
+        {
+            var from = (Guid)conn.from_node_id;
+            var to = (Guid)conn.to_node_id;
+            if (nodeIds.Contains(from) && nodeIds.Contains(to))
+            {
+                adjacency[from] = to;
+            }
+        }
+
+        // Detect cycles using DFS
+        var errors = new List<string>();
+        var warnings = new List<string>();
+        var colors = new Dictionary<Guid, int>();
+
+        bool HasCycle(Guid nodeId)
+        {
+            if (!colors.TryGetValue(nodeId, out var color))
+                color = 0;
+
+            if (color == 1) return true;
+            if (color == 2) return false;
+
+            colors[nodeId] = 1;
+            if (adjacency.TryGetValue(nodeId, out var toNode) && nodeIds.Contains(toNode))
+            {
+                if (HasCycle(toNode))
+                    return true;
+            }
+            colors[nodeId] = 2;
+            return false;
+        }
+
+        foreach (var nodeId in nodeIds)
+        {
+            if (HasCycle(nodeId))
+            {
+                errors.Add("Cycle detected in advancement graph");
+                break;
+            }
+        }
+
+        // Check for terminal nodes
+        var hasTerminal = nodes.Any(n => n.node_type == "final" || n.node_type == "playoff");
+        if (!hasTerminal)
+        {
+            warnings.Add("No terminal tournament (final or playoff) found");
+        }
+
+        return Results.Ok(new { isValid = errors.Count == 0, errors, warnings });
+    }).RequireAuthorization();
+
+    // POST /api/seasons/:id/advancement/manual-override
+    app.MapPost("/api/seasons/{id}/advancement/manual-override", async (
+        string id,
+        [FromBody] ManualAdvancementOverrideRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        // Verify ownership and staff role (admin required for manual override)
+        var isAdmin = await conn.ExecuteScalarAsync<bool>(
+            @"SELECT 1 FROM seasons s
+             JOIN season_staff ss ON ss.season_id = s.id
+             WHERE s.id = @id AND ss.user_id = @userId AND ss.role = 'admin'",
+            new { id = seasonId, userId = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isAdmin) return Results.Forbid();
+
+        // Call AdvancementProcessor.ManualOverrideAsync
+        var advancementProcessor = new AdvancementProcessor(db, new SeasonAuditService(db));
+        await advancementProcessor.ManualOverrideAsync(
+            seasonId,
+            req.ConnectionId,
+            req.TeamId,
+            req.TargetSeed,
+            req.Reason,
+            userCtx,
+            ct);
+
+        return Results.Ok(new { success = true, message = "Manual override applied" });
+    }).RequireAuthorization();
+
+    // GET /api/public/seasons
+    app.MapGet("/api/public/seasons", async (
+        int? limit,
+        int? offset,
+        string? game,
+        IDbConnectionFactory db,
+        CancellationToken ct) =>
+    {
+        using var conn = db.CreateConnection();
+        limit ??= 50;
+        offset ??= 0;
+
+        var sql = @"
+            SELECT s.*, p.username as owner_username, p.full_name as owner_full_name
+            FROM seasons s
+            JOIN profiles p ON p.id = s.owner_user_id
+            WHERE s.is_public = TRUE AND s.status = 'published' AND s.deleted_at IS NULL
+            ";
+        var parameters = new DynamicParameters();
+
+        if (!string.IsNullOrEmpty(game))
+        {
+            sql += " AND s.game = @game";
+            parameters.Add("game", game);
+        }
+
+        sql += " ORDER BY s.published_at DESC LIMIT @limit OFFSET @offset";
+        parameters.Add("limit", limit);
+        parameters.Add("offset", offset);
+
+        var seasons = await conn.QueryAsync(sql, parameters, cancellationToken: ct);
+        return Results.Ok(seasons);
+    });
+
+    // GET /api/public/seasons/:slug
+    app.MapGet("/api/public/seasons/{slug}", async (
+        string slug,
+        IDbConnectionFactory db,
+        CancellationToken ct) =>
+    {
+        using var conn = db.CreateConnection();
+
+        var season = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            @"SELECT s.*, p.username as owner_username, p.full_name as owner_full_name
+             FROM seasons s
+             JOIN profiles p ON p.id = s.owner_user_id
+             WHERE s.slug = @slug AND s.is_public = TRUE AND s.deleted_at IS NULL",
+            new { slug }, cancellationToken: ct);
+
+        if (season == null) return Results.NotFound();
+
+        return Results.Ok(season);
+    });
+
+    // GET /api/public/seasons/:id/tournaments
+    app.MapGet("/api/public/seasons/{id}/tournaments", async (
+        string id,
+        IDbConnectionFactory db,
+        CancellationToken ct) =>
+    {
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        var tournaments = await conn.QueryAsync(@"
+            SELECT st.*, t.name as tournament_name, t.slug as tournament_slug, t.status as tournament_status
+            FROM season_tournaments st
+            JOIN tournaments t ON t.id = st.tournament_id
+            WHERE st.season_id = @seasonId
+            ORDER BY st.sort_order ASC
+            ", new { seasonId }, cancellationToken: ct);
+
+        return Results.Ok(tournaments);
+    });
+
+    // GET /api/public/seasons/:id/standings
+    app.MapGet("/api/public/seasons/{id}/standings", async (
+        string id,
+        int? limit,
+        int? offset,
+        IDbConnectionFactory db,
+        CancellationToken ct) =>
+    {
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+        limit ??= 100;
+        offset ??= 0;
+
+        var standings = await conn.QueryAsync(@"
+            SELECT ss.*, t.name as team_name, t.slug as team_slug
+            FROM season_standings ss
+            JOIN teams t ON t.id = ss.team_id
+            WHERE ss.season_id = @seasonId
+            ORDER BY ss.total_points DESC, ss.best_finish ASC
+            LIMIT @limit OFFSET @offset
+            ", new { seasonId, limit, offset }, cancellationToken: ct);
+
+        return Results.Ok(standings);
+    });
+
+    // GET /api/public/seasons/:id/team/:teamId/path
+    app.MapGet("/api/public/seasons/{id}/team/{teamId}/path", async (
+        string id,
+        string teamId,
+        IDbConnectionFactory db,
+        CancellationToken ct) =>
+    {
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+        var teamGuid = Guid.Parse(teamId);
+
+        // Get all advancement records for this team in this season
+        var path = await conn.QueryAsync(@"
+            SELECT sar.*, t.name as tournament_name, t.slug as tournament_slug, tt.role as tournament_role
+            FROM season_advancement_records sar
+            JOIN tournaments t ON t.id = sar.to_tournament_id
+            JOIN season_tournaments tt ON tt.tournament_id = t.id
+            WHERE sar.season_id = @seasonId AND sar.team_id = @teamId
+            ORDER BY sar.created_at ASC
+            ", new { seasonId, teamId = teamGuid }, cancellationToken: ct);
+
+        return Results.Ok(path);
+    });
+
+    // GET /api/admin/seasons
+    app.MapGet("/api/admin/seasons", async (
+        int? limit,
+        int? offset,
+        string? game,
+        string? status,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        // Verify admin role
+        var isAdmin = await db.QuerySingleOrDefaultAsync<bool>(
+            "SELECT is_admin FROM profiles WHERE id = @id",
+            new { id = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isAdmin) return Results.Forbid();
+
+        using var conn = db.CreateConnection();
+        limit ??= 100;
+        offset ??= 0;
+
+        var sql = @"
+            SELECT s.*, p.username as owner_username, o.name as organization_name
+            FROM seasons s
+            LEFT JOIN profiles p ON p.id = s.owner_user_id
+            LEFT JOIN organizations o ON o.id = s.organization_id
+            WHERE s.deleted_at IS NULL
+            ";
+        var parameters = new DynamicParameters();
+
+        if (!string.IsNullOrEmpty(game))
+        {
+            sql += " AND s.game = @game";
+            parameters.Add("game", game);
+        }
+
+        if (!string.IsNullOrEmpty(status))
+        {
+            sql += " AND s.status = @status";
+            parameters.Add("status", status);
+        }
+
+        sql += " ORDER BY s.created_at DESC LIMIT @limit OFFSET @offset";
+        parameters.Add("limit", limit);
+        parameters.Add("offset", offset);
+
+        var seasons = await conn.QueryAsync(sql, parameters, cancellationToken: ct);
+        return Results.Ok(seasons);
+    }).RequireAuthorization();
+
+    // GET /api/admin/seasons/:id/audit
+    app.MapGet("/api/admin/seasons/{id}/audit", async (
+        string id,
+        string? action,
+        DateTime? fromDate,
+        DateTime? toDate,
+        int? limit,
+        int? offset,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        // Verify admin role
+        var isAdmin = await db.QuerySingleOrDefaultAsync<bool>(
+            "SELECT is_admin FROM profiles WHERE id = @id",
+            new { id = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isAdmin) return Results.Forbid();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+        limit ??= 100;
+        offset ??= 0;
+
+        var sql = @"
+            SELECT sal.*, p.username as actor_username
+            FROM season_audit_logs sal
+            JOIN profiles p ON p.id = sal.actor_id
+            WHERE sal.season_id = @seasonId
+            ";
+        var parameters = new DynamicParameters { { "seasonId", seasonId } };
+
+        if (!string.IsNullOrEmpty(action))
+        {
+            sql += " AND sal.action = @action";
+            parameters.Add("action", action);
+        }
+
+        if (fromDate.HasValue)
+        {
+            sql += " AND sal.created_at >= @fromDate";
+            parameters.Add("fromDate", fromDate.Value);
+        }
+
+        if (toDate.HasValue)
+        {
+            sql += " AND sal.created_at <= @toDate";
+            parameters.Add("toDate", toDate.Value);
+        }
+
+        sql += " ORDER BY sal.created_at DESC LIMIT @limit OFFSET @offset";
+        parameters.Add("limit", limit);
+        parameters.Add("offset", offset);
+
+        var logs = await conn.QueryAsync(sql, parameters, cancellationToken: ct);
+        return Results.Ok(logs);
+    }).RequireAuthorization();
+
+    // GET /api/admin/seasons/:id
+    app.MapGet("/api/admin/seasons/{id}", async (
+        string id,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        // Verify admin role
+        var isAdmin = await db.QuerySingleOrDefaultAsync<bool>(
+            "SELECT is_admin FROM profiles WHERE id = @id",
+            new { id = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isAdmin) return Results.Forbid();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        var season = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            @"SELECT s.*, p.username as owner_username, p.full_name as owner_full_name, o.name as organization_name
+             FROM seasons s
+             LEFT JOIN profiles p ON p.id = s.owner_user_id
+             LEFT JOIN organizations o ON o.id = s.organization_id
+             WHERE s.id = @id AND s.deleted_at IS NULL",
+            new { id = seasonId }, cancellationToken: ct);
+
+        if (season == null) return Results.NotFound();
+
+        return Results.Ok(season);
+    }).RequireAuthorization();
+
+    // PATCH /api/admin/seasons/:id/status
+    app.MapPatch("/api/admin/seasons/{id}/status", async (
+        string id,
+        [FromBody] AdminForceStatusRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        // Verify admin role
+        var isAdmin = await db.QuerySingleOrDefaultAsync<bool>(
+            "SELECT is_admin FROM profiles WHERE id = @id",
+            new { id = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isAdmin) return Results.Forbid();
+
+        using var conn = db.CreateConnection();
+        var seasonId = Guid.Parse(id);
+
+        await conn.ExecuteAsync(
+            "UPDATE seasons SET status = @status, updated_at = NOW() WHERE id = @id",
+            new { id = seasonId, status = req.Status }, cancellationToken: ct);
+
+        return Results.Ok(new { success = true, status = req.Status });
+    }).RequireAuthorization();
+
+    // POST /api/admin/seasons/:id/force-advancement
+    app.MapPost("/api/admin/seasons/{id}/force-advancement", async (
+        string id,
+        [FromBody] AdminForceAdvancementRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        // Verify admin role
+        var isAdmin = await db.QuerySingleOrDefaultAsync<bool>(
+            "SELECT is_admin FROM profiles WHERE id = @id",
+            new { id = userCtx.UserId }, cancellationToken: ct);
+
+        if (!isAdmin) return Results.Forbid();
+
+        var seasonId = Guid.Parse(id);
+
+        // Call AdvancementProcessor.ManualOverrideAsync for admin force override
+        var advancementProcessor = new AdvancementProcessor(db, new SeasonAuditService(db));
+        await advancementProcessor.ManualOverrideAsync(
+            seasonId,
+            req.ConnectionId,
+            req.TeamId,
+            req.TargetSeed,
+            req.Reason,
+            userCtx,
+            ct);
+
+        return Results.Ok(new { success = true, message = "Force advancement applied" });
+    }).RequireAuthorization();
+}
+
+// Request DTOs
+public record CancelSeasonRequest(string Reason);
+public record DuplicateSeasonRequest(string NewName, string NewSlug);
+public record AddSeasonTournamentRequest(Guid TournamentId, string Role, string? Region, string? DisplayName, int SortOrder);
+public record UpdateSeasonTournamentRequest(string? Role, string? Region, string? DisplayName);
+public record ReorderSeasonTournamentsRequest(Dictionary<Guid, int> SortOrderUpdates);
+public record BulkConfigSeasonTournamentsRequest(List<Guid> SeasonTournamentIds, Dictionary<string, object> ConfigUpdates);
+public record ProcessAdvancementRequest(Guid TournamentId);
+public record ManualAdvancementOverrideRequest(Guid ConnectionId, Guid TeamId, int TargetSeed, string Reason);
+public record AdminForceStatusRequest(string Status);
+public record AdminForceAdvancementRequest(Guid ConnectionId, Guid TeamId, int TargetSeed, string Reason);
+
     private sealed record SeasonSourceNode(
         Guid Id,
         string Name,
@@ -2493,6 +3978,7 @@ public static class SeasonEndpoints
         Guid OwnerUserId,
         bool IsPublic,
         string ParticipantMode,
+        string Status,
         bool AllowManualOverrides,
         bool CanManage);
 }
@@ -2548,7 +4034,64 @@ public sealed record SeasonNodeDto(
     DateTimeOffset? RegistrationDeadline = null,
     DateTimeOffset? StartsAt = null,
     DateTimeOffset? EndsAt = null,
+    JsonElement? Metadata = null,
+    // Inline tournament configuration persisted as first-class columns on
+    // season_nodes. Every non-root node represents a real tournament that will
+    // be materialised on publish. All fields are optional until the season is
+    // actually published; the /publish endpoint enforces completeness.
+    string? TournamentFormat = null,
+    int? TeamSize = null,
+    int? MaxTeams = null,
+    int? MinTeams = null,
+    int? BestOf = null,
+    string? RegistrationType = null,
+    decimal? EntryFee = null,
+    decimal? PrizePool = null,
+    int? CheckInMinutesBefore = null,
+    DateTimeOffset? RegistrationOpensAt = null,
+    Guid? PublishedTournamentId = null,
+    // Outgoing advancement connections (this node → some other node). The
+    // sync endpoint replaces the full set of outgoing edges for this node
+    // with whatever is supplied here. Null means "leave existing edges
+    // alone"; an empty array means "remove all outgoing edges".
+    SeasonAdvancementConnectionDto[]? OutgoingAdvancement = null);
+
+public sealed record SeasonAdvancementConnectionDto(
+    Guid? Id,
+    Guid ToNodeId,
+    string RuleType,
+    decimal RuleValue,
+    string SeedMode = "preserve_seed",
+    string? Label = null,
+    int DisplayOrder = 0,
     JsonElement? Metadata = null);
+
+// PublishSeasonRequest:
+//  - Activate: when true, activate the season (status = 'active') after
+//    materialising tournaments. When false (default), leave it in 'published'.
+//  - AllowIncomplete: when true, skip validation that rejects missing
+//    tournament configuration on non-root nodes. Useful for partial drafts
+//    that intentionally leave some tournaments blank.
+public sealed record PublishSeasonRequest(
+    bool Activate = false,
+    bool AllowIncomplete = false);
+
+public sealed record PublishSeasonResponse(
+    bool Success,
+    Guid SeasonId,
+    string SeasonStatus,
+    int TournamentsCreated,
+    int TournamentsLinked,
+    int ConnectionsWired,
+    List<PublishedTournamentDto> Tournaments,
+    List<string> Warnings);
+
+public sealed record PublishedTournamentDto(
+    Guid NodeId,
+    string NodeName,
+    Guid TournamentId,
+    string TournamentSlug,
+    bool WasCreated);
 
 public sealed record SyncSeasonPointsRulesRequest(SeasonPointsRuleDto[]? Rules);
 

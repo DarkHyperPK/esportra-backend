@@ -195,13 +195,13 @@ public static class NotificationEndpoints
 
                 return Results.Ok(new { id, success = true });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return Results.Json(new { error = "We couldn't send the notification. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Failed to create notification." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
-        // ── POST /api/notifications/bulk-delete─────────────────────────────
+        // ── POST /api/notifications/bulk-delete ─────────────────────────────
         app.MapPost("/api/notifications/bulk-delete", async (
             [FromBody] BulkDeleteNotificationsRequest req,
             HttpContext          ctx,
@@ -292,32 +292,21 @@ public static class NotificationEndpoints
             }
 
             // Notify inviter
-            var acceptedPlayerName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT COALESCE(full_name, username, 'A player') FROM profiles WHERE id = @id",
-                new { id = userCtx.UserIdGuid });
-            var acceptedTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @teamId",
-                new { teamId = Guid.Parse(req.TeamId) });
             var notifData = JsonSerializer.Serialize(new { team_id = req.TeamId });
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, data, is_read)
-                VALUES (@userId, 'team_invite_response', @title,
-                        @msg,
+                VALUES (@userId, 'team_invite_response', 'Team Invite Accepted',
+                        'An invited player accepted your team invite.',
                         @data::jsonb, FALSE)
                 """,
-                new {
-                    userId = invite.invited_by_user_id,
-                    title = $"✅ {acceptedPlayerName} Joined {acceptedTeamName ?? "Your Team"}!",
-                    msg = $"{acceptedPlayerName} accepted your invite and is now part of {acceptedTeamName ?? "the team"}. Your roster just got stronger!",
-                    data = notifData
-                });
+                new { userId = invite.invited_by_user_id, data = notifData });
 
             // Push via SignalR
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup(invite.invited_by_user_id.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
-                    new { type = "team_invite_response", title = $"✅ {acceptedPlayerName} Joined {acceptedTeamName ?? "Your Team"}!" }, ct);
+                    new { type = "team_invite_response", title = "Team Invite Accepted" }, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -361,31 +350,20 @@ public static class NotificationEndpoints
             }
 
             // Notify inviter
-            var rejectedPlayerName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT COALESCE(full_name, username, 'A player') FROM profiles WHERE id = @id",
-                new { id = userCtx.UserIdGuid });
-            var rejectedTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @teamId",
-                new { teamId = Guid.Parse(req.TeamId) });
             var notifData = JsonSerializer.Serialize(new { team_id = req.TeamId });
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, data, is_read)
-                VALUES (@userId, 'team_invite_response', @title,
-                        @msg,
+                VALUES (@userId, 'team_invite_response', 'Team Invite Rejected',
+                        'An invited player rejected your team invite.',
                         @data::jsonb, FALSE)
                 """,
-                new {
-                    userId = invite.invited_by_user_id,
-                    title = $"❌ Invite Declined — {rejectedTeamName ?? "Your Team"}",
-                    msg = $"{rejectedPlayerName} declined your invite to join {rejectedTeamName ?? "the team"}.",
-                    data = notifData
-                });
+                new { userId = invite.invited_by_user_id, data = notifData });
 
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup(invite.invited_by_user_id.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
-                    new { type = "team_invite_response", title = $"❌ Invite Declined — {rejectedTeamName ?? "Your Team"}" }, ct);
+                    new { type = "team_invite_response", title = "Team Invite Rejected" }, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

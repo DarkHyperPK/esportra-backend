@@ -292,7 +292,7 @@ public static class MatchEndpoints
             catch (Exception ex)
             {
                 log.LogError(ex, "Scan failed for match {MatchId}", req.MatchId);
-                return Results.Json(new { error = "We couldn't scan the match. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Match scan failed. Please try again." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -350,11 +350,11 @@ public static class MatchEndpoints
                     matchId, (int)match.version, winnerId, loserId, team1Score, team2Score, ct);
 
                 if (!success)
-                    return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
+                    return Results.Conflict(new { error = "Match state has changed — retry." });
             }
             catch (InvalidOperationException)
             {
-                return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
+                return Results.Conflict(new { error = "Match state has changed — retry." });
             }
 
             // 5. Mark report as processed
@@ -387,22 +387,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission (organizer staff OR match captain for self-play)
+            // Verify caller has permission
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
-            {
-                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM team_members tm
-                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    )
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (!isCaptain) return Results.Forbid();
-            }
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var winnerId = req?.WinnerId ?? Guid.Empty;
             var loserId  = req?.LoserId  ?? Guid.Empty;
@@ -416,7 +404,7 @@ public static class MatchEndpoints
                 if (m is not null && m.team1_score is not null && m.team2_score is not null)
                 {
                     if ((int)m.team1_score == (int)m.team2_score)
-                        return Results.BadRequest(new { error = "Scores are tied — a winner can't be determined automatically." });
+                        return Results.BadRequest(new { error = "Cannot auto-finalize: scores are tied. Provide explicit winnerId." });
 
                     winnerId = (int)m.team1_score > (int)m.team2_score ? (Guid)m.team1_id : (Guid)m.team2_id;
                     loserId  = winnerId == (Guid)m.team1_id ? (Guid)m.team2_id : (Guid)m.team1_id;
@@ -432,7 +420,7 @@ public static class MatchEndpoints
                     ct);
 
             return Results.Ok(new { success, matchId });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Organizer");
 
         // ── POST /api/matches/{matchId}/award-walkover ──────────────────────
         app.MapPost("/api/matches/{matchId}/award-walkover", async (
@@ -449,33 +437,21 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission (organizer staff OR match captain for self-play)
+            // Verify caller has permission
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
-            {
-                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM team_members tm
-                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    )
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (!isCaptain) return Results.Forbid();
-            }
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             try
             {
                 var success = await finalizer.FinalizeAsync(
                     matchId, req.WinnerId, req.LoserId, req.Team1Score, req.Team2Score, ct);
 
-                if (!success) return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
+                if (!success) return Results.Conflict(new { error = "Match state has changed." });
             }
             catch (InvalidOperationException)
             {
-                return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
+                return Results.Conflict(new { error = "Match state has changed — retry." });
             }
 
             await matchHub.Clients
@@ -484,7 +460,7 @@ public static class MatchEndpoints
                     new { matchId, status = "completed" }, ct);
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Organizer");
 
         // ── POST /api/matches/{matchId}/swap-teams ──────────────────────────
         app.MapPost("/api/matches/{matchId}/swap-teams", async (
@@ -655,22 +631,10 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission (organizer staff OR match captain for self-play)
+            // Verify caller has permission
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
-            {
-                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM team_members tm
-                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    )
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (!isCaptain) return Results.Forbid();
-            }
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
 
@@ -693,7 +657,7 @@ public static class MatchEndpoints
                     new { matchId, status = "in_progress" }, ct);
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Organizer");
 
         // ── POST /api/matches/{matchId}/save-score ──────────────────────────
         // Replaces GraphMatchService.saveScoreAndAdvance (score + advance + finals reset + stage completion)
@@ -710,25 +674,13 @@ public static class MatchEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller has permission (organizer staff OR match captain for self-play)
+            // Verify caller has permission
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
-            {
-                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM team_members tm
-                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    )
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (!isCaptain) return Results.Forbid();
-            }
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             if (req.Team1Score == req.Team2Score)
-                return Results.BadRequest(new { error = "Scores can't be tied. One team must win." });
+                return Results.BadRequest(new { error = "Scores cannot be equal." });
 
             // Resolve team IDs from request or from the match itself
             var t1Id = req.Team1Id;
@@ -906,11 +858,10 @@ public static class MatchEndpoints
                             if (stageInfo is not null &&
                                 ((string?)stageInfo.format == "single_elimination" || (string?)stageInfo.format == "double_elimination"))
                             {
-                                // Grand final = highest round_index in the bracket (bracket_type is 'winners', not 'final')
                                 var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                                     """
                                     SELECT winner_id FROM brkt_matches
-                                    WHERE version_id = @versionId
+                                    WHERE version_id = @versionId AND bracket_type = 'final'
                                       AND status = 'completed' AND winner_id IS NOT NULL
                                     ORDER BY round_index DESC, match_number DESC
                                     LIMIT 1
@@ -922,53 +873,10 @@ public static class MatchEndpoints
                                     {
                                         // Use SECURITY DEFINER function to bypass organizer-only trigger
                                         await conn.ExecuteAsync(
-                                            "SELECT admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                                            new { p_tournament_id = (Guid)stageInfo.tournament_id, p_winner_id = gfWinnerId });
+                                            "SELECT admin_set_tournament_winner(@tid, @wid)",
+                                            new { tid = (Guid)stageInfo.tournament_id, wid = gfWinnerId });
                                     }
-                                    catch (Exception winEx)
-                                    {
-                                        // Fallback: direct UPDATE (backend connects as privileged user)
-                                        Console.WriteLine($"[WARN] admin_set_tournament_winner RPC failed: {winEx.Message}. Attempting direct update.");
-                                        await conn.ExecuteAsync(
-                                            "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tournamentId",
-                                            new { winnerId = gfWinnerId, tournamentId = (Guid)stageInfo.tournament_id });
-                                    }
-
-                                    // Send tournament won notification to winning team captains
-                                    try
-                                    {
-                                        var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
-                                            "SELECT name FROM tournaments WHERE id = @tid",
-                                            new { tid = (Guid)stageInfo.tournament_id });
-                                        var winningCaptains = await conn.QueryAsync<Guid>(
-                                            """
-                                            SELECT tm.user_id FROM team_members tm
-                                            WHERE tm.team_id = @teamId AND tm.role = 'captain' AND tm.is_active = true
-                                            """,
-                                            new { teamId = gfWinnerId });
-                                        var winningTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                                            "SELECT name FROM teams WHERE id = @id",
-                                            new { id = gfWinnerId });
-                                        foreach (var captainId in winningCaptains)
-                                        {
-                                            await conn.ExecuteAsync(
-                                                """
-                                                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                                                VALUES (@userId, 'tournament_announcement', @title,
-                                                        @msg, @link,
-                                                        jsonb_build_object('tournament_id', @tid::text, 'team_id', @teamId::text)::jsonb, false)
-                                                """,
-                                                new {
-                                                    userId = captainId,
-                                                    title = $"🏆 Champions! {winningTeamName ?? "Your Team"} Wins!",
-                                                    msg = $"WHAT A RUN! {winningTeamName ?? "Your team"} just conquered {tournamentName ?? "the tournament"}! The trophy is yours — celebrate with your squad!",
-                                                    link = $"/tournaments/{stageInfo.tournament_id}",
-                                                    tid = ((Guid)stageInfo.tournament_id).ToString(),
-                                                    teamId = ((Guid)gfWinnerId).ToString()
-                                                });
-                                        }
-                                    }
-                                    catch { /* Notification is non-critical */ }
+                                    catch { /* trigger may block — non-critical */ }
                                 }
                             }
                         }

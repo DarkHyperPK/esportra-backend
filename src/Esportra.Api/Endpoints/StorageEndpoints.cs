@@ -12,42 +12,6 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class StorageEndpoints
 {
-    // Allowed file extensions for uploads
-    private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico"
-    };
-    private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".mp4", ".mov", ".webm", ".avi"
-    };
-    private static readonly HashSet<string> AllowedDocExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".pptx", ".ppt", ".doc", ".docx"
-    };
-    private static readonly HashSet<string> AllowedExtensions =
-        new(AllowedImageExtensions.Concat(AllowedVideoExtensions).Concat(AllowedDocExtensions), StringComparer.OrdinalIgnoreCase);
-
-    private const long MaxFileSizeBytes = 50 * 1024 * 1024; // 50 MB (videos can be large)
-
-    // Buckets that users are allowed to upload to
-    private static readonly HashSet<string> AllowedUploadBuckets = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
-        "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
-        "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
-        "system.assets.partners", "system.assets.website", "system.assets.games",
-        "users.documents.kyc", "venue-images", "venues.images", "venues.layouts"
-    };
-
-    // Buckets that users are allowed to delete from
-    private static readonly HashSet<string> AllowedDeleteBuckets = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "users.avatars", "teams.logos", "organizer-banners", "organizer-media",
-        "system.assets.partners", "system.assets.website", "venue-images", "venues.images", "venues.layouts",
-        "tournaments.banners", "tournaments.media", "tournament-images"
-    };
-
     public static void MapStorageEndpoints(this WebApplication app)
     {
         // ── POST /api/storage/upload ─────────────────────────────────────────
@@ -67,19 +31,7 @@ public static class StorageEndpoints
 
             var bucket = form["bucket"].FirstOrDefault();
             if (string.IsNullOrWhiteSpace(bucket))
-                return Results.BadRequest(new { error = "Please specify a storage location." });
-
-            if (!AllowedUploadBuckets.Contains(bucket))
-                return Results.BadRequest(new { error = "You're not allowed to upload to this location." });
-
-            // Validate file size
-            if (file.Length > MaxFileSizeBytes)
-                return Results.BadRequest(new { error = $"File exceeds maximum size of {MaxFileSizeBytes / (1024 * 1024)}MB." });
-
-            // Validate file extension
-            var ext = Path.GetExtension(file.FileName);
-            if (string.IsNullOrEmpty(ext) || !AllowedExtensions.Contains(ext))
-                return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg), videos (mp4, mov, webm), and documents (pdf, pptx)." });
+                return Results.BadRequest(new { error = "Query/form parameter 'bucket' is required." });
 
             var folder = form["folder"].FirstOrDefault() ?? "";
 
@@ -91,6 +43,7 @@ public static class StorageEndpoints
             // Build filename: keep original name, prefix with timestamp for uniqueness
             var sanitized = Path.GetFileNameWithoutExtension(file.FileName)
                 .Replace(' ', '-').Replace('/', '-').Replace('\\', '-');
+            var ext = Path.GetExtension(file.FileName);
             var uniqueName = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{sanitized}{ext}";
             var storagePath = string.IsNullOrWhiteSpace(folder)
                 ? uniqueName
@@ -115,7 +68,7 @@ public static class StorageEndpoints
                 logger.LogError("Supabase storage upload failed: {Url} {Status} {Body}",
                     uploadUrl, response.StatusCode, errorBody);
                 return Results.Json(
-                    new { error = "File upload failed." },
+                    new { error = "File upload failed.", detail = errorBody, url = uploadUrl },
                     statusCode: (int)response.StatusCode);
             }
 
@@ -181,7 +134,7 @@ public static class StorageEndpoints
                 logger.LogError("Player card upload failed: {Url} {Status} {Body}",
                     uploadUrl, response.StatusCode, errorBody);
                 return Results.Json(
-                    new { error = "File upload failed." },
+                    new { error = "File upload failed.", detail = errorBody, url = uploadUrl },
                     statusCode: (int)response.StatusCode);
             }
 
@@ -211,15 +164,7 @@ public static class StorageEndpoints
             var path   = ctx.Request.Query["path"].FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(path))
-                return Results.BadRequest(new { error = "Please specify the file location." });
-
-            // Restrict which buckets users can delete from
-            if (!AllowedDeleteBuckets.Contains(bucket))
-                return Results.Forbid();
-
-            // Prevent path traversal
-            if (path.Contains("..") || path.Contains('\0'))
-                return Results.BadRequest(new { error = "Invalid path." });
+                return Results.BadRequest(new { error = "Query parameters 'bucket' and 'path' are required." });
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
                 ?? throw new InvalidOperationException("Supabase:Url not configured");
@@ -235,8 +180,10 @@ public static class StorageEndpoints
 
             if (!response.IsSuccessStatusCode)
             {
-                logger.LogWarning("Storage delete failed: {Url} {Status}",
-                    deleteUrl, response.StatusCode);
+                var errorBody = await response.Content.ReadAsStringAsync();
+                logger.LogWarning("Storage delete failed: {Url} {Status} {Body}",
+                    deleteUrl, response.StatusCode, errorBody);
+                // Non-fatal — file may already be gone
             }
 
             return Results.Ok(new { deleted = true });

@@ -1,7 +1,7 @@
 namespace Esportra.Contracts.Requests;
 
-public sealed record ManageUserRequest(string Action, string? Role = null, string? RoleKey = null, string? RoleType = null, string? AssignedBy = null);
-// Actions: "delete-user", "update-role", "assign_role", "revoke_role"
+public sealed record ManageUserRequest(string Action, string? Role = null);
+// Actions: "delete-user", "update-role"
 
 public sealed record InviteSponsorRequest(
     string Email,
@@ -15,17 +15,11 @@ public sealed record SendEmailRequest(
 
 public sealed record SuspendUserRequest(string Reason);
 
-public sealed record BulkUserActionRequest(Guid[] UserIds, string Action, string? Reason = null);
-
-public sealed record BulkTournamentActionRequest(Guid[] TournamentIds, string Action);
-
 public sealed record SponsorTrackRequest(
     string  SponsorId,
     string  EventType,
     string? PageUrl = null,
     string? TournamentId = null);
-
-public sealed record RevokeSessionRequest(string? Reason = null);
 
 public sealed record CreateAuditLogRequest(
     string  AdminId,

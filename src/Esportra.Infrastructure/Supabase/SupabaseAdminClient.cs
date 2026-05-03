@@ -162,72 +162,66 @@ public sealed class SupabaseAdminClient(
     {
         var req = BuildRequest(HttpMethod.Get, $"/users?page={page}&per_page={perPage}");
         var res = await http.SendAsync(req, ct);
-        var body = await res.Content.ReadAsStringAsync(ct);
-
         if (!res.IsSuccessStatusCode)
-            throw new InvalidOperationException($"ListUsers failed: {body}");
+            throw new InvalidOperationException($"ListUsers failed: {await res.Content.ReadAsStringAsync(ct)}");
 
+        var body = await res.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        var total = root.TryGetProperty("total", out var tp) ? tp.GetInt32() : 0;
-        var users = new List<SupabaseAuthUser>();
-
-        JsonElement? usersEl = root.ValueKind == JsonValueKind.Array ? root
+        JsonElement? users = root.ValueKind == JsonValueKind.Array ? root
             : root.TryGetProperty("users", out var u) ? u : null;
 
-        if (usersEl is not null)
+        var userList = new List<SupabaseAuthUser>();
+        if (users is not null)
         {
-            foreach (var user in usersEl.Value.EnumerateArray())
+            foreach (var user in users.Value.EnumerateArray())
             {
-                var id    = user.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
-                var email = user.TryGetProperty("email", out var emEl) ? emEl.GetString() ?? "" : "";
+                var id = user.TryGetProperty("id", out var idEl) ? idEl.GetString() : "";
+                var email = user.TryGetProperty("email", out var emailEl) ? emailEl.GetString() : "";
+                DateTimeOffset? lastSignInAt = null;
+                if (user.TryGetProperty("last_sign_in_at", out var lsi) && lsi.TryGetDateTimeOffset(out var lsiDt))
+                {
+                    lastSignInAt = lsiDt;
+                }
+                DateTimeOffset createdAt = DateTimeOffset.MinValue;
+                if (user.TryGetProperty("created_at", out var ca) && ca.TryGetDateTimeOffset(out var caDt))
+                {
+                    createdAt = caDt;
+                }
 
-                DateTimeOffset? lastSignIn = null;
-                if (user.TryGetProperty("last_sign_in_at", out var lsi) && lsi.ValueKind != JsonValueKind.Null)
-                    lastSignIn = lsi.GetDateTimeOffset();
-
-                var createdAt = user.TryGetProperty("created_at", out var ca) && ca.ValueKind != JsonValueKind.Null
-                    ? ca.GetDateTimeOffset()
-                    : DateTimeOffset.MinValue;
-
-                users.Add(new SupabaseAuthUser(id, email, lastSignIn, createdAt));
+                if (!string.IsNullOrEmpty(id))
+                {
+                    userList.Add(new SupabaseAuthUser(id, email, lastSignInAt, createdAt));
+                }
             }
         }
 
-        return new SupabaseUserListResult(users, total);
+        var total = root.TryGetProperty("total", out var totalEl) ? totalEl.GetInt32() : userList.Count;
+        return new SupabaseUserListResult(userList, total);
     }
 
     public async Task LogoutUserAsync(string userId, CancellationToken ct = default)
     {
-        // GoTrue admin API: ban the user briefly to invalidate all refresh tokens,
-        // then immediately unban. This forces re-authentication on next token refresh.
-        // Step 1: Ban for 1 second
+        // Invalidate all refresh tokens by updating the user with a temporary ban, then immediately unbanning
+        // This forces all sessions to re-authenticate
         var banReq = BuildRequest(HttpMethod.Put, $"/users/{userId}", new
         {
-            ban_duration = "1s"
+            banned_until = DateTimeOffset.UtcNow.AddMinutes(1).ToString("o")
         });
         var banRes = await http.SendAsync(banReq, ct);
         if (!banRes.IsSuccessStatusCode)
-        {
-            var banBody = await banRes.Content.ReadAsStringAsync(ct);
-            logger.LogWarning("[SupabaseAdmin] Ban-to-logout failed for {UserId}: {Body}", userId, banBody);
-            throw new InvalidOperationException($"LogoutUser ban step failed: {banBody}");
-        }
+            throw new InvalidOperationException($"LogoutUser (ban) failed: {await banRes.Content.ReadAsStringAsync(ct)}");
 
-        // Step 2: Immediately unban by setting ban_duration to "none" (clears banned_until)
+        // Immediately unban the user
         var unbanReq = BuildRequest(HttpMethod.Put, $"/users/{userId}", new
         {
-            ban_duration = "none"
+            banned_until = (string?)null
         });
         var unbanRes = await http.SendAsync(unbanReq, ct);
         if (!unbanRes.IsSuccessStatusCode)
-        {
-            var unbanBody = await unbanRes.Content.ReadAsStringAsync(ct);
-            logger.LogWarning("[SupabaseAdmin] Unban-after-logout failed for {UserId}: {Body}", userId, unbanBody);
-            // Don't throw — the ban will expire in 1s anyway
-        }
+            throw new InvalidOperationException($"LogoutUser (unban) failed: {await unbanRes.Content.ReadAsStringAsync(ct)}");
 
-        logger.LogInformation("[SupabaseAdmin] Force-logged-out user {UserId} (ban/unban cycle)", userId);
+        logger.LogInformation("[SupabaseAdmin] Logged out user {UserId} (invalidated all sessions)", userId);
     }
 }

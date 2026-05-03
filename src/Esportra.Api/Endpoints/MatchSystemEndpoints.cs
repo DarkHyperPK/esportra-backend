@@ -3,10 +3,8 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
-using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
-using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -188,23 +186,18 @@ public static class MatchSystemEndpoints
                     if (captain?.user_id is not null)
                     {
                         var captainId = captain.user_id is Guid g ? g : Guid.Parse(captain.user_id.ToString());
-                        var reporterTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                            "SELECT name FROM teams WHERE id = @id",
-                            new { id = Guid.Parse(req.ReportedByTeamId) });
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications
                               (user_id, type, title, message, link, data, is_read)
                             VALUES
-                              (@userId, 'result_reported', @title,
-                               @msg,
+                              (@userId, 'result_reported', 'Match Result Reported',
+                               'Your opponent has reported the match result. Please verify or dispute.',
                                @link, @data::jsonb, FALSE)
                             """,
                             new
                             {
                                 userId = captainId,
-                                title  = $"⚔️ Match Result Submitted",
-                                msg    = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
                                 link   = matchLink,
                                 data   = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
                             });
@@ -224,7 +217,10 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to submit match report for match {MatchId}", id);
-                return Results.Json(new { error = "We couldn't submit your report. Please try again." }, statusCode: 500);
+                return Results.Problem(
+                    detail: "Report submission failed. Please try again.",
+                    statusCode: 500,
+                    title: "Report submission failed");
             }
         }).RequireAuthorization("Authenticated");
 
@@ -447,81 +443,6 @@ public static class MatchSystemEndpoints
                                         logger.LogInformation(
                                             "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
                                             id, winnerId, team1Wins, team2Wins, bestOf);
-
-                                        // Auto-delete game server after match finalized
-                                        var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
-                                        _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
-                                            id, db, dathostSvc,
-                                            matchHub, logger, CancellationToken.None));
-
-                                        // Check if all matches in this stage are now completed → set stage + tournament winner
-                                        try
-                                        {
-                                            if (match.version_id is not null)
-                                            {
-                                                var versionId = (Guid)match.version_id;
-                                                var pendingCount = await conn.QuerySingleAsync<int>(
-                                                    "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
-                                                    new { versionId });
-
-                                                if (pendingCount == 0)
-                                                {
-                                                    var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
-                                                        new { versionId });
-
-                                                    if (stageId is not null)
-                                                    {
-                                                        await conn.ExecuteAsync(
-                                                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                                                            new { stageId });
-
-                                                        var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                                                            "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
-                                                            new { stageId });
-
-                                                        if (stageInfo is not null)
-                                                        {
-                                                            var fmt = (string?)stageInfo.format;
-                                                            if (fmt is "single_elimination" or "double_elimination")
-                                                            {
-                                                                var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                                                    """
-                                                                    SELECT winner_id FROM brkt_matches
-                                                                    WHERE version_id = @versionId
-                                                                      AND status = 'completed' AND winner_id IS NOT NULL
-                                                                    ORDER BY round_index DESC, match_number DESC
-                                                                    LIMIT 1
-                                                                    """,
-                                                                    new { versionId });
-
-                                                                if (gfWinnerId is not null)
-                                                                {
-                                                                    var tid = (Guid)stageInfo.tournament_id;
-                                                                    try
-                                                                    {
-                                                                        await conn.ExecuteAsync(
-                                                                            "SELECT admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                                                                            new { p_tournament_id = tid, p_winner_id = gfWinnerId });
-                                                                    }
-                                                                    catch
-                                                                    {
-                                                                        await conn.ExecuteAsync(
-                                                                            "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tournamentId",
-                                                                            new { winnerId = gfWinnerId, tournamentId = tid });
-                                                                    }
-                                                                    logger.LogInformation("Tournament {TournamentId} winner set to {WinnerId}", tid, gfWinnerId);
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        catch (Exception stageEx)
-                                        {
-                                            logger.LogWarning(stageEx, "Stage completion check failed for match {MatchId} (non-fatal)", id);
-                                        }
                                     }
                                 }
                                 catch (InvalidOperationException ex)
@@ -532,7 +453,7 @@ public static class MatchSystemEndpoints
                                     {
                                         success        = false,
                                         error          = "version_conflict",
-                                        message        = "This match was updated by someone else. Please try again.",
+                                        message        = "Match state changed during finalization. Please retry.",
                                         matchId        = id,
                                         reportId       = rid,
                                         seriesComplete = true,
@@ -583,7 +504,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to accept report {ReportId} for match {MatchId}", rid, id);
-                return Results.Json(new { error = "We couldn't process the report. Please try again." }, statusCode: 500);
+                return Results.Problem(detail: "Failed to accept report. Please try again.", statusCode: 500, title: "Accept failed");
             }
         }).RequireAuthorization("Authenticated");
 
@@ -595,7 +516,6 @@ public static class MatchSystemEndpoints
             HttpContext                       ctx,
             IDbConnectionFactory             db,
             IHubContext<MatchHub>            matchHub,
-            Esportra.Core.Alerts.AdminAlertService alertService,
             CancellationToken                ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -681,8 +601,8 @@ public static class MatchSystemEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                        VALUES (@userId, 'result_disputed', '🚨 Result Disputed!',
-                                'The opposing team has challenged your reported result. An organizer will step in to review.',
+                        VALUES (@userId, 'result_disputed', 'Match Result Disputed',
+                                'The opposing team has disputed your reported result. An organizer will review.',
                                 '/tournaments/captain',
                                 jsonb_build_object('match_id', @matchId::text)::jsonb, false)
                         """,
@@ -696,8 +616,8 @@ public static class MatchSystemEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                        VALUES (@userId, 'dispute_filed', '⚠️ Dispute Needs Your Attention',
-                                'A team has disputed a match result in your tournament. Head to Disputes to make your ruling.',
+                        VALUES (@userId, 'dispute_filed', 'Match Dispute Filed',
+                                'A team has disputed a match result in your tournament. Review in the Disputes tab.',
                                 @link,
                                 jsonb_build_object('match_id', @matchId::text, 'tournament_id', @tournamentId::text)::jsonb, false)
                         """,
@@ -706,16 +626,7 @@ public static class MatchSystemEndpoints
 
                 tx.Commit();
 
-                // 7a. Create admin alert for new dispute
-                await alertService.CreateAsync(
-                    "dispute_filed",
-                    Esportra.Core.Alerts.AlertSeverity.Warning,
-                    $"Match dispute filed — {(string)dispute.reference_number}",
-                    $"A team has disputed match result. Reason: {req.Reason?[..Math.Min(req.Reason?.Length ?? 0, 100)]}",
-                    new { dispute_id = (Guid)dispute.id, match_id = id, reference = (string)dispute.reference_number },
-                    ct);
-
-                // 7b. Broadcast dispute event via SignalR (after commit)
+                // 7. Broadcast dispute event via SignalR (after commit)
                 await matchHub.Clients
                     .Group(MatchHub.MatchGroup(id.ToString()))
                     .SendAsync(MatchHubEvents.ReportDisputed,
@@ -723,10 +634,10 @@ public static class MatchSystemEndpoints
 
                 return Results.Ok(new { success = true, matchId = id, reportId = rid, disputeId = (Guid)dispute.id });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 tx.Rollback();
-                return Results.Json(new { error = "We couldn't file your dispute. Please try again." }, statusCode: 500);
+                return Results.Problem("Failed to file dispute. Please try again.");
             }
         }).RequireAuthorization("Authenticated");
 
@@ -850,9 +761,9 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller belongs to the team and is not a coach
+            // Verify caller belongs to the team
             var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE AND role != 'coach')",
+                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
                 new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
@@ -1078,7 +989,7 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to create time proposal for match {MatchId}", matchId);
-                return Results.Json(new { error = "We couldn't submit your time proposal. Please try again." }, statusCode: 500);
+                return Results.Json(new { error = "Failed to create time proposal." }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -1107,13 +1018,7 @@ public static class MatchSystemEndpoints
 
             // Prevent accepting own proposal
             var proposerTeamId = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM match_time_proposals mtp
-                JOIN team_members tm ON tm.user_id = mtp.proposed_by AND tm.role = 'captain' AND tm.is_active = TRUE
-                JOIN brkt_matches bm ON bm.id = mtp.match_id AND (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE mtp.id = @proposalId AND mtp.match_id = @matchId
-                LIMIT 1
-                """,
+                "SELECT proposed_by_team_id::text FROM match_time_proposals WHERE id = @proposalId AND match_id = @matchId",
                 new { proposalId, matchId });
             if (proposerTeamId is not null && captainTeam == proposerTeamId)
                 return Results.BadRequest(new { error = "Cannot accept your own time proposal." });
@@ -1331,12 +1236,10 @@ public static class MatchSystemEndpoints
             if (dispute is not null)
             {
                 var notifType    = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
-                var notifTitle   = req.Status == "resolved"
-                    ? "✅ Dispute Resolved"
-                    : "❌ Dispute Rejected";
+                var notifTitle   = req.Status == "resolved" ? "Dispute Resolved" : "Dispute Rejected";
                 var notifMessage = req.Status == "resolved"
-                    ? $"Your match dispute has been resolved in your favor. Organizer note: {req.Resolution}"
-                    : $"Your match dispute was reviewed and rejected. Organizer note: {req.Resolution}";
+                    ? $"Your match dispute has been resolved. Organizer note: {req.Resolution}"
+                    : $"Your match dispute was rejected. Organizer note: {req.Resolution}";
                 var notifData    = JsonSerializer.Serialize(new { match_id = matchId });
 
                 // Resolve tournament ID for notification link
