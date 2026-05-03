@@ -3894,9 +3894,91 @@ public static class SeasonEndpoints
 
         return Results.Ok(new { success = true, message = "Force advancement applied" });
     }).RequireAuthorization();
+
+    // DELETE /api/seasons/:id
+    app.MapDelete("/api/seasons/{id}", async (
+        Guid id,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        using var tx = conn.BeginTransaction();
+
+        var access = await GetSeasonAccessAsync(conn, id, userCtx.UserIdGuid, tx);
+        if (access is null) return Results.NotFound();
+        if (!access.CanManage) return Results.Forbid();
+
+        // Only allow deletion of draft seasons
+        if (access.Status != "draft")
+        {
+            return Results.BadRequest(new { error = "Only draft seasons can be deleted." });
+        }
+
+        // Soft delete by setting deleted_at
+        await conn.ExecuteAsync(
+            "UPDATE seasons SET deleted_at = NOW(), updated_at = NOW() WHERE id = @id",
+            new { id },
+            tx);
+
+        tx.Commit();
+        return Results.Ok(new { success = true, message = "Season deleted" });
+    }).RequireAuthorization("Authenticated");
+
+    // POST /api/seasons/bulk-delete
+    app.MapPost("/api/seasons/bulk-delete", async (
+        [FromBody] BulkDeleteSeasonsRequest req,
+        IDbConnectionFactory db,
+        HttpContext ctx,
+        CancellationToken ct) =>
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        using var tx = conn.BeginTransaction();
+
+        var seasonIds = req.SeasonIds ?? Array.Empty<Guid>();
+        var deletedCount = 0;
+        var errors = new List<string>();
+
+        foreach (var seasonId in seasonIds)
+        {
+            var access = await GetSeasonAccessAsync(conn, seasonId, userCtx.UserIdGuid, tx);
+            if (access is null)
+            {
+                errors.Add($"Season {seasonId} not found");
+                continue;
+            }
+            if (!access.CanManage)
+            {
+                errors.Add($"No permission to delete season {seasonId}");
+                continue;
+            }
+            if (access.Status != "draft")
+            {
+                errors.Add($"Season {seasonId} is not in draft status");
+                continue;
+            }
+
+            await conn.ExecuteAsync(
+                "UPDATE seasons SET deleted_at = NOW(), updated_at = NOW() WHERE id = @id",
+                new { id = seasonId },
+                tx);
+
+            deletedCount++;
+        }
+
+        tx.Commit();
+        return Results.Ok(new { success = true, deletedCount, errors });
+    }).RequireAuthorization("Authenticated");
 }
 
 // Request DTOs
+public record BulkDeleteSeasonsRequest(Guid[] SeasonIds);
 public record CancelSeasonRequest(string Reason);
 public record DuplicateSeasonRequest(string NewName, string NewSlug);
 public record AddSeasonTournamentRequest(Guid TournamentId, string Role, string? Region, string? DisplayName, int SortOrder);
