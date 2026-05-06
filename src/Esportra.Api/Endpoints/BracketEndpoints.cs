@@ -515,12 +515,14 @@ public static class BracketEndpoints
                 """
                 SELECT m.*,
                        l.x, l.y,
-                       t1.name AS team1_name, t1.logo_url AS team1_logo,
-                       t2.name AS team2_name, t2.logo_url AS team2_logo
+                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
+                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
                 LEFT JOIN teams t2 ON t2.id = m.team2_id
+                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
+                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
                 WHERE m.version_id = @versionId
                 """,
                 new { versionId });
@@ -566,11 +568,13 @@ public static class BracketEndpoints
                 var rows = await conn.QueryAsync<dynamic>(
                     """
                     SELECT m.*,
-                           t1.name AS team1_name, t1.logo_url AS team1_logo,
-                           t2.name AS team2_name, t2.logo_url AS team2_logo
+                           COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
+                           COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
                     FROM brkt_matches m
                     LEFT JOIN teams t1 ON t1.id = m.team1_id
                     LEFT JOIN teams t2 ON t2.id = m.team2_id
+                    LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
+                    LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
                     WHERE m.version_id = @versionId
                     ORDER BY m.round_index, m.match_number
                     """, new { versionId });
@@ -582,12 +586,14 @@ public static class BracketEndpoints
                 var rows = await conn.QueryAsync<dynamic>(
                     """
                     SELECT m.*,
-                           t1.name AS team1_name, t1.logo_url AS team1_logo,
-                           t2.name AS team2_name, t2.logo_url AS team2_logo
+                           COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
+                           COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
                     FROM brkt_matches m
                     JOIN brkt_versions v ON v.id = m.version_id
                     LEFT JOIN teams t1 ON t1.id = m.team1_id
                     LEFT JOIN teams t2 ON t2.id = m.team2_id
+                    LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
+                    LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
                     WHERE v.stage_id = @stageId
                     ORDER BY v.version_number DESC, m.round_index, m.match_number
                     """, new { stageId });
@@ -607,12 +613,14 @@ public static class BracketEndpoints
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT m.*,
-                       t1.name AS team1_name, t1.logo_url AS team1_logo,
-                       t2.name AS team2_name, t2.logo_url AS team2_logo,
+                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
+                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
                        ts.best_of AS stage_best_of
                 FROM brkt_matches m
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
                 LEFT JOIN teams t2 ON t2.id = m.team2_id
+                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
+                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
                 LEFT JOIN brkt_versions bv ON bv.id = m.version_id
                 LEFT JOIN tournament_stages ts ON ts.id = bv.stage_id
                 WHERE m.id = @id
@@ -731,12 +739,14 @@ public static class BracketEndpoints
                 """
                 SELECT m.*,
                        l.x, l.y,
-                       t1.name AS team1_name, t1.logo_url AS team1_logo,
-                       t2.name AS team2_name, t2.logo_url AS team2_logo
+                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
+                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
                 LEFT JOIN teams t2 ON t2.id = m.team2_id
+                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
+                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
                 WHERE m.version_id = @id
                 """, new { id });
 
@@ -761,13 +771,15 @@ public static class BracketEndpoints
                    m.bracket_type, m.group_id,
                    l.x AS x_pos, l.y AS y_pos,
                    bv.stage_id,
-                   t1.name AS team1_name, t1.logo_url AS team1_logo,
-                   t2.name AS team2_name, t2.logo_url AS team2_logo
+                   COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
+                   COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
             FROM public.brkt_matches m
             LEFT JOIN public.brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
             LEFT JOIN public.brkt_versions bv ON bv.id = m.version_id
             LEFT JOIN public.teams t1 ON t1.id = m.team1_id
             LEFT JOIN public.teams t2 ON t2.id = m.team2_id
+            LEFT JOIN public.tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
+            LEFT JOIN public.tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
             WHERE m.version_id = @versionId
             ORDER BY m.round_index, m.match_number
             """, new { versionId })).AsList();

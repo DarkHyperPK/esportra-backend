@@ -1534,8 +1534,8 @@ public static class TournamentEndpoints
                 $"""
                 SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
                        tp.participant_type::text AS participant_type,
-                       tp.status::text AS status, tp.created_at,
-                       t.name AS team_name, t.logo_url AS team_logo_url,
+                       tp.status::text AS status, tp.created_at, tp.checked_in_at, tp.is_mock,
+                       COALESCE(t.name, tp.team_name) AS team_name, t.logo_url AS team_logo_url,
                        tm.user_id AS member_user_id,
                        p.username AS member_username,
                        sp.username AS solo_username,
@@ -1573,6 +1573,8 @@ public static class TournamentEndpoints
                         participant_type = first.participant_type as string,
                         status = (string)first.status,
                         created_at = first.created_at,
+                        checked_in_at = first.checked_in_at as DateTime?,
+                        is_mock = first.is_mock as bool?,
                         team_name = first.team_name as string,
                         team_logo_url = first.team_logo_url as string,
                         team_members = string.Join(", ", members.Select(m => m.username)),
@@ -3391,10 +3393,10 @@ public static class TournamentEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO tournament_participants
-                        (tournament_id, team_name, participant_type, status, is_mock, created_at, updated_at)
+                        (tournament_id, team_name, participant_type, status, is_mock, checked_in_at, created_at, updated_at)
                     VALUES
                         (@tournamentId, @teamName, @participantType::registration_type,
-                         @mockStatus::registration_status, TRUE, NOW(), NOW())
+                         @mockStatus::registration_status, TRUE, NOW(), NOW(), NOW())
                     """,
                     rows, tx);
 
