@@ -3324,77 +3324,102 @@ public static class TournamentEndpoints
             [FromBody] MockGenerateRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            ILoggerFactory       loggerFactory,
             CancellationToken    ct) =>
         {
+            var logger  = loggerFactory.CreateLogger("MockEndpoints");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
-            using var tx   = conn.BeginTransaction();
-
-            var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT organizer_id, status, max_teams, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
-                new { id }, tx);
-            if (tournament is null) return Results.NotFound();
-            if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
-                return Results.Forbid();
-            var tStatus = (string)tournament.status;
-            if (tStatus is "open" or "ongoing")
-                return Results.BadRequest(new { error = "Mock participants cannot be added to a live tournament." });
-
-            var maxTeams = (int)tournament.max_teams;
-            var count    = req.Count.HasValue
-                ? Math.Clamp(req.Count.Value, 2, Math.Min(maxTeams, 128))
-                : maxTeams;
-
-            if (count < 2)
-                return Results.BadRequest(new { error = "At least 2 teams are required." });
-
-            // Clear existing mocks — delete child rows first (FK: stage_participants → tournament_participants)
-            await conn.ExecuteAsync(
-                """
-                DELETE FROM stage_participants sp
-                WHERE sp.stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)
-                  AND sp.participant_id IN (
-                      SELECT id FROM tournament_participants
-                      WHERE tournament_id = @id AND is_mock = TRUE
-                  )
-                """,
-                new { id }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
-                new { id }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM brkt_versions WHERE tournament_id = @id",
-                new { id }, tx);
-
-            var format          = (string)tournament.format;
-            var participantType = format is "solo" ? "solo" : "team";
-
-            var mockNames = MockTeamNames.Generate(count);
-            var rows      = mockNames.Select(name => new
+            try
             {
-                tournamentId    = id,
-                teamName        = name,
-                participantType,
-            }).ToList();
+                using var conn = db.CreateConnection();
+                using var tx   = conn.BeginTransaction();
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO tournament_participants
-                    (tournament_id, team_name, participant_type, status, is_mock, created_at, updated_at)
-                VALUES
-                    (@tournamentId, @teamName, @participantType::registration_type, 'checked_in', TRUE, NOW(), NOW())
-                """,
-                rows, tx);
+                logger.LogInformation("[mock/generate] Fetching tournament {Id}", id);
 
-            tx.Commit();
+                var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT organizer_id, status, max_teams, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
+                    new { id }, tx);
+                if (tournament is null) return Results.NotFound();
+                if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                    return Results.Forbid();
 
-            var inserted = await conn.QuerySingleAsync<int>(
-                "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
-                new { id });
+                var tStatus = (string)tournament.status;
+                logger.LogInformation("[mock/generate] Tournament status={Status} format={Format} maxTeams={Max}",
+                    tStatus, (string)tournament.format, (int)tournament.max_teams);
 
-            return Results.Ok(new { generated = inserted });
+                if (tStatus is "open" or "ongoing")
+                    return Results.BadRequest(new { error = "Mock participants cannot be added to a live tournament." });
+
+                var maxTeams = (int)tournament.max_teams;
+                var count    = req.Count.HasValue
+                    ? Math.Clamp(req.Count.Value, 2, Math.Min(maxTeams, 128))
+                    : maxTeams;
+
+                if (count < 2)
+                    return Results.BadRequest(new { error = "At least 2 teams are required." });
+
+                logger.LogInformation("[mock/generate] Generating {Count} mock participants", count);
+
+                // Delete child rows first (FK: stage_participants → tournament_participants)
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM stage_participants sp
+                    WHERE sp.stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)
+                      AND sp.participant_id IN (
+                          SELECT id FROM tournament_participants
+                          WHERE tournament_id = @id AND is_mock = TRUE
+                      )
+                    """,
+                    new { id }, tx);
+                await conn.ExecuteAsync(
+                    "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+                    new { id }, tx);
+                await conn.ExecuteAsync(
+                    "DELETE FROM brkt_versions WHERE tournament_id = @id",
+                    new { id }, tx);
+
+                logger.LogInformation("[mock/generate] Cleared existing mock data, inserting {Count} rows", count);
+
+                var format          = (string)tournament.format;
+                var participantType = format is "solo" ? "solo" : "team";
+                var mockNames       = MockTeamNames.Generate(count);
+                var rows            = mockNames.Select(name => new
+                {
+                    tournamentId    = id,
+                    teamName        = name,
+                    participantType,
+                    mockStatus      = "checked_in",
+                }).ToList();
+
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO tournament_participants
+                        (tournament_id, team_name, participant_type, status, is_mock, created_at, updated_at)
+                    VALUES
+                        (@tournamentId, @teamName, @participantType::registration_type,
+                         @mockStatus::registration_status, TRUE, NOW(), NOW())
+                    """,
+                    rows, tx);
+
+                tx.Commit();
+                logger.LogInformation("[mock/generate] Committed {Count} mock participants for tournament {Id}", count, id);
+
+                var inserted = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+                    new { id });
+
+                return Results.Ok(new { generated = inserted });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[mock/generate] Failed for tournament {Id}: {Message}", id, ex.Message);
+                return Results.Problem(
+                    detail:     ex.Message,
+                    title:      "Mock generation failed",
+                    statusCode: 500);
+            }
         }).RequireAuthorization("Organizer");
 
         // ── DELETE /api/tournaments/{id}/mock ─────────────────────────────────
