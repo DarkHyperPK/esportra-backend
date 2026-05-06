@@ -370,6 +370,12 @@ public static class TournamentEndpoints
                     return status != "rejected" && status != "cancelled";
                 });
 
+            var mockCount = isOrganizer
+                ? await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tournamentId AND is_mock = TRUE",
+                    new { tournamentId })
+                : 0;
+
             return Results.Ok(new
             {
                 tournament,
@@ -377,6 +383,7 @@ public static class TournamentEndpoints
                 stages,
                 isOrganizer,
                 staffPermissions,
+                mockCount,
             });
         });
 
@@ -533,6 +540,20 @@ public static class TournamentEndpoints
             if (organizerId is null) return Results.NotFound();
             if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
+
+            // ── Mock tournament guard: block publish if mock participants exist ──
+            if (req.Status is "open" or "published")
+            {
+                var mockCount = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+                    new { id });
+                if (mockCount > 0)
+                    return Results.BadRequest(new
+                    {
+                        error = $"Cannot publish tournament: {mockCount} mock participant(s) still exist. " +
+                                "Clear mock data before publishing."
+                    });
+            }
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -3278,6 +3299,8 @@ public static class TournamentEndpoints
                 });
             return Results.Ok(new { notified = adminIds.Count });
         }).RequireAuthorization("Authenticated");
+
+        MapMockEndpoints(app);
     }
 
     // ── GET /api/tournaments/by-slug/{slug} — fetch by slug or id ────────────
@@ -3290,6 +3313,123 @@ public static class TournamentEndpoints
 
     // ── POST /api/rosters/{rosterId}/members — get roster members via RPC ────
     // Replaces TournamentManage's supabase.rpc('get_roster_members')
+
+    // ── POST /api/tournaments/{id}/mock/generate ─────────────────────────────
+    // Generates fictitious checked-in participants so organizers can test
+    // bracket generation and stage flow while the tournament is in draft.
+    private static void MapMockEndpoints(WebApplication app)
+    {
+        app.MapPost("/api/tournaments/{id}/mock/generate", async (
+            Guid                 id,
+            [FromBody] MockGenerateRequest req,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT organizer_id, status, max_teams, format FROM tournaments WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+            if (tournament is null) return Results.NotFound();
+            if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                return Results.Forbid();
+            if ((string)tournament.status != "draft")
+                return Results.BadRequest(new { error = "Mock participants can only be added to draft tournaments." });
+
+            var maxTeams = (int)tournament.max_teams;
+            var count    = req.Count.HasValue
+                ? Math.Clamp(req.Count.Value, 2, Math.Max(maxTeams, 128))
+                : maxTeams;
+
+            if (count < 2)
+                return Results.BadRequest(new { error = "At least 2 teams are required." });
+
+            conn.Open();
+            using var tx = conn.BeginTransaction();
+
+            // Clear existing mocks and any bracket data for a clean slate
+            await conn.ExecuteAsync(
+                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+                new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM brkt_versions WHERE tournament_id = @id",
+                new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
+                new { id }, tx);
+
+            var format          = (string)tournament.format;
+            var participantType = format is "solo" ? "solo" : "team";
+
+            var mockNames = MockTeamNames.Generate(count);
+            var rows      = mockNames.Select(name => new
+            {
+                tournamentId    = id,
+                teamName        = name,
+                participantType,
+            }).ToList();
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO tournament_participants
+                    (tournament_id, team_name, participant_type, status, is_mock, created_at, updated_at)
+                VALUES
+                    (@tournamentId, @teamName, @participantType::registration_type, 'checked_in', TRUE, NOW(), NOW())
+                """,
+                rows, tx);
+
+            tx.Commit();
+
+            var inserted = await conn.QuerySingleAsync<int>(
+                "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+                new { id });
+
+            return Results.Ok(new { generated = inserted });
+        }).RequireAuthorization("Organizer");
+
+        // ── DELETE /api/tournaments/{id}/mock ─────────────────────────────────
+        // Clears all mock participants and bracket data derived from them.
+        // Tournament settings, stage configs, and real participants are untouched.
+        app.MapDelete("/api/tournaments/{id}/mock", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT organizer_id FROM tournaments WHERE id = @id AND deleted_at IS NULL",
+                new { id });
+            if (organizerId is null) return Results.NotFound();
+            if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                return Results.Forbid();
+
+            conn.Open();
+            using var tx = conn.BeginTransaction();
+
+            var deleted = await conn.ExecuteScalarAsync<int>(
+                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE RETURNING COUNT(*)",
+                new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM brkt_versions WHERE tournament_id = @id",
+                new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
+                new { id }, tx);
+
+            tx.Commit();
+
+            return Results.NoContent();
+        }).RequireAuthorization("Organizer");
+    }
 }
 
 // ── Request records ───────────────────────────────────────────────────────────
@@ -3427,6 +3567,8 @@ public sealed record BRSubmitEvidenceRequest(
     int?    Placement = null,
     int?    Kills     = null);
 
+public sealed record MockGenerateRequest(int? Count = null);
+
 // Internal deserialization helpers for BR evidence merge
 internal sealed class BRGameDataInternal
 {
@@ -3447,4 +3589,45 @@ internal sealed class BREvidenceItem
     public int? placement { get; set; }
     public int? kills { get; set; }
     public bool reviewed { get; set; }
+}
+
+// ── Mock team name generator ──────────────────────────────────────────────────
+internal static class MockTeamNames
+{
+    private static readonly string[] _pool =
+    [
+        "Shadow Wolves", "Iron Fist", "Ghost Protocol", "Storm Riders", "Neon Strike",
+        "Titan Force", "Dark Matter", "Echo Squad", "Venom Vipers", "Steel Phoenix",
+        "Apex Hunters", "Cyber Syndicate", "Rogue Elements", "Night Stalkers", "Blade Runners",
+        "Thunder Clap", "Void Walkers", "Circuit Breakers", "Solar Flare", "Crimson Tide",
+        "Silent Storm", "Alpha Protocol", "Zero Hour", "Phase Shift", "Fracture Point",
+        "Orbital Strike", "Black Horizon", "Quantum Flux", "Reaper Squad", "Ice Breakers",
+        "Nova Surge", "Static Charge", "War Machine", "Red Signal", "Overwatch Protocol",
+        "Deep Impact", "Code Red", "Vector Prime", "Hex Runners", "Signal Lost",
+        "Binary Kings", "Override", "Flux State", "Warpzone Elite", "Crossfire Unit",
+        "Digital Ghosts", "Null Pointer", "Stack Overflow", "Kernel Panic", "Buffer Overflow",
+        "Cache Miss", "Stack Smash", "Heap Spray", "Race Condition", "Deadlock",
+        "Memory Leak", "Segfault", "Off By One", "Bit Flip", "Overflow Error",
+    ];
+
+    public static List<string> Generate(int count)
+    {
+        var pool   = _pool.ToList();
+        var result = new List<string>(count);
+        var rng    = new Random(42); // deterministic so names are consistent within a session
+
+        while (result.Count < count)
+        {
+            if (pool.Count == 0)
+            {
+                // If we've exhausted the pool, recycle with a numeric suffix
+                pool = _pool.Select((n, i) => $"{n} {(result.Count / _pool.Length) + 2}").ToList();
+            }
+            var idx = rng.Next(pool.Count);
+            result.Add(pool[idx]);
+            pool.RemoveAt(idx);
+        }
+
+        return result;
+    }
 }
