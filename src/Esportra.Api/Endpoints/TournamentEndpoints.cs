@@ -3350,13 +3350,7 @@ public static class TournamentEndpoints
             if (count < 2)
                 return Results.BadRequest(new { error = "At least 2 teams are required." });
 
-            // Clear existing mocks and bracket data — scoped to mock-derived rows only
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
-                new { id }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM brkt_versions WHERE tournament_id = @id",
-                new { id }, tx);
+            // Clear existing mocks — delete child rows first (FK: stage_participants → tournament_participants)
             await conn.ExecuteAsync(
                 """
                 DELETE FROM stage_participants sp
@@ -3367,26 +3361,30 @@ public static class TournamentEndpoints
                   )
                 """,
                 new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+                new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM brkt_versions WHERE tournament_id = @id",
+                new { id }, tx);
 
             var format          = (string)tournament.format;
             var participantType = format is "solo" ? "solo" : "team";
-            var isSolo          = participantType == "solo";
 
             var mockNames = MockTeamNames.Generate(count);
             var rows      = mockNames.Select(name => new
             {
                 tournamentId    = id,
-                teamName        = isSolo ? (string?)null : name,
-                gamerTag        = isSolo ? name : (string?)null,
+                teamName        = name,
                 participantType,
             }).ToList();
 
             await conn.ExecuteAsync(
                 """
                 INSERT INTO tournament_participants
-                    (tournament_id, team_name, gamer_tag, participant_type, status, is_mock, created_at, updated_at)
+                    (tournament_id, team_name, participant_type, status, is_mock, created_at, updated_at)
                 VALUES
-                    (@tournamentId, @teamName, @gamerTag, @participantType::registration_type, 'checked_in', TRUE, NOW(), NOW())
+                    (@tournamentId, @teamName, @participantType::registration_type, 'checked_in', TRUE, NOW(), NOW())
                 """,
                 rows, tx);
 
@@ -3421,7 +3419,7 @@ public static class TournamentEndpoints
             if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
-            // Scope stage_participants deletion to mock-derived rows only
+            // Delete child rows first (FK: stage_participants → tournament_participants)
             await conn.ExecuteAsync(
                 """
                 DELETE FROM stage_participants sp
