@@ -3362,16 +3362,11 @@ public static class TournamentEndpoints
 
                 logger.LogInformation("[mock/generate] Generating {Count} mock participants", count);
 
-                // Delete child rows first (FK: stage_participants → tournament_participants)
+                // stage_participants holds (stage_id, team_id) — mock participants have
+                // no real team_id so they're never in this table. Clear it fully for all
+                // stages so bracket generation starts from a clean slate.
                 await conn.ExecuteAsync(
-                    """
-                    DELETE FROM stage_participants sp
-                    WHERE sp.stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)
-                      AND sp.participant_id IN (
-                          SELECT id FROM tournament_participants
-                          WHERE tournament_id = @id AND is_mock = TRUE
-                      )
-                    """,
+                    "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
                     new { id }, tx);
                 await conn.ExecuteAsync(
                     "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
@@ -3444,16 +3439,11 @@ public static class TournamentEndpoints
             if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
-            // Delete child rows first (FK: stage_participants → tournament_participants)
+            // stage_participants holds (stage_id, team_id) — mock participants have
+            // no real team_id so they're never in this table. Clear it fully for all
+            // stages so the next simulation starts from a clean slate.
             await conn.ExecuteAsync(
-                """
-                DELETE FROM stage_participants sp
-                WHERE sp.stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)
-                  AND sp.participant_id IN (
-                      SELECT id FROM tournament_participants
-                      WHERE tournament_id = @id AND is_mock = TRUE
-                  )
-                """,
+                "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
                 new { id }, tx);
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
