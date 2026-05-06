@@ -3330,10 +3330,11 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            using var tx   = conn.BeginTransaction();
 
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT organizer_id, status, max_teams, format FROM tournaments WHERE id = @id AND deleted_at IS NULL",
-                new { id });
+                "SELECT organizer_id, status, max_teams, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
+                new { id }, tx);
             if (tournament is null) return Results.NotFound();
             if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
@@ -3343,16 +3344,13 @@ public static class TournamentEndpoints
 
             var maxTeams = (int)tournament.max_teams;
             var count    = req.Count.HasValue
-                ? Math.Clamp(req.Count.Value, 2, Math.Max(maxTeams, 128))
+                ? Math.Clamp(req.Count.Value, 2, Math.Min(maxTeams, 128))
                 : maxTeams;
 
             if (count < 2)
                 return Results.BadRequest(new { error = "At least 2 teams are required." });
 
-            conn.Open();
-            using var tx = conn.BeginTransaction();
-
-            // Clear existing mocks and any bracket data for a clean slate
+            // Clear existing mocks and bracket data — scoped to mock-derived rows only
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
                 new { id }, tx);
@@ -3360,26 +3358,35 @@ public static class TournamentEndpoints
                 "DELETE FROM brkt_versions WHERE tournament_id = @id",
                 new { id }, tx);
             await conn.ExecuteAsync(
-                "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
+                """
+                DELETE FROM stage_participants sp
+                WHERE sp.stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)
+                  AND sp.participant_id IN (
+                      SELECT id FROM tournament_participants
+                      WHERE tournament_id = @id AND is_mock = TRUE
+                  )
+                """,
                 new { id }, tx);
 
             var format          = (string)tournament.format;
             var participantType = format is "solo" ? "solo" : "team";
+            var isSolo          = participantType == "solo";
 
             var mockNames = MockTeamNames.Generate(count);
             var rows      = mockNames.Select(name => new
             {
                 tournamentId    = id,
-                teamName        = name,
+                teamName        = isSolo ? (string?)null : name,
+                gamerTag        = isSolo ? name : (string?)null,
                 participantType,
             }).ToList();
 
             await conn.ExecuteAsync(
                 """
                 INSERT INTO tournament_participants
-                    (tournament_id, team_name, participant_type, status, is_mock, created_at, updated_at)
+                    (tournament_id, team_name, gamer_tag, participant_type, status, is_mock, created_at, updated_at)
                 VALUES
-                    (@tournamentId, @teamName, @participantType::registration_type, 'checked_in', TRUE, NOW(), NOW())
+                    (@tournamentId, @teamName, @gamerTag, @participantType::registration_type, 'checked_in', TRUE, NOW(), NOW())
                 """,
                 rows, tx);
 
@@ -3405,25 +3412,31 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            using var tx   = conn.BeginTransaction();
 
             var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT organizer_id FROM tournaments WHERE id = @id AND deleted_at IS NULL",
-                new { id });
+                new { id }, tx);
             if (organizerId is null) return Results.NotFound();
             if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
-            conn.Open();
-            using var tx = conn.BeginTransaction();
-
-            var deleted = await conn.ExecuteScalarAsync<int>(
-                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE RETURNING COUNT(*)",
+            // Scope stage_participants deletion to mock-derived rows only
+            await conn.ExecuteAsync(
+                """
+                DELETE FROM stage_participants sp
+                WHERE sp.stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)
+                  AND sp.participant_id IN (
+                      SELECT id FROM tournament_participants
+                      WHERE tournament_id = @id AND is_mock = TRUE
+                  )
+                """,
+                new { id }, tx);
+            await conn.ExecuteAsync(
+                "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
                 new { id }, tx);
             await conn.ExecuteAsync(
                 "DELETE FROM brkt_versions WHERE tournament_id = @id",
-                new { id }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
                 new { id }, tx);
 
             tx.Commit();
@@ -3615,7 +3628,7 @@ internal static class MockTeamNames
     {
         var pool   = _pool.ToList();
         var result = new List<string>(count);
-        var rng    = new Random(42); // deterministic so names are consistent within a session
+        var rng    = Random.Shared;
 
         while (result.Count < count)
         {
