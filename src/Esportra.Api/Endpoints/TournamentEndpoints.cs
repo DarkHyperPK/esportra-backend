@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
@@ -3337,8 +3337,9 @@ public static class TournamentEndpoints
             if (tournament is null) return Results.NotFound();
             if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
-            if ((string)tournament.status != "draft")
-                return Results.BadRequest(new { error = "Mock participants can only be added to draft tournaments." });
+            var tStatus = (string)tournament.status;
+            if (tStatus is "open" or "ongoing")
+                return Results.BadRequest(new { error = "Mock participants cannot be added to a live tournament." });
 
             var maxTeams = (int)tournament.max_teams;
             var count    = req.Count.HasValue
@@ -3631,3 +3632,4 @@ internal static class MockTeamNames
         return result;
     }
 }
+
