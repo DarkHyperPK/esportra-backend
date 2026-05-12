@@ -3341,18 +3341,22 @@ public static class TournamentEndpoints
                 logger.LogInformation("[mock/generate] Fetching tournament {Id}", id);
 
                 var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT organizer_id, status, max_teams, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
+                    "SELECT organizer_id, status, is_public, max_teams, team_size, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
                     new { id }, tx);
                 if (tournament is null) return Results.NotFound();
                 if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                     return Results.Forbid();
 
-                var tStatus = (string)tournament.status;
-                logger.LogInformation("[mock/generate] Tournament status={Status} format={Format} maxTeams={Max}",
-                    tStatus, (string)tournament.format, (int)tournament.max_teams);
+                var tStatus  = ((string)tournament.status).ToLowerInvariant();
+                var isPublic = (bool)tournament.is_public;
+                logger.LogInformation("[mock/generate] Tournament status={Status} isPublic={IsPublic} format={Format} maxTeams={Max}",
+                    tStatus, isPublic, (string)tournament.format, (int)tournament.max_teams);
 
-                if (tStatus is "open" or "ongoing")
+                if (tStatus is "ongoing" or "live")
                     return Results.BadRequest(new { error = "Mock participants cannot be added to a live tournament." });
+
+                if (isPublic)
+                    return Results.BadRequest(new { error = "Mock participants can only be added before the tournament is public." });
 
                 var maxTeams = (int)tournament.max_teams;
                 var count    = req.Count.HasValue
