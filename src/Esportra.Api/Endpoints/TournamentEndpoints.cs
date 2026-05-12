@@ -3379,8 +3379,8 @@ public static class TournamentEndpoints
 
                 logger.LogInformation("[mock/generate] Cleared existing mock data, inserting {Count} rows", count);
 
-                var format          = (string)tournament.format;
-                var participantType = format is "solo" ? "solo" : "team";
+                var teamSize        = (int)tournament.team_size;
+                var participantType = teamSize == 1 ? "solo" : "team";
                 var mockNames       = MockTeamNames.Generate(count);
                 var rows            = mockNames.Select(name => new
                 {
