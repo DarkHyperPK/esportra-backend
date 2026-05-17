@@ -318,6 +318,8 @@ builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<Esportra.Api.Services.SeasonStandingsSyncService>();
+builder.Services.AddScoped<Esportra.Api.Services.SeasonAdvancementService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 
@@ -329,6 +331,7 @@ builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>(
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<CheckinWalkoversJob>();
 builder.Services.AddHostedService<DiscordDmDispatcherJob>();
+builder.Services.AddHostedService<InviteExpiryJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -493,6 +496,12 @@ app.MapProfileResolveEndpoint();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
+app.MapTournamentInvitationEndpoints();
+app.MapSeasonEndpoints();
+app.MapSeasonStructureEndpoints();
+app.MapSeasonOpsEndpoints();
+app.MapSeasonAnnouncementEndpoints();
+app.MapSeasonCompatibilityEndpoints();
 app.MapVenueEndpoints();
 app.MapVenueStaffEndpoints();
 app.MapSessionRefundEndpoints();
@@ -572,3 +581,4 @@ catch (Exception ex)
     Console.Out.Flush();
     throw;
 }
+

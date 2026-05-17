@@ -21,7 +21,7 @@ public static class StaffAuthHelper
 {
     // ── By tournament_id ────────────────────────────────────────────────────
     public static async Task<bool> CanActOnTournamentAsync(
-        IDbConnection conn, Guid userId, Guid tournamentId, string? requiredPermission = null)
+        IDbConnection conn, Guid userId, Guid tournamentId, string? requiredPermission = null, IDbTransaction? tx = null)
     {
         return await conn.QuerySingleAsync<bool>(
             """
@@ -50,7 +50,7 @@ public static class StaffAuthHelper
                   )
             )
             """,
-            new { userId, tournamentId, perm = requiredPermission });
+            new { userId, tournamentId, perm = requiredPermission }, tx);
     }
 
     // ── By brkt_versions.id ─────────────────────────────────────────────────
@@ -155,7 +155,8 @@ public static class StaffAuthHelper
     /// Use as a final fallback after the SQL check returns false.
     /// </summary>
     public static bool IsPlatformAdmin(UserContext userCtx)
-        => userCtx.Roles.Contains("admin") || userCtx.Roles.Contains("super_admin");
+        => userCtx.Roles.Contains("admin", StringComparer.OrdinalIgnoreCase)
+           || userCtx.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase);
 
     // ── Permission constants (mirror frontend StaffPermission type) ──────────
     public const string PermBracketEdit       = "bracket:edit";

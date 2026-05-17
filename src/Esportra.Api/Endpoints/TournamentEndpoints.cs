@@ -866,21 +866,51 @@ public static class TournamentEndpoints
 
             // Lock tournament row to prevent race condition on capacity check
             var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT status, max_teams, entry_fee, payment_instructions, game FROM tournaments WHERE id = @id FOR UPDATE",
+                """
+                SELECT status, max_teams, entry_fee, payment_instructions, game,
+                       reserved_invite_slots,
+                       COALESCE(settings->>'registrationType', 'open') AS registration_type
+                FROM tournaments
+                WHERE id = @id
+                FOR UPDATE
+                """,
                 new { id }, txn);
             if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
             if ((string)tourn.status is not "open" and not "published")
             {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament is not accepting registrations." }); }
 
+            if (string.Equals((string?)tourn.registration_type, "invite_only", StringComparison.OrdinalIgnoreCase))
+            {   txn.Rollback(); return Results.BadRequest(new { error = "This tournament is invite-only." }); }
+
             // Check capacity (0 or null = unlimited)
             int? maxTeams = (int?)tourn.max_teams;
             if (maxTeams.HasValue && maxTeams.Value > 0)
             {
-                var currentCount = await conn.QuerySingleAsync<int>(
-                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled')",
-                    new { id }, txn);
-                if (currentCount >= maxTeams.Value)
-                {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
+                var reservedSlots = Math.Max((int)(tourn.reserved_invite_slots ?? 0), 0);
+                var openCap       = Math.Max(maxTeams.Value - reservedSlots, 0);
+
+                if (reservedSlots > 0)
+                {
+                    var openCount = await conn.QuerySingleAsync<int>(
+                        """
+                        SELECT COUNT(*)
+                        FROM tournament_participants
+                        WHERE tournament_id = @id
+                          AND status NOT IN ('rejected', 'cancelled')
+                          AND COALESCE(source, 'open') = 'open'
+                        """,
+                        new { id }, txn);
+                    if (openCount >= openCap)
+                    {   txn.Rollback(); return Results.BadRequest(new { error = "Open registration slots are full. Invited teams still have guaranteed slots." }); }
+                }
+                else
+                {
+                    var currentCount = await conn.QuerySingleAsync<int>(
+                        "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled')",
+                        new { id }, txn);
+                    if (currentCount >= maxTeams.Value)
+                    {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
+                }
             }
 
             // Check existing registration (exclude cancelled/rejected/disqualified)
@@ -946,16 +976,16 @@ public static class TournamentEndpoints
                 INSERT INTO tournament_participants
                     (tournament_id, user_id, team_id, team_captain_id, team_name,
                      team_members, team_contact_email, roster_id, roster_name,
-                     status, participant_type, entry_fee_amount, entry_fee_paid,
+                     status, participant_type, source, entry_fee_amount, entry_fee_paid,
                      payment_status, payment_receipt_url)
                 VALUES (@tournamentId, @userId, @teamId, @teamCaptainId, @teamName,
                         @teamMembers::jsonb, @teamContactEmail, @rosterId, @rosterName,
-                        @regStatus::registration_status, @participantType::registration_type,
+                        @regStatus::registration_status, @participantType::registration_type, 'open',
                         @entryFeeAmount, @entryFeePaid,
                         @paymentStatus, @paymentReceiptUrl)
                 RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
                          team_members, team_contact_email, roster_id, roster_name,
-                         status, participant_type, entry_fee_amount, entry_fee_paid,
+                         status, participant_type, source, entry_fee_amount, entry_fee_paid,
                          payment_status, payment_receipt_url, created_at
                 """,
                 new

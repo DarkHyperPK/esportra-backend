@@ -17,4 +17,5 @@ public enum EmailType
     LicenseApplicationReceived,
     LicenseApproved,
     LicenseRejected,
+    TournamentInvite,
 }

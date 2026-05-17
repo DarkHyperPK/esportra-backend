@@ -17,7 +17,7 @@ public enum ActionType
     Feature, Unfeature
 }
 
-public enum TargetType { User, Tournament, Venue, Payment, Team, Match, Dispute, System, Sponsor }
+public enum TargetType { User, Tournament, Venue, Payment, Team, Match, Dispute, System, Sponsor, Season }
 
 public enum AuditSeverity { Low, Medium, High, Critical }
 
@@ -59,6 +59,45 @@ public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> 
         {
             // Audit failures must never break the main flow
             logger.LogWarning(ex, "[Audit] Failed to log {Action} on {Target}:{TargetId}", action, target, targetId);
+        }
+    }
+
+    public async Task LogCustomAsync(
+        Guid       adminId,
+        string     adminName,
+        string     actionType,
+        TargetType target,
+        Guid       targetId,
+        string     targetName,
+        object?    details          = null,
+        AuditSeverity severity      = AuditSeverity.Low,
+        CancellationToken ct        = default)
+    {
+        try
+        {
+            using var conn = db.CreateConnection();
+
+            await conn.ExecuteAsync(@"
+                INSERT INTO public.audit_logs
+                    (admin_id, admin_name, action_type, target_type, target_id, target_name, details, severity, created_at)
+                VALUES
+                    (@adminId, @adminName, @actionType, @targetType, @targetId, @targetName, @details::jsonb, @severity, now())",
+                new
+                {
+                    adminId,
+                    adminName,
+                    actionType,
+                    targetType = target.ToString().ToLowerInvariant(),
+                    targetId,
+                    targetName,
+                    details    = details is null ? "{}" : JsonSerializer.Serialize(details),
+                    severity   = severity.ToString().ToLowerInvariant(),
+                });
+        }
+        catch (Exception ex)
+        {
+            // Audit failures must never break the main flow
+            logger.LogWarning(ex, "[Audit] Failed to log {Action} on {Target}:{TargetId}", actionType, target, targetId);
         }
     }
 

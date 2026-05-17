@@ -122,22 +122,38 @@ public static class AnalyticsEndpoints
             using var conn = db.CreateConnection();
 
             var userRoles = await conn.QueryAsync<dynamic>(
-                "SELECT role, is_active, assigned_at FROM user_roles WHERE user_id = @userId AND is_active = TRUE ORDER BY assigned_at DESC",
+                "SELECT role, is_active FROM user_roles WHERE user_id = @userId AND is_active = TRUE ORDER BY assigned_at DESC",
                 new { userId = userCtx.UserIdGuid });
 
             var verifiedRoles = await conn.QueryAsync<dynamic>(
                 "SELECT role, status, is_active FROM verified_roles WHERE user_id = @userId",
                 new { userId = userCtx.UserIdGuid });
 
-            var verificationRequests = await conn.QueryAsync<dynamic>(
-                "SELECT id, requested_role, status, business_name, business_type, created_at, reviewed_at, rejection_reason, verification_notes FROM verification_requests WHERE user_id = @userId ORDER BY created_at DESC",
+            var hasOrganization = await conn.QuerySingleAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM organizations WHERE owner_id = @userId)",
                 new { userId = userCtx.UserIdGuid });
 
-            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
-                new { userId = userCtx.UserIdGuid });
+            var hasApprovedLicense = verifiedRoles.Any(r =>
+                (bool)r.is_active &&
+                string.Equals((string)r.status, "approved", StringComparison.OrdinalIgnoreCase));
+            var canCreateTournament = userRoles.Any(r =>
+                (bool)r.is_active &&
+                string.Equals((string)r.role, "organizer", StringComparison.OrdinalIgnoreCase)) &&
+                verifiedRoles.Any(r =>
+                    (bool)r.is_active &&
+                    string.Equals((string)r.role, "organizer", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals((string)r.status, "approved", StringComparison.OrdinalIgnoreCase)) &&
+                hasOrganization;
 
-            return Results.Ok(new { userRoles, verifiedRoles, verificationRequests, organization_id = (object?)org?.id });
+            return Results.Ok(new
+            {
+                userRoles,
+                verifiedRoles,
+                hasOrganization,
+                hasApprovedLicense,
+                canCreateTournament,
+                canCreateSeason = canCreateTournament
+            });
         }).RequireAuthorization("Authenticated");
     }
 }

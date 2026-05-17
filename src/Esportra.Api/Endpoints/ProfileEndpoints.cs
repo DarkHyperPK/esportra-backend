@@ -36,7 +36,7 @@ public static class ProfileEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            return await GetProfileResult(userCtx.UserIdGuid, db, cache, ct);
+            return await GetProfileResult(userCtx.UserIdGuid, db, cache, ct, includePrivateFields: true);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/{id} ────────────────────────────────────────────
@@ -46,7 +46,7 @@ public static class ProfileEndpoints
             HybridCache          cache,
             CancellationToken    ct) =>
         {
-            return await GetProfileResult(id, db, cache, ct);
+            return await GetProfileResult(id, db, cache, ct, includePrivateFields: false);
         });
 
         // ── PUT /api/profiles/{id} ────────────────────────────────────────────
@@ -406,7 +406,13 @@ public static class ProfileEndpoints
 
             using var conn = db.CreateConnection();
             var requests = await conn.QueryAsync<dynamic>(
-                "SELECT role, status, is_active, verified_at FROM verified_roles WHERE user_id = @userId ORDER BY verified_at DESC NULLS LAST",
+                """
+                SELECT requested_role, status, business_name, business_type,
+                       created_at, reviewed_at, rejection_reason, verification_notes
+                FROM verification_requests
+                WHERE user_id = @userId
+                ORDER BY created_at DESC
+                """,
                 new { userId = userCtx.UserIdGuid });
             return Results.Ok(requests);
         }).RequireAuthorization("Authenticated");
@@ -633,11 +639,27 @@ public static class ProfileEndpoints
     // ── Shared helper ─────────────────────────────────────────────────────────
 
     private static async Task<IResult> GetProfileResult(
-        Guid id, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
+        Guid id, IDbConnectionFactory db, HybridCache cache, CancellationToken ct, bool includePrivateFields)
     {
         using var conn = db.CreateConnection();
         var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT * FROM profiles WHERE id = @id",
+            includePrivateFields
+                ? """
+                  SELECT id, username, full_name, avatar_url, is_verified, bio, location,
+                         social_links, country_code, card_image_url, banner_url,
+                         riot_tag, steam_tag, role, base_role, is_admin, admin_roles,
+                         is_suspended, suspension_until, suspension_reason, suspension_type,
+                         date_of_birth, created_at, updated_at
+                  FROM profiles
+                  WHERE id = @id
+                  """
+                : """
+                  SELECT id, username, full_name, avatar_url, is_verified, bio, location,
+                         social_links, country_code, card_image_url, banner_url,
+                         riot_tag, steam_tag, created_at, updated_at
+                  FROM profiles
+                  WHERE id = @id
+                  """,
             new { id });
 
         return profile is null ? Results.NotFound() : Results.Ok(profile);
