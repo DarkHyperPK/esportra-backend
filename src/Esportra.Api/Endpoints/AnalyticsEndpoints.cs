@@ -129,9 +129,14 @@ public static class AnalyticsEndpoints
                 "SELECT role, status, is_active FROM verified_roles WHERE user_id = @userId",
                 new { userId = userCtx.UserIdGuid });
 
-            var hasOrganization = await conn.QuerySingleAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM organizations WHERE owner_id = @userId)",
+            var verificationRequests = await conn.QueryAsync<dynamic>(
+                "SELECT id, requested_role, status, business_name, business_type, created_at, reviewed_at, rejection_reason, verification_notes FROM verification_requests WHERE user_id = @userId ORDER BY created_at DESC",
                 new { userId = userCtx.UserIdGuid });
+
+            var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId = userCtx.UserIdGuid });
+            var hasOrganization = org is not null;
 
             var hasApprovedLicense = verifiedRoles.Any(r =>
                 (bool)r.is_active &&
@@ -149,6 +154,8 @@ public static class AnalyticsEndpoints
             {
                 userRoles,
                 verifiedRoles,
+                verificationRequests,
+                organization_id = (object?)org?.id,
                 hasOrganization,
                 hasApprovedLicense,
                 canCreateTournament,
