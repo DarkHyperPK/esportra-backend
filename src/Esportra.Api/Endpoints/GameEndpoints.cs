@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Esportra.Api.Services;
 using Dapper;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
@@ -14,6 +15,15 @@ public static class GameEndpoints
 {
     public static void MapGameEndpoints(this WebApplication app)
     {
+        app.MapGet("/api/games/catalog", async (GameCatalogService catalog, CancellationToken ct) =>
+            Results.Ok(await catalog.GetCatalogAsync(ct)));
+
+        app.MapGet("/api/games/catalog/{slugOrAlias}", async (string slugOrAlias, GameCatalogService catalog, CancellationToken ct) =>
+        {
+            var game = await catalog.GetGameAsync(slugOrAlias, ct);
+            return game is null ? Results.NotFound(new { error = "Game catalog entry not found." }) : Results.Ok(game);
+        });
+
         // ── GET /api/games/search?q={query} ───────────────────────────────────
         app.MapGet("/api/games/search", async (
             string               q,

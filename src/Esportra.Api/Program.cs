@@ -320,6 +320,7 @@ builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<Esportra.Api.Services.SeasonStandingsSyncService>();
 builder.Services.AddScoped<Esportra.Api.Services.SeasonAdvancementService>();
+builder.Services.AddScoped<Esportra.Api.Services.GameCatalogService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 
@@ -393,6 +394,12 @@ else
 Esportra.Infrastructure.Email.EmailTemplates.Init(
     builder.Configuration["FrontendUrl"] ?? "https://esportra.com",
     builder.Configuration["Supabase:Url"] ?? "https://api.esportra.com");
+
+using (var scope = app.Services.CreateScope())
+{
+    var catalog = scope.ServiceProvider.GetRequiredService<Esportra.Api.Services.GameCatalogService>();
+    await catalog.ImportPackagedCatalogAsync();
+}
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();

@@ -1,0 +1,863 @@
+{
+  "games": [
+    {
+      "name": "Valorant",
+      "slug": "valorant",
+      "category": "5v5 Tactical FPS",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "5v5",
+          "value": "5v5",
+          "teamSize": 5
+        }
+      ],
+      "defaultFormat": "5v5",
+      "logo": "/games/valorant-logo.png",
+      "features": {
+        "mapVeto": true,
+        "mapPool": true,
+        "mapPoolSize": 7,
+        "assistedReporting": true,
+        "seriesFormats": [
+          "bo1",
+          "bo3",
+          "bo5"
+        ],
+        "hasSidePick": true,
+        "isTeamGame": true,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "5v5",
+          "key": "5v5",
+          "value": "5v5",
+          "teamSize": 5,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 7,
+          "aliases": [
+            "5v5"
+          ]
+        },
+        {
+          "name": "Skirmish",
+          "key": "skirmish",
+          "value": "skirmish",
+          "teamSize": 5,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 7,
+          "aliases": [
+            "swiftplay",
+            "skirmish_5v5"
+          ]
+        }
+      ],
+      "defaultMode": "5v5",
+      "aliases": [
+        "valorant",
+        "Valorant",
+        "vct"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Counter-Strike 2",
+      "slug": "cs2",
+      "category": "5v5 Tactical FPS",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "5v5",
+          "value": "5v5",
+          "teamSize": 5
+        }
+      ],
+      "defaultFormat": "5v5",
+      "logo": "/games/cs2-logo.png",
+      "features": {
+        "mapVeto": true,
+        "mapPool": true,
+        "mapPoolSize": 7,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "bo1",
+          "bo3",
+          "bo5"
+        ],
+        "hasSidePick": true,
+        "isTeamGame": true,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "5v5",
+          "key": "5v5",
+          "value": "5v5",
+          "teamSize": 5,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 7,
+          "aliases": [
+            "5v5"
+          ]
+        }
+      ],
+      "defaultMode": "5v5",
+      "aliases": [
+        "cs2",
+        "Counter-Strike 2",
+        "counter strike 2",
+        "counter-strike 2",
+        "counterstrike 2"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
+      "name": "League of Legends",
+      "slug": "lol",
+      "category": "5v5 MOBA",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "5v5",
+          "value": "5v5",
+          "teamSize": 5
+        }
+      ],
+      "defaultFormat": "5v5",
+      "logo": "/games/lol-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "bo1",
+          "bo3",
+          "bo5"
+        ],
+        "hasSidePick": false,
+        "isTeamGame": true,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "5v5",
+          "key": "5v5",
+          "value": "5v5",
+          "teamSize": 5,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 7,
+          "aliases": [
+            "5v5"
+          ]
+        }
+      ],
+      "defaultMode": "5v5",
+      "aliases": [
+        "lol",
+        "League of Legends",
+        "league"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Dota 2",
+      "slug": "dota2",
+      "category": "5v5 MOBA",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "5v5",
+          "value": "5v5",
+          "teamSize": 5
+        }
+      ],
+      "defaultFormat": "5v5",
+      "logo": "/games/dota2-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "bo1",
+          "bo2",
+          "bo3",
+          "bo5"
+        ],
+        "hasSidePick": false,
+        "isTeamGame": true,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "5v5",
+          "key": "5v5",
+          "value": "5v5",
+          "teamSize": 5,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 7,
+          "aliases": [
+            "5v5"
+          ]
+        }
+      ],
+      "defaultMode": "5v5",
+      "aliases": [
+        "dota2",
+        "Dota 2",
+        "dota"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Fortnite",
+      "slug": "fortnite",
+      "category": "Battle Royale",
+      "type": "battle_royale",
+      "formats": [
+        {
+          "name": "Solo",
+          "value": "solo",
+          "teamSize": 1
+        },
+        {
+          "name": "Duo",
+          "value": "duo",
+          "teamSize": 2
+        },
+        {
+          "name": "Trio",
+          "value": "trio",
+          "teamSize": 3
+        }
+      ],
+      "defaultFormat": "solo",
+      "logo": "/games/fortnite-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [],
+        "hasSidePick": false,
+        "isTeamGame": false,
+        "isBattleRoyale": true
+      },
+      "brConfig": {
+        "playersPerLobby": 100,
+        "defaultGameCount": 6,
+        "scoringPresets": {
+          "fncs": {
+            "name": "FNCS Standard",
+            "placements": [
+              25,
+              22,
+              20,
+              18,
+              17,
+              16,
+              15,
+              14,
+              13,
+              12,
+              11,
+              10,
+              9,
+              8,
+              7,
+              6,
+              5,
+              4,
+              3,
+              2,
+              1
+            ],
+            "killPoints": 1,
+            "killCap": null
+          }
+        },
+        "defaultPreset": "fncs"
+      },
+      "modes": [
+        {
+          "name": "Solo",
+          "key": "solo",
+          "value": "solo",
+          "teamSize": 1,
+          "participantMode": "solo",
+          "allowsSubstitutes": false,
+          "maxRosterSize": 1,
+          "aliases": [
+            "solo"
+          ]
+        },
+        {
+          "name": "Duo",
+          "key": "duo",
+          "value": "duo",
+          "teamSize": 2,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 4,
+          "aliases": [
+            "duo"
+          ]
+        },
+        {
+          "name": "Trio",
+          "key": "trio",
+          "value": "trio",
+          "teamSize": 3,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 5,
+          "aliases": [
+            "trio"
+          ]
+        }
+      ],
+      "defaultMode": "solo",
+      "aliases": [
+        "fortnite",
+        "Fortnite",
+        "fn"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "battle_royale",
+        "supportedStructures": [
+          {
+            "key": "battle_royale",
+            "name": "Battle Royale"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Apex Legends",
+      "slug": "apex",
+      "category": "Battle Royale",
+      "type": "battle_royale",
+      "formats": [
+        {
+          "name": "Trios",
+          "value": "trios",
+          "teamSize": 3
+        }
+      ],
+      "defaultFormat": "trios",
+      "logo": "/games/apex-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [],
+        "hasSidePick": false,
+        "isTeamGame": true,
+        "isBattleRoyale": true
+      },
+      "brConfig": {
+        "playersPerLobby": 60,
+        "defaultGameCount": 6,
+        "scoringPresets": {
+          "algs": {
+            "name": "ALGS Standard",
+            "placements": [
+              12,
+              9,
+              7,
+              5,
+              4,
+              3,
+              3,
+              2,
+              2,
+              2,
+              1,
+              1,
+              1,
+              1,
+              1
+            ],
+            "killPoints": 1,
+            "killCap": 6
+          }
+        },
+        "defaultPreset": "algs"
+      },
+      "modes": [
+        {
+          "name": "Trios",
+          "key": "trios",
+          "value": "trios",
+          "teamSize": 3,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 5,
+          "aliases": [
+            "trios"
+          ]
+        }
+      ],
+      "defaultMode": "trios",
+      "aliases": [
+        "apex",
+        "Apex Legends",
+        "apex legends"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "battle_royale",
+        "supportedStructures": [
+          {
+            "key": "battle_royale",
+            "name": "Battle Royale"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PUBG",
+      "slug": "pubg",
+      "category": "Battle Royale",
+      "type": "battle_royale",
+      "formats": [
+        {
+          "name": "Solo",
+          "value": "solo",
+          "teamSize": 1
+        },
+        {
+          "name": "Duo",
+          "value": "duo",
+          "teamSize": 2
+        },
+        {
+          "name": "Squads",
+          "value": "squads",
+          "teamSize": 4
+        }
+      ],
+      "defaultFormat": "squads",
+      "logo": "/games/pubg-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [],
+        "hasSidePick": false,
+        "isTeamGame": false,
+        "isBattleRoyale": true
+      },
+      "brConfig": {
+        "playersPerLobby": 64,
+        "defaultGameCount": 6,
+        "scoringPresets": {
+          "pcs": {
+            "name": "PCS Standard",
+            "placements": [
+              10,
+              6,
+              5,
+              4,
+              3,
+              2,
+              1,
+              1
+            ],
+            "killPoints": 1,
+            "killCap": null
+          }
+        },
+        "defaultPreset": "pcs"
+      },
+      "modes": [
+        {
+          "name": "Solo",
+          "key": "solo",
+          "value": "solo",
+          "teamSize": 1,
+          "participantMode": "solo",
+          "allowsSubstitutes": false,
+          "maxRosterSize": 1,
+          "aliases": [
+            "solo"
+          ]
+        },
+        {
+          "name": "Duo",
+          "key": "duo",
+          "value": "duo",
+          "teamSize": 2,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 4,
+          "aliases": [
+            "duo"
+          ]
+        },
+        {
+          "name": "Squads",
+          "key": "squads",
+          "value": "squads",
+          "teamSize": 4,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 6,
+          "aliases": [
+            "squads"
+          ]
+        }
+      ],
+      "defaultMode": "squads",
+      "aliases": [
+        "pubg",
+        "PUBG",
+        "playerunknowns battlegrounds"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "battle_royale",
+        "supportedStructures": [
+          {
+            "key": "battle_royale",
+            "name": "Battle Royale"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Rocket League",
+      "slug": "rocket-league",
+      "category": "Vehicular Sports",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "3v3",
+          "value": "3v3",
+          "teamSize": 3
+        },
+        {
+          "name": "2v2",
+          "value": "2v2",
+          "teamSize": 2
+        },
+        {
+          "name": "1v1",
+          "value": "1v1",
+          "teamSize": 1
+        }
+      ],
+      "defaultFormat": "3v3",
+      "logo": "/games/rocket-league-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "bo3",
+          "bo5",
+          "bo7"
+        ],
+        "hasSidePick": false,
+        "isTeamGame": true,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "3v3",
+          "key": "3v3",
+          "value": "3v3",
+          "teamSize": 3,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 5,
+          "aliases": [
+            "3v3"
+          ]
+        },
+        {
+          "name": "2v2",
+          "key": "2v2",
+          "value": "2v2",
+          "teamSize": 2,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 4,
+          "aliases": [
+            "2v2"
+          ]
+        },
+        {
+          "name": "1v1",
+          "key": "1v1",
+          "value": "1v1",
+          "teamSize": 1,
+          "participantMode": "team",
+          "allowsSubstitutes": false,
+          "maxRosterSize": 1,
+          "aliases": [
+            "1v1"
+          ]
+        }
+      ],
+      "defaultMode": "3v3",
+      "aliases": [
+        "rocket-league",
+        "Rocket League",
+        "rl"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Tekken 8",
+      "slug": "tekken8",
+      "category": "Fighting",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "1v1",
+          "value": "1v1",
+          "teamSize": 1
+        }
+      ],
+      "defaultFormat": "1v1",
+      "logo": "/games/tekken8-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "ft2",
+          "ft3",
+          "ft5"
+        ],
+        "hasSidePick": false,
+        "isTeamGame": false,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "1v1",
+          "key": "1v1",
+          "value": "1v1",
+          "teamSize": 1,
+          "participantMode": "solo",
+          "allowsSubstitutes": false,
+          "maxRosterSize": 1,
+          "aliases": [
+            "1v1"
+          ]
+        }
+      ],
+      "defaultMode": "1v1",
+      "aliases": [
+        "tekken8",
+        "Tekken 8",
+        "tekken"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EA FC",
+      "slug": "eafc",
+      "category": "Sports Simulation",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "1v1",
+          "value": "1v1",
+          "teamSize": 1
+        }
+      ],
+      "defaultFormat": "1v1",
+      "logo": "/games/eafc-logo.png",
+      "features": {
+        "mapVeto": false,
+        "mapPool": false,
+        "mapPoolSize": 0,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "bo1",
+          "bo3",
+          "bo5"
+        ],
+        "hasSidePick": false,
+        "isTeamGame": false,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "1v1",
+          "key": "1v1",
+          "value": "1v1",
+          "teamSize": 1,
+          "participantMode": "solo",
+          "allowsSubstitutes": false,
+          "maxRosterSize": 1,
+          "aliases": [
+            "1v1"
+          ]
+        }
+      ],
+      "defaultMode": "1v1",
+      "aliases": [
+        "eafc",
+        "EA FC",
+        "ea fc",
+        "fifa"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    }
+  ],
+  "catalogVersion": "2026.06.18-staging-tournament-catalog",
+  "schemaVersion": 1
+}

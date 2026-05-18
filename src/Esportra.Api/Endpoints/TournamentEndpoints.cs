@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -41,6 +42,7 @@ public static class TournamentEndpoints
         string    Game,
         string    Status,
         string?   Format,
+        string?   GameMode,
         DateTime? StartDate,
         DateTime? EndDate,
         DateTime? RegistrationDeadline,
@@ -71,7 +73,7 @@ public static class TournamentEndpoints
     );
 
     private const string TournamentListSql = """
-        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
+        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
                t.start_date, t.end_date, t.registration_deadline,
                t.max_teams, t.min_teams, t.team_size,
                t.entry_fee, t.prize_pool,
@@ -144,7 +146,7 @@ public static class TournamentEndpoints
                 using var conn2 = db.CreateConnection();
                 var rows2 = (await conn2.QueryAsync<TournamentListRow>(
                     """
-                    SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
+                    SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
                            t.start_date, t.end_date, t.registration_deadline,
                            t.max_teams, t.min_teams, t.team_size,
                            t.entry_fee, t.prize_pool,
@@ -242,7 +244,7 @@ public static class TournamentEndpoints
                     using var conn = db.CreateConnection();
                     return (await conn.QueryAsync<TournamentListRow>(
                         """
-                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format,
+                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
                                t.start_date, t.end_date, t.registration_deadline,
                                t.max_teams, t.min_teams, t.team_size,
                                t.entry_fee, t.prize_pool,
@@ -393,6 +395,7 @@ public static class TournamentEndpoints
             [FromBody] CreateTournamentRequest req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            GameCatalogService                gameCatalog,
             HybridCache                       cache,
             CancellationToken                 ct) =>
         {
@@ -412,22 +415,34 @@ public static class TournamentEndpoints
                 if (exists)
                     uniqueSlug = $"{slug}-{DateTime.UtcNow.Ticks % 9999:x4}";
 
+                var catalog = await gameCatalog.ResolveTournamentAsync(
+                    req.Game,
+                    req.GameMode,
+                    req.TeamSize,
+                    req.Format,
+                    req.TournamentType,
+                    req.Stages?.Select(s => s.Format).ToArray(),
+                    req.MapPoolIds is { Count: > 0 },
+                    req.Settings,
+                    conn,
+                    tx);
+
                 var tournament = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO tournaments (
-                        name, description, slug, game, format, max_teams, min_teams, team_size,
+                        name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
                         rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region
                     ) VALUES (
-                        @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
+                        @name, @description, @slug, @game, @format, @gameMode, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
                         @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion
                     )
-                    RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
+                    RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
                              status, banner_url, logo_url, organization_id, venue_id, is_public,
                              check_in_required, check_in_deadline, auto_remove_unchecked,
@@ -438,10 +453,11 @@ public static class TournamentEndpoints
                         name                 = req.Name,
                         description          = req.Description,
                         slug                 = uniqueSlug,
-                        game                 = req.Game,
-                        format               = req.Format ?? "single_elimination",
+                        game                 = catalog.GameName,
+                        format               = catalog.TournamentStructure,
+                        gameMode             = catalog.GameMode,
                         maxTeams             = req.MaxTeams,
-                        teamSize             = req.TeamSize ?? 1,
+                        teamSize             = catalog.TeamSize,
                         entryFee             = req.EntryFee ?? 0m,
                         prizePool            = req.PrizePool ?? 0m,
                         startDate            = req.StartDate,
@@ -513,6 +529,11 @@ public static class TournamentEndpoints
 
                 return Results.Ok(tournament);
             }
+            catch (GameCatalogValidationException ex)
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = ex.Message });
+            }
             catch
             {
                 tx.Rollback();
@@ -526,6 +547,7 @@ public static class TournamentEndpoints
             [FromBody] UpdateTournamentRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
+            GameCatalogService            gameCatalog,
             HybridCache                   cache,
             CancellationToken             ct) =>
         {
@@ -535,10 +557,10 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
 
             // Only organizer or admin can update
-            var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT organizer_id FROM tournaments WHERE id = @id", new { id });
-            if (organizerId is null) return Results.NotFound();
-            if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+            var existingTournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT organizer_id, game, game_mode, team_size, format FROM tournaments WHERE id = @id", new { id });
+            if (existingTournament is null) return Results.NotFound();
+            if ((Guid)existingTournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
             // ── Mock tournament guard: block publish if mock participants exist ──
@@ -555,14 +577,36 @@ public static class TournamentEndpoints
                     });
             }
 
+            TournamentCatalogResolution catalog;
+            try
+            {
+                catalog = await gameCatalog.ResolveTournamentAsync(
+                    req.Game ?? (string)existingTournament.game,
+                    req.GameMode ?? (string?)existingTournament.game_mode,
+                    req.TeamSize ?? (int?)existingTournament.team_size,
+                    req.Format ?? (string?)existingTournament.format,
+                    null,
+                    Array.Empty<string>(),
+                    false,
+                    req.Settings,
+                    conn);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 UPDATE tournaments SET
                     name                 = COALESCE(@name, name),
                     description          = COALESCE(@description, description),
-                    game                 = COALESCE(@game, game),
+                    game                 = @game,
+                    format               = @format,
+                    game_mode            = @gameMode,
                     status               = CASE WHEN @status IS NOT NULL THEN @status::tournament_status ELSE status END,
                     max_teams            = COALESCE(@maxTeams, max_teams),
+                    team_size            = @teamSize,
                     entry_fee            = COALESCE(@entryFee, entry_fee),
                     prize_pool           = COALESCE(@prizePool, prize_pool),
                     start_date           = COALESCE(@startDate, start_date),
@@ -583,7 +627,7 @@ public static class TournamentEndpoints
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
                 WHERE id = @id
-                RETURNING id, name, description, slug, game, format, max_teams, min_teams, team_size,
+                RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
                          status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
@@ -594,9 +638,12 @@ public static class TournamentEndpoints
                     id,
                     name                 = req.Name,
                     description          = req.Description,
-                    game                 = req.Game,
+                    game                 = catalog.GameName,
+                    format               = catalog.TournamentStructure,
+                    gameMode             = catalog.GameMode,
                     status               = req.Status,
                     maxTeams             = req.MaxTeams,
+                    teamSize             = catalog.TeamSize,
                     entryFee             = req.EntryFee,
                     prizePool            = req.PrizePool,
                     startDate            = req.StartDate,
@@ -856,6 +903,7 @@ public static class TournamentEndpoints
             [FromBody] RegisterTournamentRequest req,
             HttpContext                       ctx,
             IDbConnectionFactory             db,
+            GameCatalogService                gameCatalog,
             CancellationToken                ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -924,6 +972,16 @@ public static class TournamentEndpoints
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
             Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
             var   participantType = teamIdGuid is not null ? "team" : "solo";
+
+            try
+            {
+                await gameCatalog.ValidateRegistrationAsync(conn, txn, id, teamIdGuid, rosterIdGuid, userCtx.UserIdGuid);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                txn.Rollback();
+                return Results.BadRequest(new { error = ex.Message });
+            }
 
             // Auto-create a virtual team for solo participants so that
             // brkt_matches.team1_id / team2_id always references teams(id).
@@ -3505,6 +3563,7 @@ public sealed record CreateTournamentRequest(
     string?    Description          = null,
     string?    Slug                 = null,
     string?    Format               = null,
+    string?    GameMode             = null,
     int?       TeamSize             = null,
     decimal?   EntryFee             = null,
     decimal?   PrizePool            = null,
@@ -3543,8 +3602,11 @@ public sealed record UpdateTournamentRequest(
     string?   Name                 = null,
     string?   Description          = null,
     string?   Game                 = null,
+    string?   Format               = null,
+    string?   GameMode             = null,
     string?   Status               = null,
     int?      MaxTeams             = null,
+    int?      TeamSize             = null,
     decimal?  EntryFee             = null,
     decimal?  PrizePool            = null,
     DateTime? StartDate            = null,

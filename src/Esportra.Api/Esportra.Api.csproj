@@ -26,4 +26,8 @@
     <ProjectReference Include="..\Esportra.Contracts\Esportra.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Update="GameCatalog\esportsGames.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
