@@ -689,7 +689,16 @@ public sealed class GameCatalogService(
 
     private sealed record CatalogVersionRow(Guid Id, string CatalogVersion, int SchemaVersion, string ContentHash);
     private sealed record GameRow(string Slug, string Name, string? Category, string GameType, string DefaultModeKey, string FeaturesJson, string? BrConfigJson);
-    public sealed record ModeRow(string ModeKey, string Name, int TeamSize, string ParticipantMode, bool AllowsSubstitutes, int? MaxRosterSize, string[] Aliases);
+    public sealed class ModeRow
+    {
+        public string ModeKey { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public int TeamSize { get; set; }
+        public string ParticipantMode { get; set; } = "team";
+        public bool AllowsSubstitutes { get; set; }
+        public int? MaxRosterSize { get; set; }
+        public string[] Aliases { get; set; } = Array.Empty<string>();
+    }
     public sealed record StructureRow(string StructureKey, string Name, bool IsDefault);
     private sealed record TournamentRegistrationCatalogRow(Guid Id, string Game, string? GameMode, int? TeamSize);
     private sealed record TeamCatalogRow(Guid Id, string Name, string? Game, string? GameFormat, Guid OwnerId);
