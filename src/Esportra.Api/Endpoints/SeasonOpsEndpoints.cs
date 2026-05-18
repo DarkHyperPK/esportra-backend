@@ -154,7 +154,7 @@ public static class SeasonOpsEndpoints
                 """
                 SELECT sp.id, sp.season_id, sp.team_id, COALESCE(t.name, sp.team_name) AS team_name,
                        COALESCE(t.logo_url, sp.team_logo_url) AS team_logo_url,
-                       COALESCE(t.slug, sp.team_slug) AS team_slug,
+                       COALESCE(t.tag, sp.team_slug) AS team_slug,
                        sp.status, sp.registered_by, sp.notes, sp.created_at, sp.updated_at
                 FROM public.season_participants sp
                 LEFT JOIN public.teams t ON t.id = sp.team_id
@@ -182,7 +182,7 @@ public static class SeasonOpsEndpoints
 
             var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT t.id, t.name, t.logo_url, t.slug
+                    SELECT t.id, t.name, t.logo_url, t.tag AS slug
                 FROM public.teams t
                 WHERE (@teamId IS NULL OR t.id = @teamId)
                   AND EXISTS (
