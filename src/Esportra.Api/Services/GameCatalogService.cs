@@ -361,10 +361,10 @@ public sealed class GameCatalogService(
                 """
                 INSERT INTO public.game_catalog_game_modes
                     (version_id, game_slug, mode_key, name, team_size, participant_mode,
-                     allows_substitutes, max_roster_size, aliases, raw)
+                     allows_substitutes, max_roster_size, aliases, display_group, variant_label, raw)
                 VALUES
                     (@versionId, @slug, @modeKey, @name, @teamSize, @participantMode,
-                     @allowsSubstitutes, @maxRosterSize, @aliases, @raw::jsonb)
+                     @allowsSubstitutes, @maxRosterSize, @aliases, @displayGroup, @variantLabel, @raw::jsonb)
                 """,
                 new
                 {
@@ -377,6 +377,8 @@ public sealed class GameCatalogService(
                     allowsSubstitutes = OptionalBool(mode, "allowsSubstitutes") ?? true,
                     maxRosterSize = OptionalInt(mode, "maxRosterSize"),
                     aliases = ReadStringArray(mode, "aliases").Append(modeKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    displayGroup = OptionalString(mode, "modeGroup"),
+                    variantLabel = OptionalString(mode, "variantLabel"),
                     raw = mode.GetRawText()
                 }, tx);
         }
@@ -495,10 +497,11 @@ public sealed class GameCatalogService(
         var modes = conn.Query<ModeRow>(
             """
             SELECT mode_key AS modeKey, name, team_size AS teamSize, participant_mode AS participantMode,
-                   allows_substitutes AS allowsSubstitutes, max_roster_size AS maxRosterSize, aliases
+                   allows_substitutes AS allowsSubstitutes, max_roster_size AS maxRosterSize, aliases,
+                   display_group AS modeGroup, variant_label AS variantLabel
             FROM public.game_catalog_game_modes
             WHERE version_id = @versionId AND game_slug = @slug
-            ORDER BY name ASC
+            ORDER BY COALESCE(display_group, name) ASC, team_size ASC, name ASC
             """,
             new { versionId, game.Slug }).AsList();
 
@@ -547,7 +550,8 @@ public sealed class GameCatalogService(
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE AND status = 'active' LIMIT 1
             )
             SELECT m.mode_key AS modeKey, m.name, m.team_size AS teamSize, m.participant_mode AS participantMode,
-                   m.allows_substitutes AS allowsSubstitutes, m.max_roster_size AS maxRosterSize, m.aliases
+                   m.allows_substitutes AS allowsSubstitutes, m.max_roster_size AS maxRosterSize, m.aliases,
+                   m.display_group AS modeGroup, m.variant_label AS variantLabel
             FROM public.game_catalog_game_modes m
             JOIN active_version av ON av.id = m.version_id
             WHERE m.game_slug = @gameSlug
@@ -698,6 +702,8 @@ public sealed class GameCatalogService(
         public bool AllowsSubstitutes { get; set; }
         public int? MaxRosterSize { get; set; }
         public string[] Aliases { get; set; } = Array.Empty<string>();
+        public string? ModeGroup { get; set; }
+        public string? VariantLabel { get; set; }
     }
     public sealed record StructureRow(string StructureKey, string Name, bool IsDefault);
     private sealed record TournamentRegistrationCatalogRow(Guid Id, string Game, string? GameMode, int? TeamSize);

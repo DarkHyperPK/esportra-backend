@@ -42,16 +42,35 @@
           ]
         },
         {
-          "name": "Skirmish",
-          "key": "skirmish",
-          "value": "skirmish",
-          "teamSize": 5,
+          "name": "Skirmish 1v1",
+          "key": "skirmish_1v1",
+          "value": "skirmish_1v1",
+          "modeGroup": "Skirmish",
+          "variantLabel": "1v1",
+          "teamSize": 1,
+          "participantMode": "solo",
+          "allowsSubstitutes": false,
+          "maxRosterSize": 1,
+          "aliases": [
+            "skirmish",
+            "swiftplay",
+            "1v1",
+            "skirmish_1v1"
+          ]
+        },
+        {
+          "name": "Skirmish 2v2",
+          "key": "skirmish_2v2",
+          "value": "skirmish_2v2",
+          "modeGroup": "Skirmish",
+          "variantLabel": "2v2",
+          "teamSize": 2,
           "participantMode": "team",
           "allowsSubstitutes": true,
-          "maxRosterSize": 7,
+          "maxRosterSize": 3,
           "aliases": [
-            "swiftplay",
-            "skirmish_5v5"
+            "2v2",
+            "skirmish_2v2"
           ]
         }
       ],
@@ -858,6 +877,6 @@
       }
     }
   ],
-  "catalogVersion": "2026.06.18-staging-tournament-catalog",
+  "catalogVersion": "2026.06.19-staging-tournament-catalog",
   "schemaVersion": 1
 }
