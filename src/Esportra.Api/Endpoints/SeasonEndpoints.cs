@@ -186,10 +186,11 @@ public static class SeasonEndpoints
                 """,
                 new { seasonId = season.Id });
 
+            var nodeResponses = nodes.Select(SeasonEndpointHelpers.ToSeasonNodeResponse).ToArray();
             return Results.Ok(new
             {
-                season,
-                nodes,
+                season = SeasonEndpointHelpers.ToSeasonResponse(season),
+                nodes = nodeResponses,
                 tree = SeasonEndpointHelpers.BuildTree(nodes),
                 rules,
                 staff,
@@ -290,7 +291,15 @@ public static class SeasonEndpoints
                 ORDER BY ss.created_at ASC
                 """,
                 new { seasonId = id });
-            return Results.Ok(new { season, nodes, tree = SeasonEndpointHelpers.BuildTree(nodes), rules, staff, permissions = new { canManage = true, isPublic = season.IsPublic } });
+            return Results.Ok(new
+            {
+                season = SeasonEndpointHelpers.ToSeasonResponse(season),
+                nodes = nodes.Select(SeasonEndpointHelpers.ToSeasonNodeResponse).ToArray(),
+                tree = SeasonEndpointHelpers.BuildTree(nodes),
+                rules,
+                staff,
+                permissions = new { canManage = true, isPublic = season.IsPublic }
+            });
         }).RequireAuthorization("Organizer");
 
         app.MapDelete("/api/seasons/{id:guid}", async (
@@ -525,6 +534,62 @@ internal static class SeasonEndpointHelpers
             LIMIT 1
             """,
             new { idOrSlug });
+    }
+
+    public static object ToSeasonResponse(SeasonDetailRow season) => new
+    {
+        season.Id,
+        season.Name,
+        season.Slug,
+        season.Description,
+        season.Game,
+        season.ParticipantMode,
+        season.Status,
+        season.OwnerUserId,
+        season.OrganizationId,
+        season.IsPublic,
+        season.AllowManualOverrides,
+        season.StartDate,
+        season.EndDate,
+        season.BannerUrl,
+        season.LogoUrl,
+        Settings = ParseJson(season.Settings),
+        season.CreatedAt,
+        season.UpdatedAt,
+        season.OwnerUsername,
+        season.OwnerFullName
+    };
+
+    public static object ToSeasonNodeResponse(SeasonNodeRow node) => new
+    {
+        node.Id,
+        node.SeasonId,
+        node.ParentNodeId,
+        node.Name,
+        node.Slug,
+        node.NodeType,
+        node.DisplayOrder,
+        node.Region,
+        node.City,
+        node.Country,
+        node.LinkedTournamentId,
+        node.LinkedStageId,
+        node.Status,
+        node.RegistrationDeadline,
+        node.StartsAt,
+        node.EndsAt,
+        Metadata = ParseJson(node.Metadata),
+        node.CreatedAt,
+        node.UpdatedAt,
+        node.LinkedTournamentName,
+        node.LinkedStageName
+    };
+
+    private static object ParseJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new Dictionary<string, object?>();
+        try { return JsonSerializer.Deserialize<JsonElement>(json); }
+        catch { return json; }
     }
 
     public static async Task<string> CreateUniqueSeasonSlugAsync(IDbConnection conn, IDbTransaction? tx, string name, Guid? excludingSeasonId)
