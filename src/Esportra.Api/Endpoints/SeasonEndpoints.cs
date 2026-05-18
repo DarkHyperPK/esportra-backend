@@ -155,7 +155,7 @@ public static class SeasonEndpoints
                 """
                 SELECT sn.id, sn.season_id, sn.parent_node_id, sn.name, sn.slug, sn.node_type, sn.display_order,
                        sn.region, sn.city, sn.country, sn.linked_tournament_id, sn.linked_stage_id, sn.status,
-                       sn.registration_deadline, sn.starts_at, sn.ends_at, sn.metadata, sn.created_at, sn.updated_at,
+                       sn.registration_deadline, sn.starts_at, sn.ends_at, sn.metadata::text AS metadata, sn.created_at, sn.updated_at,
                        t.name AS linked_tournament_name, ts.name AS linked_stage_name
                 FROM public.season_nodes sn
                 LEFT JOIN public.tournaments t ON t.id = sn.linked_tournament_id
@@ -262,7 +262,7 @@ public static class SeasonEndpoints
                 """
                 SELECT sn.id, sn.season_id, sn.parent_node_id, sn.name, sn.slug, sn.node_type, sn.display_order,
                        sn.region, sn.city, sn.country, sn.linked_tournament_id, sn.linked_stage_id, sn.status,
-                       sn.registration_deadline, sn.starts_at, sn.ends_at, sn.metadata, sn.created_at, sn.updated_at,
+                       sn.registration_deadline, sn.starts_at, sn.ends_at, sn.metadata::text AS metadata, sn.created_at, sn.updated_at,
                        t.name AS linked_tournament_name, ts.name AS linked_stage_name
                 FROM public.season_nodes sn
                 LEFT JOIN public.tournaments t ON t.id = sn.linked_tournament_id
@@ -472,7 +472,7 @@ public static class SeasonEndpoints
                 SELECT al.id, al.target_id AS season_id, al.admin_id AS actor_id,
                        p.username AS actor_username, al.action_type AS action,
                        al.target_type AS entity_type, al.target_id AS entity_id,
-                       al.details, NULL::text AS reason, al.created_at
+                       al.details::text AS details, NULL::text AS reason, al.created_at
                 FROM public.audit_logs al
                 LEFT JOIN public.profiles p ON p.id = al.admin_id
                 WHERE al.target_type = 'season' AND al.target_id = @id
@@ -516,7 +516,7 @@ internal static class SeasonEndpointHelpers
             """
             SELECT s.id, s.name, s.slug, s.description, s.game, s.participant_mode, s.status,
                    s.owner_user_id, s.organization_id, s.is_public, s.allow_manual_overrides,
-                   s.start_date, s.end_date, s.banner_url, s.logo_url, s.settings, s.created_at, s.updated_at,
+                   s.start_date, s.end_date, s.banner_url, s.logo_url, s.settings::text AS settings, s.created_at, s.updated_at,
                    COALESCE(p.username, '') AS owner_username, p.full_name AS owner_full_name
             FROM public.seasons s
             LEFT JOIN public.profiles p ON p.id = s.owner_user_id
@@ -692,7 +692,7 @@ public sealed record SeasonDetailRow(
     DateTime? EndDate,
     string? BannerUrl,
     string? LogoUrl,
-    object? Settings,
+    string? Settings,
     DateTime CreatedAt,
     DateTime UpdatedAt,
     string OwnerUsername,
@@ -715,7 +715,7 @@ public sealed record SeasonNodeRow(
     DateTime? RegistrationDeadline,
     DateTime? StartsAt,
     DateTime? EndsAt,
-    object? Metadata,
+    string? Metadata,
     DateTime CreatedAt,
     DateTime UpdatedAt,
     string? LinkedTournamentName,
@@ -734,7 +734,7 @@ public sealed record SeasonNodeCloneRow(
     DateTime? RegistrationDeadline,
     DateTime? StartsAt,
     DateTime? EndsAt,
-    object? Metadata);
+    string? Metadata);
 
 public sealed record SeasonRuleDataRow(
     Guid Id,
@@ -750,5 +750,5 @@ public sealed record SeasonRuleDataRow(
 
 public sealed record SeasonStaffMemberRow(Guid UserId, string Role, string? Username, string? FullName);
 public sealed record SeasonTreeNode(Guid Id, string Name, string Type, string Status, List<SeasonTreeNode> Children);
-public sealed record SeasonAuditLogEntryRow(Guid Id, Guid SeasonId, Guid ActorId, string? ActorUsername, string Action, string EntityType, Guid? EntityId, object? Details, string? Reason, DateTime CreatedAt);
+public sealed record SeasonAuditLogEntryRow(Guid Id, Guid SeasonId, Guid ActorId, string? ActorUsername, string Action, string EntityType, Guid? EntityId, string? Details, string? Reason, DateTime CreatedAt);
 
