@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Audit;
@@ -80,6 +81,7 @@ public static class SeasonEndpoints
             [FromBody] CreateSeasonRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
             AuditService audit,
             HybridCache cache,
             CancellationToken ct) =>
@@ -95,14 +97,25 @@ public static class SeasonEndpoints
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
 
+            GameModeCatalogResolution catalog;
+            try
+            {
+                catalog = await gameCatalog.ResolveGameModeAsync(req.Game, req.GameMode, req.TeamSize, conn, tx);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
             var slug = await SeasonEndpointHelpers.CreateUniqueSeasonSlugAsync(conn, tx, req.Name, null);
             var season = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO public.seasons
-                    (name, slug, game, description, participant_mode, owner_user_id, organization_id,
+                    (name, slug, game, game_mode, catalog_game_slug, region, description, participant_mode, owner_user_id, organization_id,
                      start_date, end_date, banner_url, logo_url, settings)
                 VALUES
-                    (@name, @slug, @game, @description, @participantMode, @ownerUserId, @organizationId,
+                    (@name, @slug, @game, @gameMode, @catalogGameSlug, @region, @description, @participantMode, @ownerUserId, @organizationId,
                      @startDate, @endDate, @bannerUrl, @logoUrl, '{}'::jsonb)
                 RETURNING id, name, slug, status
                 """,
@@ -110,9 +123,12 @@ public static class SeasonEndpoints
                 {
                     name = req.Name.Trim(),
                     slug,
-                    game = req.Game.Trim(),
+                    game = catalog.GameName,
+                    gameMode = catalog.GameMode,
+                    catalogGameSlug = catalog.GameSlug,
+                    region = string.IsNullOrWhiteSpace(req.Region) ? null : req.Region.Trim(),
                     description = req.Description,
-                    participantMode = SeasonEndpointHelpers.NormalizeParticipantMode(req.ParticipantMode),
+                    participantMode = catalog.ParticipantMode,
                     ownerUserId = userCtx.UserIdGuid,
                     organizationId = req.OrganizationId,
                     startDate = req.StartDate,
@@ -131,7 +147,7 @@ public static class SeasonEndpoints
                 new { seasonId, name = req.Name.Trim(), slug }, tx);
 
             tx.Commit();
-            await SeasonEndpointHelpers.LogSeasonAuditAsync(audit, userCtx, "season.create", seasonId, req.Name, new { req.Game }, ct);
+            await SeasonEndpointHelpers.LogSeasonAuditAsync(audit, userCtx, "season.create", seasonId, req.Name, new { game = catalog.GameName, gameMode = catalog.GameMode, req.Region }, ct);
             await SeasonEndpointHelpers.InvalidateSeasonCacheAsync(cache, seasonId, ct);
 
             return Results.Ok(new { id = seasonId, name = (string)season.name, slug = (string)season.slug, rootNodeId, status = (string)season.status });
@@ -203,6 +219,7 @@ public static class SeasonEndpoints
             [FromBody] UpdateSeasonRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
             AuditService audit,
             HybridCache cache,
             CancellationToken ct) =>
@@ -215,11 +232,47 @@ public static class SeasonEndpoints
             if (req.Game?.Length > SeasonConstants.MaxGameLength) return Results.BadRequest(new { error = "Game must be 60 characters or fewer." });
             if (req.Description?.Length > SeasonConstants.MaxDescriptionLength) return Results.BadRequest(new { error = "Description must be 2000 characters or fewer." });
 
+            var current = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT game, game_mode, participant_mode
+                FROM public.seasons
+                WHERE id = @id AND deleted_at IS NULL
+                """,
+                new { id });
+            if (current is null) return Results.NotFound();
+
+            GameModeCatalogResolution? catalog = null;
+            var requestedGame = req.Game ?? (string)current.game;
+            var requestedGameMode = req.GameMode ?? (string?)current.game_mode;
+            if (req.Game is not null || req.GameMode is not null || req.TeamSize is not null)
+            {
+                var hasSeasonActivity = await conn.QuerySingleAsync<bool>(
+                    """
+                    SELECT EXISTS(SELECT 1 FROM public.season_tournaments WHERE season_id = @id)
+                        OR EXISTS(SELECT 1 FROM public.season_participants WHERE season_id = @id)
+                    """,
+                    new { id });
+                if (hasSeasonActivity)
+                    return Results.Conflict(new { error = "Season game and mode cannot be changed after tournaments or participants exist." });
+
+                try
+                {
+                    catalog = await gameCatalog.ResolveGameModeAsync(requestedGame, requestedGameMode, req.TeamSize, conn);
+                }
+                catch (GameCatalogValidationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }
+
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 UPDATE public.seasons
                 SET name = COALESCE(@name, name),
                     game = COALESCE(@game, game),
+                    game_mode = COALESCE(@gameMode, game_mode),
+                    catalog_game_slug = COALESCE(@catalogGameSlug, catalog_game_slug),
+                    region = COALESCE(@region, region),
                     slug = COALESCE(@slug, slug),
                     description = @description,
                     participant_mode = COALESCE(@participantMode, participant_mode),
@@ -240,10 +293,13 @@ public static class SeasonEndpoints
                 {
                     id,
                     name = req.Name,
-                    game = req.Game,
+                    game = catalog?.GameName,
+                    gameMode = catalog?.GameMode ?? req.GameMode,
+                    catalogGameSlug = catalog?.GameSlug,
+                    region = req.Region is null ? null : req.Region.Trim(),
                     slug = req.Slug,
                     description = req.Description,
-                    participantMode = SeasonEndpointHelpers.NormalizeParticipantMode(req.ParticipantMode),
+                    participantMode = catalog?.ParticipantMode ?? (req.ParticipantMode is null ? null : SeasonEndpointHelpers.NormalizeParticipantMode(req.ParticipantMode)),
                     status = SeasonEndpointHelpers.NormalizeSeasonStatus(req.Status),
                     isPublic = req.IsPublic,
                     allowManualOverrides = req.AllowManualOverrides,
@@ -325,8 +381,35 @@ public static class SeasonEndpoints
             return Results.Ok(new { deleted = true });
         }).RequireAuthorization("Organizer");
 
-        app.MapPost("/api/seasons/{id:guid}/publish", async (Guid id, HttpContext ctx, IDbConnectionFactory db, AuditService audit, HybridCache cache, CancellationToken ct) =>
-            await SeasonEndpointHelpers.SetSeasonStatusAsync(id, "published", ctx, db, audit, cache, ct)).RequireAuthorization("Organizer");
+        app.MapPost("/api/seasons/{id:guid}/publish", async (Guid id, HttpContext ctx, SeasonPublishingService publisher, AuditService audit, IDbConnectionFactory db, HybridCache cache, CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            SeasonPublishResult result;
+            try
+            {
+                result = await publisher.PublishAsync(id, userCtx, cache, ct);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Results.Forbid();
+            }
+
+            if (!result.Success)
+            {
+                return result.Status == "not_found"
+                    ? Results.NotFound()
+                    : Results.BadRequest(new { error = "Season plan is not ready to publish.", issues = result.Issues, warnings = result.Warnings });
+            }
+
+            await SeasonEndpointHelpers.LogSeasonAuditAsync(audit, userCtx, "season.publish", id, "Season", new
+            {
+                result.CreatedTournaments,
+                result.LinkedTournaments,
+                result.AdvancementRules
+            }, ct);
+            return Results.Ok(result);
+        }).RequireAuthorization("Organizer");
 
         app.MapPost("/api/seasons/{id:guid}/start", async (Guid id, HttpContext ctx, IDbConnectionFactory db, AuditService audit, HybridCache cache, CancellationToken ct) =>
             await SeasonEndpointHelpers.SetSeasonStatusAsync(id, "active", ctx, db, audit, cache, ct)).RequireAuthorization("Organizer");
@@ -370,7 +453,7 @@ public static class SeasonEndpoints
 
             using var tx = conn.BeginTransaction();
             var source = await conn.QuerySingleOrDefaultAsync<dynamic>("""
-                SELECT id, name, slug, game, description, participant_mode, status, owner_user_id, organization_id,
+                SELECT id, name, slug, game, game_mode, catalog_game_slug, region, description, participant_mode, status, owner_user_id, organization_id,
                        is_public, allow_manual_overrides, start_date, end_date, banner_url, logo_url, settings
                 FROM public.seasons WHERE id = @id AND deleted_at IS NULL
                 """, new { id }, tx);
@@ -385,10 +468,10 @@ public static class SeasonEndpoints
             var newSeason = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO public.seasons
-                    (name, slug, game, description, participant_mode, status, owner_user_id, organization_id,
+                    (name, slug, game, game_mode, catalog_game_slug, region, description, participant_mode, status, owner_user_id, organization_id,
                      is_public, allow_manual_overrides, start_date, end_date, banner_url, logo_url, settings)
                 VALUES
-                    (@name, @slug, @game, @description, @participantMode, 'draft', @ownerUserId, @organizationId,
+                    (@name, @slug, @game, @gameMode, @catalogGameSlug, @region, @description, @participantMode, 'draft', @ownerUserId, @organizationId,
                      @isPublic, @allowManualOverrides, @startDate, @endDate, @bannerUrl, @logoUrl, @settings::jsonb)
                 RETURNING id, name, slug, status
                 """,
@@ -397,6 +480,9 @@ public static class SeasonEndpoints
                     name,
                     slug,
                     game = (string)source.game,
+                    gameMode = (string?)source.game_mode,
+                    catalogGameSlug = (string?)source.catalog_game_slug,
+                    region = (string?)source.region,
                     description = (string?)source.description,
                     participantMode = (string)source.participant_mode,
                     ownerUserId = userCtx.UserIdGuid,
@@ -523,7 +609,8 @@ internal static class SeasonEndpointHelpers
     {
         return await conn.QuerySingleOrDefaultAsync<SeasonDetailRow>(
             """
-            SELECT s.id, s.name, s.slug, s.description, s.game, s.participant_mode, s.status,
+            SELECT s.id, s.name, s.slug, s.description, s.game, s.game_mode AS gameMode,
+                   s.catalog_game_slug AS catalogGameSlug, s.region, s.participant_mode, s.status,
                    s.owner_user_id, s.organization_id, s.is_public, s.allow_manual_overrides,
                    s.start_date, s.end_date, s.banner_url, s.logo_url, s.settings::text AS settings, s.created_at, s.updated_at,
                    COALESCE(p.username, '') AS owner_username, p.full_name AS owner_full_name
@@ -543,6 +630,9 @@ internal static class SeasonEndpointHelpers
         season.Slug,
         season.Description,
         season.Game,
+        season.GameMode,
+        season.CatalogGameSlug,
+        season.Region,
         season.ParticipantMode,
         season.Status,
         season.OwnerUserId,
@@ -645,6 +735,8 @@ internal static class SeasonEndpointHelpers
 
     public static string NormalizeTournamentRole(string? role)
     {
+        if (string.Equals(role, "final", StringComparison.OrdinalIgnoreCase) || string.Equals(role, "grand_final", StringComparison.OrdinalIgnoreCase))
+            return "finals";
         var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "qualifier", "event", "finals", "custom" };
         return !string.IsNullOrWhiteSpace(role) && allowed.Contains(role) ? role.ToLowerInvariant() : "event";
     }
@@ -713,6 +805,9 @@ internal static class SeasonEndpointHelpers
 public sealed record CreateSeasonRequest(
     string Name,
     string Game,
+    string? GameMode = null,
+    string? Region = null,
+    int? TeamSize = null,
     string? Description = null,
     string? ParticipantMode = null,
     DateTime? StartDate = null,
@@ -724,6 +819,9 @@ public sealed record CreateSeasonRequest(
 public sealed record UpdateSeasonRequest(
     string? Name = null,
     string? Game = null,
+    string? GameMode = null,
+    string? Region = null,
+    int? TeamSize = null,
     string? ParticipantMode = null,
     string? Status = null,
     string? Slug = null,
@@ -747,6 +845,9 @@ public sealed record SeasonDetailRow(
     string Slug,
     string? Description,
     string Game,
+    string? GameMode,
+    string? CatalogGameSlug,
+    string? Region,
     string ParticipantMode,
     string Status,
     Guid OwnerUserId,

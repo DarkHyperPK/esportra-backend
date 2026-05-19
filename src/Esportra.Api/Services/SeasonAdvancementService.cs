@@ -12,6 +12,7 @@ namespace Esportra.Api.Services;
 /// </summary>
 public sealed class SeasonAdvancementService(
     IDbConnectionFactory db,
+    SeasonStandingsSyncService standingsSync,
     ILogger<SeasonAdvancementService> logger)
 {
     // ── Preview ──────────────────────────────────────────────────────────────
@@ -68,8 +69,10 @@ public sealed class SeasonAdvancementService(
         if (standings.Count == 0)
             return new AdvancementPreviewResult([], [], "No standings data available. Run standings recalculation first.");
 
-        // 3. For tournament-scoped rules, also load tournament-level placements
-        var tournamentPlacements = new Dictionary<Guid, List<TournamentPlacement>>();
+        // 3. Tournament-scoped rules use source tournament placements; standings-only
+        // rules use season-wide rank. That keeps qualifier-to-final and
+        // points-events-to-final explicit instead of blending both semantics.
+        var tournamentPlacements = new Dictionary<Guid, List<StandingRow>>();
         var sourceTournamentIds = rules
             .Where(r => r.SourceTournamentId.HasValue)
             .Select(r => r.SourceTournamentId!.Value)
@@ -78,16 +81,26 @@ public sealed class SeasonAdvancementService(
 
         foreach (var tid in sourceTournamentIds)
         {
-            var placements = (await conn.QueryAsync<TournamentPlacement>(
+            var placements = await standingsSync.ResolveTournamentPlacementsAsync(conn, tid);
+            var teamIds = placements.Select(p => p.TeamId).Distinct().ToArray();
+            var teams = teamIds.Length == 0
+                ? new Dictionary<Guid, TeamLookupRow>()
+                : (await conn.QueryAsync<TeamLookupRow>(
                 """
-                SELECT ss.team_id, ss.standing_rank AS placement, t.name AS team_name, t.logo_url AS team_logo_url
-                FROM public.season_standings ss
-                LEFT JOIN public.teams t ON t.id = ss.team_id
-                WHERE ss.season_id = @seasonId
-                ORDER BY ss.standing_rank NULLS LAST, ss.total_points DESC
+                SELECT id, name, logo_url AS logoUrl
+                FROM public.teams
+                WHERE id = ANY(@teamIds)
                 """,
-                new { seasonId })).AsList();
-            tournamentPlacements[tid] = placements;
+                new { teamIds })).ToDictionary(t => t.Id);
+
+            tournamentPlacements[tid] = placements
+                .OrderBy(p => p.Placement)
+                .Select(p =>
+                {
+                    teams.TryGetValue(p.TeamId, out var team);
+                    return new StandingRow(p.TeamId, 0, p.Placement, null, team?.Name, team?.LogoUrl);
+                })
+                .ToList();
         }
 
         // 4. Compute proposed movements
@@ -120,8 +133,11 @@ public sealed class SeasonAdvancementService(
 
         foreach (var rule in rules)
         {
-            // Use standings rank as placement (season-wide)
-            var eligibleTeams = standings
+            var sourcePlacements = rule.SourceTournamentId.HasValue && tournamentPlacements.TryGetValue(rule.SourceTournamentId.Value, out var placements)
+                ? placements
+                : standings;
+
+            var eligibleTeams = sourcePlacements
                 .Where(s => s.StandingRank.HasValue
                     && s.StandingRank.Value >= rule.PlacementStart
                     && s.StandingRank.Value <= rule.PlacementEnd
@@ -241,13 +257,13 @@ public sealed class SeasonAdvancementService(
                         var inserted = await conn.ExecuteAsync(
                             """
                             INSERT INTO public.tournament_participants
-                                (tournament_id, team_id, status, participant_type, is_mock)
+                                (tournament_id, team_id, team_name, status, participant_type, source, is_mock)
                             VALUES
-                                (@tournamentId, @teamId, 'approved', 'team', FALSE)
+                                (@tournamentId, @teamId, @teamName, 'approved', 'team', 'advancement', FALSE)
                             ON CONFLICT (tournament_id, COALESCE(team_id, '00000000-0000-0000-0000-000000000000'::uuid))
                             DO NOTHING
                             """,
-                            new { tournamentId = movement.TargetTournamentId.Value, teamId = movement.TeamId }, tx);
+                            new { tournamentId = movement.TargetTournamentId.Value, teamId = movement.TeamId, teamName = (string?)teamInfo.name }, tx);
 
                         if (inserted > 0) advancedCount++;
                     }
@@ -266,15 +282,16 @@ public sealed class SeasonAdvancementService(
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO public.season_qualification_records
-                        (season_id, destination_node_id, team_id, status, qualification_type, display_name, notes)
+                        (season_id, source_node_id, destination_node_id, team_id, status, qualification_type, display_name, notes)
                     VALUES
-                        (@seasonId, @destinationNodeId, @teamId, 'qualified', 'qualified',
+                        (@seasonId, @sourceNodeId, @destinationNodeId, @teamId, 'qualified', 'qualified',
                          @displayName, @notes)
                     ON CONFLICT DO NOTHING
                     """,
                     new
                     {
                         seasonId,
+                        sourceNodeId = movement.SourceNodeId,
                         destinationNodeId = movement.TargetNodeId,
                         teamId = movement.TeamId,
                         displayName = movement.TeamName,
@@ -355,8 +372,7 @@ public sealed class SeasonAdvancementService(
         Guid TeamId, int TotalPoints, int? StandingRank, string? QualificationStatus,
         string? TeamName, string? TeamLogoUrl);
 
-    private sealed record TournamentPlacement(
-        Guid TeamId, int? Placement, string? TeamName, string? TeamLogoUrl);
+    private sealed record TeamLookupRow(Guid Id, string Name, string? LogoUrl);
 
     public sealed record ProposedMovement(
         Guid TeamId, string? TeamName, string? TeamLogoUrl,

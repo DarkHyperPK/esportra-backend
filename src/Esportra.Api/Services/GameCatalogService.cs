@@ -164,6 +164,37 @@ public sealed class GameCatalogService(
         return new TournamentCatalogResolution(resolvedGame.Name, resolvedGame.Slug, mode.ModeKey, mode.TeamSize, structure.StructureKey);
     }
 
+    public async Task<GameModeCatalogResolution> ResolveGameModeAsync(
+        string game,
+        string? gameMode,
+        int? teamSize = null,
+        IDbConnection? existingConnection = null,
+        IDbTransaction? tx = null)
+    {
+        var ownsConnection = existingConnection is null;
+        using var owned = ownsConnection ? db.CreateConnection() : null;
+        var conn = existingConnection ?? owned!;
+
+        var resolvedGame = await ResolveGameAsync(conn, game, tx)
+            ?? throw new GameCatalogValidationException($"Unsupported game '{game}'.");
+
+        var mode = await ResolveModeAsync(conn, resolvedGame.Slug, gameMode, teamSize, tx);
+        if (teamSize.HasValue && teamSize.Value != mode.TeamSize)
+            throw new GameCatalogValidationException($"Team size {teamSize.Value} does not match {resolvedGame.Name} mode '{mode.ModeKey}' ({mode.TeamSize}).");
+
+        return new GameModeCatalogResolution(
+            resolvedGame.Name,
+            resolvedGame.Slug,
+            mode.ModeKey,
+            mode.Name,
+            mode.TeamSize,
+            mode.ParticipantMode,
+            mode.AllowsSubstitutes,
+            mode.MaxRosterSize,
+            mode.ModeGroup,
+            mode.VariantLabel);
+    }
+
     public async Task ValidateRegistrationAsync(
         IDbConnection conn,
         IDbTransaction tx,
@@ -720,6 +751,18 @@ public sealed record TournamentCatalogResolution(
     string GameMode,
     int TeamSize,
     string TournamentStructure);
+
+public sealed record GameModeCatalogResolution(
+    string GameName,
+    string GameSlug,
+    string GameMode,
+    string ModeName,
+    int TeamSize,
+    string ParticipantMode,
+    bool AllowsSubstitutes,
+    int? MaxRosterSize,
+    string? ModeGroup,
+    string? VariantLabel);
 
 public sealed record GameCatalogResponse(
     string CatalogVersion,

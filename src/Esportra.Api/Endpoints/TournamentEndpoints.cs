@@ -917,7 +917,10 @@ public static class TournamentEndpoints
                 """
                 SELECT status, max_teams, entry_fee, payment_instructions, game,
                        reserved_invite_slots,
-                       COALESCE(settings->>'registrationType', 'open') AS registration_type
+                       COALESCE(settings->>'registrationType', 'open') AS registration_type,
+                       settings->>'seasonId' AS season_id,
+                       settings->>'seasonNodeId' AS season_node_id,
+                       settings->>'seasonRole' AS season_role
                 FROM tournaments
                 WHERE id = @id
                 FOR UPDATE
@@ -929,6 +932,24 @@ public static class TournamentEndpoints
 
             if (string.Equals((string?)tourn.registration_type, "invite_only", StringComparison.OrdinalIgnoreCase))
             {   txn.Rollback(); return Results.BadRequest(new { error = "This tournament is invite-only." }); }
+            if (string.Equals((string?)tourn.registration_type, "closed", StringComparison.OrdinalIgnoreCase))
+            {   txn.Rollback(); return Results.BadRequest(new { error = "This tournament is closed for direct registration." }); }
+
+            Guid? seasonId = Guid.TryParse((string?)tourn.season_id, out var parsedSeasonId) ? parsedSeasonId : null;
+            Guid? seasonNodeId = Guid.TryParse((string?)tourn.season_node_id, out var parsedSeasonNodeId) ? parsedSeasonNodeId : null;
+            if (seasonId.HasValue)
+            {
+                var node = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT node_type
+                    FROM public.season_nodes
+                    WHERE season_id = @seasonId AND (linked_tournament_id = @id OR id = @seasonNodeId)
+                    LIMIT 1
+                    """,
+                    new { seasonId, seasonNodeId, id }, txn);
+                if (node is not null && Esportra.Api.Services.SeasonValidationService.IsInboundOnlyNode((string)node.node_type))
+                { txn.Rollback(); return Results.BadRequest(new { error = "Season finals and stages only accept advancement qualifiers." }); }
+            }
 
             // Check capacity (0 or null = unlimited)
             int? maxTeams = (int?)tourn.max_teams;
@@ -972,6 +993,30 @@ public static class TournamentEndpoints
             Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
             Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
             var   participantType = teamIdGuid is not null ? "team" : "solo";
+
+            if (seasonId.HasValue)
+            {
+                var alreadyInSeason = await conn.QuerySingleAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM public.season_tournaments st
+                        JOIN public.season_nodes sn ON sn.linked_tournament_id = st.tournament_id AND sn.season_id = st.season_id
+                        JOIN public.tournament_participants tp ON tp.tournament_id = st.tournament_id
+                        WHERE st.season_id = @seasonId
+                          AND sn.node_type IN ('qualifier','event','custom')
+                          AND tp.status NOT IN ('rejected','cancelled','disqualified')
+                          AND (
+                              (@teamId IS NOT NULL AND tp.team_id = @teamId)
+                              OR (@teamId IS NULL AND tp.user_id = @userId)
+                          )
+                          AND st.tournament_id <> @id
+                    )
+                    """,
+                    new { seasonId, teamId = teamIdGuid, userId = userCtx.UserIdGuid, id }, txn);
+                if (alreadyInSeason)
+                { txn.Rollback(); return Results.Conflict(new { error = "This entrant is already registered in another qualifier or event for this season." }); }
+            }
 
             try
             {
@@ -1064,6 +1109,32 @@ public static class TournamentEndpoints
                     paymentStatus    = paymentStatus,
                     paymentReceiptUrl = req.PaymentReceiptUrl,
                 }, txn);
+
+            if (seasonId.HasValue && teamIdGuid.HasValue)
+            {
+                var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT name, logo_url, tag FROM public.teams WHERE id = @teamId",
+                    new { teamId = teamIdGuid }, txn);
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.season_participants
+                        (season_id, team_id, team_name, team_logo_url, team_slug, status, registered_by)
+                    VALUES
+                        (@seasonId, @teamId, @teamName, @teamLogoUrl, @teamSlug, 'approved', @registeredBy)
+                    ON CONFLICT (season_id, team_id) DO UPDATE SET
+                        status = 'approved',
+                        updated_at = NOW()
+                    """,
+                    new
+                    {
+                        seasonId,
+                        teamId = teamIdGuid,
+                        teamName = (string?)team?.name ?? req.TeamName ?? "Team",
+                        teamLogoUrl = (string?)team?.logo_url,
+                        teamSlug = (string?)team?.tag,
+                        registeredBy = userCtx.UserIdGuid
+                    }, txn);
+            }
 
             txn.Commit();
             return Results.Ok(row);

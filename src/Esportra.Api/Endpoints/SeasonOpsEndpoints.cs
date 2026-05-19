@@ -39,6 +39,7 @@ public static class SeasonOpsEndpoints
             [FromBody] AddSeasonTournamentRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
             AuditService audit,
             HybridCache cache,
             CancellationToken ct) =>
@@ -50,10 +51,35 @@ public static class SeasonOpsEndpoints
             using var conn = db.CreateConnection();
             if (!await SeasonEndpointHelpers.CanManageSeasonAsync(conn, id, userCtx)) return Results.Forbid();
 
-            var season = await conn.QuerySingleOrDefaultAsync<dynamic>("SELECT id, name, game, organization_id FROM public.seasons WHERE id = @id AND deleted_at IS NULL", new { id });
+            var season = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, name, game, game_mode, region, organization_id FROM public.seasons WHERE id = @id AND deleted_at IS NULL",
+                new { id });
             if (season is null) return Results.NotFound();
 
             using var tx = conn.BeginTransaction();
+            GameModeCatalogResolution catalog;
+            TournamentCatalogResolution tournamentCatalog;
+            try
+            {
+                catalog = await gameCatalog.ResolveGameModeAsync((string)season.game, (string?)season.game_mode, req.TeamSize, conn, tx);
+                tournamentCatalog = await gameCatalog.ResolveTournamentAsync(
+                    (string)season.game,
+                    catalog.GameMode,
+                    catalog.TeamSize,
+                    req.TournamentStructure ?? req.Format,
+                    null,
+                    Array.Empty<string>(),
+                    false,
+                    null,
+                    conn,
+                    tx);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
             var slug = await CreateUniqueTournamentSlugAsync(conn, tx, req.Name);
             var now = DateTime.UtcNow;
             var startDate = req.StartDate ?? now.AddDays(14);
@@ -63,11 +89,11 @@ public static class SeasonOpsEndpoints
             var tournament = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO public.tournaments (
-                    name, description, slug, game, format, max_teams, min_teams, team_size,
+                    name, description, slug, game, game_mode, format, max_teams, min_teams, team_size,
                     entry_fee, prize_pool, start_date, end_date, registration_deadline,
                     status, organization_id, is_public, organizer_id, settings, region, currency
                 ) VALUES (
-                    @name, @description, @slug, @game, @format, @maxTeams, 2, @teamSize,
+                    @name, @description, @slug, @game, @gameMode, @format, @maxTeams, 2, @teamSize,
                     0, 0, @startDate, @endDate, @registrationDeadline,
                     'open'::tournament_status, @organizationId, TRUE, @organizerId, @settings::jsonb, @region, 'USD'
                 )
@@ -78,17 +104,25 @@ public static class SeasonOpsEndpoints
                     name = req.Name.Trim(),
                     description = $"Tournament for {(string)season.name}",
                     slug,
-                    game = (string)season.game,
-                    format = req.Format ?? "single_elimination",
+                    game = tournamentCatalog.GameName,
+                    gameMode = tournamentCatalog.GameMode,
+                    format = tournamentCatalog.TournamentStructure,
                     maxTeams = req.MaxTeams ?? 16,
-                    teamSize = req.TeamSize ?? 5,
+                    teamSize = tournamentCatalog.TeamSize,
                     startDate,
                     endDate,
                     registrationDeadline,
                     organizationId = (Guid?)season.organization_id,
                     organizerId = userCtx.UserIdGuid,
-                    settings = JsonSerializer.Serialize(new { seasonId = id, seasonRole = role, displayName = req.DisplayName, registrationType = role is "finals" ? "closed" : "open" }),
-                    region = req.Region
+                    settings = JsonSerializer.Serialize(new
+                    {
+                        seasonId = id,
+                        seasonRole = role,
+                        displayName = req.DisplayName,
+                        registrationType = role is "finals" ? "closed" : "open",
+                        registrationPolicy = role is "finals" ? "inbound_only" : "single_intake"
+                    }),
+                    region = (string?)season.region
                 }, tx);
 
             var tournamentId = (Guid)tournament.id;
@@ -117,11 +151,19 @@ public static class SeasonOpsEndpoints
                     name = req.DisplayName ?? req.Name.Trim(),
                     slug,
                     nodeType = role == "finals" ? "final" : role,
-                    req.Region,
+                    Region = (string?)season.region,
                     tournamentId,
                     startsAt = startDate,
                     endsAt = endDate,
-                    metadata = JsonSerializer.Serialize(new { role, format = req.Format, maxTeams = req.MaxTeams })
+                    metadata = JsonSerializer.Serialize(new
+                    {
+                        role,
+                        tournamentStructure = tournamentCatalog.TournamentStructure,
+                        registrationType = role is "finals" ? "closed" : "open",
+                        registrationPolicy = role is "finals" ? "inbound_only" : "single_intake",
+                        maxTeams = req.MaxTeams ?? 16,
+                        generatedBySeason = true
+                    })
                 }, tx);
 
             tx.Commit();
@@ -220,6 +262,236 @@ public static class SeasonOpsEndpoints
                 });
             await SeasonEndpointHelpers.InvalidateSeasonCacheAsync(cache, id, ct);
             return Results.Ok(row);
+        }).RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/seasons/{id:guid}/registrations", async (
+            Guid id,
+            [FromBody] RegisterSeasonNodeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "Notes must be 500 characters or fewer." });
+
+            using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
+
+            var season = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT id, status, game, game_mode
+                FROM public.seasons
+                WHERE id = @id AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+                new { id }, tx);
+            if (season is null) { tx.Rollback(); return Results.NotFound(); }
+
+            var status = (string)season.status;
+            if (status is not "published" and not "active")
+            { tx.Rollback(); return Results.BadRequest(new { error = "Season is not accepting registrations." }); }
+
+            var node = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT sn.id, sn.node_type, sn.name, sn.linked_tournament_id,
+                       COALESCE(sn.metadata->>'registrationType', 'open') AS registration_type
+                FROM public.season_nodes sn
+                WHERE sn.season_id = @seasonId
+                  AND (
+                      sn.id = @nodeId
+                      OR sn.linked_tournament_id = @nodeId
+                      OR sn.linked_tournament_id = (
+                          SELECT st.tournament_id
+                          FROM public.season_tournaments st
+                          WHERE st.id = @nodeId AND st.season_id = @seasonId
+                          LIMIT 1
+                      )
+                  )
+                FOR UPDATE
+                """,
+                new { nodeId = req.NodeId, seasonId = id }, tx);
+            if (node is null) { tx.Rollback(); return Results.BadRequest(new { error = "Registration node was not found." }); }
+
+            var nodeType = (string)node.node_type;
+            if (!SeasonValidationService.IsIntakeNode(nodeType))
+            { tx.Rollback(); return Results.BadRequest(new { error = "This season node is inbound-only and does not accept direct registration." }); }
+            if (string.Equals((string?)node.registration_type, "closed", StringComparison.OrdinalIgnoreCase))
+            { tx.Rollback(); return Results.BadRequest(new { error = "This season node is closed for direct registration." }); }
+            if (node.linked_tournament_id is null)
+            { tx.Rollback(); return Results.BadRequest(new { error = "This season node has not been published into a tournament yet." }); }
+
+            var tournamentId = (Guid)node.linked_tournament_id;
+            var resolvedMode = await gameCatalog.ResolveGameModeAsync((string)season.game, (string?)season.game_mode, null, conn, tx);
+            Guid? requestedTeamId = req.TeamId;
+            Guid? requestedRosterId = req.RosterId;
+            if (!requestedTeamId.HasValue && !string.Equals(resolvedMode.ParticipantMode, "solo", StringComparison.OrdinalIgnoreCase))
+            {
+                var defaultTeam = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT t.id AS team_id, tr.id AS roster_id
+                    FROM public.teams t
+                    JOIN public.team_members tm ON tm.team_id = t.id
+                    LEFT JOIN public.team_rosters tr
+                      ON tr.team_id = t.id
+                     AND (LOWER(tr.format) = LOWER(@gameMode) OR tr.team_size = @teamSize)
+                    WHERE t.is_active = TRUE
+                      AND tm.user_id = @userId
+                      AND tm.is_active = TRUE
+                      AND tm.role IN ('captain','owner','admin')
+                    ORDER BY CASE WHEN tr.id IS NULL THEN 1 ELSE 0 END, t.created_at ASC
+                    LIMIT 1
+                    """,
+                    new { userId = userCtx.UserIdGuid, gameMode = resolvedMode.GameMode, teamSize = resolvedMode.TeamSize }, tx);
+                if (defaultTeam is null)
+                { tx.Rollback(); return Results.BadRequest(new { error = "Select an eligible team and roster for this season." }); }
+                requestedTeamId = (Guid)defaultTeam.team_id;
+                requestedRosterId ??= (Guid?)defaultTeam.roster_id;
+            }
+
+            var alreadyInSeason = await conn.QuerySingleAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM public.season_tournaments st
+                    JOIN public.season_nodes sn ON sn.linked_tournament_id = st.tournament_id AND sn.season_id = st.season_id
+                    JOIN public.tournament_participants tp ON tp.tournament_id = st.tournament_id
+                    WHERE st.season_id = @seasonId
+                      AND sn.node_type IN ('qualifier','event','custom')
+                      AND tp.status NOT IN ('rejected','cancelled','disqualified')
+                      AND (
+                          (@teamId IS NOT NULL AND tp.team_id = @teamId)
+                          OR (@teamId IS NULL AND tp.user_id = @userId)
+                      )
+                      AND st.tournament_id <> @tournamentId
+                )
+                """,
+                new { seasonId = id, teamId = requestedTeamId, userId = userCtx.UserIdGuid, tournamentId }, tx);
+            if (alreadyInSeason)
+            { tx.Rollback(); return Results.Conflict(new { error = "This entrant is already registered in another qualifier or event for this season." }); }
+
+            try
+            {
+                await gameCatalog.ValidateRegistrationAsync(conn, tx, tournamentId, requestedTeamId, requestedRosterId, userCtx.UserIdGuid);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
+            Guid? teamId = requestedTeamId;
+            var participantType = teamId.HasValue ? "team" : "solo";
+            string? teamName = null;
+            string? teamLogoUrl = null;
+            string? teamSlug = null;
+
+            if (!teamId.HasValue)
+            {
+                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT username, avatar_url FROM public.profiles WHERE id = @userId",
+                    new { userId = userCtx.UserIdGuid }, tx);
+                teamId = Guid.NewGuid();
+                teamName = (string?)profile?.username ?? "Solo Player";
+                teamSlug = $"solo-{teamId:N}";
+                teamLogoUrl = (string?)profile?.avatar_url;
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.teams (id, name, tag, game, owner_id, is_solo, max_members, logo_url)
+                    VALUES (@teamId, @teamName, @teamSlug, @game, @ownerId, TRUE, 1, @teamLogoUrl)
+                    """,
+                    new { teamId, teamName, teamSlug, game = (string)season.game, ownerId = userCtx.UserIdGuid, teamLogoUrl }, tx);
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.team_members (team_id, user_id, role, is_active)
+                    VALUES (@teamId, @userId, 'captain', TRUE)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { teamId, userId = userCtx.UserIdGuid }, tx);
+            }
+            else
+            {
+                var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT id, name, logo_url, tag FROM public.teams WHERE id = @teamId",
+                    new { teamId }, tx);
+                if (team is null) { tx.Rollback(); return Results.BadRequest(new { error = "Team was not found." }); }
+                teamName = (string)team.name;
+                teamLogoUrl = (string?)team.logo_url;
+                teamSlug = (string?)team.tag;
+            }
+
+            var existingInTarget = await conn.QuerySingleAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM public.tournament_participants
+                    WHERE tournament_id = @tournamentId
+                      AND status NOT IN ('cancelled','rejected','disqualified')
+                      AND (team_id = @teamId OR user_id = @userId)
+                )
+                """,
+                new { tournamentId, teamId, userId = userCtx.UserIdGuid }, tx);
+            if (existingInTarget)
+            { tx.Rollback(); return Results.Conflict(new { error = "This entrant is already registered for this tournament." }); }
+
+            var maxTeams = await conn.QuerySingleOrDefaultAsync<int?>("SELECT max_teams FROM public.tournaments WHERE id = @tournamentId", new { tournamentId }, tx);
+            if (maxTeams.HasValue && maxTeams.Value > 0)
+            {
+                var currentCount = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM public.tournament_participants WHERE tournament_id = @tournamentId AND status NOT IN ('rejected','cancelled','disqualified')",
+                    new { tournamentId }, tx);
+                if (currentCount >= maxTeams.Value)
+                { tx.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
+            }
+
+            var tournamentParticipant = await conn.QuerySingleAsync<dynamic>(
+                """
+                INSERT INTO public.tournament_participants
+                    (tournament_id, user_id, team_id, team_captain_id, team_name,
+                     roster_id, status, participant_type, source)
+                VALUES
+                    (@tournamentId, @userId, @teamId, @teamCaptainId, @teamName,
+                     @rosterId, 'approved'::registration_status, @participantType::registration_type, 'open')
+                RETURNING id
+                """,
+                new
+                {
+                    tournamentId,
+                    userId = userCtx.UserIdGuid,
+                    teamId,
+                    teamCaptainId = userCtx.UserIdGuid,
+                    teamName,
+                    rosterId = requestedRosterId,
+                    participantType
+                }, tx);
+
+            var seasonParticipant = await conn.QuerySingleAsync<SeasonParticipantRow>(
+                """
+                INSERT INTO public.season_participants
+                    (season_id, team_id, team_name, team_logo_url, team_slug, status, registered_by, notes)
+                VALUES
+                    (@seasonId, @teamId, @teamName, @teamLogoUrl, @teamSlug, 'approved', @registeredBy, @notes)
+                ON CONFLICT (season_id, team_id) DO UPDATE SET
+                    status = 'approved',
+                    notes = COALESCE(EXCLUDED.notes, public.season_participants.notes),
+                    updated_at = NOW()
+                RETURNING id, season_id, team_id, team_name, team_logo_url, team_slug, status, registered_by, notes, created_at, updated_at
+                """,
+                new
+                {
+                    seasonId = id,
+                    teamId,
+                    teamName,
+                    teamLogoUrl,
+                    teamSlug,
+                    registeredBy = userCtx.UserIdGuid,
+                    notes = req.Notes
+                }, tx);
+
+            tx.Commit();
+            await SeasonEndpointHelpers.InvalidateSeasonCacheAsync(cache, id, ct);
+            return Results.Ok(new { seasonParticipant, tournamentParticipantId = (Guid)tournamentParticipant.id, tournamentId, nodeId = req.NodeId });
         }).RequireAuthorization("Authenticated");
 
         app.MapDelete("/api/seasons/{id:guid}/participants/{participantId:guid}", async (Guid id, Guid participantId, HttpContext ctx, IDbConnectionFactory db, HybridCache cache, CancellationToken ct) =>
@@ -351,6 +623,7 @@ public sealed record AddSeasonTournamentRequest(
     string Role,
     string? Region,
     string? DisplayName,
+    string? TournamentStructure,
     string? Format,
     int? MaxTeams,
     int? TeamSize,
@@ -359,6 +632,7 @@ public sealed record AddSeasonTournamentRequest(
     DateTime? RegistrationDeadline);
 
 public sealed record RegisterSeasonRequest(Guid? TeamId = null, string? Notes = null);
+public sealed record RegisterSeasonNodeRequest(Guid NodeId, Guid? TeamId = null, Guid? RosterId = null, string? Notes = null);
 public sealed record UpdateQualificationRequest(string? Status = null, string? QualificationType = null, string? Notes = null);
 
 public sealed record SeasonTournamentDetailsRow(

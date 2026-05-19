@@ -153,7 +153,7 @@ public sealed class SeasonStandingsSyncService(
     /// Resolves final placements for all teams in a completed tournament.
     /// Uses bracket elimination order for bracket tournaments, or match-based standings for group/swiss.
     /// </summary>
-    private async Task<List<TeamPlacement>> ResolveTournamentPlacementsAsync(IDbConnection conn, Guid tournamentId)
+    public async Task<List<TeamPlacement>> ResolveTournamentPlacementsAsync(IDbConnection conn, Guid tournamentId)
     {
         var placements = new List<TeamPlacement>();
 
@@ -420,7 +420,7 @@ public sealed class SeasonStandingsSyncService(
     // ── Internal DTOs ─────────────────────────────────────────────────────────────
 
     private sealed record LinkedSeasonRow(Guid SeasonId, string SeasonRole, string SeasonStatus);
-    private sealed record TeamPlacement(Guid TeamId, int Placement);
+    public sealed record TeamPlacement(Guid TeamId, int Placement);
     private sealed record PointRuleRow(
         Guid Id, Guid? TournamentId, Guid? SourceNodeId,
         int PlacementStart, int PlacementEnd, int Points,
