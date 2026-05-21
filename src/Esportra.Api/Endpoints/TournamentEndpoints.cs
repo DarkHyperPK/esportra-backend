@@ -3349,7 +3349,7 @@ public static class TournamentEndpoints
                 logger.LogInformation("[mock/generate] Fetching tournament {Id}", id);
 
                 var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT organizer_id, status, is_public, max_teams, team_size, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
+                    "SELECT organizer_id, status, is_public, max_teams, team_size, game, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
                     new { id }, tx);
                 if (tournament is null) return Results.NotFound();
                 if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
@@ -3392,20 +3392,44 @@ public static class TournamentEndpoints
                 var teamSize        = (int)tournament.team_size;
                 var participantType = teamSize == 1 ? "solo" : "team";
                 var mockNames       = MockTeamNames.Generate(count);
-                var rows            = mockNames.Select(name => new
+                var rows            = mockNames.Select(name =>
                 {
-                    tournamentId    = id,
-                    teamName        = name,
-                    participantType,
-                    mockStatus      = "checked_in",
+                    var mockId = Guid.NewGuid();
+                    return new
+                    {
+                        mockId,
+                        tournamentId = id,
+                        teamName = name,
+                        tag = $"mock-{mockId:N}"[..18],
+                        game = (string)tournament.game,
+                        ownerId = (Guid)tournament.organizer_id,
+                        isSolo = teamSize == 1,
+                        maxMembers = Math.Max(teamSize, 1),
+                        participantType,
+                        mockStatus = "checked_in",
+                    };
                 }).ToList();
 
                 await conn.ExecuteAsync(
                     """
+                    INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members)
+                    VALUES (@mockId, @teamName, @tag, @game, @ownerId, @isSolo, @maxMembers)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        tag = EXCLUDED.tag,
+                        game = EXCLUDED.game,
+                        owner_id = EXCLUDED.owner_id,
+                        is_solo = EXCLUDED.is_solo,
+                        max_members = EXCLUDED.max_members
+                    """,
+                    rows, tx);
+
+                await conn.ExecuteAsync(
+                    """
                     INSERT INTO tournament_participants
-                        (tournament_id, team_name, participant_type, status, is_mock, checked_in_at, created_at, updated_at)
+                        (id, tournament_id, team_id, team_name, participant_type, status, is_mock, checked_in_at, created_at, updated_at)
                     VALUES
-                        (@tournamentId, @teamName, @participantType::registration_type,
+                        (@mockId, @tournamentId, @mockId, @teamName, @participantType::registration_type,
                          @mockStatus::registration_status, TRUE, NOW(), NOW(), NOW())
                     """,
                     rows, tx);
@@ -3621,7 +3645,18 @@ public static class TournamentEndpoints
             "DELETE FROM public.brkt_versions WHERE tournament_id = @tournamentId",
             new { tournamentId }, tx);
         await conn.ExecuteAsync(
-            "DELETE FROM public.tournament_participants WHERE tournament_id = @tournamentId AND is_mock = TRUE",
+            """
+            WITH deleted_mock_participants AS (
+                DELETE FROM public.tournament_participants
+                WHERE tournament_id = @tournamentId
+                  AND is_mock = TRUE
+                RETURNING team_id
+            )
+            DELETE FROM public.teams t
+            USING deleted_mock_participants d
+            WHERE t.id = d.team_id
+              AND t.tag LIKE 'mock-%'
+            """,
             new { tournamentId }, tx);
     }
 
