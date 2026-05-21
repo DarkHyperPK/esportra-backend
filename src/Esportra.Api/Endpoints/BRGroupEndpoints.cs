@@ -22,9 +22,12 @@ public static class BRGroupEndpoints
         // List all groups for a BR stage with team counts. Public endpoint.
         app.MapGet("/api/stages/{stageId}/br/groups", async (
             Guid              stageId,
+            HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
+            if (!await CanViewStagePublicDataAsync(conn, ctx, stageId))
+                return Results.NotFound();
 
             var groups = await conn.QueryAsync<dynamic>(
                 """
@@ -284,9 +287,12 @@ public static class BRGroupEndpoints
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/participants", async (
             Guid              stageId,
             Guid              groupId,
+            HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
+            if (!await CanViewStagePublicDataAsync(conn, ctx, stageId))
+                return Results.NotFound();
 
             var groupExists = await conn.QuerySingleOrDefaultAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM br_groups WHERE id = @groupId AND stage_id = @stageId)",
@@ -591,6 +597,8 @@ public static class BRGroupEndpoints
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
+            if (!await CanViewStagePublicDataAsync(conn, ctx, stageId))
+                return Results.NotFound();
 
             // Verify groupId belongs to this stageId
             var groupExists = await conn.QuerySingleOrDefaultAsync<bool>(
@@ -1931,9 +1939,12 @@ public static class BRGroupEndpoints
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/leaderboard", async (
             Guid              stageId,
             Guid              groupId,
+            HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
+            if (!await CanViewStagePublicDataAsync(conn, ctx, stageId))
+                return Results.NotFound();
 
             // Verify groupId belongs to this stageId
             var groupExists = await conn.QuerySingleOrDefaultAsync<bool>(
@@ -2810,6 +2821,33 @@ public static class BRGroupEndpoints
         var shuffled = teams.ToArray();
         Random.Shared.Shuffle(shuffled);
         return shuffled;
+    }
+
+    private static async Task<bool> CanViewStagePublicDataAsync(IDbConnection conn, HttpContext ctx, Guid stageId)
+    {
+        var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            """
+            SELECT t.id, t.organizer_id, t.is_public
+            FROM public.tournament_stages s
+            JOIN public.tournaments t ON t.id = s.tournament_id
+            WHERE s.id = @stageId
+              AND t.deleted_at IS NULL
+            """,
+            new { stageId });
+
+        if (tournament is null)
+            return false;
+
+        if ((bool)tournament.is_public)
+            return true;
+
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null)
+            return false;
+
+        return (Guid)tournament.organizer_id == userCtx.UserIdGuid
+            || StaffAuthHelper.IsPlatformAdmin(userCtx)
+            || await StaffAuthHelper.CanActOnStageAsync(conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
     }
 
     /// <summary>

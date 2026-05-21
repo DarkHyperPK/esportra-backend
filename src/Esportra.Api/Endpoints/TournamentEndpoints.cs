@@ -1639,10 +1639,14 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
         app.MapGet("/api/tournaments/{id}/stages", async (
             Guid                 id,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
+            if (!await CanViewTournamentPublicDataAsync(conn, ctx, id))
+                return Results.NotFound();
+
             var rows = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @id ORDER BY stage_order",
                 new { id });
@@ -1653,10 +1657,14 @@ public static class TournamentEndpoints
         app.MapGet("/api/tournaments/{id}/bracket-versions", async (
             Guid                 id,
             string?              status,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
+            if (!await CanViewTournamentPublicDataAsync(conn, ctx, id))
+                return Results.NotFound();
+
             dynamic rows;
             if (!string.IsNullOrEmpty(status))
             {
@@ -3513,7 +3521,7 @@ public static class TournamentEndpoints
 
                 var safety = await CheckMockSimulationSafetyAsync(conn, tx, id);
                 if (!safety.CanRegenerate)
-                    return Results.Json(new { error = safety.Error }, statusCode: StatusCodes.Status409Conflict);
+                    return Results.Json(MockOperationError(safety.Error, ctx.TraceIdentifier), statusCode: StatusCodes.Status409Conflict);
 
                 var maxTeams = (int)tournament.max_teams;
                 var count    = req.Count.HasValue
@@ -3562,10 +3570,9 @@ public static class TournamentEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "[mock/generate] Failed for tournament {Id}: {Message}", id, ex.Message);
-                return Results.Problem(
-                    detail:     ex.Message,
-                    title:      "Mock generation failed",
-                    statusCode: 500);
+                return Results.Json(
+                    MockOperationError("We couldn't generate mock teams right now. Please try again, and report this if it keeps happening.", ctx.TraceIdentifier),
+                    statusCode: StatusCodes.Status500InternalServerError);
             }
         }).RequireAuthorization("Organizer");
 
@@ -3576,32 +3583,52 @@ public static class TournamentEndpoints
             Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            ILoggerFactory       loggerFactory,
             CancellationToken    ct) =>
         {
+            var logger  = loggerFactory.CreateLogger("MockEndpoints");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
-            using var tx   = conn.BeginTransaction();
+            try
+            {
+                using var conn = db.CreateConnection();
+                using var tx   = conn.BeginTransaction();
 
-            var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT organizer_id FROM tournaments WHERE id = @id AND deleted_at IS NULL",
-                new { id }, tx);
-            if (organizerId is null) return Results.NotFound();
-            if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
-                return Results.Forbid();
+                var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT organizer_id FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
+                    new { id }, tx);
+                if (organizerId is null) return Results.NotFound();
+                if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                    return Results.Forbid();
 
-            var safety = await CheckMockSimulationSafetyAsync(conn, tx, id);
-            if (!safety.CanRegenerate)
-                return Results.Json(new { error = safety.Error }, statusCode: StatusCodes.Status409Conflict);
+                var safety = await CheckMockSimulationSafetyAsync(conn, tx, id);
+                if (!safety.CanRegenerate)
+                    return Results.Json(MockOperationError(safety.Error, ctx.TraceIdentifier), statusCode: StatusCodes.Status409Conflict);
 
-            await ClearMockSimulationDataAsync(conn, tx, id);
+                await ClearMockSimulationDataAsync(conn, tx, id);
 
-            tx.Commit();
+                tx.Commit();
 
-            return Results.NoContent();
+                logger.LogInformation("[mock/clear] Cleared mock data for tournament {Id}", id);
+                return Results.NoContent();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[mock/clear] Failed for tournament {Id}: {Message}", id, ex.Message);
+                return Results.Json(
+                    MockOperationError("We couldn't clear mock teams right now. Please try again, and report this if it keeps happening.", ctx.TraceIdentifier),
+                    statusCode: StatusCodes.Status500InternalServerError);
+            }
         }).RequireAuthorization("Organizer");
     }
+
+    private static object MockOperationError(string? message, string traceId) => new
+    {
+        error = message ?? "Mock tournament operation failed.",
+        message = message ?? "Mock tournament operation failed.",
+        traceId,
+    };
 
     private static async Task<MockSimulationSafety> CheckMockSimulationSafetyAsync(IDbConnection conn, IDbTransaction tx, Guid tournamentId)
     {
@@ -3611,7 +3638,7 @@ public static class TournamentEndpoints
             FROM public.tournament_participants
             WHERE tournament_id = @tournamentId
               AND COALESCE(is_mock, FALSE) = FALSE
-              AND status NOT IN ('rejected', 'cancelled', 'withdrawn')
+              AND status::text NOT IN ('rejected', 'cancelled', 'disqualified')
             """,
             new { tournamentId }, tx);
 
@@ -3623,7 +3650,7 @@ public static class TournamentEndpoints
             SELECT COUNT(*)
             FROM public.tournament_participants
             WHERE tournament_id = @tournamentId
-              AND status NOT IN ('rejected', 'cancelled', 'withdrawn')
+              AND status::text NOT IN ('rejected', 'cancelled', 'disqualified')
               AND COALESCE(payment_status, '') NOT IN ('', 'not_required', 'waived')
             """,
             new { tournamentId }, tx);
@@ -3684,7 +3711,59 @@ public static class TournamentEndpoints
         // They are cleared together so regeneration reflects the current max_teams
         // and cannot leave stale teams attached to a bracket.
         await conn.ExecuteAsync(
+            """
+            DELETE FROM public.dispute_comments dc
+            USING public.tournament_disputes td
+            JOIN public.brkt_matches m ON m.id = td.match_id
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE dc.dispute_id = td.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.tournament_disputes td
+            USING public.brkt_matches m
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE td.match_id = m.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.match_disputes md
+            USING public.brkt_matches m
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE md.match_id = m.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.match_result_reports r
+            USING public.brkt_matches m
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE r.match_id = m.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.br_group_teams gt
+            USING public.tournament_participants tp
+            JOIN public.tournament_stages ts ON ts.tournament_id = tp.tournament_id
+            JOIN public.br_groups g ON g.stage_id = ts.id
+            WHERE gt.group_id = g.id
+              AND gt.participant_id = tp.id
+              AND tp.tournament_id = @tournamentId
+              AND COALESCE(tp.is_mock, FALSE) = TRUE
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
             "DELETE FROM public.stage_participants WHERE stage_id IN (SELECT id FROM public.tournament_stages WHERE tournament_id = @tournamentId)",
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.brkt_matches WHERE version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)",
             new { tournamentId }, tx);
         await conn.ExecuteAsync(
             "DELETE FROM public.brkt_versions WHERE tournament_id = @tournamentId",
@@ -3695,6 +3774,24 @@ public static class TournamentEndpoints
     }
 
     private sealed record MockSimulationSafety(bool CanRegenerate, string? Error);
+
+    private static async Task<bool> CanViewTournamentPublicDataAsync(IDbConnection conn, HttpContext ctx, Guid tournamentId)
+    {
+        var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT organizer_id, is_public FROM public.tournaments WHERE id = @tournamentId AND deleted_at IS NULL",
+            new { tournamentId });
+        if (tournament is null)
+            return false;
+
+        if ((bool)tournament.is_public)
+            return true;
+
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null)
+            return false;
+
+        return (Guid)tournament.organizer_id == userCtx.UserIdGuid || userCtx.Roles.Contains("admin");
+    }
 }
 
 // ── Request records ───────────────────────────────────────────────────────────
