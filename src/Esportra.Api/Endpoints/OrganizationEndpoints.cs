@@ -604,6 +604,117 @@ public static class OrganizationEndpoints
             return Results.Ok(rows);
         });
 
+        // ── GET /api/organizations/{orgId}/participants — aggregate org registrations ─
+        // Single server-side read for the organizer management console. This avoids the
+        // frontend N+1 pattern of fetching every tournament and then every participant list.
+        app.MapGet("/api/organizations/{orgId}/participants", async (
+            Guid                 orgId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct,
+            string?              search = null,
+            string?              status = null,
+            int?                 limit = null,
+            int?                 offset = null) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
+            var pageSize = Math.Clamp(limit ?? 100, 1, 500);
+            var pageOffset = Math.Max(offset ?? 0, 0);
+            var searchTerm = string.IsNullOrWhiteSpace(search) ? null : $"%{search.Trim()}%";
+            var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToLowerInvariant();
+
+            var rows = (await conn.QueryAsync<dynamic>(
+                """
+                WITH registrations AS (
+                    SELECT
+                        tp.id,
+                        tp.tournament_id,
+                        tp.user_id,
+                        tp.team_id,
+                        tp.participant_type::text AS participant_type,
+                        tp.status::text AS status,
+                        tp.source,
+                        tp.payment_status::text AS payment_status,
+                        tp.created_at AS registered_at,
+                        tp.checked_in_at,
+                        COALESCE(tp.is_mock, FALSE) AS is_mock,
+                        COALESCE(team.name, tp.team_name, solo.username, solo.full_name, 'Unknown Participant') AS display_name,
+                        team.logo_url AS team_logo_url,
+                        COALESCE(captain.username, captain.full_name, solo.username, solo.full_name, 'Unknown Captain') AS captain_name,
+                        solo.username AS solo_username,
+                        solo.full_name AS solo_full_name,
+                        solo.avatar_url AS solo_avatar_url,
+                        t.name AS tournament_name,
+                        t.slug AS tournament_slug,
+                        t.team_size AS tournament_team_size,
+                        t.game AS tournament_game,
+                        COUNT(*) OVER() AS total_count
+                    FROM public.tournament_participants tp
+                    JOIN public.tournaments t ON t.id = tp.tournament_id
+                    LEFT JOIN public.teams team ON team.id = tp.team_id
+                    LEFT JOIN public.profiles solo ON solo.id = tp.user_id
+                    LEFT JOIN public.profiles captain ON captain.id = COALESCE(team.owner_id, tp.team_captain_id, tp.user_id)
+                    WHERE t.organization_id = @orgId
+                      AND t.deleted_at IS NULL
+                      AND (@normalizedStatus IS NULL OR tp.status::text = @normalizedStatus)
+                      AND (
+                          @searchTerm IS NULL
+                          OR COALESCE(team.name, tp.team_name, solo.username, solo.full_name, '') ILIKE @searchTerm
+                          OR COALESCE(captain.username, captain.full_name, '') ILIKE @searchTerm
+                          OR t.name ILIKE @searchTerm
+                      )
+                )
+                SELECT *
+                FROM registrations
+                ORDER BY registered_at DESC
+                LIMIT @pageSize OFFSET @pageOffset
+                """,
+                new { orgId, normalizedStatus, searchTerm, pageSize, pageOffset })).AsList();
+
+            var total = rows.Count > 0 ? Convert.ToInt32(rows[0].total_count) : 0;
+
+            return Results.Ok(new
+            {
+                items = rows.Select(row => new
+                {
+                    id = (Guid)row.id,
+                    tournament_id = (Guid)row.tournament_id,
+                    user_id = row.user_id as Guid?,
+                    team_id = row.team_id as Guid?,
+                    participant_type = (string?)row.participant_type,
+                    status = (string?)row.status,
+                    source = (string?)row.source,
+                    payment_status = (string?)row.payment_status,
+                    registered_at = row.registered_at,
+                    created_at = row.registered_at,
+                    checked_in_at = row.checked_in_at,
+                    is_mock = (bool)row.is_mock,
+                    display_name = (string?)row.display_name,
+                    team_name = (string?)row.display_name,
+                    team_logo_url = row.team_logo_url as string,
+                    captain_name = (string?)row.captain_name,
+                    captain_email = (string?)null,
+                    solo_username = row.solo_username as string,
+                    solo_full_name = row.solo_full_name as string,
+                    solo_avatar_url = row.solo_avatar_url as string,
+                    tournament_name = (string?)row.tournament_name,
+                    tournament_slug = (string?)row.tournament_slug,
+                    tournament_team_size = row.tournament_team_size is int teamSize ? (int?)teamSize : null,
+                    tournament_game = row.tournament_game as string,
+                }),
+                total,
+                limit = pageSize,
+                offset = pageOffset,
+            });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/organizations/{orgId}/albums — with cover URL ──────────
         app.MapGet("/api/organizations/{orgId}/albums", async (
             Guid                 orgId,
