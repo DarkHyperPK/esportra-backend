@@ -26,22 +26,33 @@ public static class StageEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
 
             // Verify ownership/organizer
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT organizer_id FROM tournaments WHERE id = @tournamentId",
-                new { tournamentId });
+                "SELECT organizer_id, max_teams FROM tournaments WHERE id = @tournamentId FOR UPDATE",
+                new { tournamentId }, tx);
             if (tournament is null) return Results.NotFound();
             if ((Guid)tournament.organizer_id != userCtx.UserIdGuid) return Results.Forbid();
+            int? tournamentMaxTeams = (int?)tournament.max_teams is > 0
+                ? (int)tournament.max_teams
+                : null;
 
             // Get existing stage IDs as Guid for proper uuid comparison
             var existingGuids = (await conn.QueryAsync<Guid>(
                 "SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId",
-                new { tournamentId })).ToHashSet();
+                new { tournamentId }, tx)).ToHashSet();
 
             var stages = req.Stages ?? Array.Empty<StageDto>();
+            var normalizedStages = NormalizeStageCapacities(stages, tournamentMaxTeams);
+            var validationError = ValidateStageCapacities(normalizedStages, tournamentMaxTeams);
+            if (validationError is not null)
+            {
+                tx.Rollback();
+                return Results.BadRequest(new { error = validationError, message = validationError, traceId = ctx.TraceIdentifier });
+            }
 
-            var incomingGuids = stages
+            var incomingGuids = normalizedStages
                 .Where(s => s.Id is not null && Guid.TryParse(s.Id, out _))
                 .Select(s => Guid.Parse(s.Id!))
                 .ToHashSet();
@@ -52,11 +63,11 @@ public static class StageEndpoints
             {
                 await conn.ExecuteAsync(
                     "DELETE FROM tournament_stages WHERE id = ANY(@ids)",
-                    new { ids = toDelete });
+                    new { ids = toDelete }, tx);
             }
 
             // Upsert all stages
-            foreach (var s in stages)
+            foreach (var s in normalizedStages)
             {
                 var stageGuid = s.Id is not null && Guid.TryParse(s.Id, out var parsed) ? parsed : (Guid?)null;
 
@@ -86,7 +97,7 @@ public static class StageEndpoints
                             config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
                             startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
                             endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
-                        });
+                        }, tx);
                 }
                 else
                 {
@@ -109,13 +120,15 @@ public static class StageEndpoints
                             config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
                             startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
                             endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
-                        });
+                        }, tx);
                 }
             }
 
             var updated = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order LIMIT 50",
-                new { tournamentId });
+                new { tournamentId }, tx);
+
+            tx.Commit();
 
             return Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
@@ -522,6 +535,48 @@ public static class StageEndpoints
                 """, new { id });
             return Results.Ok(participants);
         });
+    }
+
+    private static StageDto[] NormalizeStageCapacities(StageDto[] stages, int? tournamentMaxTeams)
+    {
+        return stages
+            .OrderBy(s => s.StageOrder)
+            .Select((stage, index) =>
+            {
+                var stageOrder = index + 1;
+                var capacity = stageOrder == 1
+                    ? tournamentMaxTeams
+                    : stage.Capacity;
+
+                return stage with
+                {
+                    StageOrder = stageOrder,
+                    Capacity = capacity,
+                };
+            })
+            .ToArray();
+    }
+
+    private static string? ValidateStageCapacities(StageDto[] stages, int? tournamentMaxTeams)
+    {
+        for (var i = 0; i < stages.Length; i++)
+        {
+            var stage = stages[i];
+            if (stage.Capacity is <= 0)
+                return $"{stage.Name} capacity must be greater than zero.";
+
+            if (tournamentMaxTeams is > 0 && stage.Capacity is > 0 && stage.Capacity > tournamentMaxTeams)
+                return $"{stage.Name} capacity cannot exceed the tournament max capacity of {tournamentMaxTeams}.";
+
+            if (i > 0)
+            {
+                var previous = stages[i - 1];
+                if (previous.AdvancementCount is > 0 && stage.Capacity is > 0 && stage.Capacity > previous.AdvancementCount)
+                    return $"{stage.Name} capacity cannot exceed the {previous.AdvancementCount} teams advancing from {previous.Name}.";
+            }
+        }
+
+        return null;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
