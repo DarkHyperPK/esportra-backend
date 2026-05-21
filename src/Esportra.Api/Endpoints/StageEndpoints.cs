@@ -414,6 +414,7 @@ public static class StageEndpoints
             var advancingTeams = (List<AdvancingTeam>)completionResult.advancingTeams;
             Guid tournamentId = (Guid)stage.tournament_id;
             int stageOrder = (int)stage.stage_order;
+            await EnsureMockBackingTeamsAsync(conn, tournamentId, advancingTeams.Select(t => t.TeamId));
 
             // 5. Find next stage
             var nextStage = await conn.QuerySingleOrDefaultAsync(
@@ -740,7 +741,18 @@ public static class StageEndpoints
         if (teamIds.Count == 0) return [];
 
         var teams = (await conn.QueryAsync(
-            "SELECT id, name FROM teams WHERE id = ANY(@ids)",
+            """
+            SELECT id, name
+            FROM teams
+            WHERE id = ANY(@ids)
+            UNION ALL
+            SELECT tp.id, COALESCE(tp.team_name, 'Mock Team') AS name
+            FROM tournament_participants tp
+            LEFT JOIN teams t ON t.id = tp.id
+            WHERE tp.id = ANY(@ids)
+              AND COALESCE(tp.is_mock, FALSE) = TRUE
+              AND t.id IS NULL
+            """,
             new { ids = teamIds.ToArray() })).AsList();
 
         return teamIds.Select((id, idx) =>
@@ -748,6 +760,76 @@ public static class StageEndpoints
             var t = teams.FirstOrDefault(x => (Guid)x.id == id);
             return new AdvancingTeam(id, t?.name ?? "Unknown", idx + 1);
         }).ToList();
+    }
+
+    private static async Task EnsureMockBackingTeamsAsync(
+        System.Data.IDbConnection conn,
+        Guid tournamentId,
+        IEnumerable<Guid> candidateIds)
+    {
+        var ids = candidateIds.Distinct().ToArray();
+        if (ids.Length == 0) return;
+
+        var missingMocks = (await conn.QueryAsync<dynamic>(
+            """
+            SELECT tp.id,
+                   COALESCE(tp.team_name, 'Mock Team') AS team_name,
+                   t.game,
+                   t.organizer_id,
+                   COALESCE(t.team_size, 1) AS team_size
+            FROM tournament_participants tp
+            JOIN tournaments t ON t.id = tp.tournament_id
+            LEFT JOIN teams existing ON existing.id = tp.id
+            WHERE tp.tournament_id = @tournamentId
+              AND COALESCE(tp.is_mock, FALSE) = TRUE
+              AND tp.id = ANY(@ids)
+              AND existing.id IS NULL
+            """,
+            new { tournamentId, ids })).AsList();
+
+        if (missingMocks.Count > 0)
+        {
+            var rows = missingMocks.Select(row =>
+            {
+                var mockId = (Guid)row.id;
+                return new
+                {
+                    mockId,
+                    teamName = (string)row.team_name,
+                    tag = $"mock-{mockId:N}"[..18],
+                    game = (string)row.game,
+                    ownerId = (Guid)row.organizer_id,
+                    isSolo = (int)row.team_size == 1,
+                    maxMembers = Math.Max((int)row.team_size, 1),
+                };
+            }).ToList();
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members)
+                VALUES (@mockId, @teamName, @tag, @game, @ownerId, @isSolo, @maxMembers)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    tag = EXCLUDED.tag,
+                    game = EXCLUDED.game,
+                    owner_id = EXCLUDED.owner_id,
+                    is_solo = EXCLUDED.is_solo,
+                    max_members = EXCLUDED.max_members
+                """,
+                rows);
+        }
+
+        await conn.ExecuteAsync(
+            """
+            UPDATE tournament_participants
+            SET team_id = id,
+                updated_at = NOW()
+            WHERE tournament_id = @tournamentId
+              AND COALESCE(is_mock, FALSE) = TRUE
+              AND id = ANY(@ids)
+              AND team_id IS NULL
+            """,
+            new { tournamentId, ids });
     }
 }
 
