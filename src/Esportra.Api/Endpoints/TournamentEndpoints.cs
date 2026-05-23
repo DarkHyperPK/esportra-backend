@@ -3736,6 +3736,30 @@ public static class TournamentEndpoints
         // and cannot leave stale teams attached to a bracket.
         await conn.ExecuteAsync(
             """
+            UPDATE public.tournaments t
+            SET winner_id = NULL,
+                status = CASE
+                    WHEN t.status::text = 'completed' THEN 'open'::public.tournament_status
+                    ELSE t.status
+                END,
+                end_date = CASE
+                    WHEN t.status::text = 'completed' THEN NULL
+                    ELSE t.end_date
+                END,
+                updated_at = NOW()
+            WHERE t.id = @tournamentId
+              AND t.winner_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM public.tournament_participants tp
+                  WHERE tp.tournament_id = t.id
+                    AND tp.team_id = t.winner_id
+                    AND COALESCE(tp.is_mock, FALSE) = TRUE
+              )
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
             DELETE FROM public.dispute_comments dc
             USING public.tournament_disputes td
             JOIN public.brkt_matches m ON m.id = td.match_id
