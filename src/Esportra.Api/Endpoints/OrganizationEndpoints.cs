@@ -58,6 +58,21 @@ public static class OrganizationEndpoints
             new { orgId, userId });
     }
 
+    private static async Task<bool> ColumnExists(IDbConnection conn, string tableName, string columnName)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = @tableName
+                  AND column_name = @columnName
+            )
+            """,
+            new { tableName, columnName });
+    }
+
     public static void MapOrganizationEndpoints(this WebApplication app)
     {
         // ── GET /api/organizations/{orgId}/staff ───────────────────────────────
@@ -577,30 +592,67 @@ public static class OrganizationEndpoints
         // ── GET /api/organizations/{orgId}/tournaments — full details ───────
         app.MapGet("/api/organizations/{orgId}/tournaments", async (
             Guid                 orgId,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct,
             bool?                deleted = null,
             bool?                exclude_completed = null) =>
         {
             using var conn = db.CreateConnection();
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            var canManageOrg = userCtx is not null && await IsOrgMember(conn, orgId, userCtx.UserIdGuid);
 
             string filter;
             if (deleted == true)
-                filter = "deleted_at IS NOT NULL";
+                filter = "t.deleted_at IS NOT NULL";
             else
             {
-                filter = "deleted_at IS NULL";
+                filter = "t.deleted_at IS NULL";
                 if (exclude_completed == true)
-                    filter += " AND status != 'completed'";
+                    filter += " AND t.status != 'completed'";
             }
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT * FROM v_tournament_details
-                WHERE organization_id = @orgId AND {filter}
-                ORDER BY start_date DESC
+                SELECT
+                    t.id,
+                    t.name,
+                    t.slug,
+                    t.game,
+                    t.format,
+                    t.status,
+                    t.start_date,
+                    t.end_date,
+                    t.venue_id,
+                    t.max_teams,
+                    t.team_size,
+                    t.prize_pool,
+                    t.entry_fee,
+                    t.banner_url,
+                    t.logo_url,
+                    t.organization_id,
+                    t.organizer_id,
+                    t.is_public,
+                    t.currency,
+                    t.deleted_at,
+                    o.name AS organization_name,
+                    o.slug AS organization_slug,
+                    o.logo_url AS organization_logo,
+                    o.owner_id AS organization_owner_id,
+                    (
+                        SELECT COUNT(*)
+                        FROM public.tournament_participants tp
+                        WHERE tp.tournament_id = t.id
+                          AND tp.status NOT IN ('rejected', 'cancelled')
+                    ) AS current_participants
+                FROM public.tournaments t
+                LEFT JOIN public.organizations o ON o.id = t.organization_id
+                WHERE t.organization_id = @orgId
+                  AND {filter}
+                  AND (@canManageOrg = TRUE OR t.is_public = TRUE)
+                ORDER BY t.start_date DESC NULLS LAST, t.created_at DESC
                 """,
-                new { orgId });
+                new { orgId, canManageOrg });
             return Results.Ok(rows);
         });
 
@@ -629,23 +681,44 @@ public static class OrganizationEndpoints
             var pageOffset = Math.Max(offset ?? 0, 0);
             var searchTerm = string.IsNullOrWhiteSpace(search) ? null : $"%{search.Trim()}%";
             var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToLowerInvariant();
+            var participantTypeSelect = await ColumnExists(conn, "tournament_participants", "participant_type")
+                ? "tp.participant_type::text AS participant_type"
+                : "CASE WHEN tp.team_id IS NULL THEN 'solo' ELSE 'team' END AS participant_type";
+            var sourceSelect = await ColumnExists(conn, "tournament_participants", "source")
+                ? "COALESCE(tp.source, 'open')::text AS source"
+                : "'open'::text AS source";
+            var paymentStatusSelect = await ColumnExists(conn, "tournament_participants", "payment_status")
+                ? "COALESCE(tp.payment_status, 'not_required')::text AS payment_status"
+                : "'not_required'::text AS payment_status";
+            var checkedInAtSelect = await ColumnExists(conn, "tournament_participants", "checked_in_at")
+                ? "tp.checked_in_at AS checked_in_at"
+                : "NULL::timestamptz AS checked_in_at";
+            var isMockSelect = await ColumnExists(conn, "tournament_participants", "is_mock")
+                ? "COALESCE(tp.is_mock, FALSE) AS is_mock"
+                : "FALSE AS is_mock";
+            var teamNameExpression = await ColumnExists(conn, "tournament_participants", "team_name")
+                ? "tp.team_name"
+                : "NULL::text";
+            var teamCaptainExpression = await ColumnExists(conn, "tournament_participants", "team_captain_id")
+                ? "tp.team_captain_id"
+                : "NULL::uuid";
 
             var rows = (await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 WITH registrations AS (
                     SELECT
                         tp.id,
                         tp.tournament_id,
                         tp.user_id,
                         tp.team_id,
-                        tp.participant_type::text AS participant_type,
+                        {participantTypeSelect},
                         tp.status::text AS status,
-                        tp.source,
-                        tp.payment_status::text AS payment_status,
+                        {sourceSelect},
+                        {paymentStatusSelect},
                         tp.created_at AS registered_at,
-                        tp.checked_in_at,
-                        COALESCE(tp.is_mock, FALSE) AS is_mock,
-                        COALESCE(team.name, tp.team_name, solo.username, solo.full_name, 'Unknown Participant') AS display_name,
+                        {checkedInAtSelect},
+                        {isMockSelect},
+                        COALESCE(team.name, {teamNameExpression}, solo.username, solo.full_name, 'Unknown Participant') AS display_name,
                         team.logo_url AS team_logo_url,
                         COALESCE(captain.username, captain.full_name, solo.username, solo.full_name, 'Unknown Captain') AS captain_name,
                         solo.username AS solo_username,
@@ -660,13 +733,13 @@ public static class OrganizationEndpoints
                     JOIN public.tournaments t ON t.id = tp.tournament_id
                     LEFT JOIN public.teams team ON team.id = tp.team_id
                     LEFT JOIN public.profiles solo ON solo.id = tp.user_id
-                    LEFT JOIN public.profiles captain ON captain.id = COALESCE(team.owner_id, tp.team_captain_id, tp.user_id)
+                    LEFT JOIN public.profiles captain ON captain.id = COALESCE(team.owner_id, {teamCaptainExpression}, tp.user_id)
                     WHERE t.organization_id = @orgId
                       AND t.deleted_at IS NULL
                       AND (@normalizedStatus IS NULL OR tp.status::text = @normalizedStatus)
                       AND (
                           @searchTerm IS NULL
-                          OR COALESCE(team.name, tp.team_name, solo.username, solo.full_name, '') ILIKE @searchTerm
+                          OR COALESCE(team.name, {teamNameExpression}, solo.username, solo.full_name, '') ILIKE @searchTerm
                           OR COALESCE(captain.username, captain.full_name, '') ILIKE @searchTerm
                           OR t.name ILIKE @searchTerm
                       )
