@@ -27,5 +27,4 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.admin_clear_tournament_winner(UUID, BOOLEAN) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.admin_clear_tournament_winner(UUID, BOOLEAN) TO service_role;
