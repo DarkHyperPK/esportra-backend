@@ -526,6 +526,7 @@ public static class TournamentEndpoints
             [FromBody] UpdateTournamentRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
+            TournamentWinnerService       winnerService,
             HybridCache                   cache,
             CancellationToken             ct) =>
         {
@@ -627,13 +628,16 @@ public static class TournamentEndpoints
                 try
                 {
                     using var txClear = conn.BeginTransaction();
-                    await conn.ExecuteAsync(
-                        "SELECT public.admin_clear_tournament_winner(@id, FALSE)",
-                        new { id },
-                        transaction: txClear);
+                    await winnerService.ClearWinnerAsync(
+                        conn,
+                        txClear,
+                        id,
+                        reopenCompleted: false,
+                        reason: "tournament status changed away from completed",
+                        ct);
                     txClear.Commit();
                 }
-                catch { /* best effort */ }
+                catch { /* best effort: status update should not fail because a stale winner clear failed */ }
             }
 
             // Auto-set winner_id when tournament is marked completed
@@ -699,10 +703,13 @@ public static class TournamentEndpoints
                     try
                     {
                         using var tx = conn.BeginTransaction();
-                        await conn.ExecuteAsync(
-                            "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                            new { p_tournament_id = id, p_winner_id = resolvedWinnerId.Value },
-                            transaction: tx);
+                        await winnerService.SetWinnerAsync(
+                            conn,
+                            tx,
+                            id,
+                            resolvedWinnerId.Value,
+                            reason: "tournament status changed to completed",
+                            ct);
                         tx.Commit();
                     }
                     catch
@@ -3328,6 +3335,7 @@ public static class TournamentEndpoints
             [FromBody] MockGenerateRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
             ILoggerFactory       loggerFactory,
             CancellationToken    ct) =>
         {
@@ -3368,18 +3376,7 @@ public static class TournamentEndpoints
 
                 logger.LogInformation("[mock/generate] Generating {Count} mock participants", count);
 
-                // stage_participants holds (stage_id, team_id) — mock participants have
-                // no real team_id so they're never in this table. Clear it fully for all
-                // stages so bracket generation starts from a clean slate.
-                await conn.ExecuteAsync(
-                    "DELETE FROM stage_participants WHERE stage_id IN (SELECT id FROM tournament_stages WHERE tournament_id = @id)",
-                    new { id }, tx);
-                await conn.ExecuteAsync(
-                    "DELETE FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
-                    new { id }, tx);
-                await conn.ExecuteAsync(
-                    "DELETE FROM brkt_versions WHERE tournament_id = @id",
-                    new { id }, tx);
+                await ClearMockSimulationDataAsync(conn, tx, winnerService, id, ct);
 
                 logger.LogInformation("[mock/generate] Cleared existing mock data, inserting {Count} rows", count);
 
@@ -3453,6 +3450,7 @@ public static class TournamentEndpoints
             Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
             ILoggerFactory       loggerFactory,
             CancellationToken    ct) =>
         {
@@ -3476,7 +3474,7 @@ public static class TournamentEndpoints
                 if (!safety.CanRegenerate)
                     return Results.Json(MockOperationError(safety.Error, ctx.TraceIdentifier), statusCode: StatusCodes.Status409Conflict);
 
-                await ClearMockSimulationDataAsync(conn, tx, id);
+                await ClearMockSimulationDataAsync(conn, tx, winnerService, id, ct);
 
                 tx.Commit();
 
@@ -3549,7 +3547,12 @@ public static class TournamentEndpoints
         return new(true, null);
     }
 
-    private static async Task ClearMockSimulationDataAsync(IDbConnection conn, IDbTransaction tx, Guid tournamentId)
+    private static async Task ClearMockSimulationDataAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        TournamentWinnerService winnerService,
+        Guid tournamentId,
+        CancellationToken ct)
     {
         // Stage participants and bracket versions are derived simulation state.
         // They are cleared together so regeneration reflects the current max_teams
@@ -3573,7 +3576,15 @@ public static class TournamentEndpoints
             new { tournamentId }, tx);
 
         if (hasMockWinner)
-            await ClearTournamentWinnerAsync(conn, tx, tournamentId, reopenCompleted: true);
+        {
+            await winnerService.ClearWinnerAsync(
+                conn,
+                tx,
+                tournamentId,
+                reopenCompleted: true,
+                reason: "mock tournament cleanup",
+                ct);
+        }
 
         await conn.ExecuteAsync(
             """
@@ -3691,12 +3702,6 @@ public static class TournamentEndpoints
             """,
             new { tournamentId }, tx);
     }
-
-    private static Task ClearTournamentWinnerAsync(IDbConnection conn, IDbTransaction tx, Guid tournamentId, bool reopenCompleted) =>
-        conn.ExecuteAsync(
-            "SELECT public.admin_clear_tournament_winner(@tournamentId, @reopenCompleted)",
-            new { tournamentId, reopenCompleted },
-            tx);
 
     private sealed record MockSimulationSafety(bool CanRegenerate, string? Error);
 

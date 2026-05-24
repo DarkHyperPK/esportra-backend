@@ -2,6 +2,7 @@
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
@@ -237,6 +238,7 @@ public static class MatchSystemEndpoints
             IDbConnectionFactory           db,
             VetoDbService                  vetoService,
             MatchFinalizationService       finalizer,
+            TournamentWinnerService        winnerService,
             IHubContext<MatchHub>          matchHub,
             IHubContext<BracketHub>        bracketHub,
             ILoggerFactory                 loggerFactory,
@@ -498,19 +500,13 @@ public static class MatchSystemEndpoints
                                                                 if (gfWinnerId is not null)
                                                                 {
                                                                     var tid = (Guid)stageInfo.tournament_id;
-                                                                    try
-                                                                    {
-                                                                        await conn.ExecuteAsync(
-                                                                            "SELECT admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                                                                            new { p_tournament_id = tid, p_winner_id = gfWinnerId });
-                                                                    }
-                                                                    catch
-                                                                    {
-                                                                        await conn.ExecuteAsync(
-                                                                            "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tournamentId",
-                                                                            new { winnerId = gfWinnerId, tournamentId = tid });
-                                                                    }
-                                                                    logger.LogInformation("Tournament {TournamentId} winner set to {WinnerId}", tid, gfWinnerId);
+                                                                    await winnerService.SetWinnerAsync(
+                                                                        conn,
+                                                                        tx: null,
+                                                                        tid,
+                                                                        gfWinnerId.Value,
+                                                                        reason: "match report completed final bracket",
+                                                                        ct);
                                                                 }
                                                             }
                                                         }

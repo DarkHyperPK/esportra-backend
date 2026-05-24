@@ -1,4 +1,5 @@
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
@@ -20,6 +21,7 @@ public static class StageEndpoints
             [FromBody] SyncStagesRequest      req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            TournamentWinnerService           winnerService,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -61,7 +63,7 @@ public static class StageEndpoints
             var toDelete = existingGuids.Except(incomingGuids).ToArray();
             if (toDelete.Length > 0)
             {
-                await ClearTournamentWinnerIfStagesContainWinnerAsync(conn, tx, tournamentId, toDelete);
+                await ClearTournamentWinnerIfStagesContainWinnerAsync(conn, tx, winnerService, tournamentId, toDelete, ct);
                 await conn.ExecuteAsync(
                     "DELETE FROM tournament_stages WHERE id = ANY(@ids)",
                     new { ids = toDelete }, tx);
@@ -252,6 +254,7 @@ public static class StageEndpoints
             [FromBody] DeleteStagesRequest    req,
             HttpContext                        ctx,
             IDbConnectionFactory              db,
+            TournamentWinnerService           winnerService,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -276,7 +279,7 @@ public static class StageEndpoints
                 return Results.BadRequest(new { error = "No stage IDs provided." });
             }
 
-            await ClearTournamentWinnerIfStagesContainWinnerAsync(conn, tx, tournamentId, req.DeleteIds);
+            await ClearTournamentWinnerIfStagesContainWinnerAsync(conn, tx, winnerService, tournamentId, req.DeleteIds, ct);
 
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_stages WHERE id = ANY(@ids) AND tournament_id = @tournamentId",
@@ -364,6 +367,7 @@ public static class StageEndpoints
             Guid                stageId,
             IDbConnectionFactory db,
             StandingsService    standings,
+            TournamentWinnerService winnerService,
             CancellationToken   ct) =>
         {
             using var conn = db.CreateConnection();
@@ -443,9 +447,13 @@ public static class StageEndpoints
 
                 if (advancingTeams.Count > 0)
                 {
-                    await conn.ExecuteAsync(
-                        "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                        new { p_tournament_id = tournamentId, p_winner_id = advancingTeams[0].TeamId });
+                    await winnerService.SetWinnerAsync(
+                        conn,
+                        tx: null,
+                        tournamentId,
+                        advancingTeams[0].TeamId,
+                        reason: "final stage advancement completed",
+                        ct);
                 }
                 else
                 {
@@ -596,8 +604,10 @@ public static class StageEndpoints
     private static async Task ClearTournamentWinnerIfStagesContainWinnerAsync(
         System.Data.IDbConnection conn,
         System.Data.IDbTransaction tx,
+        TournamentWinnerService winnerService,
         Guid tournamentId,
-        Guid[] stageIds)
+        Guid[] stageIds,
+        CancellationToken ct)
     {
         if (stageIds.Length == 0)
             return;
@@ -620,9 +630,13 @@ public static class StageEndpoints
         if (!winnerCameFromStages)
             return;
 
-        await conn.ExecuteAsync(
-            "SELECT public.admin_clear_tournament_winner(@tournamentId, TRUE)",
-            new { tournamentId }, tx);
+        await winnerService.ClearWinnerAsync(
+            conn,
+            tx,
+            tournamentId,
+            reopenCompleted: true,
+            reason: "stage deletion removed matches containing tournament winner",
+            ct);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

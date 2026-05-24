@@ -318,6 +318,7 @@ builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 
