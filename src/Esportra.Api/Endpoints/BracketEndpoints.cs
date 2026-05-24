@@ -347,25 +347,42 @@ public static class BracketEndpoints
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            using var tx = conn.BeginTransaction();
 
             // Find the version_id for this stage
-            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT id FROM public.brkt_versions WHERE stage_id = @stageId ORDER BY created_at DESC LIMIT 1",
-                new { stageId });
+            var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, tournament_id FROM public.brkt_versions WHERE stage_id = @stageId ORDER BY created_at DESC LIMIT 1",
+                new { stageId }, tx);
 
-            if (versionId is null)
+            if (version is null)
+            {
+                tx.Rollback();
                 return Results.NotFound(new { error = "No bracket found for this stage." });
+            }
+
+            var versionId = (Guid)version.id;
+            var tournamentId = (Guid)version.tournament_id;
+            var matchIds = (await conn.QueryAsync<Guid>(
+                "SELECT id FROM public.brkt_matches WHERE version_id = @versionId AND round_number = @roundNumber",
+                new { versionId, roundNumber }, tx)).ToArray();
+
+            await ClearTournamentWinnerIfMatchesContainWinnerAsync(conn, tx, tournamentId, matchIds);
+            await DeleteMatchDerivedRowsAsync(conn, tx, matchIds);
 
             // Delete all matches for the given version and round_number
             var deleted = await conn.ExecuteAsync(
                 "DELETE FROM public.brkt_matches WHERE version_id = @versionId AND round_number = @roundNumber",
-                new { versionId, roundNumber });
+                new { versionId, roundNumber }, tx);
+
+            tx.Commit();
 
             if (deleted > 0)
             {
                 await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                    .Group(BracketHub.BracketGroup(versionId.ToString()))
                     .SendAsync(BracketHubEvents.MatchDeleted,
                         new { versionId, stageId, roundNumber, deletedCount = deleted },
                         ct);
@@ -755,6 +772,60 @@ public static class BracketEndpoints
 
             return Results.Ok(new { version, nodes, edges });
         });
+    }
+
+    private static async Task ClearTournamentWinnerIfMatchesContainWinnerAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        Guid tournamentId,
+        Guid[] matchIds)
+    {
+        if (matchIds.Length == 0)
+            return;
+
+        var winnerCameFromMatches = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.tournaments t
+                JOIN public.brkt_matches m ON m.id = ANY(@matchIds)
+                WHERE t.id = @tournamentId
+                  AND t.winner_id IS NOT NULL
+                  AND m.winner_id = t.winner_id
+            )
+            """,
+            new { tournamentId, matchIds }, tx);
+
+        if (!winnerCameFromMatches)
+            return;
+
+        await conn.ExecuteAsync(
+            "SELECT public.admin_clear_tournament_winner(@tournamentId, TRUE)",
+            new { tournamentId }, tx);
+    }
+
+    private static async Task DeleteMatchDerivedRowsAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        Guid[] matchIds)
+    {
+        if (matchIds.Length == 0)
+            return;
+
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.dispute_comments dc
+            USING public.tournament_disputes td
+            WHERE dc.dispute_id = td.id
+              AND td.match_id = ANY(@matchIds)
+            """,
+            new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.tournament_disputes WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.match_disputes WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.match_result_reports WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.match_completed_events WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.brkt_match_games WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.brkt_match_events WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
     }
 
     // ── UI cache builder ──────────────────────────────────────────────────────

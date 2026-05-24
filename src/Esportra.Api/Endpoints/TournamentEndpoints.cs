@@ -628,10 +628,7 @@ public static class TournamentEndpoints
                 {
                     using var txClear = conn.BeginTransaction();
                     await conn.ExecuteAsync(
-                        "SET LOCAL request.jwt.claim.role = 'service_role'",
-                        transaction: txClear);
-                    await conn.ExecuteAsync(
-                        "UPDATE tournaments SET winner_id = NULL WHERE id = @id AND winner_id IS NOT NULL",
+                        "SELECT public.admin_clear_tournament_winner(@id, FALSE)",
                         new { id },
                         transaction: txClear);
                     txClear.Commit();
@@ -703,11 +700,8 @@ public static class TournamentEndpoints
                     {
                         using var tx = conn.BeginTransaction();
                         await conn.ExecuteAsync(
-                            "SET LOCAL request.jwt.claim.role = 'service_role'",
-                            transaction: tx);
-                        await conn.ExecuteAsync(
-                            "UPDATE tournaments SET winner_id = @winnerId WHERE id = @id",
-                            new { id, winnerId = resolvedWinnerId.Value },
+                            "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                            new { p_tournament_id = id, p_winner_id = resolvedWinnerId.Value },
                             transaction: tx);
                         tx.Commit();
                     }
@@ -3552,32 +3546,6 @@ public static class TournamentEndpoints
         if (nonMockBracketTeams > 0)
             return new(false, "Mock teams cannot be regenerated because bracket data contains real teams.");
 
-        var completedMatchCount = await conn.ExecuteScalarAsync<int>(
-            """
-            SELECT COUNT(*)
-            FROM public.brkt_matches m
-            JOIN public.brkt_versions v ON v.id = m.version_id
-            WHERE v.tournament_id = @tournamentId
-              AND m.status IN ('completed', 'disputed')
-            """,
-            new { tournamentId }, tx);
-
-        if (completedMatchCount > 0)
-            return new(false, "Mock teams cannot be regenerated after matches have completed or entered dispute.");
-
-        var resultReportCount = await conn.ExecuteScalarAsync<int>(
-            """
-            SELECT COUNT(*)
-            FROM public.match_result_reports r
-            JOIN public.brkt_matches m ON m.id = r.match_id
-            JOIN public.brkt_versions v ON v.id = m.version_id
-            WHERE v.tournament_id = @tournamentId
-            """,
-            new { tournamentId }, tx);
-
-        if (resultReportCount > 0)
-            return new(false, "Mock teams cannot be regenerated after match result reports have been submitted.");
-
         return new(true, null);
     }
 
@@ -3586,30 +3554,37 @@ public static class TournamentEndpoints
         // Stage participants and bracket versions are derived simulation state.
         // They are cleared together so regeneration reflects the current max_teams
         // and cannot leave stale teams attached to a bracket.
-        await conn.ExecuteAsync(
+        var hasMockWinner = await conn.ExecuteScalarAsync<bool>(
             """
-            UPDATE public.tournaments t
-            SET winner_id = NULL,
-                status = CASE
-                    WHEN t.status::text = 'completed' THEN 'open'::public.tournament_status
-                    ELSE t.status
-                END,
-                end_date = CASE
-                    WHEN t.status::text = 'completed' THEN NULL
-                    ELSE t.end_date
-                END,
-                updated_at = NOW()
-            WHERE t.id = @tournamentId
-              AND t.winner_id IS NOT NULL
-              AND EXISTS (
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.tournaments t
+                WHERE t.id = @tournamentId
+                  AND t.winner_id IS NOT NULL
+                  AND EXISTS (
                   SELECT 1
                   FROM public.tournament_participants tp
                   WHERE tp.tournament_id = t.id
                     AND tp.team_id = t.winner_id
                     AND COALESCE(tp.is_mock, FALSE) = TRUE
-              )
+                  )
+            )
             """,
             new { tournamentId }, tx);
+
+        if (hasMockWinner)
+            await ClearTournamentWinnerAsync(conn, tx, tournamentId, reopenCompleted: true);
+
+        await conn.ExecuteAsync(
+            """
+            UPDATE public.tournament_stages
+            SET status = 'draft',
+                updated_at = NOW()
+            WHERE tournament_id = @tournamentId
+              AND status::text <> 'draft'
+            """,
+            new { tournamentId }, tx);
+
         await conn.ExecuteAsync(
             """
             DELETE FROM public.dispute_comments dc
@@ -3649,6 +3624,39 @@ public static class TournamentEndpoints
             new { tournamentId }, tx);
         await conn.ExecuteAsync(
             """
+            DELETE FROM public.match_completed_events e
+            USING public.brkt_matches m
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE e.match_id = m.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.brkt_match_games g
+            USING public.brkt_matches m
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE g.match_id = m.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.brkt_match_events e
+            USING public.brkt_matches m
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE e.match_id = m.id
+              AND v.tournament_id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.brkt_layout WHERE version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)",
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            "DELETE FROM public.brkt_advancements WHERE version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)",
+            new { tournamentId }, tx);
+        await conn.ExecuteAsync(
+            """
             DELETE FROM public.br_group_teams gt
             USING public.tournament_participants tp
             JOIN public.tournament_stages ts ON ts.tournament_id = tp.tournament_id
@@ -3683,6 +3691,12 @@ public static class TournamentEndpoints
             """,
             new { tournamentId }, tx);
     }
+
+    private static Task ClearTournamentWinnerAsync(IDbConnection conn, IDbTransaction tx, Guid tournamentId, bool reopenCompleted) =>
+        conn.ExecuteAsync(
+            "SELECT public.admin_clear_tournament_winner(@tournamentId, @reopenCompleted)",
+            new { tournamentId, reopenCompleted },
+            tx);
 
     private sealed record MockSimulationSafety(bool CanRegenerate, string? Error);
 
