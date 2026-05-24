@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
@@ -703,6 +704,7 @@ public static class MatchEndpoints
             HttpContext                  ctx,
             IDbConnectionFactory         db,
             IHubContext<BracketHub>      bracketHub,
+            TournamentWinnerService      winnerService,
             CancellationToken            ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -918,21 +920,13 @@ public static class MatchEndpoints
                                     new { versionId });
                                 if (gfWinnerId is not null)
                                 {
-                                    try
-                                    {
-                                        // Use SECURITY DEFINER function to bypass organizer-only trigger
-                                        await conn.ExecuteAsync(
-                                            "SELECT admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                                            new { p_tournament_id = (Guid)stageInfo.tournament_id, p_winner_id = gfWinnerId });
-                                    }
-                                    catch (Exception winEx)
-                                    {
-                                        // Fallback: direct UPDATE (backend connects as privileged user)
-                                        Console.WriteLine($"[WARN] admin_set_tournament_winner RPC failed: {winEx.Message}. Attempting direct update.");
-                                        await conn.ExecuteAsync(
-                                            "UPDATE tournaments SET winner_id = @winnerId, status = 'completed', end_date = NOW() WHERE id = @tournamentId",
-                                            new { winnerId = gfWinnerId, tournamentId = (Guid)stageInfo.tournament_id });
-                                    }
+                                    await winnerService.SetWinnerAsync(
+                                        conn,
+                                        tx: null,
+                                        (Guid)stageInfo.tournament_id,
+                                        gfWinnerId.Value,
+                                        reason: "match score completed final bracket",
+                                        ct);
 
                                     // Send tournament won notification to winning team captains
                                     try

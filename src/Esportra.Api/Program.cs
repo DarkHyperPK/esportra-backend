@@ -323,6 +323,7 @@ builder.Services.AddScoped<Esportra.Api.Services.SeasonAdvancementService>();
 builder.Services.AddScoped<Esportra.Api.Services.GameCatalogService>();
 builder.Services.AddScoped<Esportra.Api.Services.SeasonValidationService>();
 builder.Services.AddScoped<Esportra.Api.Services.SeasonPublishingService>();
+builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 

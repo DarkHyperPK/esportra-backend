@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
@@ -337,6 +338,7 @@ public static class BracketEndpoints
             int                      roundNumber,
             HttpContext              ctx,
             IDbConnectionFactory     db,
+            TournamentWinnerService  winnerService,
             IHubContext<BracketHub>  bracketHub,
             CancellationToken        ct) =>
         {
@@ -369,7 +371,7 @@ public static class BracketEndpoints
                 "SELECT id FROM public.brkt_matches WHERE version_id = @versionId AND round_number = @roundNumber",
                 new { versionId, roundNumber }, tx)).ToArray();
 
-            await ClearTournamentWinnerIfMatchesContainWinnerAsync(conn, tx, tournamentId, matchIds);
+            await ClearTournamentWinnerIfMatchesContainWinnerAsync(conn, tx, winnerService, tournamentId, matchIds, ct);
             await DeleteMatchDerivedRowsAsync(conn, tx, matchIds);
 
             // Delete all matches for the given version and round_number
@@ -777,8 +779,10 @@ public static class BracketEndpoints
     private static async Task ClearTournamentWinnerIfMatchesContainWinnerAsync(
         System.Data.IDbConnection conn,
         System.Data.IDbTransaction tx,
+        TournamentWinnerService winnerService,
         Guid tournamentId,
-        Guid[] matchIds)
+        Guid[] matchIds,
+        CancellationToken ct)
     {
         if (matchIds.Length == 0)
             return;
@@ -799,9 +803,13 @@ public static class BracketEndpoints
         if (!winnerCameFromMatches)
             return;
 
-        await conn.ExecuteAsync(
-            "SELECT public.admin_clear_tournament_winner(@tournamentId, TRUE)",
-            new { tournamentId }, tx);
+        await winnerService.ClearWinnerAsync(
+            conn,
+            tx,
+            tournamentId,
+            reopenCompleted: true,
+            reason: "bracket round deletion removed matches containing tournament winner",
+            ct);
     }
 
     private static async Task DeleteMatchDerivedRowsAsync(
