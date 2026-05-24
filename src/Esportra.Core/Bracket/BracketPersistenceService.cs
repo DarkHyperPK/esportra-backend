@@ -149,31 +149,84 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     public async Task ResetAsync(Guid versionId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
+        using var tx = conn.BeginTransaction();
 
-        var matches = (await conn.QueryAsync(
-            "SELECT id, round_index FROM public.brkt_matches WHERE version_id = @versionId",
-            new { versionId })).AsList();
-
-        foreach (var match in matches)
+        try
         {
-            if ((int)match.round_index == 0)
+            var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT tournament_id, stage_id FROM public.brkt_versions WHERE id = @versionId FOR UPDATE",
+                new { versionId }, tx);
+            if (version is null)
             {
-                await conn.ExecuteAsync(
-                    "UPDATE public.brkt_matches SET status='pending', winner_id=null, loser_id=null WHERE id=@id",
-                    new { id = (Guid)match.id });
+                tx.Commit();
+                return;
             }
-            else
-            {
-                await conn.ExecuteAsync(
-                    "UPDATE public.brkt_matches SET status='pending', team1_id=null, team2_id=null, winner_id=null, loser_id=null WHERE id=@id",
-                    new { id = (Guid)match.id });
-            }
-        }
 
-        var matchIds = matches.Select(m => (Guid)m.id).ToArray();
-        await conn.ExecuteAsync(
-            "DELETE FROM public.brkt_match_events WHERE match_id = ANY(@ids)",
-            new { ids = matchIds });
+            var tournamentId = (Guid)version.tournament_id;
+            var stageId = (Guid?)version.stage_id;
+
+            await ClearTournamentWinnerIfVersionWinnerAsync(conn, tx, versionId, tournamentId, reopenCompleted: true);
+
+            var matches = (await conn.QueryAsync(
+                "SELECT id, round_index FROM public.brkt_matches WHERE version_id = @versionId",
+                new { versionId }, tx)).AsList();
+
+            var matchIds = matches.Select(m => (Guid)m.id).ToArray();
+            await DeleteMatchDerivedRowsAsync(conn, tx, matchIds);
+
+            foreach (var match in matches)
+            {
+                if ((int)match.round_index == 0)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE public.brkt_matches
+                           SET status = 'pending',
+                               winner_id = NULL,
+                               loser_id = NULL,
+                               team1_score = NULL,
+                               team2_score = NULL
+                         WHERE id = @id
+                        """,
+                        new { id = (Guid)match.id }, tx);
+                }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE public.brkt_matches
+                           SET status = 'pending',
+                               team1_id = NULL,
+                               team2_id = NULL,
+                               winner_id = NULL,
+                               loser_id = NULL,
+                               team1_score = NULL,
+                               team2_score = NULL
+                         WHERE id = @id
+                        """,
+                        new { id = (Guid)match.id }, tx);
+                }
+            }
+
+            if (stageId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE public.tournament_stages
+                       SET status = CASE WHEN status::text = 'completed' THEN 'active' ELSE status END,
+                           updated_at = NOW()
+                     WHERE id = @stageId
+                    """,
+                    new { stageId = stageId.Value }, tx);
+            }
+
+            tx.Commit();
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
     }
 
     // ── Clear (delete entire version) ────────────────────────────────────────
@@ -181,9 +234,113 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     public async Task ClearAsync(Guid versionId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
-        // All child tables (brkt_matches, brkt_layout, brkt_advancements, brkt_match_events,
-        // brkt_match_games, match_checkins, etc.) cascade from brkt_versions.
-        await conn.ExecuteAsync("DELETE FROM public.brkt_versions WHERE id = @v", new { v = versionId });
+        using var tx = conn.BeginTransaction();
+
+        try
+        {
+            var version = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT tournament_id, stage_id FROM public.brkt_versions WHERE id = @versionId FOR UPDATE",
+                new { versionId }, tx);
+            if (version is null)
+            {
+                tx.Commit();
+                return;
+            }
+
+            var tournamentId = (Guid)version.tournament_id;
+            var stageId = (Guid?)version.stage_id;
+
+            await ClearTournamentWinnerIfVersionWinnerAsync(conn, tx, versionId, tournamentId, reopenCompleted: true);
+
+            var matchIds = (await conn.QueryAsync<Guid>(
+                "SELECT id FROM public.brkt_matches WHERE version_id = @versionId",
+                new { versionId }, tx)).ToArray();
+            await DeleteMatchDerivedRowsAsync(conn, tx, matchIds);
+            await DeleteVersionGraphRowsAsync(conn, tx, versionId);
+
+            await conn.ExecuteAsync("DELETE FROM public.brkt_matches WHERE version_id = @versionId", new { versionId }, tx);
+            await conn.ExecuteAsync("DELETE FROM public.brkt_versions WHERE id = @versionId", new { versionId }, tx);
+
+            if (stageId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE public.tournament_stages
+                       SET status = 'draft',
+                           updated_at = NOW()
+                     WHERE id = @stageId
+                    """,
+                    new { stageId = stageId.Value }, tx);
+            }
+
+            tx.Commit();
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
+    }
+
+    private static async Task ClearTournamentWinnerIfVersionWinnerAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        Guid versionId,
+        Guid tournamentId,
+        bool reopenCompleted)
+    {
+        var winnerCameFromVersion = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.tournaments t
+                JOIN public.brkt_matches m ON m.version_id = @versionId
+                WHERE t.id = @tournamentId
+                  AND t.winner_id IS NOT NULL
+                  AND m.winner_id = t.winner_id
+            )
+            """,
+            new { versionId, tournamentId }, tx);
+
+        if (!winnerCameFromVersion)
+            return;
+
+        await conn.ExecuteAsync(
+            "SELECT public.admin_clear_tournament_winner(@tournamentId, @reopenCompleted)",
+            new { tournamentId, reopenCompleted }, tx);
+    }
+
+    private static async Task DeleteMatchDerivedRowsAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        Guid[] matchIds)
+    {
+        if (matchIds.Length == 0)
+            return;
+
+        await conn.ExecuteAsync(
+            """
+            DELETE FROM public.dispute_comments dc
+            USING public.tournament_disputes td
+            WHERE dc.dispute_id = td.id
+              AND td.match_id = ANY(@matchIds)
+            """,
+            new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.tournament_disputes WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.match_disputes WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.match_result_reports WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.match_completed_events WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.brkt_match_games WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.brkt_match_events WHERE match_id = ANY(@matchIds)", new { matchIds }, tx);
+    }
+
+    private static async Task DeleteVersionGraphRowsAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        Guid versionId)
+    {
+        await conn.ExecuteAsync("DELETE FROM public.brkt_layout WHERE version_id = @versionId", new { versionId }, tx);
+        await conn.ExecuteAsync("DELETE FROM public.brkt_advancements WHERE version_id = @versionId", new { versionId }, tx);
     }
 
     // ── Internal: advance a team along edges ─────────────────────────────────

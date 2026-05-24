@@ -61,6 +61,7 @@ public static class StageEndpoints
             var toDelete = existingGuids.Except(incomingGuids).ToArray();
             if (toDelete.Length > 0)
             {
+                await ClearTournamentWinnerIfStagesContainWinnerAsync(conn, tx, tournamentId, toDelete);
                 await conn.ExecuteAsync(
                     "DELETE FROM tournament_stages WHERE id = ANY(@ids)",
                     new { ids = toDelete }, tx);
@@ -257,19 +258,31 @@ public static class StageEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
 
             // Verify ownership
             var isOwner = await conn.ExecuteScalarAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
-                new { tournamentId, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+                new { tournamentId, userId = userCtx.UserIdGuid }, tx);
+            if (!isOwner)
+            {
+                tx.Rollback();
+                return Results.Forbid();
+            }
 
             if (req.DeleteIds is not { Length: > 0 })
+            {
+                tx.Rollback();
                 return Results.BadRequest(new { error = "No stage IDs provided." });
+            }
+
+            await ClearTournamentWinnerIfStagesContainWinnerAsync(conn, tx, tournamentId, req.DeleteIds);
 
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_stages WHERE id = ANY(@ids) AND tournament_id = @tournamentId",
-                new { ids = req.DeleteIds, tournamentId });
+                new { ids = req.DeleteIds, tournamentId }, tx);
+
+            tx.Commit();
 
             return Results.Ok(new { success = true, deleted = req.DeleteIds.Length });
         }).RequireAuthorization("Authenticated");
@@ -431,8 +444,8 @@ public static class StageEndpoints
                 if (advancingTeams.Count > 0)
                 {
                     await conn.ExecuteAsync(
-                        "UPDATE tournaments SET winner_id = @winnerId, status = 'completed' WHERE id = @tournamentId",
-                        new { winnerId = advancingTeams[0].TeamId, tournamentId });
+                        "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                        new { p_tournament_id = tournamentId, p_winner_id = advancingTeams[0].TeamId });
                 }
                 else
                 {
@@ -578,6 +591,38 @@ public static class StageEndpoints
         }
 
         return null;
+    }
+
+    private static async Task ClearTournamentWinnerIfStagesContainWinnerAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        Guid tournamentId,
+        Guid[] stageIds)
+    {
+        if (stageIds.Length == 0)
+            return;
+
+        var winnerCameFromStages = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.tournaments t
+                JOIN public.brkt_versions v ON v.tournament_id = t.id
+                JOIN public.brkt_matches m ON m.version_id = v.id
+                WHERE t.id = @tournamentId
+                  AND v.stage_id = ANY(@stageIds)
+                  AND t.winner_id IS NOT NULL
+                  AND m.winner_id = t.winner_id
+            )
+            """,
+            new { tournamentId, stageIds }, tx);
+
+        if (!winnerCameFromStages)
+            return;
+
+        await conn.ExecuteAsync(
+            "SELECT public.admin_clear_tournament_winner(@tournamentId, TRUE)",
+            new { tournamentId }, tx);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
