@@ -192,6 +192,94 @@ public static class GameEndpoints
             return Results.Ok(response);
         }); // Public
 
+        // ── POST /api/games/igdb-assets/batch ───────────────────────────────
+        // Returns IGDB artwork for multiple catalog games without creating one
+        // browser request per card on landing/list surfaces.
+        app.MapPost("/api/games/igdb-assets/batch", async (
+            IgdbAssetsBatchRequest req,
+            IDbConnectionFactory   db,
+            IgdbApiClient          igdb,
+            CancellationToken      ct) =>
+        {
+            var games = (req.Games ?? [])
+                .Select(g => g.Trim())
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(24)
+                .ToArray();
+
+            if (games.Length == 0)
+                return Results.BadRequest(new { error = "Please select at least one game." });
+
+            using var conn = db.CreateConnection();
+            var results = new Dictionary<string, IgdbAssetsBatchItem>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var cachedRows = await conn.QueryAsync<(string GameName, string AssetsJson)>(
+                    """
+                    SELECT game_name AS GameName, igdb_assets AS AssetsJson
+                    FROM public.games_metadata
+                    WHERE LOWER(game_name) = ANY(@names)
+                      AND igdb_assets IS NOT NULL
+                      AND last_updated > NOW() - INTERVAL '7 days'
+                    """,
+                    new { names = games.Select(g => g.ToLowerInvariant()).ToArray() });
+
+                foreach (var row in cachedRows)
+                {
+                    var cached = DeserializeIgdbAssets(row.AssetsJson);
+                    if (cached is not null)
+                        results[row.GameName] = cached with { IsCached = true };
+                }
+            }
+            catch { /* cache table/column may be absent in older environments */ }
+
+            foreach (var gameName in games)
+            {
+                if (results.ContainsKey(gameName))
+                    continue;
+
+                var assets = await igdb.GetGameAssetsAsync(gameName, ct);
+                var item = assets is null
+                    ? IgdbAssetsBatchItem.Empty
+                    : new IgdbAssetsBatchItem(
+                        assets.Banners,
+                        assets.Cover,
+                        assets.Videos.Select(v => new IgdbVideoDto(v.VideoId, v.Name)).ToArray(),
+                        assets.MatchedName,
+                        assets.IgdbId,
+                        IsCached: false);
+
+                results[gameName] = item;
+
+                try
+                {
+                    var responseJson = JsonSerializer.Serialize(new
+                    {
+                        banners = item.Banners,
+                        cover = item.Cover,
+                        videos = item.Videos,
+                        matchedGame = item.MatchedGame,
+                        igdbId = item.IgdbId
+                    });
+
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO public.games_metadata (game_name, igdb_assets, last_updated)
+                        VALUES (@name, @json::jsonb, NOW())
+                        ON CONFLICT (game_name) DO UPDATE SET
+                            igdb_assets = EXCLUDED.igdb_assets,
+                            last_updated = EXCLUDED.last_updated
+                        """,
+                        new { name = gameName, json = responseJson });
+                }
+                catch { /* cache write failure is non-critical */ }
+            }
+
+            return Results.Ok(results);
+        }); // Public
+
         // ── GET /api/games/igdb-banner?game={game} ──────────────────────────
         // Legacy: returns first IGDB banner for backward compat
         app.MapGet("/api/games/igdb-banner", async (
@@ -246,5 +334,44 @@ public static class GameEndpoints
 
             return Results.Ok(new { banner = assets.Banners.Count > 0 ? assets.Banners[0] : null, cover = assets.Cover, isCached = false });
         }); // Public
+    }
+
+    private static IgdbAssetsBatchItem? DeserializeIgdbAssets(string json)
+    {
+        try
+        {
+            var item = JsonSerializer.Deserialize<IgdbAssetsBatchItem>(json, s_jsonOptions);
+            return item ?? IgdbAssetsBatchItem.Empty;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    public sealed record IgdbAssetsBatchRequest(string[]? Games);
+
+    public sealed record IgdbVideoDto(string VideoId, string? Name);
+
+    public sealed record IgdbAssetsBatchItem(
+        IReadOnlyList<string> Banners,
+        string? Cover,
+        IReadOnlyList<IgdbVideoDto> Videos,
+        string? MatchedGame,
+        int? IgdbId,
+        bool IsCached)
+    {
+        public static readonly IgdbAssetsBatchItem Empty = new(
+            Array.Empty<string>(),
+            null,
+            Array.Empty<IgdbVideoDto>(),
+            null,
+            null,
+            IsCached: false);
     }
 }
