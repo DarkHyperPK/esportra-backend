@@ -22,6 +22,7 @@ public static class StageEndpoints
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             TournamentWinnerService           winnerService,
+            BattleRoyaleStageBootstrapService brBootstrap,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -126,6 +127,8 @@ public static class StageEndpoints
                         }, tx);
                 }
             }
+
+            await brBootstrap.EnsureTournamentGroupsAsync(conn, tx, tournamentId);
 
             var updated = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order LIMIT 50",
@@ -566,9 +569,10 @@ public static class StageEndpoints
             .Select((stage, index) =>
             {
                 var stageOrder = index + 1;
-                var capacity = stageOrder == 1
+                var isBattleRoyale = string.Equals(stage.Format, "battle_royale", StringComparison.OrdinalIgnoreCase);
+                var capacity = stageOrder == 1 && !isBattleRoyale
                     ? tournamentMaxTeams
-                    : stage.Capacity;
+                    : stage.Capacity ?? (isBattleRoyale ? tournamentMaxTeams : null);
 
                 return stage with
                 {
@@ -584,8 +588,12 @@ public static class StageEndpoints
         for (var i = 0; i < stages.Length; i++)
         {
             var stage = stages[i];
+            var isBattleRoyale = string.Equals(stage.Format, "battle_royale", StringComparison.OrdinalIgnoreCase);
             if (stage.Capacity is <= 0)
                 return $"{stage.Name} capacity must be greater than zero.";
+
+            if (isBattleRoyale)
+                continue;
 
             if (tournamentMaxTeams is > 0 && stage.Capacity is > 0 && stage.Capacity > tournamentMaxTeams)
                 return $"{stage.Name} capacity cannot exceed the tournament max capacity of {tournamentMaxTeams}.";

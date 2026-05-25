@@ -396,6 +396,7 @@ public static class TournamentEndpoints
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             GameCatalogService                gameCatalog,
+            BattleRoyaleStageBootstrapService brBootstrap,
             HybridCache                       cache,
             CancellationToken                 ct) =>
         {
@@ -488,8 +489,26 @@ public static class TournamentEndpoints
 
                 var tournamentId = (Guid)tournament.id;
 
+                var isBattleRoyaleTournament = string.Equals(catalog.TournamentStructure, "battle_royale", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(req.TournamentType, "battle_royale", StringComparison.OrdinalIgnoreCase);
+
+                var stagesToInsert = req.Stages;
+                if (isBattleRoyaleTournament && stagesToInsert is not { Count: > 0 })
+                {
+                    stagesToInsert =
+                    [
+                        new StageRequest(
+                            Name: "Main Event",
+                            Format: "battle_royale",
+                            StageOrder: 1,
+                            BestOf: 1,
+                            Capacity: req.MaxTeams,
+                            AdvancementCount: null)
+                    ];
+                }
+
                 // Stages
-                if (req.Stages is { Count: > 0 })
+                if (stagesToInsert is { Count: > 0 })
                 {
                     await conn.ExecuteAsync(
                         """
@@ -498,17 +517,24 @@ public static class TournamentEndpoints
                         VALUES
                             (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount)
                         """,
-                        req.Stages.Select((s, i) => new
+                        stagesToInsert.Select((s, i) => new
                         {
                             tournamentId,
                             name              = s.Name,
                             format            = s.Format,
                             stageOrder        = s.StageOrder ?? i,
                             bestOf            = s.BestOf ?? 1,
-                            capacity          = s.Capacity,
+                            capacity          = string.Equals(s.Format, "battle_royale", StringComparison.OrdinalIgnoreCase)
+                                ? s.Capacity ?? req.MaxTeams
+                                : s.Capacity,
                             advancementCount  = s.AdvancementCount,
                         }),
                         tx);
+                }
+
+                if (isBattleRoyaleTournament)
+                {
+                    await brBootstrap.EnsureTournamentGroupsAsync(conn, tx, tournamentId);
                 }
 
                 // Map pool

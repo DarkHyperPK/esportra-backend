@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -450,6 +451,47 @@ public static class BRGroupEndpoints
                     tx.Commit();
                     return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
                 }
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/stages/{stageId}/br/bootstrap ─────────────────────────
+        // Repair legacy BR stages that have no backing group. Single-lobby BR
+        // is still group-backed internally so rounds/results use one path.
+        app.MapPost("/api/stages/{stageId}/br/bootstrap", async (
+            Guid                              stageId,
+            HttpContext                       ctx,
+            IDbConnectionFactory             db,
+            BattleRoyaleStageBootstrapService brBootstrap) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermTeamsManage);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                var results = await brBootstrap.EnsureStageGroupsAsync(conn, tx, stageId);
+                tx.Commit();
+
+                if (results.Count == 0)
+                    return Results.NotFound(new { error = "Battle royale stage not found." });
+
+                return Results.Ok(new
+                {
+                    bootstrapped = results.Any(result => result.Created),
+                    stages = results,
+                });
             }
             catch
             {
