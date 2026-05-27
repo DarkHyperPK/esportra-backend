@@ -16,6 +16,9 @@ public static class BRGroupEndpoints
 {
     private sealed record BrScoringSettings(int[] Placements, int KillPoints, int? KillCap);
     private sealed record BrEntityAccess(Guid? TeamId, Guid? ParticipantId);
+    private static readonly string[] SeedEligibleRegistrationStatuses = ["approved", "checked_in"];
+    private const string SeedEligibleParticipantMessage = "No eligible participants found. Participants must be approved or checked in.";
+    private const string SeedEligibleTeamMessage = "No eligible teams found. Teams must be approved or checked in.";
 
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
@@ -389,12 +392,12 @@ public static class BRGroupEndpoints
                         SELECT DISTINCT id AS participant_id
                         FROM tournament_participants
                         WHERE tournament_id = @tournamentId
-                          AND status IN ('pending', 'approved')
+                          AND status::text = ANY(@seedEligibleStatuses)
                         """,
-                        new { tournamentId })).ToArray();
+                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses })).ToArray();
 
                     if (participantIds.Length == 0)
-                        return Results.BadRequest(new { error = "No registered participants found. Ensure participants have status 'pending' or 'approved'." });
+                        return Results.BadRequest(new { error = SeedEligibleParticipantMessage });
 
                     var orderedParticipants = method == "random"
                         ? ShuffleTeams(participantIds)
@@ -424,13 +427,13 @@ public static class BRGroupEndpoints
                         SELECT DISTINCT team_id
                         FROM tournament_participants
                         WHERE tournament_id = @tournamentId
-                          AND status IN ('pending','approved')
+                          AND status::text = ANY(@seedEligibleStatuses)
                           AND team_id IS NOT NULL
                         """,
-                        new { tournamentId })).ToArray();
+                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses })).ToArray();
 
                     if (teamIds.Length == 0)
-                        return Results.BadRequest(new { error = "No registered teams found. Ensure participants have status 'pending' or 'approved'." });
+                        return Results.BadRequest(new { error = SeedEligibleTeamMessage });
 
                     var orderedTeams = method == "random"
                         ? ShuffleTeams(teamIds)
@@ -564,14 +567,14 @@ public static class BRGroupEndpoints
                         """
                         SELECT DISTINCT id FROM tournament_participants
                         WHERE tournament_id = @tournamentId
-                          AND status IN ('pending', 'approved')
+                          AND status::text = ANY(@seedEligibleStatuses)
                           AND id = ANY(@idsArr)
                         """,
-                        new { tournamentId, idsArr = teamIds.ToArray() })).ToHashSet();
+                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses, idsArr = teamIds.ToArray() })).ToHashSet();
 
                     var invalid = teamIds.Where(t => !validParticipantIds.Contains(t)).ToList();
                     if (invalid.Count > 0)
-                        return Results.BadRequest(new { error = $"Participants not registered in tournament: {string.Join(", ", invalid)}" });
+                        return Results.BadRequest(new { error = $"Participants are not eligible for seeding. They must be registered, approved or checked in: {string.Join(", ", invalid)}" });
                 }
                 else
                 {
@@ -580,14 +583,14 @@ public static class BRGroupEndpoints
                         """
                         SELECT DISTINCT team_id FROM tournament_participants
                         WHERE tournament_id = @tournamentId
-                          AND status IN ('pending','approved')
+                          AND status::text = ANY(@seedEligibleStatuses)
                           AND team_id = ANY(@teamIdArr)
                         """,
-                        new { tournamentId, teamIdArr = teamIds.ToArray() })).ToHashSet();
+                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses, teamIdArr = teamIds.ToArray() })).ToHashSet();
 
                     var invalid = teamIds.Where(t => !validTeamIds.Contains(t)).ToList();
                     if (invalid.Count > 0)
-                        return Results.BadRequest(new { error = $"Teams not registered in tournament: {string.Join(", ", invalid)}" });
+                        return Results.BadRequest(new { error = $"Teams are not eligible for seeding. They must be registered, approved or checked in: {string.Join(", ", invalid)}" });
                 }
             }
 
