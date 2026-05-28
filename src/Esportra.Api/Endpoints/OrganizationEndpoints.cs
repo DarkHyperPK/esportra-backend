@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using System.Dynamic;
 using System.Text.Json;
 using Dapper;
@@ -575,8 +575,11 @@ public static class OrganizationEndpoints
         });
 
         // ── GET /api/organizations/{orgId}/tournaments — full details ───────
+        // Org members see all tournaments (including draft/unlisted). Public callers
+        // only receive public tournaments in displayable statuses.
         app.MapGet("/api/organizations/{orgId}/tournaments", async (
             Guid                 orgId,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct,
             bool?                deleted = null,
@@ -584,21 +587,46 @@ public static class OrganizationEndpoints
         {
             using var conn = db.CreateConnection();
 
-            string filter;
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            var isOrgMember = userCtx is not null
+                && await IsOrgMember(conn, orgId, userCtx.UserIdGuid);
+
+            string lifecycleFilter;
             if (deleted == true)
-                filter = "deleted_at IS NOT NULL";
+                lifecycleFilter = "t.deleted_at IS NOT NULL";
             else
             {
-                filter = "deleted_at IS NULL";
+                lifecycleFilter = "t.deleted_at IS NULL";
                 if (exclude_completed == true)
-                    filter += " AND status != 'completed'";
+                    lifecycleFilter += " AND t.status::text != 'completed'";
             }
+
+            var visibilityFilter = isOrgMember
+                ? string.Empty
+                : """
+                  AND t.is_public = TRUE
+                  AND t.status::text IN ('published', 'open', 'check_in', 'ongoing', 'completed', 'cancelled')
+                  """;
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT * FROM v_tournament_details
-                WHERE organization_id = @orgId AND {filter}
-                ORDER BY start_date DESC
+                SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                       t.start_date, t.end_date, t.registration_deadline,
+                       t.max_teams, t.min_teams, t.team_size,
+                       t.entry_fee, t.prize_pool,
+                       t.banner_url, t.logo_url, t.is_public,
+                       t.organizer_id, t.venue_id, t.organization_id, t.description,
+                       t.created_at, t.updated_at, t.deleted_at, t.region, t.currency,
+                       (SELECT COUNT(*) FROM tournament_participants tp
+                        WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
+                       o.name   AS organizer_name,
+                       o.slug   AS organization_slug
+                FROM tournaments t
+                LEFT JOIN organizations o ON o.id = t.organization_id
+                WHERE t.organization_id = @orgId
+                  AND {lifecycleFilter}
+                  {visibilityFilter}
+                ORDER BY t.start_date DESC
                 """,
                 new { orgId });
             return Results.Ok(rows);
