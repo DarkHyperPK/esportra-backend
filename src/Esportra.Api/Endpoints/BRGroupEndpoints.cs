@@ -19,6 +19,7 @@ public static class BRGroupEndpoints
     private static readonly string[] SeedEligibleRegistrationStatuses = ["approved", "checked_in"];
     private const string SeedEligibleParticipantMessage = "No eligible participants found. Participants must be approved or checked in.";
     private const string SeedEligibleTeamMessage = "No eligible teams found. Teams must be approved or checked in.";
+    private const string StageRoundsLockedMessage = "This stage already has rounds. Reset or recreate the stage before reseeding participants.";
 
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
@@ -91,7 +92,10 @@ public static class BRGroupEndpoints
                     COALESCE(gt.team_id, gt.participant_id) AS team_id,
                     gt.seed_order,
                     gt.assigned_at,
-                    CASE WHEN gt.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE
+                        WHEN gt.team_id IS NOT NULL THEN t.name
+                        ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                    END AS team_name,
                     CASE WHEN gt.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
                 FROM br_groups g
                 JOIN br_group_teams gt ON gt.group_id = g.id
@@ -165,22 +169,23 @@ public static class BRGroupEndpoints
             if (lobbySize <= 0 || lobbySize > 150)
                 return Results.BadRequest(new { error = "lobbySize must be between 1 and 150." });
 
-            // Check if existing groups have rounds (protect against accidental data loss)
-            var hasRounds = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM br_rounds r
-                    JOIN br_groups g ON g.id = r.group_id
-                    WHERE g.stage_id = @stageId
-                )
-                """,
-                new { stageId });
-            if (hasRounds && !force)
-                return Results.Conflict(new { error = "Groups already have rounds. Set force=true to delete all existing data." });
-
             using var tx = conn.BeginTransaction();
             try
             {
+                if (!await LockStageAsync(conn, tx, stageId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Stage not found." });
+                }
+
+                await LockStageGroupsAsync(conn, tx, stageId);
+
+                if (await StageHasAnyRoundsAsync(conn, stageId, tx) && !force)
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = StageRoundsLockedMessage });
+                }
+
                 // Delete existing groups (FK CASCADE clears teams/rounds/results)
                 await conn.ExecuteAsync(
                     "DELETE FROM br_groups WHERE stage_id = @stageId",
@@ -238,9 +243,40 @@ public static class BRGroupEndpoints
             if (!exists)
                 return Results.NotFound(new { error = "Group not found in this stage." });
 
-            await conn.ExecuteAsync(
-                "DELETE FROM br_groups WHERE id = @groupId",
-                new { groupId });
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                if (!await LockStageAsync(conn, tx, stageId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Stage not found." });
+                }
+
+                var lockedGroupIds = await LockStageGroupsAsync(conn, tx, stageId);
+                if (!lockedGroupIds.Contains(groupId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Group not found in this stage." });
+                }
+
+                if (await StageHasAnyRoundsAsync(conn, stageId, tx))
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = StageRoundsLockedMessage });
+                }
+
+                await conn.ExecuteAsync(
+                    "DELETE FROM br_groups WHERE id = @groupId",
+                    new { groupId },
+                    tx);
+
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
 
             return Results.Ok(new { deleted = true });
         }).RequireAuthorization("Authenticated");
@@ -272,7 +308,10 @@ public static class BRGroupEndpoints
                     COALESCE(gt.team_id, gt.participant_id) AS team_id,
                     gt.seed_order,
                     gt.assigned_at,
-                    CASE WHEN gt.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE
+                        WHEN gt.team_id IS NOT NULL THEN t.name
+                        ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                    END AS team_name,
                     CASE WHEN gt.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
                 FROM br_group_teams gt
                 LEFT JOIN teams t ON t.id = gt.team_id
@@ -310,7 +349,10 @@ public static class BRGroupEndpoints
                     COALESCE(gt.team_id, gt.participant_id) AS team_id,
                     gt.seed_order,
                     gt.assigned_at,
-                    CASE WHEN gt.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                    CASE
+                        WHEN gt.team_id IS NOT NULL THEN t.name
+                        ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                    END AS team_name,
                     CASE WHEN gt.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
                 FROM br_group_teams gt
                 LEFT JOIN teams t ON t.id = gt.team_id
@@ -374,11 +416,28 @@ public static class BRGroupEndpoints
             if (groups.Count == 0)
                 return Results.BadRequest(new { error = "Create groups first." });
 
-            var groupIds = groups.Select(g => (Guid)g.id).ToArray();
-
             using var tx = conn.BeginTransaction();
             try
             {
+                if (!await LockStageAsync(conn, tx, stageId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Stage not found." });
+                }
+
+                var groupIds = (await LockStageGroupsAsync(conn, tx, stageId)).ToArray();
+                if (groupIds.Length == 0)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Create groups first." });
+                }
+
+                if (await StageHasAnyRoundsAsync(conn, stageId, tx))
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = StageRoundsLockedMessage });
+                }
+
                 // Clear existing assignments
                 await conn.ExecuteAsync(
                     "DELETE FROM br_group_teams WHERE group_id = ANY(@groupIds)",
@@ -417,7 +476,7 @@ public static class BRGroupEndpoints
                         tx);
 
                     tx.Commit();
-                    return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
+                    return Results.Ok(new { assigned = assignments.Count, groups = groupIds.Length });
                 }
                 else
                 {
@@ -452,7 +511,7 @@ public static class BRGroupEndpoints
                         tx);
 
                     tx.Commit();
-                    return Results.Ok(new { assigned = assignments.Count, groups = groups.Count });
+                    return Results.Ok(new { assigned = assignments.Count, groups = groupIds.Length });
                 }
             }
             catch
@@ -597,6 +656,25 @@ public static class BRGroupEndpoints
             using var tx = conn.BeginTransaction();
             try
             {
+                if (!await LockStageAsync(conn, tx, stageId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Stage not found." });
+                }
+
+                var lockedGroupIds = await LockStageGroupsAsync(conn, tx, stageId);
+                if (!lockedGroupIds.Contains(groupId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Group not found in this stage." });
+                }
+
+                if (await StageHasAnyRoundsAsync(conn, stageId, tx))
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = StageRoundsLockedMessage });
+                }
+
                 // Clear existing teams in group
                 await conn.ExecuteAsync(
                     "DELETE FROM br_group_teams WHERE group_id = @groupId",
@@ -990,6 +1068,15 @@ public static class BRGroupEndpoints
 
                     if (newStatus == "completed")
                     {
+                        if (!await RoundResultsMatchCurrentRosterAsync(conn, tx, groupId, roundId))
+                        {
+                            tx.Rollback();
+                            return Results.Conflict(new
+                            {
+                                error = "Save round results before completing this round."
+                            });
+                        }
+
                         var pendingEvidenceCount = await conn.ExecuteScalarAsync<int>(
                             "SELECT COUNT(*) FROM br_round_evidence WHERE round_id = @roundId AND reviewed = FALSE",
                             new { roundId },
@@ -1221,8 +1308,10 @@ public static class BRGroupEndpoints
                     UPDATE br_rounds
                     SET status = 'pending',
                         lobby_code = NULL,
+                        scheduled_at = NULL,
                         started_at = NULL,
                         completed_at = NULL,
+                        queue_timer_minutes = NULL,
                         queue_started_at = NULL
                     WHERE id = @roundId
                     RETURNING id, round_number, lobby_code, status, scheduled_at, started_at, completed_at, created_at,
@@ -1262,7 +1351,10 @@ public static class BRGroupEndpoints
                              COALESCE(rr.team_id, rr.participant_id) AS team_id,
                              rr.placement, rr.kills,
                              rr.placement_points, rr.kill_points, rr.total_points,
-                             CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                             CASE
+                                 WHEN rr.team_id IS NOT NULL THEN t.name
+                                 ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                             END AS team_name,
                              CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url
                       FROM br_round_results rr
                       LEFT JOIN teams t ON t.id = rr.team_id
@@ -1345,7 +1437,10 @@ public static class BRGroupEndpoints
             var evidence = await conn.QueryAsync<dynamic>(
                 """
                 SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
-                       CASE WHEN re.team_id IS NOT NULL THEN t.name ELSE p.username END AS entity_name,
+                       CASE
+                           WHEN re.team_id IS NOT NULL THEN t.name
+                           ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                       END AS entity_name,
                        CASE WHEN re.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
                        re.image_url,
                        re.submitted_at,
@@ -2006,7 +2101,10 @@ public static class BRGroupEndpoints
                     ? """
                       SELECT
                           COALESCE(rr.team_id, rr.participant_id) AS team_id,
-                          CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                          CASE
+                              WHEN rr.team_id IS NOT NULL THEN t.name
+                              ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                          END AS team_name,
                           CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
                           COUNT(DISTINCT rr.round_id) AS games_played,
                           SUM(rr.placement_points) AS total_placement_points,
@@ -2022,7 +2120,10 @@ public static class BRGroupEndpoints
                       LEFT JOIN profiles p ON p.id = tp.user_id
                       WHERE r.group_id = @groupId
                       GROUP BY COALESCE(rr.team_id, rr.participant_id),
-                               CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END,
+                               CASE
+                                   WHEN rr.team_id IS NOT NULL THEN t.name
+                                   ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                               END,
                                CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
                       ORDER BY total_points DESC, wins DESC, total_kills DESC
                       """
@@ -2274,7 +2375,10 @@ public static class BRGroupEndpoints
                         COALESCE(rr.team_id, rr.participant_id) AS entity_id,
                         rr.team_id,
                         rr.participant_id,
-                        CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END AS team_name,
+                        CASE
+                            WHEN rr.team_id IS NOT NULL THEN t.name
+                            ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                        END AS team_name,
                         CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
                         g.name AS group_name,
                         SUM(rr.total_points) AS total_points,
@@ -2295,7 +2399,10 @@ public static class BRGroupEndpoints
                     WHERE g.stage_id = @stageId
                     GROUP BY COALESCE(rr.team_id, rr.participant_id),
                              rr.team_id, rr.participant_id,
-                             CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE p.username END,
+                             CASE
+                                 WHEN rr.team_id IS NOT NULL THEN t.name
+                                 ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                             END,
                              CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END,
                              g.name, r.group_id
                 ) ranked
@@ -2893,6 +3000,104 @@ public static class BRGroupEndpoints
         return (Guid)tournament.organizer_id == userCtx.UserIdGuid
             || StaffAuthHelper.IsPlatformAdmin(userCtx)
             || await StaffAuthHelper.CanActOnStageAsync(conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+    }
+
+    private static async Task<List<Guid>> LockStageGroupsAsync(IDbConnection conn, IDbTransaction tx, Guid stageId)
+    {
+        return (await conn.QueryAsync<Guid>(
+            """
+            SELECT id
+            FROM br_groups
+            WHERE stage_id = @stageId
+            ORDER BY group_order
+            FOR UPDATE
+            """,
+            new { stageId },
+            tx)).AsList();
+    }
+
+    private static async Task<bool> LockStageAsync(IDbConnection conn, IDbTransaction tx, Guid stageId)
+    {
+        var lockedStageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT id
+            FROM tournament_stages
+            WHERE id = @stageId
+            FOR UPDATE
+            """,
+            new { stageId },
+            tx);
+
+        return lockedStageId.HasValue;
+    }
+
+    private static async Task<bool> StageHasAnyRoundsAsync(IDbConnection conn, Guid stageId, IDbTransaction? tx = null)
+    {
+        return await conn.QuerySingleOrDefaultAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                WHERE g.stage_id = @stageId
+            )
+            """,
+            new { stageId },
+            tx);
+    }
+
+    private static async Task<bool> RoundResultsMatchCurrentRosterAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        Guid groupId,
+        Guid roundId)
+    {
+        var groupTeamsHasParticipantId = await ColumnExistsAsync(conn, "br_group_teams", "participant_id", tx);
+        var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_round_results", "participant_id", tx);
+
+        var rosterEntityExpression = groupTeamsHasParticipantId
+            ? "COALESCE(team_id, participant_id)"
+            : "team_id";
+        var resultEntityExpression = roundResultsHasParticipantId
+            ? "COALESCE(team_id, participant_id)"
+            : "team_id";
+
+        var sql = $"""
+            WITH roster AS (
+                SELECT {rosterEntityExpression} AS entity_id
+                FROM br_group_teams
+                WHERE group_id = @groupId
+            ),
+            results AS (
+                SELECT {resultEntityExpression} AS entity_id
+                FROM br_round_results
+                WHERE round_id = @roundId
+            ),
+            roster_valid AS (
+                SELECT entity_id FROM roster WHERE entity_id IS NOT NULL
+            ),
+            result_valid AS (
+                SELECT entity_id FROM results WHERE entity_id IS NOT NULL
+            )
+            SELECT
+                (SELECT COUNT(*) FROM roster) > 0
+                AND (SELECT COUNT(*) FROM roster) = (SELECT COUNT(*) FROM roster_valid)
+                AND (SELECT COUNT(*) FROM results) = (SELECT COUNT(*) FROM result_valid)
+                AND (SELECT COUNT(*) FROM roster_valid) = (SELECT COUNT(DISTINCT entity_id) FROM roster_valid)
+                AND (SELECT COUNT(*) FROM result_valid) = (SELECT COUNT(DISTINCT entity_id) FROM result_valid)
+                AND NOT EXISTS (
+                    SELECT entity_id FROM roster_valid
+                    EXCEPT
+                    SELECT entity_id FROM result_valid
+                )
+                AND NOT EXISTS (
+                    SELECT entity_id FROM result_valid
+                    EXCEPT
+                    SELECT entity_id FROM roster_valid
+                )
+            """;
+
+        return await conn.ExecuteScalarAsync<bool>(sql, new { groupId, roundId }, tx);
     }
 
     /// <summary>

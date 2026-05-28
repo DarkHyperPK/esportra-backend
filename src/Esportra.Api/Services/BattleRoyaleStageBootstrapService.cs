@@ -31,6 +31,7 @@ public sealed class BattleRoyaleStageBootstrapService
             WHERE ts.tournament_id = @tournamentId
               AND ts.format = 'battle_royale'
             ORDER BY ts.stage_order
+            FOR UPDATE OF ts
             """,
             new { tournamentId },
             tx)).ToList();

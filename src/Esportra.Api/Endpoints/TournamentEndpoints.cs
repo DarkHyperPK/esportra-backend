@@ -3553,7 +3553,7 @@ public static class TournamentEndpoints
 
                 var maxTeams = (int)tournament.max_teams;
                 var count    = req.Count.HasValue
-                    ? Math.Clamp(req.Count.Value, 2, Math.Min(maxTeams, 128))
+                    ? Math.Clamp(req.Count.Value, 2, maxTeams)
                     : maxTeams;
 
                 if (count < 2)
