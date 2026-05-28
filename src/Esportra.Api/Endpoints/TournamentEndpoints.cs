@@ -1849,6 +1849,9 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── BR Game Data ─────────────────────────────────────────────────────
+        // Deprecated: legacy JSON BR game state. New player and organizer flows use
+        // relational br_rounds/br_round_evidence endpoints in BRGroupEndpoints.
+        // Keep temporarily for rollback and older clients.
 
         // GET /api/tournaments/{id}/br-games — read BR game data (any authenticated user)
         app.MapGet("/api/tournaments/{id}/br-games", async (

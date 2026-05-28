@@ -557,6 +557,7 @@ app.MapHub<ConversationHub>("/hubs/conversations").RequireCors("EsportraPolicy")
 app.MapHub<NotificationHub>("/hubs/notifications").RequireCors("EsportraPolicy");
 app.MapHub<LiveHub>("/hubs/live").RequireCors("EsportraPolicy");
 app.MapHub<VenueSyncHub>("/hubs/venue-sync").RequireCors("EsportraPolicy");
+app.MapHub<BRHub>("/hubs/br").RequireCors("EsportraPolicy");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();

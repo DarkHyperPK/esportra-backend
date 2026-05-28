@@ -797,7 +797,9 @@ public static class BRGroupEndpoints
             Guid                groupId,
             [FromBody] JsonElement body,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHubContext<BRHub>   brHub,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -876,6 +878,13 @@ public static class BRGroupEndpoints
                     tx);
 
                 tx.Commit();
+
+                var roundId = (Guid)round.id;
+                var roundNumber = Convert.ToInt32(round.round_number);
+                var roundStatus = (string)round.status;
+                var payload = BuildRoundEvent(stageId, groupId, roundId, roundNumber, roundStatus);
+                await BroadcastBrAsync(brHub, BRHubEvents.RoundCreated, stageId, groupId, roundId, payload, ct);
+
                 return Results.Ok(round);
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
@@ -898,7 +907,9 @@ public static class BRGroupEndpoints
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
-            IHubContext<NotificationHub> notifHub) =>
+            IHubContext<NotificationHub> notifHub,
+            IHubContext<BRHub>   brHub,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -908,6 +919,10 @@ public static class BRGroupEndpoints
             using var tx = conn.BeginTransaction();
 
             dynamic? updated;
+            Guid broadcastStageId = default;
+            Guid broadcastGroupId = default;
+            string broadcastOldStatus = string.Empty;
+            string broadcastNewStatus = string.Empty;
             try
             {
                 var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1143,6 +1158,11 @@ public static class BRGroupEndpoints
                     return Results.NotFound();
                 }
 
+                broadcastStageId = stageId;
+                broadcastGroupId = groupId;
+                broadcastOldStatus = currentStatus;
+                broadcastNewStatus = finalStatus;
+
                 tx.Commit();
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
@@ -1155,6 +1175,39 @@ public static class BRGroupEndpoints
             {
                 tx.Rollback();
                 throw;
+            }
+
+            if (updated is not null && broadcastStageId != default && broadcastGroupId != default)
+            {
+                var roundNumber = Convert.ToInt32(updated.round_number);
+                var roundPayload = BuildRoundEvent(
+                    broadcastStageId,
+                    broadcastGroupId,
+                    roundId,
+                    roundNumber,
+                    broadcastNewStatus);
+                await BroadcastBrAsync(
+                    brHub,
+                    BRHubEvents.RoundUpdated,
+                    broadcastStageId,
+                    broadcastGroupId,
+                    roundId,
+                    roundPayload,
+                    ct);
+
+                var statusChanged = !string.Equals(broadcastOldStatus, broadcastNewStatus, StringComparison.Ordinal);
+                if (statusChanged && (broadcastNewStatus == "completed"
+                    || (broadcastOldStatus == "completed" && broadcastNewStatus == "active")))
+                {
+                    await BroadcastBrAsync(
+                        brHub,
+                        BRHubEvents.LeaderboardUpdated,
+                        broadcastStageId,
+                        broadcastGroupId,
+                        roundId,
+                        BuildLeaderboardEvent(broadcastStageId, broadcastGroupId),
+                        ct);
+                }
             }
 
             // ── Fire-and-forget notifications when a round goes active ───────
@@ -1255,7 +1308,9 @@ public static class BRGroupEndpoints
         app.MapPost("/api/br/rounds/{roundId}/reset", async (
             Guid                roundId,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHubContext<BRHub>   brHub,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1264,7 +1319,9 @@ public static class BRGroupEndpoints
 
             var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT g.stage_id
+                SELECT g.stage_id,
+                       g.id AS group_id,
+                       r.round_number
                 FROM br_rounds r
                 JOIN br_groups g ON g.id = r.group_id
                 WHERE r.id = @roundId
@@ -1274,6 +1331,8 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Round not found." });
 
             var stageId = (Guid)roundInfo.stage_id;
+            var groupId = (Guid)roundInfo.group_id;
+            var roundNumber = Convert.ToInt32(roundInfo.round_number);
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
@@ -1321,6 +1380,18 @@ public static class BRGroupEndpoints
                     tx);
 
                 tx.Commit();
+
+                var resetPayload = BuildRoundEvent(stageId, groupId, roundId, roundNumber, "pending");
+                await BroadcastBrAsync(brHub, BRHubEvents.RoundReset, stageId, groupId, roundId, resetPayload, ct);
+                await BroadcastBrAsync(
+                    brHub,
+                    BRHubEvents.LeaderboardUpdated,
+                    stageId,
+                    groupId,
+                    roundId,
+                    BuildLeaderboardEvent(stageId, groupId),
+                    ct);
+
                 return Results.Ok(round);
             }
             catch
@@ -1484,7 +1555,9 @@ public static class BRGroupEndpoints
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
-            IConfiguration       config) =>
+            IConfiguration       config,
+            IHubContext<BRHub>   brHub,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1517,6 +1590,7 @@ public static class BRGroupEndpoints
             var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT g.stage_id,
+                       g.id AS group_id,
                        ts.tournament_id,
                        t.team_size,
                        r.status
@@ -1530,6 +1604,8 @@ public static class BRGroupEndpoints
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
+            var stageId = (Guid)roundInfo.stage_id;
+            var groupId = (Guid)roundInfo.group_id;
             var tournamentId = (Guid)roundInfo.tournament_id;
             var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
             var roundStatus = (string)roundInfo.status;
@@ -1623,6 +1699,18 @@ public static class BRGroupEndpoints
                 return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
             }
 
+            var entityId = teamId ?? participantId!.Value;
+            var pendingCount = await GetPendingEvidenceCountAsync(conn, roundId);
+            var evidencePayload = new
+            {
+                stageId = stageId.ToString(),
+                groupId = groupId.ToString(),
+                roundId = roundId.ToString(),
+                entityId = entityId.ToString(),
+                pendingCount,
+            };
+            await BroadcastBrAsync(brHub, BRHubEvents.EvidenceSubmitted, stageId, groupId, roundId, evidencePayload, ct);
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
@@ -1633,7 +1721,9 @@ public static class BRGroupEndpoints
             Guid                entityId,
             [FromBody] JsonElement body,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHubContext<BRHub>   brHub,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1649,6 +1739,7 @@ public static class BRGroupEndpoints
             var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT g.stage_id,
+                       g.id AS group_id,
                        t.team_size
                 FROM br_rounds r
                 JOIN br_groups g ON g.id = r.group_id
@@ -1661,6 +1752,7 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Round not found." });
 
             var stageId = (Guid)roundInfo.stage_id;
+            var groupId = (Guid)roundInfo.group_id;
             var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
@@ -1697,6 +1789,18 @@ public static class BRGroupEndpoints
             if (updated == 0)
                 return Results.NotFound(new { error = "Evidence submission not found." });
 
+            var pendingCount = await GetPendingEvidenceCountAsync(conn, roundId);
+            var reviewPayload = new
+            {
+                stageId = stageId.ToString(),
+                groupId = groupId.ToString(),
+                roundId = roundId.ToString(),
+                entityId = entityId.ToString(),
+                reviewed,
+                pendingCount,
+            };
+            await BroadcastBrAsync(brHub, BRHubEvents.EvidenceReviewed, stageId, groupId, roundId, reviewPayload, ct);
+
             return Results.Ok(new { success = true, reviewed });
         }).RequireAuthorization("Authenticated");
 
@@ -1706,7 +1810,9 @@ public static class BRGroupEndpoints
             Guid                roundId,
             [FromBody] JsonElement body,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHubContext<BRHub>   brHub,
+            CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2014,6 +2120,24 @@ public static class BRGroupEndpoints
                 }
 
                 tx.Commit();
+
+                var resultsPayload = new
+                {
+                    stageId = stageId.ToString(),
+                    groupId = groupId.ToString(),
+                    roundId = roundId.ToString(),
+                    saved = parsedResults.Count,
+                };
+                await BroadcastBrAsync(brHub, BRHubEvents.ResultsUpdated, stageId, groupId, roundId, resultsPayload, ct);
+                await BroadcastBrAsync(
+                    brHub,
+                    BRHubEvents.LeaderboardUpdated,
+                    stageId,
+                    groupId,
+                    roundId,
+                    BuildLeaderboardEvent(stageId, groupId),
+                    ct);
+
                 return Results.Ok(new { saved = parsedResults.Count });
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
@@ -3143,4 +3267,65 @@ public static class BRGroupEndpoints
 
         return assignments;
     }
+
+    private static object BuildRoundEvent(
+        Guid stageId,
+        Guid groupId,
+        Guid roundId,
+        int roundNumber,
+        string? status = null) => new
+    {
+        stageId = stageId.ToString(),
+        groupId = groupId.ToString(),
+        roundId = roundId.ToString(),
+        roundNumber,
+        status
+    };
+
+    private static object BuildLeaderboardEvent(Guid stageId, Guid groupId) => new
+    {
+        stageId = stageId.ToString(),
+        groupId = groupId.ToString(),
+    };
+
+    private static async Task BroadcastBrAsync(
+        IHubContext<BRHub> hub,
+        string eventName,
+        Guid stageId,
+        Guid groupId,
+        Guid? roundId,
+        object payload,
+        CancellationToken ct = default)
+    {
+        _ = ct;
+        var tasks = new List<Task>
+        {
+            hub.Clients.Group(BRHub.StageGroup(stageId.ToString())).SendAsync(eventName, payload, CancellationToken.None),
+            hub.Clients.Group(BRHub.GroupGroup(groupId.ToString())).SendAsync(eventName, payload, CancellationToken.None),
+        };
+
+        if (roundId is not null)
+        {
+            tasks.Add(hub.Clients.Group(BRHub.RoundGroup(roundId.Value.ToString())).SendAsync(eventName, payload, CancellationToken.None));
+        }
+
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[BRGroupEndpoints] Failed to broadcast {eventName} for stage {stageId}, group {groupId}, round {roundId}: {ex.Message}");
+        }
+    }
+
+    private static async Task<int> GetPendingEvidenceCountAsync(
+        IDbConnection conn,
+        Guid roundId,
+        IDbTransaction? tx = null) =>
+        await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM br_round_evidence WHERE round_id = @roundId AND reviewed = FALSE",
+            new { roundId },
+            tx);
 }
