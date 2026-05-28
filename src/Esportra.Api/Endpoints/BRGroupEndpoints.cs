@@ -833,6 +833,18 @@ public static class BRGroupEndpoints
             using var tx = conn.BeginTransaction();
             try
             {
+                var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                var scheduleWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
+                    parsedSchedule,
+                    tournamentStart,
+                    tournamentEnd,
+                    "Round schedule");
+                if (scheduleWindowError is not null)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = scheduleWindowError });
+                }
+
                 var lockedGroup = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
                     SELECT id
@@ -990,6 +1002,18 @@ public static class BRGroupEndpoints
                         var saStr = saProp.GetString();
                         if (saStr is not null && DateTimeOffset.TryParse(saStr, out var dt))
                         {
+                            var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                            var scheduleWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
+                                dt,
+                                tournamentStart,
+                                tournamentEnd,
+                                "Round schedule");
+                            if (scheduleWindowError is not null)
+                            {
+                                tx.Rollback();
+                                return Results.BadRequest(new { error = scheduleWindowError });
+                            }
+
                             setClauses.Add("scheduled_at = @scheduledAt");
                             parameters.Add("scheduledAt", dt);
                         }
@@ -1056,6 +1080,25 @@ public static class BRGroupEndpoints
                         {
                             tx.Rollback();
                             return Results.BadRequest(new { error = "Lobby code is required before starting a round." });
+                        }
+
+                        var (tournamentStart, tournamentEnd, tournamentStatus) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                        var ongoingError = TournamentTimelineValidator.ValidateTournamentIsOngoing(tournamentStatus);
+                        if (ongoingError is not null)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = ongoingError });
+                        }
+
+                        var liveWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
+                            DateTimeOffset.UtcNow,
+                            tournamentStart,
+                            tournamentEnd,
+                            "Starting a round");
+                        if (liveWindowError is not null)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = liveWindowError });
                         }
 
                         var existingActiveRound = await conn.QuerySingleOrDefaultAsync<dynamic>(

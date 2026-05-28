@@ -498,6 +498,22 @@ public static class TournamentEndpoints
 
                 var tournamentId = (Guid)tournament.id;
 
+                var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(req.StartDate, req.EndDate ?? req.StartDate.AddHours(2));
+                if (dateOrderError is not null)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = dateOrderError });
+                }
+
+                var registrationDeadlineError = TournamentTimelineValidator.ValidateRegistrationDeadline(
+                    req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
+                    req.StartDate);
+                if (registrationDeadlineError is not null)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = registrationDeadlineError });
+                }
+
                 var isBattleRoyaleTournament = string.Equals(catalog.TournamentStructure, "battle_royale", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(req.TournamentType, "battle_royale", StringComparison.OrdinalIgnoreCase);
 
@@ -631,6 +647,20 @@ public static class TournamentEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
+
+            var effectiveStartDate = req.StartDate ?? (DateTimeOffset?)existingTournament.start_date;
+            var effectiveEndDate = req.EndDate ?? (DateTimeOffset?)existingTournament.end_date;
+            var effectiveRegistrationDeadline = req.RegistrationDeadline ?? (DateTimeOffset?)existingTournament.registration_deadline;
+
+            var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(effectiveStartDate, effectiveEndDate);
+            if (dateOrderError is not null)
+                return Results.BadRequest(new { error = dateOrderError });
+
+            var registrationDeadlineError = TournamentTimelineValidator.ValidateRegistrationDeadline(
+                effectiveRegistrationDeadline,
+                effectiveStartDate);
+            if (registrationDeadlineError is not null)
+                return Results.BadRequest(new { error = registrationDeadlineError });
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -1683,10 +1713,47 @@ public static class TournamentEndpoints
             if (!await CanViewTournamentPublicDataAsync(conn, ctx, id))
                 return Results.NotFound();
 
-            var rows = await conn.QueryAsync<dynamic>(
+            var rows = (await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @id ORDER BY stage_order",
-                new { id });
-            return Results.Ok(rows);
+                new { id })).ToList();
+
+            var enriched = new List<object>();
+            foreach (var stage in rows)
+            {
+                var stageId = (Guid)stage.id;
+                var format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+                string progressLabel;
+
+                if (format is "battle_royale")
+                {
+                    var snapshot = await StageCompletionHelper.EvaluateBattleRoyaleAsync(conn, stage, stageId, ct: ct);
+                    progressLabel = snapshot.ProgressLabel;
+                }
+                else
+                {
+                    progressLabel = await StageCompletionHelper.EvaluateBracketProgressLabelAsync(conn, stage, stageId);
+                }
+
+                enriched.Add(new
+                {
+                    id = stage.id,
+                    tournament_id = stage.tournament_id,
+                    name = stage.name,
+                    format = stage.format,
+                    stage_order = stage.stage_order,
+                    best_of = stage.best_of,
+                    capacity = stage.capacity,
+                    advancement_count = stage.advancement_count,
+                    config = stage.config,
+                    starts_at = stage.starts_at,
+                    ends_at = stage.ends_at,
+                    created_at = stage.created_at,
+                    updated_at = stage.updated_at,
+                    progress_label = progressLabel,
+                });
+            }
+
+            return Results.Ok(enriched);
         });
 
         // ── GET /api/tournaments/{id}/bracket-versions ───────────────────────

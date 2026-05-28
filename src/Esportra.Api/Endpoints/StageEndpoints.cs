@@ -1,4 +1,5 @@
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -187,36 +188,19 @@ public static class StageEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/stages/{stageId}/status ──────────────────────────────
-        // Update a single stage's status (e.g. draft → live → completed).
-        // Used by StageManagementTab after bracket generation.
-        app.MapPatch("/api/stages/{stageId}/status", async (
-            Guid                              stageId,
-            [FromBody] UpdateStageStatusRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+        // Deprecated: stage progress is derived from completion rules and tournament timeline.
+        app.MapPatch("/api/stages/{stageId}/status", (
+            Guid stageId,
+            [FromBody] UpdateStageStatusRequest req) =>
         {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
-            using var conn = db.CreateConnection();
-
-            var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, tournament_id FROM tournament_stages WHERE id = @stageId",
-                new { stageId });
-            if (stage is null) return Results.NotFound(new { error = "Stage not found" });
-
-            // Verify ownership
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
-                new { tid = (Guid)stage.tournament_id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
-
-            await conn.ExecuteAsync(
-                "UPDATE tournament_stages SET status = @status, updated_at = NOW() WHERE id = @stageId",
-                new { stageId, status = req.Status });
-
-            return Results.Ok(new { success = true, stageId, status = req.Status });
+            _ = stageId;
+            _ = req;
+            return Results.Json(
+                new
+                {
+                    error = "Manual stage status updates are deprecated. Stage progress is derived automatically from rounds, matches, and advancement.",
+                },
+                statusCode: StatusCodes.Status410Gone);
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/stages/{stageId}/order ───────────────────────────────
@@ -308,6 +292,16 @@ public static class StageEndpoints
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
 
+            string format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+            var alreadyAdvanced = await StageCompletionHelper.IsStageAlreadyAdvancedAsync(conn, stage, stageId);
+
+            if (format is "battle_royale")
+            {
+                var brSnapshot = await StageCompletionHelper.EvaluateBattleRoyaleAsync(
+                    conn, stage, stageId, alreadyAdvanced, ct);
+                return Results.Ok(brSnapshot.ToResponse());
+            }
+
             int advancementCount = (int?)stage.advancement_count ?? 1;
 
             // 2. Count participants
@@ -330,6 +324,8 @@ public static class StageEndpoints
                 return Results.Ok(new
                 {
                     isComplete = false,
+                    alreadyAdvanced,
+                    progressLabel = alreadyAdvanced ? "advanced" : "setup",
                     advancingTeams = Array.Empty<object>(),
                     reason = $"Invalid Configuration: Advancement count ({advancementCount}) must be less than participants ({participantsCount}) to ensure elimination."
                 });
@@ -340,28 +336,54 @@ public static class StageEndpoints
                 "SELECT id FROM brkt_versions WHERE stage_id = @stageId ORDER BY version_number DESC LIMIT 1",
                 new { stageId });
             if (version is null)
-                return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "No bracket found" });
+            {
+                return Results.Ok(new
+                {
+                    isComplete = false,
+                    alreadyAdvanced,
+                    progressLabel = alreadyAdvanced ? "advanced" : "setup",
+                    advancingTeams = Array.Empty<object>(),
+                    reason = "No bracket found"
+                });
+            }
 
             // 4. Get all matches
             var matches = (await conn.QueryAsync(
                 "SELECT * FROM brkt_matches WHERE version_id = @vid",
                 new { vid = (Guid)version.id })).AsList();
             if (matches.Count == 0)
-                return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "No matches found" });
+            {
+                return Results.Ok(new
+                {
+                    isComplete = false,
+                    alreadyAdvanced,
+                    progressLabel = alreadyAdvanced ? "advanced" : "setup",
+                    advancingTeams = Array.Empty<object>(),
+                    reason = "No matches found"
+                });
+            }
 
             // 5. Check completion based on format
-            string format = (string?)stage.format ?? "single_elimination";
-
             if (format is "single_elimination" or "double_elimination")
             {
-                return Results.Ok(await CheckEliminationCompletion(conn, matches, advancementCount));
-            }
-            else if (format is "swiss" or "round_robin")
-            {
-                return Results.Ok(await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct));
+                var elimination = await CheckEliminationCompletion(conn, matches, advancementCount);
+                return Results.Ok(MergeBracketCompletion(elimination, alreadyAdvanced));
             }
 
-            return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "Unknown format" });
+            if (format is "swiss" or "round_robin")
+            {
+                var roundRobin = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct);
+                return Results.Ok(MergeBracketCompletion(roundRobin, alreadyAdvanced));
+            }
+
+            return Results.Ok(new
+            {
+                isComplete = false,
+                alreadyAdvanced,
+                progressLabel = alreadyAdvanced ? "advanced" : "setup",
+                advancingTeams = Array.Empty<object>(),
+                reason = "Unknown format"
+            });
         }).RequireAuthorization("Organizer");
 
 
@@ -645,6 +667,36 @@ public static class StageEndpoints
             reopenCompleted: true,
             reason: "stage deletion removed matches containing tournament winner",
             ct);
+    }
+
+    private static object MergeBracketCompletion(object bracketCore, bool alreadyAdvanced)
+    {
+        var dict = bracketCore.GetType().GetProperties()
+            .ToDictionary(p => p.Name, p => p.GetValue(bracketCore));
+
+        var isComplete = dict.TryGetValue("isComplete", out var completeValue) && completeValue is true;
+        var reason = dict.TryGetValue("reason", out var reasonValue) ? reasonValue as string : null;
+        var advancingTeams = dict.TryGetValue("advancingTeams", out var teamsValue) ? teamsValue : Array.Empty<object>();
+
+        string progressLabel;
+        if (alreadyAdvanced)
+            progressLabel = "advanced";
+        else if (isComplete)
+            progressLabel = "ready_to_advance";
+        else if (string.Equals(reason, "No bracket found", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(reason, "No matches found", StringComparison.OrdinalIgnoreCase))
+            progressLabel = "setup";
+        else
+            progressLabel = "in_progress";
+
+        return new
+        {
+            isComplete,
+            alreadyAdvanced,
+            progressLabel,
+            reason,
+            advancingTeams,
+        };
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
