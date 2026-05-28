@@ -2243,6 +2243,7 @@ public static class BRGroupEndpoints
                       LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
                       LEFT JOIN profiles p ON p.id = tp.user_id
                       WHERE r.group_id = @groupId
+                        AND r.status = 'completed'
                       GROUP BY COALESCE(rr.team_id, rr.participant_id),
                                CASE
                                    WHEN rr.team_id IS NOT NULL THEN t.name
@@ -2267,6 +2268,7 @@ public static class BRGroupEndpoints
                       JOIN br_rounds r ON r.id = rr.round_id
                       LEFT JOIN teams t ON t.id = rr.team_id
                       WHERE r.group_id = @groupId
+                        AND r.status = 'completed'
                       GROUP BY rr.team_id, t.name, t.logo_url
                       ORDER BY total_points DESC, wins DESC, total_kills DESC
                       """,
