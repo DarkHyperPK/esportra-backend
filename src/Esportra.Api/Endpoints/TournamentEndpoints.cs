@@ -31,6 +31,16 @@ public static class TournamentEndpoints
     private static readonly HashSet<string> AllowedCreateStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "draft", "open" };
 
+    private static string? NormalizeTournamentStatusGroup(string? statusGroup)
+    {
+        if (string.IsNullOrWhiteSpace(statusGroup)) return null;
+        return statusGroup.Trim().ToLowerInvariant() switch
+        {
+            "upcoming" or "live" or "completed" or "cancelled" => statusGroup.Trim().ToLowerInvariant(),
+            _ => null,
+        };
+    }
+
     /// Typed DTOfor tournament list rows — required so HybridCache (System.Text.Json) can
     /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
     /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
@@ -106,8 +116,12 @@ public static class TournamentEndpoints
           AND (@city    IS NULL OR v.city    ILIKE '%' || @city    || '%')
           AND (@country IS NULL OR v.country ILIKE '%' || @country || '%')
           AND (@region  IS NULL OR t.region = @region)
-        ORDER BY t.start_date ASC
-        LIMIT @limit OFFSET @offset
+          AND (@statusGroup IS NULL OR (
+               (@statusGroup = 'upcoming'  AND t.status::text IN ('published', 'open', 'check_in', 'closed'))
+            OR (@statusGroup = 'live'      AND t.status::text = 'ongoing')
+            OR (@statusGroup = 'completed' AND t.status::text = 'completed')
+            OR (@statusGroup = 'cancelled'  AND t.status::text = 'cancelled')
+          ))
         """;
 
     public static void MapTournamentEndpoints(this WebApplication app)
@@ -124,14 +138,27 @@ public static class TournamentEndpoints
             string?              city,
             string?              country,
             string?              region,
+            string?              status_group,
             int                  limit  = 50,
             int                  offset = 0,
             IDbConnectionFactory db     = null!,
             HybridCache          cache  = null!,
             CancellationToken    ct     = default) =>
         {
-            limit = Math.Clamp(limit, 1, 100);
+            limit = Math.Clamp(limit, 1, 200);
             offset = Math.Max(offset, 0);
+            var normalizedStatusGroup = NormalizeTournamentStatusGroup(status_group);
+            // Public browse: newest tournaments first so recent publishes/completions surface
+            // without needing region/format filters to narrow the result set.
+            var orderSql = normalizedStatusGroup switch
+            {
+                "upcoming" or "live" =>
+                    "ORDER BY t.created_at DESC NULLS LAST, t.start_date ASC NULLS LAST",
+                "completed" or "cancelled" =>
+                    "ORDER BY t.created_at DESC NULLS LAST, COALESCE(t.end_date, t.updated_at, t.start_date) DESC NULLS LAST",
+                _ => "ORDER BY t.created_at DESC NULLS LAST, t.start_date ASC NULLS LAST",
+            };
+            var listSql = $"{TournamentListSql}\n{orderSql}\nLIMIT @limit OFFSET @offset";
             // Bulk fetch by IDs — bypass cache for direct lookup
             if (!string.IsNullOrWhiteSpace(ids))
             {
@@ -174,7 +201,7 @@ public static class TournamentEndpoints
                 return Results.Json(rows2, s_snakeCase);
             }
 
-            var cacheKey = $"tournaments:{status}:{game}:{q}:{organizer_id}:{is_online}:{city}:{country}:{region}:{limit}:{offset}";
+            var cacheKey = $"tournaments:{status}:{normalizedStatusGroup}:{game}:{q}:{organizer_id}:{is_online}:{city}:{country}:{region}:{limit}:{offset}";
             Guid? organizerGuid = Guid.TryParse(organizer_id, out var g) ? g : null;
             var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
                 cacheKey,
@@ -182,8 +209,8 @@ public static class TournamentEndpoints
                 {
                     using var conn = db.CreateConnection();
                     return (await conn.QueryAsync<TournamentListRow>(
-                        TournamentListSql,
-                        new { status, game, q, organizerGuid, isOnline = is_online, city, country, region, limit, offset })).AsList();
+                        listSql,
+                        new { status, statusGroup = normalizedStatusGroup, game, q, organizerGuid, isOnline = is_online, city, country, region, limit, offset })).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
                 tags: ["tournament-list"],
@@ -266,11 +293,12 @@ public static class TournamentEndpoints
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND t.status::text IN ('published', 'open', 'check_in')
-                        ORDER BY t.start_date ASC
+                        ORDER BY t.created_at DESC NULLS LAST, t.start_date ASC NULLS LAST
                         LIMIT 100
                         """)).AsList();
                 },
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                tags: ["tournament-list"],
                 cancellationToken: ct);
             return Results.Json(rows, s_snakeCase);
         }); // Public
