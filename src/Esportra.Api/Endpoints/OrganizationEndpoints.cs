@@ -649,7 +649,13 @@ public static class OrganizationEndpoints
                 LEFT JOIN public.organizations o ON o.id = t.organization_id
                 WHERE t.organization_id = @orgId
                   AND {filter}
-                  AND (@canManageOrg = TRUE OR t.is_public = TRUE)
+                  AND (
+                    @canManageOrg = TRUE
+                    OR (
+                      t.is_public = TRUE
+                      AND t.status::text IN ('published', 'open', 'check_in', 'ongoing', 'completed', 'cancelled')
+                    )
+                  )
                 ORDER BY t.start_date DESC NULLS LAST, t.created_at DESC
                 """,
                 new { orgId, canManageOrg });

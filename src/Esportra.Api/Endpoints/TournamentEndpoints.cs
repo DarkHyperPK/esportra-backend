@@ -441,6 +441,15 @@ public static class TournamentEndpoints
                 if (exists)
                     uniqueSlug = $"{slug}-{DateTime.UtcNow.Ticks % 9999:x4}";
 
+                Guid? organizationId = Guid.TryParse(req.OrganizationId, out var orgGuid) ? orgGuid : null;
+                if (!organizationId.HasValue)
+                {
+                    organizationId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                        "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                        new { userId = userCtx.UserIdGuid },
+                        tx);
+                }
+
                 var tournament = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO tournaments (
@@ -479,7 +488,7 @@ public static class TournamentEndpoints
                         status               = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "open",
                         bannerUrl            = req.BannerUrl,
                         logoUrl              = req.LogoUrl,
-                        organizationId       = Guid.TryParse(req.OrganizationId, out var orgGuid) ? orgGuid : (Guid?)null,
+                        organizationId       = organizationId,
                         venueId              = Guid.TryParse(req.VenueId, out var venGuid) ? venGuid : (Guid?)null,
                         isPublic             = req.IsPublic ?? true,
                         checkInRequired      = req.CheckInRequired ?? false,
