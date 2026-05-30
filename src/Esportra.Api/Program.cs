@@ -319,7 +319,13 @@ builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<Esportra.Api.Services.SeasonStandingsSyncService>();
+builder.Services.AddScoped<Esportra.Api.Services.SeasonAdvancementService>();
+builder.Services.AddScoped<Esportra.Api.Services.GameCatalogService>();
+builder.Services.AddScoped<Esportra.Api.Services.SeasonValidationService>();
+builder.Services.AddScoped<Esportra.Api.Services.SeasonPublishingService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
+builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 
@@ -331,6 +337,7 @@ builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>(
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<CheckinWalkoversJob>();
 builder.Services.AddHostedService<DiscordDmDispatcherJob>();
+builder.Services.AddHostedService<InviteExpiryJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -392,6 +399,12 @@ else
 Esportra.Infrastructure.Email.EmailTemplates.Init(
     builder.Configuration["FrontendUrl"] ?? "https://esportra.com",
     builder.Configuration["Supabase:Url"] ?? "https://api.esportra.com");
+
+using (var scope = app.Services.CreateScope())
+{
+    var catalog = scope.ServiceProvider.GetRequiredService<Esportra.Api.Services.GameCatalogService>();
+    await catalog.ImportPackagedCatalogAsync();
+}
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
@@ -495,6 +508,12 @@ app.MapProfileResolveEndpoint();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
+app.MapTournamentInvitationEndpoints();
+app.MapSeasonEndpoints();
+app.MapSeasonStructureEndpoints();
+app.MapSeasonOpsEndpoints();
+app.MapSeasonAnnouncementEndpoints();
+app.MapSeasonCompatibilityEndpoints();
 app.MapVenueEndpoints();
 app.MapVenueStaffEndpoints();
 app.MapSessionRefundEndpoints();
@@ -539,6 +558,7 @@ app.MapHub<ConversationHub>("/hubs/conversations").RequireCors("EsportraPolicy")
 app.MapHub<NotificationHub>("/hubs/notifications").RequireCors("EsportraPolicy");
 app.MapHub<LiveHub>("/hubs/live").RequireCors("EsportraPolicy");
 app.MapHub<VenueSyncHub>("/hubs/venue-sync").RequireCors("EsportraPolicy");
+app.MapHub<BRHub>("/hubs/br").RequireCors("EsportraPolicy");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();
@@ -574,3 +594,4 @@ catch (Exception ex)
     Console.Out.Flush();
     throw;
 }
+
