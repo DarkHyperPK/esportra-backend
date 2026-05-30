@@ -2,6 +2,8 @@
 
 See the frontend doc for the full picture: [frag-and-book-main/docs/ci-cd-setup.md](https://github.com/DarkHyperPK/Esportra/blob/main/docs/ci-cd-setup.md).
 
+Re-run staging deploy workflow from GitHub Actions if push did not trigger (path filters).
+
 ## Backend-specific
 
 | Workflow | Trigger | Checks |
