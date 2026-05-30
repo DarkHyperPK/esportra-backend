@@ -40,6 +40,10 @@ jobs:
       - name: Check migrations for forward references
         run: python .github/scripts/lint-migrations.py
 
+      - name: Check prod-absent table guards (main PRs)
+        if: github.base_ref == 'main'
+        run: python .github/scripts/lint-prod-table-references.py
+
   # ── Phase 4: full replay from an empty database ────────────────────────────
   # Spins up a fresh Postgres container and runs Esportra.Migrator against it.
   # Every migration must apply cleanly from scratch. Fails the PR if any script
