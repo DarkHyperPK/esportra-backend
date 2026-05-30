@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: deploy-prod-backend
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -111,7 +115,21 @@ jobs:
           API_URL: ${{ secrets.E2E_PROD_API_URL }}
         run: |
           if [ -z "$API_URL" ]; then
-            echo "E2E_PROD_API_URL not set — skipping smoke."
+            echo "::warning title=Smoke skipped::E2E_PROD_API_URL not set — post-deploy smoke skipped."
             exit 0
           fi
+          bash .github/scripts/api-preflight.sh
           curl --fail --silent --show-error --max-time 30 "${API_URL}/health/ready"
+
+  notify-failure:
+    name: Report failure
+    needs: [build, migration-lint, migration-replay, promote, smoke]
+    if: failure() && !cancelled()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/notify-failure
+        with:
+          webhook_url: ${{ secrets.CI_NOTIFY_WEBHOOK_URL }}
