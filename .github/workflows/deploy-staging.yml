@@ -4,6 +4,9 @@ on:
   push:
     branches: [staging]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build
@@ -22,7 +25,6 @@ jobs:
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
 
-  # ── Phase 5: forward-reference linter ──────────────────────────────────────
   migration-lint:
     name: Migration Lint (forward-reference check)
     runs-on: ubuntu-latest
@@ -37,9 +39,6 @@ jobs:
       - name: Check migrations for forward references
         run: python .github/scripts/lint-migrations.py
 
-  # ── Phase 4: migration replay gate ─────────────────────────────────────────
-  # Must pass before Coolify is triggered. A clean full replay proves every
-  # script in the chain is safe to apply on a fresh database.
   migration-replay:
     name: Migration Replay (full replay from empty DB)
     runs-on: ubuntu-latest
@@ -80,24 +79,36 @@ jobs:
           --project src/Esportra.Migrator/Esportra.Migrator.csproj
           -c Release
 
-  deploy:
-    name: Deploy to Coolify (Staging)
+  promote:
+    name: Promote to deploy/staging
     needs: migration-replay
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Coolify staging deployment
-        # If COOLIFY_STAGING_WEBHOOK is not yet configured, Coolify's native
-        # auto-deploy handles the deployment — this step exits cleanly.
-        # To enable CI-gated deploys:
-        #   1. Coolify → staging app → Deployments tab → copy Webhook URL
-        #   2. GitHub → Settings → Secrets → Actions → add COOLIFY_STAGING_WEBHOOK
-        #   3. Coolify → staging app → disable "Auto Deploy on push"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward deploy/staging
+        uses: ./.github/actions/promote-deploy-branch
+        with:
+          deploy_branch: deploy/staging
+
+  smoke:
+    name: Post-deploy smoke (staging API)
+    needs: promote
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for Coolify deploy
+        run: sleep 120
+
+      - name: API readiness smoke
         env:
-          WEBHOOK: ${{ secrets.COOLIFY_STAGING_WEBHOOK }}
+          API_URL: ${{ secrets.E2E_STAGING_API_URL }}
         run: |
-          if [ -z "$WEBHOOK" ]; then
-            echo "ℹ️ COOLIFY_STAGING_WEBHOOK not configured — Coolify auto-deploy handles deployment."
+          if [ -z "$API_URL" ]; then
+            echo "E2E_STAGING_API_URL not set — skipping smoke."
             exit 0
           fi
-          curl --fail --silent --show-error -X GET "$WEBHOOK"
-
+          curl --fail --silent --show-error --max-time 30 "${API_URL}/health/ready"

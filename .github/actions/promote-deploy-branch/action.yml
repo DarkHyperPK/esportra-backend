@@ -1,0 +1,28 @@
+name: Promote deploy branch
+description: Fast-forward a deploy/* branch to the tested commit so Coolify can deploy it.
+
+inputs:
+  deploy_branch:
+    description: Deploy branch to update (e.g. deploy/staging)
+    required: true
+  token:
+    description: GitHub token with contents:write
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Promote tested commit
+      shell: bash
+      env:
+        DEPLOY_BRANCH: ${{ inputs.deploy_branch }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git fetch origin "$DEPLOY_BRANCH" 2>/dev/null || true
+        git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+          "HEAD:refs/heads/${DEPLOY_BRANCH}"

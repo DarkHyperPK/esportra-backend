@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build
@@ -22,7 +25,6 @@ jobs:
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
 
-  # ── Phase 5: forward-reference linter ──────────────────────────────────────
   migration-lint:
     name: Migration Lint (forward-reference check)
     runs-on: ubuntu-latest
@@ -37,9 +39,9 @@ jobs:
       - name: Check migrations for forward references
         run: python .github/scripts/lint-migrations.py
 
-  # ── Phase 4: migration replay gate ─────────────────────────────────────────
-  # Must pass before Coolify is triggered. A clean full replay proves every
-  # script in the chain is safe to apply on a fresh database.
+      - name: Check prod-absent table guards
+        run: python .github/scripts/lint-prod-table-references.py
+
   migration-replay:
     name: Migration Replay (full replay from empty DB)
     runs-on: ubuntu-latest
@@ -80,23 +82,36 @@ jobs:
           --project src/Esportra.Migrator/Esportra.Migrator.csproj
           -c Release
 
-  deploy:
-    name: Deploy to Coolify (Production)
+  promote:
+    name: Promote to deploy/main
     needs: migration-replay
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Coolify production deployment
-        # Production Coolify app is not yet created.
-        # When ready:
-        #   1. Coolify → prod app → Deployments tab → copy Webhook URL
-        #   2. GitHub → Settings → Secrets → Actions → add COOLIFY_PROD_WEBHOOK
-        #   3. Coolify → prod app → disable "Auto Deploy on push"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward deploy/main
+        uses: ./.github/actions/promote-deploy-branch
+        with:
+          deploy_branch: deploy/main
+
+  smoke:
+    name: Post-deploy smoke (production API)
+    needs: promote
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for Coolify deploy
+        run: sleep 120
+
+      - name: API readiness smoke
         env:
-          WEBHOOK: ${{ secrets.COOLIFY_PROD_WEBHOOK }}
+          API_URL: ${{ secrets.E2E_PROD_API_URL }}
         run: |
-          if [ -z "$WEBHOOK" ]; then
-            echo "ℹ️ COOLIFY_PROD_WEBHOOK not configured — skipping production deployment."
+          if [ -z "$API_URL" ]; then
+            echo "E2E_PROD_API_URL not set — skipping smoke."
             exit 0
           fi
-          curl --fail --silent --show-error -X GET "$WEBHOOK"
-
+          curl --fail --silent --show-error --max-time 30 "${API_URL}/health/ready"
