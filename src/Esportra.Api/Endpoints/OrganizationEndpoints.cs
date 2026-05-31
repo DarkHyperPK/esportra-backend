@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Dynamic;
 using System.Text.Json;
 using Dapper;
@@ -626,7 +626,7 @@ public static class OrganizationEndpoints
                 WHERE t.organization_id = @orgId
                   AND {lifecycleFilter}
                   {visibilityFilter}
-                ORDER BY t.start_date DESC
+                ORDER BY t.created_at DESC NULLS LAST, t.start_date DESC NULLS LAST
                 """,
                 new { orgId });
             return Results.Ok(rows);
