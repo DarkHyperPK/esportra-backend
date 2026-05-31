@@ -90,23 +90,36 @@ public static class GameEndpoints
                 "application/json");
         }); // Public — game search doesn't require auth
 
-        // ── GET /api/games/maps?game={game} ──────────────────────────────────
-        // Used by StepFormatRules.tsx
+        // ── GET /api/games/maps?game={game}&mode={mode} ──────────────────────
+        // Used by StepFormatRules.tsx — mode filters Skirmish vs competitive pools
         app.MapGet("/api/games/maps", async (
             string               game,
+            string?              mode,
             IDbConnectionFactory db) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
 
             using var conn = db.CreateConnection();
-            var maps = await conn.QueryAsync<dynamic>(
-                """
+
+            var isSkirmishMode = !string.IsNullOrWhiteSpace(mode)
+                && mode.Contains("skirmish", StringComparison.OrdinalIgnoreCase);
+            var isValorant = game.Contains("Valorant", StringComparison.OrdinalIgnoreCase);
+
+            var sql = """
                 SELECT id::text as id, game, map_name, map_image_url, is_active
                 FROM public.game_maps
                 WHERE game ILIKE @game AND is_active = true
-                ORDER BY map_name ASC
-                """, new { game });
+                """;
+
+            if (isSkirmishMode)
+                sql += " AND map_name ILIKE 'Skirmish %'";
+            else if (isValorant)
+                sql += " AND map_name NOT ILIKE 'Skirmish %'";
+
+            sql += " ORDER BY map_name ASC";
+
+            var maps = await conn.QueryAsync<dynamic>(sql, new { game });
 
             return Results.Ok(maps);
         }); // Public
