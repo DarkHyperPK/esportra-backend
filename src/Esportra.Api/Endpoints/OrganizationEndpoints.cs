@@ -635,6 +635,7 @@ public static class OrganizationEndpoints
                     t.is_public,
                     t.currency,
                     t.deleted_at,
+                    t.created_at,
                     o.name AS organization_name,
                     o.slug AS organization_slug,
                     o.logo_url AS organization_logo,
@@ -656,7 +657,7 @@ public static class OrganizationEndpoints
                       AND t.status::text IN ('published', 'open', 'check_in', 'ongoing', 'completed', 'cancelled')
                     )
                   )
-                ORDER BY t.start_date DESC NULLS LAST, t.created_at DESC
+                ORDER BY t.created_at DESC NULLS LAST, t.start_date DESC NULLS LAST
                 """,
                 new { orgId, canManageOrg });
             return Results.Ok(rows);
