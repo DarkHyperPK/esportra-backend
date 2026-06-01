@@ -34,6 +34,31 @@ src/
 7. **RLS policies**: Use `DO $$ BEGIN IF NOT EXISTS ... END; $$` blocks to avoid duplicate policy errors
 8. The `.csproj` has `<EmbeddedResource Include="Migrations\Scripts\*.sql" />` — files are auto-included
 
+#### CI migration replay (post-baseline)
+
+Pre-2026-03-17 schema lived in Supabase before DbUp; [`20260317_001_baseline.sql`](src/Esportra.Infrastructure/Migrations/Scripts/20260317_001_baseline.sql) marks that cutoff. CI does **not** replay pre-baseline scripts from empty Postgres.
+
+| Artifact | Purpose |
+|----------|---------|
+| [`.github/ci/post-baseline-replay-schema.sql`](.github/ci/post-baseline-replay-schema.sql) | DB state after pre-baseline migrations (stub + SQL through baseline) |
+| [`.github/ci/replay-journal-seed.sql`](.github/ci/replay-journal-seed.sql) | Marks those scripts as applied in DbUp `schemaversions` |
+| [`.github/ci/supabase-replay-bootstrap.sql`](.github/ci/supabase-replay-bootstrap.sql) | Legacy table shells — input to schema generator only (not applied in CI replay) |
+
+**Adding a post-baseline migration:** normal flow — CI replays it automatically.
+
+**Rare: adding a pre-baseline migration** (filename sorts before `20260317_001_baseline.sql`):
+
+1. Update `supabase-replay-bootstrap.sql` if new legacy stubs are needed.
+2. Regenerate fixtures:
+   ```bash
+   python .github/scripts/generate-post-baseline-replay-schema.py
+   python .github/scripts/generate-replay-journal-seed.py
+   ```
+   Or with Postgres: `bash .github/scripts/build-post-baseline-schema.sh` (pg_dump replaces concat output).
+3. Commit both `.github/ci/post-baseline-replay-schema.sql` and `.github/ci/replay-journal-seed.sql`.
+
+CI runs `--check` on both generators in `migration-lint` — stale artifacts fail the build.
+
 ### Supabase Config Keys
 
 The staging environment uses these config keys (from Docker env vars `Supabase__*`):

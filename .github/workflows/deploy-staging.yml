@@ -43,8 +43,13 @@ jobs:
       - name: Check migrations for forward references
         run: python .github/scripts/lint-migrations.py
 
+      - name: Verify replay fixture artifacts are up to date
+        run: |
+          python .github/scripts/generate-replay-journal-seed.py --check
+          python .github/scripts/generate-post-baseline-replay-schema.py --check
+
   migration-replay:
-    name: Migration Replay (full replay from empty DB)
+    name: Migration Replay (post-baseline from baseline schema)
     runs-on: ubuntu-latest
     needs: [build, migration-lint]
     services:
@@ -72,10 +77,10 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
-      - name: Apply Supabase replay bootstrap
+      - name: Apply post-baseline replay fixture
         run: bash .github/scripts/apply-replay-bootstrap.sh
 
-      - name: Run full migration replay
+      - name: Run post-baseline migration replay
         env:
           ConnectionStrings__Postgres: >-
             Host=localhost;Port=5432;Database=esportra_test;

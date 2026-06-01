@@ -8,9 +8,11 @@ Re-run staging deploy workflow from GitHub Actions if push did not trigger (path
 
 | Workflow | Trigger | Checks |
 |----------|---------|--------|
-| `pr-check.yml` | PR to `staging` / `main` | Build, migration lint, replay |
+| `pr-check.yml` | PR to `staging` / `main` | Build, migration lint, **post-baseline replay** |
 | `deploy-staging.yml` | Push `staging` | Same + promote `deploy/staging` + API smoke |
 | `deploy-prod.yml` | Push `main` | Same + prod-absent table lint + promote `deploy/main` + API smoke |
+
+Migration replay applies a committed baseline schema snapshot and only tests DbUp scripts after `20260317_001_baseline.sql`. See [`.github/copilot-instructions.md`](../.github/copilot-instructions.md) (CI migration replay section).
 
 ## Coolify branch switch
 

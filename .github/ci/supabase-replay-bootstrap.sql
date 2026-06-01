@@ -1,7 +1,7 @@
 -- CI migration replay bootstrap (do NOT apply in production)
--- DbUp scripts assume a Supabase-shaped database. CI uses vanilla Postgres, so we
--- pre-create auth/storage stubs and legacy public tables that existed before DbUp
--- but are never CREATE TABLE'd in Scripts/.
+-- Used only as input when building post-baseline-replay-schema.sql (see
+-- .github/scripts/generate-post-baseline-replay-schema.py or build-post-baseline-schema.sh).
+-- CI replay applies post-baseline-replay-schema.sql + replay-journal-seed.sql instead.
 --
 -- Regenerate table stubs: python .github/scripts/generate-replay-bootstrap.py
 
@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   role public.app_role DEFAULT 'casual',
   date_of_birth DATE,
   is_admin BOOLEAN NOT NULL DEFAULT false,
+  admin_roles TEXT[] NOT NULL DEFAULT '{}',
   riot_tag TEXT,
   steam_tag TEXT,
   faceit_nickname TEXT,
@@ -173,7 +174,12 @@ CREATE TABLE IF NOT EXISTS public.tournaments (
 CREATE TABLE IF NOT EXISTS public.user_roles (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID);
 CREATE TABLE IF NOT EXISTS public.venue_bookings (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), venue_id UUID);
 CREATE TABLE IF NOT EXISTS public.verified_roles (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID);
-CREATE TABLE IF NOT EXISTS public.venues (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), owner_id UUID);
+CREATE TABLE IF NOT EXISTS public.venues (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id UUID,
+  is_active BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Patch columns when an older bootstrap stub already created the shell table.
 ALTER TABLE public.team_members ADD COLUMN IF NOT EXISTS role public.team_member_role DEFAULT 'member';
@@ -185,5 +191,9 @@ ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS is_featured BOOLEAN NOT 
 ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS approved_by UUID;
 ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS winner_id UUID;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS admin_roles TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE public.venues ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.venues ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE public.team_members ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
 
 SELECT 'replay bootstrap applied' AS status;
