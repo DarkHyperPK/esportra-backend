@@ -120,31 +120,70 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   social_links JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
--- ── Legacy public tables (id stub; migrations add columns) ─────────────────
+-- ── Legacy public tables (stubs; migrations add/alter columns) ─────────────
 CREATE TABLE IF NOT EXISTS public.audit_logs (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.brkt_match_games (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.brkt_matches (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.dispute_comments (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.match_map_veto_actions (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.match_map_vetos (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.match_result_reports (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.notifications (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE IF NOT EXISTS public.brkt_versions (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tournament_id UUID);
+CREATE TABLE IF NOT EXISTS public.brkt_match_games (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), match_id UUID);
+CREATE TABLE IF NOT EXISTS public.brkt_matches (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  version_id UUID,
+  team1_id UUID,
+  team2_id UUID
+);
+CREATE TABLE IF NOT EXISTS public.dispute_comments (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), dispute_id UUID);
+CREATE TABLE IF NOT EXISTS public.match_map_veto_actions (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), veto_id UUID);
+CREATE TABLE IF NOT EXISTS public.match_map_vetos (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), match_id UUID);
+CREATE TABLE IF NOT EXISTS public.match_result_reports (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), match_id UUID);
+CREATE TABLE IF NOT EXISTS public.notifications (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID);
 CREATE TABLE IF NOT EXISTS public.organizations (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), owner_id UUID);
-CREATE TABLE IF NOT EXISTS public.sponsor_impressions (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE IF NOT EXISTS public.sponsor_impressions (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), sponsor_id UUID);
 CREATE TABLE IF NOT EXISTS public.sponsors (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.staff_audit_log (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.team_invitations (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), team_id UUID);
-CREATE TABLE IF NOT EXISTS public.team_members (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), team_id UUID, user_id UUID);
+CREATE TABLE IF NOT EXISTS public.staff_audit_log (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), organization_id UUID);
+CREATE TABLE IF NOT EXISTS public.team_invitations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID,
+  invited_user_id UUID
+);
+CREATE TABLE IF NOT EXISTS public.team_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID,
+  user_id UUID,
+  role public.team_member_role DEFAULT 'member'
+);
 CREATE TABLE IF NOT EXISTS public.team_roster_members (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), roster_id UUID, user_id UUID);
 CREATE TABLE IF NOT EXISTS public.team_rosters (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), team_id UUID);
 CREATE TABLE IF NOT EXISTS public.teams (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), owner_id UUID);
-CREATE TABLE IF NOT EXISTS public.tournament_disputes (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE IF NOT EXISTS public.tournament_participants (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tournament_id UUID);
+CREATE TABLE IF NOT EXISTS public.tournament_disputes (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tournament_id UUID);
+CREATE TABLE IF NOT EXISTS public.tournament_participants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tournament_id UUID,
+  team_id UUID,
+  user_id UUID
+);
 CREATE TABLE IF NOT EXISTS public.tournament_stages (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tournament_id UUID);
-CREATE TABLE IF NOT EXISTS public.tournaments (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), organizer_id UUID, status public.tournament_status DEFAULT 'draft');
+CREATE TABLE IF NOT EXISTS public.tournaments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organizer_id UUID,
+  status public.tournament_status DEFAULT 'draft',
+  is_featured BOOLEAN NOT NULL DEFAULT false,
+  approved_by UUID,
+  approved_at TIMESTAMPTZ,
+  winner_id UUID
+);
 CREATE TABLE IF NOT EXISTS public.user_roles (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID);
 CREATE TABLE IF NOT EXISTS public.venue_bookings (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), venue_id UUID);
 CREATE TABLE IF NOT EXISTS public.verified_roles (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID);
 CREATE TABLE IF NOT EXISTS public.venues (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), owner_id UUID);
+
+-- Patch columns when an older bootstrap stub already created the shell table.
+ALTER TABLE public.team_members ADD COLUMN IF NOT EXISTS role public.team_member_role DEFAULT 'member';
+ALTER TABLE public.team_invitations ADD COLUMN IF NOT EXISTS invited_user_id UUID;
+ALTER TABLE public.brkt_matches ADD COLUMN IF NOT EXISTS version_id UUID;
+ALTER TABLE public.brkt_matches ADD COLUMN IF NOT EXISTS team1_id UUID;
+ALTER TABLE public.brkt_matches ADD COLUMN IF NOT EXISTS team2_id UUID;
+ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS is_featured BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS approved_by UUID;
+ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS winner_id UUID;
 
 SELECT 'replay bootstrap applied' AS status;
