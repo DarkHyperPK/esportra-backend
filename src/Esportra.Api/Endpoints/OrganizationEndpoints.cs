@@ -6,6 +6,7 @@ using Esportra.Contracts.Auth;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
 
 namespace Esportra.Api.Endpoints;
@@ -631,6 +632,87 @@ public static class OrganizationEndpoints
                 new { orgId });
             return Results.Ok(rows);
         });
+
+        // ── POST /api/organizations/{orgId}/tournaments/bulk-lifecycle ───────
+        // Soft-delete, restore, or permanently delete many tournaments in one round-trip.
+        // Replaces the frontend anti-pattern of firing one PUT/DELETE per tournament.
+        app.MapPost("/api/organizations/{orgId}/tournaments/bulk-lifecycle", async (
+            Guid                              orgId,
+            [FromBody] BulkTournamentLifecycleRequest req,
+            HttpContext                       ctx,
+            IDbConnectionFactory              db,
+            HybridCache                       cache,
+            CancellationToken                 ct) =>
+        {
+            const int maxBatchSize = 500;
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.TournamentIds is not { Length: > 0 })
+                return Results.BadRequest(new { error = "TournamentIds must not be empty." });
+            if (req.TournamentIds.Length > maxBatchSize)
+                return Results.BadRequest(new { error = $"Cannot process more than {maxBatchSize} tournaments at once." });
+
+            var action = (req.Action ?? string.Empty).Trim().ToLowerInvariant();
+            if (action is not ("soft-delete" or "restore" or "permanent-delete"))
+                return Results.BadRequest(new { error = "Action must be soft-delete, restore, or permanent-delete." });
+
+            using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
+            int affected;
+            switch (action)
+            {
+                case "soft-delete":
+                    affected = await conn.ExecuteAsync(
+                        """
+                        UPDATE tournaments
+                        SET deleted_at = COALESCE(@deletedAt, NOW()), updated_at = NOW()
+                        WHERE organization_id = @orgId
+                          AND id = ANY(@ids)
+                          AND deleted_at IS NULL
+                        """,
+                        new
+                        {
+                            orgId,
+                            ids = req.TournamentIds,
+                            deletedAt = req.DeletedAt ?? DateTimeOffset.UtcNow,
+                        });
+                    break;
+
+                case "restore":
+                    affected = await conn.ExecuteAsync(
+                        """
+                        UPDATE tournaments
+                        SET deleted_at = NULL,
+                            status = 'open'::tournament_status,
+                            updated_at = NOW()
+                        WHERE organization_id = @orgId
+                          AND id = ANY(@ids)
+                          AND deleted_at IS NOT NULL
+                        """,
+                        new { orgId, ids = req.TournamentIds });
+                    break;
+
+                default:
+                    affected = await conn.ExecuteAsync(
+                        """
+                        DELETE FROM tournaments
+                        WHERE organization_id = @orgId
+                          AND id = ANY(@ids)
+                          AND deleted_at IS NOT NULL
+                        """,
+                        new { orgId, ids = req.TournamentIds });
+                    break;
+            }
+
+            try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
+
+            return Results.Ok(new { success = true, affected, action });
+        }).RequireAuthorization("Organizer");
 
         // ── GET /api/organizations/{orgId}/participants — aggregate org registrations ─
         // Single server-side read for the organizer management console. This avoids the
@@ -1532,6 +1614,11 @@ public sealed record UpdateStaffRequest(string Role, List<string> Permissions);
 public sealed record RespondInviteRequest(bool Accept);
 
 public sealed record AssignTournamentsRequest(List<string> TournamentIds);
+
+public sealed record BulkTournamentLifecycleRequest(
+    Guid[] TournamentIds,
+    string Action,
+    DateTimeOffset? DeletedAt = null);
 
 public sealed record InsertOrgMediaRequest(string Url, string Type, string? Caption = null, string? AlbumId = null);
 public sealed record UpdateOrgImageRequest(string Url);
