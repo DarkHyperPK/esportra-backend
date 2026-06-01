@@ -183,7 +183,9 @@ CREATE TABLE IF NOT EXISTS public.venues (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id UUID,
   is_active BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION
 );
 
 -- Patch columns when an older bootstrap stub already created the shell table.
@@ -199,6 +201,8 @@ ALTER TABLE public.tournaments ADD COLUMN IF NOT EXISTS winner_id UUID;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS admin_roles TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE public.venues ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE public.venues ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE public.venues ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+ALTER TABLE public.venues ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
 ALTER TABLE public.team_members ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
 
 SELECT 'replay bootstrap applied' AS status;
