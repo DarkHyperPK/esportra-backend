@@ -72,6 +72,9 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
+      - name: Apply Supabase replay bootstrap
+        run: bash .github/scripts/apply-replay-bootstrap.sh
+
       - name: Run full migration replay
         env:
           ConnectionStrings__Postgres: >-
