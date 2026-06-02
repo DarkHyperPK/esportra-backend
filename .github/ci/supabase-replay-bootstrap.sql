@@ -230,7 +230,8 @@ CREATE TABLE IF NOT EXISTS public.tournament_disputes (
   title TEXT,
   description TEXT,
   status TEXT,
-  dispute_reason TEXT
+  dispute_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS public.tournament_staff (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -303,6 +304,7 @@ ALTER TABLE public.tournament_disputes ADD COLUMN IF NOT EXISTS title TEXT;
 ALTER TABLE public.tournament_disputes ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE public.tournament_disputes ADD COLUMN IF NOT EXISTS status TEXT;
 ALTER TABLE public.tournament_disputes ADD COLUMN IF NOT EXISTS dispute_reason TEXT;
+ALTER TABLE public.tournament_disputes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE public.match_result_reports ADD COLUMN IF NOT EXISTS reported_by UUID;
 ALTER TABLE public.match_result_reports ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
 ALTER TABLE public.match_result_reports ADD COLUMN IF NOT EXISTS responded_by UUID;
