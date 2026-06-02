@@ -140,14 +140,18 @@ AS $$ BEGIN NULL; END; $$;
 -- ── Legacy public tables (stubs; migrations add/alter columns) ─────────────
 CREATE TABLE IF NOT EXISTS public.admin_roles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT,
+  name TEXT NOT NULL UNIQUE,
   key TEXT UNIQUE,
   description TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS public.admin_user_roles (
-  user_id UUID NOT NULL,
-  role_id UUID NOT NULL REFERENCES public.admin_roles(id)
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role_id UUID NOT NULL REFERENCES public.admin_roles(id) ON DELETE CASCADE,
+  assigned_by UUID REFERENCES auth.users(id),
+  assigned_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (user_id, role_id)
 );
 CREATE TABLE IF NOT EXISTS public.audit_logs (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.brkt_versions (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tournament_id UUID);
