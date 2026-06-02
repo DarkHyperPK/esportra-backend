@@ -19,6 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 STUB = REPO_ROOT / ".github" / "ci" / "supabase-replay-bootstrap.sql"
+OVERLAYS = REPO_ROOT / ".github" / "ci" / "replay-legacy-overlays.sql"
 MIGRATIONS_DIR = (
     REPO_ROOT / "src" / "Esportra.Infrastructure" / "Migrations" / "Scripts"
 )
@@ -39,7 +40,9 @@ def pre_baseline_paths() -> list[Path]:
     return result
 
 
-def render_schema(stub_sql: str, migration_paths: list[Path]) -> str:
+def render_schema(
+    stub_sql: str, overlay_sql: str, migration_paths: list[Path]
+) -> str:
     sections = [
         "-- CI post-baseline replay schema snapshot (generated — do not apply in production)",
         "-- Regenerate: python .github/scripts/generate-post-baseline-replay-schema.py",
@@ -47,6 +50,9 @@ def render_schema(stub_sql: str, migration_paths: list[Path]) -> str:
         "",
         "-- ── Supabase stub (legacy schema shells) ────────────────────────────────",
         stub_sql.rstrip(),
+        "",
+        "-- ── Legacy overlays (tables never CREATE TABLE'd in Scripts/) ─────────────",
+        overlay_sql.rstrip(),
         "",
     ]
 
@@ -79,8 +85,16 @@ def main() -> int:
         print(f"ERROR: Missing stub: {STUB}", file=sys.stderr)
         return 1
 
+    if not OVERLAYS.is_file():
+        print(f"ERROR: Missing legacy overlays: {OVERLAYS}", file=sys.stderr)
+        return 1
+
     migration_paths = pre_baseline_paths()
-    sql = render_schema(STUB.read_text(encoding="utf-8"), migration_paths)
+    sql = render_schema(
+        STUB.read_text(encoding="utf-8"),
+        OVERLAYS.read_text(encoding="utf-8"),
+        migration_paths,
+    )
 
     if args.check:
         if not OUTPUT.is_file():

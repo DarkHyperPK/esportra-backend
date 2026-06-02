@@ -40,11 +40,27 @@ Pre-2026-03-17 schema lived in Supabase before DbUp; [`20260317_001_baseline.sql
 
 | Artifact | Purpose |
 |----------|---------|
-| [`.github/ci/post-baseline-replay-schema.sql`](.github/ci/post-baseline-replay-schema.sql) | DB state after pre-baseline migrations (stub + SQL through baseline) |
+| [`.github/ci/post-baseline-replay-schema.sql`](.github/ci/post-baseline-replay-schema.sql) | DB state after pre-baseline migrations (stub + overlays + SQL through baseline) |
 | [`.github/ci/replay-journal-seed.sql`](.github/ci/replay-journal-seed.sql) | Marks those scripts as applied in DbUp `schemaversions` |
-| [`.github/ci/supabase-replay-bootstrap.sql`](.github/ci/supabase-replay-bootstrap.sql) | Legacy table shells — input to schema generator only (not applied in CI replay) |
+| [`.github/ci/supabase-replay-bootstrap.sql`](.github/ci/supabase-replay-bootstrap.sql) | Supabase stubs — input to schema generator only (not applied in CI replay) |
+| [`.github/ci/replay-legacy-overlays.sql`](.github/ci/replay-legacy-overlays.sql) | Curated legacy public tables/columns for post-baseline replay |
+| [`.github/ci/replay-legacy-manifest.json`](.github/ci/replay-legacy-manifest.json) | Audit of legacy deps in post-baseline migrations (`--check` in CI) |
 
 **Adding a post-baseline migration:** normal flow — CI replays it automatically.
+
+**CI replay fixture maintenance** (when a post-baseline migration references legacy schema not created in Scripts/):
+
+1. Add or update DDL in `replay-legacy-overlays.sql` (include `UNIQUE`/`NOT NULL` needed for `ON CONFLICT`).
+2. Regenerate audit + fixtures:
+   ```bash
+   python .github/scripts/audit-replay-legacy-deps.py
+   python .github/scripts/generate-post-baseline-replay-schema.py
+   python .github/scripts/generate-replay-journal-seed.py
+   ```
+3. Validate locally: `bash .github/scripts/run-migration-replay-local.sh`
+4. Commit `replay-legacy-overlays.sql`, `replay-legacy-manifest.json`, `post-baseline-replay-schema.sql`, and `replay-journal-seed.sql` together.
+
+Never edit `post-baseline-replay-schema.sql` or `replay-journal-seed.sql` by hand.
 
 **Rare: adding a pre-baseline migration** (filename sorts before `20260317_001_baseline.sql`):
 
@@ -57,7 +73,7 @@ Pre-2026-03-17 schema lived in Supabase before DbUp; [`20260317_001_baseline.sql
    Or with Postgres: `bash .github/scripts/build-post-baseline-schema.sh` (pg_dump replaces concat output).
 3. Commit both `.github/ci/post-baseline-replay-schema.sql` and `.github/ci/replay-journal-seed.sql`.
 
-CI runs `--check` on both generators in `migration-lint` — stale artifacts fail the build.
+CI runs `--check` on audit, journal, and schema generators in `migration-lint` — stale artifacts fail the build.
 
 ### Supabase Config Keys
 

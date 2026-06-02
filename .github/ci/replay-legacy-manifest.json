@@ -1,0 +1,495 @@
+{
+  "baseline": "20260317_001_baseline.sql",
+  "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
+  "postBaselineScriptCount": 133,
+  "legacyTables": {
+    "admin_permissions": {
+      "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
+      "operations": [
+        "insert"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "admin_role_permissions": {
+      "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
+      "operations": [
+        "insert"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "anon": {
+      "firstSeenIn": "20260621001000_lock_tournament_winner_rpcs.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
+    },
+    "audit_logs": {
+      "firstSeenIn": "20260409100000_audit_logs_target_index.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "authenticated": {
+      "firstSeenIn": "20260408110000_fix_admin_alerts_rls.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "brkt_match_games": {
+      "firstSeenIn": "20260318_001_drop_riot_match_id_unique.sql",
+      "operations": [
+        "alter"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "brkt_matches": {
+      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "dispute_comments": {
+      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
+      "operations": [
+        "policy"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "game_maps": {
+      "firstSeenIn": "20260326150000_seed_r6s_cod_game_maps.sql",
+      "operations": [
+        "delete",
+        "insert",
+        "join",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "on": {
+      "firstSeenIn": "20260403210000_add_booking_code_columns.sql",
+      "operations": [
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "or": {
+      "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
+      "operations": [
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "organization_staff": {
+      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
+      "operations": [
+        "join",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "organizations": {
+      "firstSeenIn": "20260413230000_organizations.sql",
+      "operations": [
+        "alter",
+        "join",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
+    },
+    "profiles": {
+      "firstSeenIn": "20260323000000_cleanup_profiles_unused_columns.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "public": {
+      "firstSeenIn": "20260621001000_lock_tournament_winner_rpcs.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
+    },
+    "service_role": {
+      "firstSeenIn": "20260410200500_revoke_delete_financial.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "set": {
+      "firstSeenIn": "20260331100000_payment_flow_bucket_and_columns.sql",
+      "operations": [
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "sponsor_impressions": {
+      "firstSeenIn": "20260321060000_daily_sponsor_stats_trigger.sql",
+      "operations": [
+        "alter",
+        "index",
+        "trigger"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "sponsors": {
+      "firstSeenIn": "20260321000000_sponsors_detail_deck.sql",
+      "operations": [
+        "alter",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "staff_audit_log": {
+      "firstSeenIn": "20260320000000_staff_audit_log_nullable_org.sql",
+      "operations": [
+        "alter"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "staff_tournament_assignments": {
+      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "team_members": {
+      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
+      "operations": [
+        "alter",
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "teams": {
+      "firstSeenIn": "20260402114000_add_virtual_teams_for_solo.sql",
+      "operations": [
+        "alter",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "to": {
+      "firstSeenIn": "20260325100000_br_game_data.sql",
+      "operations": [
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "tournament_disputes": {
+      "firstSeenIn": "20260318_002_dispute_reference_number.sql",
+      "operations": [
+        "alter",
+        "join",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "tournament_participants": {
+      "firstSeenIn": "20260331100000_payment_flow_bucket_and_columns.sql",
+      "operations": [
+        "alter",
+        "index",
+        "references",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "tournament_stages": {
+      "firstSeenIn": "20260420110000_br_multi_group_tables.sql",
+      "operations": [
+        "alter",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
+    },
+    "tournaments": {
+      "firstSeenIn": "20260318000000_standardize_tournament_status_enum.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "user_roles": {
+      "firstSeenIn": "20260328000000_unique_user_roles_verified_roles.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "using": {
+      "firstSeenIn": "20260413245000_fix_rls_policies_status_check.sql",
+      "operations": [
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
+    },
+    "venue_bookings": {
+      "firstSeenIn": "20260403210000_add_booking_code_columns.sql",
+      "operations": [
+        "alter",
+        "index",
+        "references",
+        "trigger"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "venues": {
+      "firstSeenIn": "20260401100000_venues_currency_column.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    },
+    "verified_roles": {
+      "firstSeenIn": "20260328000000_unique_user_roles_verified_roles.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "id",
+        "key",
+        "permission",
+        "role",
+        "venue_id"
+      ]
+    }
+  }
+}

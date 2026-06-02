@@ -50,6 +50,16 @@ echo "Applying Supabase replay stub..."
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
   -v ON_ERROR_STOP=1 -f "${STUB}"
 
+OVERLAYS="${ROOT}/.github/ci/replay-legacy-overlays.sql"
+if [[ ! -f "${OVERLAYS}" ]]; then
+  echo "ERROR: Missing legacy overlays: ${OVERLAYS}" >&2
+  exit 1
+fi
+
+echo "Applying legacy replay overlays..."
+psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
+  -v ON_ERROR_STOP=1 -f "${OVERLAYS}"
+
 echo "Applying pre-baseline migrations (through ${BASELINE})..."
 while IFS= read -r -d '' f; do
   base="$(basename "${f}")"

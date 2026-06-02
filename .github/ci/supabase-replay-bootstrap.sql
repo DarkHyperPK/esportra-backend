@@ -3,6 +3,9 @@
 -- .github/scripts/generate-post-baseline-replay-schema.py or build-post-baseline-schema.sh).
 -- CI replay applies post-baseline-replay-schema.sql + replay-journal-seed.sql instead.
 --
+-- Supabase/platform stubs (auth, storage, roles, enums) live here.
+-- Rich legacy public app DDL belongs in replay-legacy-overlays.sql.
+--
 -- Regenerate table stubs: python .github/scripts/generate-replay-bootstrap.py
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";

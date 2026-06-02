@@ -45,6 +45,7 @@ jobs:
 
       - name: Verify replay fixture artifacts are up to date
         run: |
+          python .github/scripts/audit-replay-legacy-deps.py --check
           python .github/scripts/generate-replay-journal-seed.py --check
           python .github/scripts/generate-post-baseline-replay-schema.py --check
 
@@ -90,6 +91,9 @@ jobs:
           dotnet run
           --project src/Esportra.Migrator/Esportra.Migrator.csproj
           -c Release
+
+      - name: Assert migration replay completed
+        run: bash .github/scripts/assert-migration-replay-complete.sh
 
   promote:
     name: Promote to deploy/staging

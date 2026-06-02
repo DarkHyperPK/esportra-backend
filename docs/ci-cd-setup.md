@@ -14,6 +14,24 @@ Re-run staging deploy workflow from GitHub Actions if push did not trigger (path
 
 Migration replay applies a committed baseline schema snapshot and only tests DbUp scripts after `20260317_001_baseline.sql`. See [`.github/copilot-instructions.md`](../.github/copilot-instructions.md) (CI migration replay section).
 
+### Post-baseline replay (local)
+
+Reproduce the CI `migration-replay` job before pushing:
+
+```bash
+bash .github/scripts/run-migration-replay-local.sh
+```
+
+Regenerate committed CI artifacts after overlay or pre-baseline changes:
+
+```bash
+python .github/scripts/audit-replay-legacy-deps.py
+python .github/scripts/generate-post-baseline-replay-schema.py
+python .github/scripts/generate-replay-journal-seed.py
+```
+
+CI asserts every embedded script is journaled via `assert-migration-replay-complete.sh`.
+
 ## Coolify branch switch
 
 - Staging backend app → `deploy/staging`
