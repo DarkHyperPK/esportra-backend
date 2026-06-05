@@ -40,31 +40,31 @@ public static class BattleRoyaleConfigResolver
         double AvgPlacement);
 
     public static ResolvedStageBrConfig Resolve(
-        string? gameName,
         object? tournamentSettings,
         object? stageConfig,
+        object? catalogBrConfig,
         int? stageCapacity = null)
     {
         return new ResolvedStageBrConfig(
-            ResolveScoring(gameName, tournamentSettings, stageConfig),
+            ResolveScoring(tournamentSettings, stageConfig, catalogBrConfig),
             ResolveTiebreaker(tournamentSettings),
-            ResolveMapConfig(gameName, tournamentSettings, stageConfig),
+            ResolveMapConfig(tournamentSettings, stageConfig, catalogBrConfig),
             ResolveGameCount(tournamentSettings, stageConfig));
     }
 
     public static BrScoringSettings ResolveScoring(
-        string? gameName,
         object? tournamentSettings,
-        object? stageConfig)
+        object? stageConfig,
+        object? catalogBrConfig)
     {
-        var fallbackPresetKey = ResolveDefaultBrPresetKey(gameName);
+        var fallbackPresetKey = BrCatalogBrConfigHelper.ReadDefaultPreset(catalogBrConfig);
         var fallback = ResolvePresetScoring(fallbackPresetKey);
 
         if (!TryParseJsonElement(stageConfig, out var stageRoot)
             || !TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
             || brSection.ValueKind != JsonValueKind.Object)
         {
-            return ResolveTournamentScoring(gameName, tournamentSettings, fallbackPresetKey, fallback);
+            return ResolveTournamentScoring(tournamentSettings, fallbackPresetKey, fallback, catalogBrConfig);
         }
 
         if (TryGetPropertyIgnoreCase(brSection, "scoring", out var stageScoring)
@@ -111,7 +111,7 @@ public static class BattleRoyaleConfigResolver
             return resolved;
         }
 
-        return ResolveTournamentScoring(gameName, tournamentSettings, fallbackPresetKey, fallback);
+        return ResolveTournamentScoring(tournamentSettings, fallbackPresetKey, fallback, catalogBrConfig);
     }
 
     public static BrTiebreaker ResolveTiebreaker(object? tournamentSettings)
@@ -135,17 +135,17 @@ public static class BattleRoyaleConfigResolver
     }
 
     public static BrMapConfig ResolveMapConfig(
-        string? gameName,
         object? tournamentSettings,
-        object? stageConfig)
+        object? stageConfig,
+        object? catalogBrConfig)
     {
-        var catalogPool = ResolveCatalogMapPool(gameName);
-        var hasMaps = catalogPool.Count > 0;
+        var catalogPool = BrCatalogBrConfigHelper.ReadMapPool(catalogBrConfig);
+        var hasMaps = BrCatalogBrConfigHelper.ReadHasMaps(catalogBrConfig, catalogPool);
 
         var defaultMode = BrMapMode.None;
         if (hasMaps)
         {
-            defaultMode = BrMapMode.PerRound;
+            defaultMode = BrCatalogBrConfigHelper.ReadDefaultMapMode(catalogBrConfig) ?? BrMapMode.PerRound;
             if (TryParseJsonElement(tournamentSettings, out var settingsRoot))
             {
                 var brSettings = ResolveBrSettingsRoot(settingsRoot);
@@ -335,10 +335,10 @@ public static class BattleRoyaleConfigResolver
     }
 
     private static BrScoringSettings ResolveTournamentScoring(
-        string? gameName,
         object? tournamentSettings,
         string? fallbackPresetKey,
-        BrScoringSettings fallback)
+        BrScoringSettings fallback,
+        object? catalogBrConfig)
     {
         try
         {
@@ -404,34 +404,10 @@ public static class BattleRoyaleConfigResolver
         };
     }
 
-    private static string? ResolveDefaultBrPresetKey(string? gameName)
-    {
-        return gameName?.Trim().ToLowerInvariant() switch
-        {
-            "fortnite" => "fncs",
-            "apex legends" => "algs",
-            "pubg" => "pcs",
-            _ => null,
-        };
-    }
+    private static BrMapMode? ParseMapMode(string? rawMode) =>
+        ParseMapModePublic(rawMode);
 
-    private static IReadOnlyList<string> ResolveCatalogMapPool(string? gameName)
-    {
-        return gameName?.Trim().ToLowerInvariant() switch
-        {
-            "apex legends" =>
-            [
-                "Kings Canyon", "World's Edge", "Olympus", "Storm Point", "Broken Moon", "E-District",
-            ],
-            "pubg" =>
-            [
-                "Erangel", "Miramar", "Sanhok", "Karakin", "Paramo", "Taego", "Deston", "Vikendi", "Rondo",
-            ],
-            _ => [],
-        };
-    }
-
-    private static BrMapMode? ParseMapMode(string? rawMode)
+    public static BrMapMode? ParseMapModePublic(string? rawMode)
     {
         return rawMode?.Trim().ToLowerInvariant() switch
         {

@@ -552,7 +552,7 @@ public sealed class GameCatalogService(
             game.GameType,
             game.DefaultModeKey,
             ParseJson(game.FeaturesJson),
-            ParseJson(game.BrConfigJson),
+            BrCatalogBrConfigHelper.EnrichBrConfigForApi(game.BrConfigJson),
             modes,
             structures);
     }

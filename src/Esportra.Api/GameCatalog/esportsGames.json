@@ -382,7 +382,12 @@
             "killCap": null
           }
         },
-        "defaultPreset": "fncs"
+        "defaultPreset": "fncs",
+        "defaultMapMode": "none",
+        "maps": {
+          "hasMaps": false,
+          "pool": []
+        }
       },
       "modes": [
         {
@@ -489,7 +494,19 @@
             "killCap": 6
           }
         },
-        "defaultPreset": "algs"
+        "defaultPreset": "algs",
+        "defaultMapMode": "rotation",
+        "maps": {
+          "hasMaps": true,
+          "pool": [
+            "Kings Canyon",
+            "World's Edge",
+            "Olympus",
+            "Storm Point",
+            "Broken Moon",
+            "E-District"
+          ]
+        }
       },
       "modes": [
         {
@@ -575,7 +592,22 @@
             "killCap": null
           }
         },
-        "defaultPreset": "pcs"
+        "defaultPreset": "pcs",
+        "defaultMapMode": "rotation",
+        "maps": {
+          "hasMaps": true,
+          "pool": [
+            "Erangel",
+            "Miramar",
+            "Sanhok",
+            "Karakin",
+            "Paramo",
+            "Taego",
+            "Deston",
+            "Vikendi",
+            "Rondo"
+          ]
+        }
       },
       "modes": [
         {

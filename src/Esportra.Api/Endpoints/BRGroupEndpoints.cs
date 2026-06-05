@@ -801,6 +801,7 @@ public static class BRGroupEndpoints
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   catalog,
             IHubContext<BRHub>   brHub,
             CancellationToken    ct) =>
         {
@@ -887,14 +888,14 @@ public static class BRGroupEndpoints
                     tx);
 
                 var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_rounds", "map", tx);
+                var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
                 string? persistedMap = null;
                 if (roundsHasMapColumn && mapValue is not null)
                 {
-                    var gameName = stageContext?.game as string;
                     var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
-                        gameName,
                         stageContext?.settings,
-                        stageContext?.stage_config);
+                        stageContext?.stage_config,
+                        catalogBrConfig);
                     if (!BattleRoyaleConfigResolver.ValidateMapInPool(mapConfig, mapValue, out string? mapError))
                     {
                         tx.Rollback();
@@ -905,11 +906,10 @@ public static class BRGroupEndpoints
                 }
                 else if (roundsHasMapColumn)
                 {
-                    var gameName = stageContext?.game as string;
                     var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
-                        gameName,
                         stageContext?.settings,
-                        stageContext?.stage_config);
+                        stageContext?.stage_config,
+                        catalogBrConfig);
                     persistedMap = BattleRoyaleConfigResolver.ResolveMapForRound(mapConfig, nextRoundNumber, null);
                 }
 
@@ -971,6 +971,7 @@ public static class BRGroupEndpoints
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   catalog,
             IHubContext<NotificationHub> notifHub,
             IHubContext<BRHub>   brHub,
             CancellationToken    ct) =>
@@ -1063,10 +1064,11 @@ public static class BRGroupEndpoints
                             new { stageId },
                             tx);
 
+                        var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
                         var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
-                            stageContext?.game as string,
                             stageContext?.settings,
-                            stageContext?.stage_config);
+                            stageContext?.stage_config,
+                            catalogBrConfig);
 
                         if (finalMap is not null)
                         {
@@ -1194,10 +1196,11 @@ public static class BRGroupEndpoints
                                 new { stageId },
                                 tx);
 
+                            var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
                             var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
-                                stageContext?.game as string,
                                 stageContext?.settings,
-                                stageContext?.stage_config);
+                                stageContext?.stage_config,
+                                catalogBrConfig);
 
                             var effectiveMap = BattleRoyaleConfigResolver.ResolveMapForRound(
                                 mapConfig,
@@ -1994,6 +1997,7 @@ public static class BRGroupEndpoints
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   catalog,
             IHubContext<BRHub>   brHub,
             CancellationToken    ct) =>
         {
@@ -2118,7 +2122,8 @@ public static class BRGroupEndpoints
                 entity => entity.EntityId,
                 entity => (entity.TeamId, entity.ParticipantId));
 
-            var scoring = BattleRoyaleConfigResolver.ResolveScoring(gameName, rawSettings, stageConfig);
+            var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, gameName, ct);
+            var scoring = BattleRoyaleConfigResolver.ResolveScoring(rawSettings, stageConfig, catalogBrConfig);
 
             var parsedResults = new List<(Guid EntityId, int Placement, int Kills)>();
             var seenEntityIds = new HashSet<Guid>();
@@ -3014,6 +3019,18 @@ public static class BRGroupEndpoints
             tx);
 
         return new BrEntityAccess(teamId, null);
+    }
+
+    private static async Task<object?> LoadCatalogBrConfigAsync(
+        GameCatalogService catalog,
+        string? gameName,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(gameName))
+            return null;
+
+        var game = await catalog.GetGameAsync(gameName.Trim(), ct);
+        return game?.BrConfig;
     }
 
     private static bool TryNormalizeEvidenceImageUrl(
