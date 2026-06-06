@@ -6,6 +6,7 @@ using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Npgsql;
@@ -1743,6 +1744,7 @@ public static class BRGroupEndpoints
             IDbConnectionFactory db,
             IConfiguration       config,
             IHubContext<BRHub>   brHub,
+            IWebHostEnvironment  env,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1812,35 +1814,29 @@ public static class BRGroupEndpoints
                 return Results.Forbid();
 
             // Check if evidence has already been submitted — once submitted, it is locked.
-            bool alreadyExists;
-            if (isSolo)
-            {
-                alreadyExists = await conn.ExecuteScalarAsync<bool>(
+            var alreadyExists = participantId is not null
+                ? await conn.ExecuteScalarAsync<bool>(
                     "SELECT EXISTS (SELECT 1 FROM br_round_evidence WHERE round_id = @roundId AND participant_id = @participantId)",
-                    new { roundId, participantId });
-            }
-            else
-            {
-                alreadyExists = await conn.ExecuteScalarAsync<bool>(
+                    new { roundId, participantId })
+                : await conn.ExecuteScalarAsync<bool>(
                     "SELECT EXISTS (SELECT 1 FROM br_round_evidence WHERE round_id = @roundId AND team_id = @teamId)",
                     new { roundId, teamId });
-            }
 
             if (alreadyExists)
                 return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
 
             try
             {
-                if (isSolo)
+                if (participantId is not null)
                 {
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO br_round_evidence (
-                            round_id, participant_id, image_url, submitted_by, submitted_at,
+                            round_id, team_id, participant_id, image_url, submitted_by, submitted_at,
                             placement, kills, reviewed, reviewed_at, reviewed_by
                         )
                         VALUES (
-                            @roundId, @participantId, @imageUrl, @submittedBy, NOW(),
+                            @roundId, NULL, @participantId, @imageUrl, @submittedBy, NOW(),
                             @placement, @kills, FALSE, NULL, NULL
                         )
                         """,
@@ -1859,11 +1855,11 @@ public static class BRGroupEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO br_round_evidence (
-                            round_id, team_id, image_url, submitted_by, submitted_at,
+                            round_id, team_id, participant_id, image_url, submitted_by, submitted_at,
                             placement, kills, reviewed, reviewed_at, reviewed_by
                         )
                         VALUES (
-                            @roundId, @teamId, @imageUrl, @submittedBy, NOW(),
+                            @roundId, @teamId, NULL, @imageUrl, @submittedBy, NOW(),
                             @placement, @kills, FALSE, NULL, NULL
                         )
                         """,
@@ -1883,6 +1879,40 @@ public static class BRGroupEndpoints
                                                    || ex.ConstraintName == "uq_br_round_evidence_participant"))
             {
                 return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.ForeignKeyViolation
+                                               || ex.SqlState == PostgresErrorCodes.CheckViolation)
+            {
+                return Results.BadRequest(new { error = "Evidence could not be linked to your BR roster. Refresh the page and try again." });
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UndefinedTable
+                                               || ex.SqlState == PostgresErrorCodes.UndefinedColumn)
+            {
+                Console.Error.WriteLine(
+                    $"[BRGroupEndpoints] BR evidence schema missing for round {roundId}. " +
+                    $"Postgres {ex.SqlState} {ex.MessageText}");
+
+                return Results.Json(
+                    new { error = "BR evidence storage is not available yet. Try again shortly or contact support." },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+            catch (PostgresException ex)
+            {
+                Console.Error.WriteLine(
+                    $"[BRGroupEndpoints] Failed to submit evidence for round {roundId}. " +
+                    $"Postgres {ex.SqlState} {ex.ConstraintName} {ex.TableName}.{ex.ColumnName} :: {ex.MessageText} :: {ex.Detail}");
+
+                if (!env.IsProduction())
+                {
+                    return Results.Json(new
+                    {
+                        error = "BR evidence submit failed.",
+                        detail = ex.MessageText,
+                        sqlState = ex.SqlState,
+                    }, statusCode: StatusCodes.Status500InternalServerError);
+                }
+
+                throw;
             }
 
             var entityId = teamId ?? participantId!.Value;
@@ -2997,7 +3027,27 @@ public static class BRGroupEndpoints
                 new { roundId, tournamentId, userId },
                 tx);
 
-            return new BrEntityAccess(null, participantId);
+            if (participantId is not null)
+                return new BrEntityAccess(null, participantId);
+
+            var soloTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT bgt.team_id
+                FROM br_rounds r
+                JOIN br_groups g ON g.id = r.group_id
+                JOIN br_group_teams bgt ON bgt.group_id = g.id
+                JOIN tournament_participants tp ON tp.team_id = bgt.team_id
+                WHERE r.id = @roundId
+                  AND tp.tournament_id = @tournamentId
+                  AND tp.user_id = @userId
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                  AND bgt.team_id IS NOT NULL
+                LIMIT 1
+                """,
+                new { roundId, tournamentId, userId },
+                tx);
+
+            return new BrEntityAccess(soloTeamId, null);
         }
 
         var teamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -3018,7 +3068,26 @@ public static class BRGroupEndpoints
             new { roundId, tournamentId, userId },
             tx);
 
-        return new BrEntityAccess(teamId, null);
+        if (teamId is not null)
+            return new BrEntityAccess(teamId, null);
+
+        var teamParticipantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT tp.id
+            FROM br_rounds r
+            JOIN br_groups g ON g.id = r.group_id
+            JOIN br_group_teams bgt ON bgt.group_id = g.id
+            JOIN tournament_participants tp ON tp.id = bgt.participant_id
+            WHERE r.id = @roundId
+              AND tp.tournament_id = @tournamentId
+              AND tp.user_id = @userId
+              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+            LIMIT 1
+            """,
+            new { roundId, tournamentId, userId },
+            tx);
+
+        return new BrEntityAccess(null, teamParticipantId);
     }
 
     private static async Task<object?> LoadCatalogBrConfigAsync(
