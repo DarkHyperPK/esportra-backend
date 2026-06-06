@@ -1,3 +1,8 @@
+-- Ensure picked-map JSONB columns exist (replay baseline stubs match_map_vetos minimally).
+ALTER TABLE public.match_map_vetos
+  ADD COLUMN IF NOT EXISTS team1_picked_maps jsonb DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS team2_picked_maps jsonb DEFAULT '[]'::jsonb;
+
 -- Backfill NULL picked-map JSONB columns so map pick appends do not violate NOT NULL.
 UPDATE public.match_map_vetos
    SET team1_picked_maps = '[]'::jsonb
