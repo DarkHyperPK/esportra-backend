@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 135,
+  "postBaselineScriptCount": 136,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -10,8 +10,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -27,8 +29,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -52,7 +56,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -65,7 +71,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -78,8 +86,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -98,8 +108,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -112,8 +124,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -129,11 +143,25 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
+      ]
+    },
+    "match_map_veto_actions": {
+      "firstSeenIn": "20260606120000_restore_r6s_maps_and_veto_history.sql",
+      "operations": [
+        "alter",
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "map_name"
       ]
     },
     "on": {
@@ -143,7 +171,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -156,8 +186,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -174,8 +206,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -189,7 +223,10 @@
         "references"
       ],
       "columnsMentioned": [],
-      "onConflictColumns": []
+      "onConflictColumns": [
+        "game",
+        "map_name"
+      ]
     },
     "profiles": {
       "firstSeenIn": "20260323000000_cleanup_profiles_unused_columns.sql",
@@ -202,8 +239,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -227,6 +266,8 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -239,8 +280,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -255,8 +298,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -273,8 +318,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -290,8 +337,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -307,8 +356,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -322,8 +373,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -337,7 +390,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -350,8 +405,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -366,8 +423,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -386,8 +445,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -400,7 +461,10 @@
         "references"
       ],
       "columnsMentioned": [],
-      "onConflictColumns": []
+      "onConflictColumns": [
+        "game",
+        "map_name"
+      ]
     },
     "tournaments": {
       "firstSeenIn": "20260318000000_standardize_tournament_status_enum.sql",
@@ -413,8 +477,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "name",
         "permission",
         "role",
@@ -430,8 +496,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -443,7 +511,10 @@
         "update"
       ],
       "columnsMentioned": [],
-      "onConflictColumns": []
+      "onConflictColumns": [
+        "game",
+        "map_name"
+      ]
     },
     "venue_bookings": {
       "firstSeenIn": "20260403210000_add_booking_code_columns.sql",
@@ -455,7 +526,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -471,7 +544,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
@@ -484,8 +559,10 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
+        "game",
         "id",
         "key",
+        "map_name",
         "permission",
         "role",
         "venue_id"
