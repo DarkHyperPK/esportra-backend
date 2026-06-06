@@ -88,6 +88,72 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             new { tournamentId, userId });
     }
 
+    // ── Veto action history ────────────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<VetoActionHistory>> GetHistoryAsync(
+        Guid matchId, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        var rows = await conn.QueryAsync(@"
+            SELECT id, veto_id, match_id, tournament_id, team_id, team_side,
+                   action_type, map_id::text AS map_id, action_number, side,
+                   created_by, created_at::text AS created_at
+            FROM public.match_map_veto_actions
+            WHERE match_id = @matchId
+            ORDER BY action_number ASC",
+            new { matchId });
+
+        return rows.Select(r => new VetoActionHistory(
+            (Guid)r.id,
+            (Guid)r.veto_id,
+            (Guid)r.match_id,
+            (Guid?)r.tournament_id,
+            (Guid?)r.team_id,
+            (string?)r.team_side,
+            (string)r.action_type,
+            (string?)r.map_id,
+            (int)r.action_number,
+            (string?)r.side,
+            (Guid?)r.created_by,
+            (string?)r.created_at)).ToList();
+    }
+
+    /// <summary>Enriched veto history with team and map metadata for UI display.</summary>
+    public async Task<IReadOnlyList<VetoHistoryEntry>> GetEnrichedHistoryAsync(
+        Guid matchId, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        var rows = await conn.QueryAsync(@"
+            SELECT a.action_number,
+                   COALESCE(a.team_side, 'team1') AS team_side,
+                   a.team_id,
+                   t.name AS team_name,
+                   a.action_type AS action,
+                   a.map_id::text AS map_id,
+                   gm.map_name,
+                   gm.map_image_url,
+                   a.side,
+                   a.created_at::text AS created_at
+            FROM public.match_map_veto_actions a
+            LEFT JOIN public.teams t ON t.id = a.team_id
+            LEFT JOIN public.game_maps gm ON gm.id = a.map_id
+            WHERE a.match_id = @matchId
+            ORDER BY a.action_number ASC",
+            new { matchId });
+
+        return rows.Select(r => new VetoHistoryEntry(
+            (int)r.action_number,
+            (string)r.team_side,
+            (Guid?)r.team_id,
+            (string?)r.team_name,
+            (string)r.action,
+            (string)r.map_id,
+            (string?)r.map_name,
+            (string?)r.map_image_url,
+            (string?)r.side,
+            (string?)r.created_at)).ToList();
+    }
+
     // ── Initialize veto ──────────────────────────────────────────────────────
 
     public async Task<MatchMapVeto> InitAsync(
@@ -99,7 +165,25 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         logger.LogInformation("InitAsync: matchId={MatchId}, tournamentId={TournamentId}, bestOf={BestOf}, team1={T1}, team2={T2}",
             matchId, tournamentId, bestOf, team1Id, team2Id);
 
-        var firstStep = VetoSequences.GetStep(bestOf, 1)
+        using var conn = db.CreateConnection();
+
+        var mapPoolIds = (await conn.QueryAsync<string>(@"
+            SELECT tmp.map_id::text
+            FROM public.tournament_map_pools tmp
+            JOIN public.game_maps gm ON gm.id = tmp.map_id
+            WHERE tmp.tournament_id = @tournamentId
+            ORDER BY gm.map_name ASC",
+            new { tournamentId })).ToArray();
+
+        var gameConfig = VetoSequences.GetGameConfig(game);
+        if (mapPoolIds.Length != gameConfig.MapPoolSize)
+        {
+            throw new InvalidOperationException(
+                $"INVALID_POOL_SIZE: expected {gameConfig.MapPoolSize} maps for {game}, got {mapPoolIds.Length}");
+        }
+
+        var poolSize = mapPoolIds.Length;
+        var firstStep = VetoSequences.GetStep(bestOf, 1, game, poolSize)
             ?? throw new InvalidOperationException("No veto sequence for bestOf=" + bestOf);
 
         Guid? firstTeamId = firstStep.Team == "T1" ? team1Id : team2Id;
@@ -108,8 +192,6 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         var team1Token = GenerateCryptoToken();
         var team2Token = GenerateCryptoToken();
 
-        using var conn = db.CreateConnection();
-
         var id = Guid.NewGuid();
         await conn.ExecuteAsync(@"
             INSERT INTO public.match_map_vetos
@@ -117,14 +199,14 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                  current_team_id, current_action, current_action_number,
                  team1_banned_maps, team2_banned_maps,
                  team1_picked_maps, team2_picked_maps,
-                 started_at, game, team1_link_token, team2_link_token,
+                 selected_map_pool, started_at, game, team1_link_token, team2_link_token,
                  turn_started_at)
             VALUES
                 (@id, @match_id, @tournament_id, @team1_id, @team2_id, @best_of, 'in_progress',
                  @current_team_id, @current_action, @action_number,
                  '{}', '{}',
                  '[]'::jsonb, '[]'::jsonb,
-                 now(), @game, @team1_token, @team2_token, now())
+                 @selected_map_pool, now(), @game, @team1_token, @team2_token, now())
             ON CONFLICT (match_id) DO UPDATE SET
                 best_of = @best_of,
                 status = 'in_progress',
@@ -136,26 +218,33 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                 team1_picked_maps = '[]'::jsonb,
                 team2_picked_maps = '[]'::jsonb,
                 selected_map_id = null,
+                selected_map_pool = @selected_map_pool,
                 completed_at = null,
                 started_at = now(),
                 turn_started_at = now(),
+                game = @game,
                 team1_link_token = COALESCE(match_map_vetos.team1_link_token, @team1_token),
                 team2_link_token = COALESCE(match_map_vetos.team2_link_token, @team2_token)",
             new
             {
                 id,
-                match_id       = matchId,
-                tournament_id  = tournamentId,
-                team1_id       = team1Id,
-                team2_id       = team2Id,
-                best_of        = bestOf,
-                current_team_id = firstTeamId,
-                current_action = firstStep.Action,
-                action_number  = firstStep.ActionNumber,
+                match_id          = matchId,
+                tournament_id     = tournamentId,
+                team1_id          = team1Id,
+                team2_id          = team2Id,
+                best_of           = bestOf,
+                current_team_id   = firstTeamId,
+                current_action    = firstStep.Action,
+                action_number     = firstStep.ActionNumber,
+                selected_map_pool = mapPoolIds,
                 game,
-                team1_token    = team1Token,
-                team2_token    = team2Token,
+                team1_token       = team1Token,
+                team2_token       = team2Token,
             });
+
+        await conn.ExecuteAsync(
+            "DELETE FROM public.match_map_veto_actions WHERE match_id = @matchId",
+            new { matchId });
 
         return (await GetAsync(matchId, ct))!;
     }
@@ -177,10 +266,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         bool isTeam1 = veto.CurrentTeamId == veto.Team1Id;
         string col   = isTeam1 ? "team1_banned_maps" : "team2_banned_maps";
 
-        var next = VetoEngine.NextAction(veto.BestOf, veto.CurrentActionNumber);
+        var next = NextActionFor(veto);
 
         // D4: Optimistic lock — only update if action_number hasn't changed
-        await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null);
+        await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, userId, "ban");
 
         return (await GetAsync(matchId, ct))!;
     }
@@ -199,8 +288,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         bool isTeam1 = veto.CurrentTeamId == veto.Team1Id;
         string col   = isTeam1 ? "team1_picked_maps" : "team2_picked_maps";
 
-        var next = VetoEngine.NextAction(veto.BestOf, veto.CurrentActionNumber);
-        await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, isPick: true);
+        var next = NextActionFor(veto);
+        await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, userId, "pick", isPick: true);
 
         return (await GetAsync(matchId, ct))!;
     }
@@ -243,7 +332,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         // append it to the current team's picks so the side is stored.
         // Only do this for decider maps — not for regular side picks where
         // the map belongs to the opposing team.
-        var step = VetoSequences.GetStep(veto.BestOf, veto.CurrentActionNumber);
+        var step = CurrentStepFor(veto);
         if (step?.IsDecider == true)
         {
             var newEntry = System.Text.Json.JsonSerializer.Serialize(
@@ -270,7 +359,9 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             await conn.ExecuteAsync(appendSql, new { matchId, mapId, entry = newEntry });
         }
 
-        var next = VetoEngine.NextAction(veto.BestOf, veto.CurrentActionNumber);
+        await RecordHistoryAsync(conn, veto, mapId, userId, "pick_side", side);
+
+        var next = NextActionFor(veto);
         await SetNextActionAsync(matchId, veto, next);
 
         return (await GetAsync(matchId, ct))!;
@@ -285,6 +376,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         // Delete game rows created from the previous veto so stale data doesn't survive
         await conn.ExecuteAsync(
             "DELETE FROM public.brkt_match_games WHERE match_id = @matchId",
+            new { matchId });
+
+        await conn.ExecuteAsync(
+            "DELETE FROM public.match_map_veto_actions WHERE match_id = @matchId",
             new { matchId });
 
         await conn.ExecuteAsync(@"
@@ -359,6 +454,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         Guid matchId, MatchMapVeto veto,
         (string? Action, string? TeamSide)? next,
         string arrayCol, string mapId, string? side,
+        Guid userId, string actionType,
         bool isPick = false)
     {
         using var conn = db.CreateConnection();
@@ -392,7 +488,64 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         if (updated == 0)
             throw new InvalidOperationException("CONFLICT: veto state changed (optimistic lock)");
 
+        await RecordHistoryAsync(conn, veto, mapId, userId, actionType, side);
         await SetNextActionAsync(matchId, veto, next);
+    }
+
+    private static int PoolSizeFor(MatchMapVeto veto)
+    {
+        if (veto.SelectedMapPool.Length > 0)
+            return veto.SelectedMapPool.Length;
+        return VetoSequences.GetGameConfig(veto.Game ?? "valorant").MapPoolSize;
+    }
+
+    private static (string? Action, string? TeamSide)? NextActionFor(MatchMapVeto veto)
+        => VetoEngine.NextAction(
+            veto.BestOf,
+            veto.CurrentActionNumber,
+            veto.Game ?? "valorant",
+            PoolSizeFor(veto));
+
+    private static VetoStep? CurrentStepFor(MatchMapVeto veto)
+        => VetoSequences.GetStep(
+            veto.BestOf,
+            veto.CurrentActionNumber,
+            veto.Game ?? "valorant",
+            PoolSizeFor(veto));
+
+    private static async Task RecordHistoryAsync(
+        System.Data.IDbConnection conn,
+        MatchMapVeto veto,
+        string mapId,
+        Guid userId,
+        string actionType,
+        string? side)
+    {
+        var isTeam1 = veto.CurrentTeamId == veto.Team1Id;
+        var teamSide = isTeam1 ? "team1" : "team2";
+        var teamId = isTeam1 ? veto.Team1Id : veto.Team2Id;
+
+        await conn.ExecuteAsync(@"
+            INSERT INTO public.match_map_veto_actions
+                (veto_id, match_id, tournament_id, team_id, team_side,
+                 action_type, map_id, action_number, side, created_by, created_at)
+            VALUES
+                (@vetoId, @matchId, @tournamentId, @teamId, @teamSide,
+                 @actionType, @mapId::uuid, @actionNumber, @side, @createdBy, now())
+            ON CONFLICT (veto_id, action_number) DO NOTHING",
+            new
+            {
+                vetoId        = veto.Id,
+                matchId       = veto.MatchId,
+                tournamentId  = veto.TournamentId,
+                teamId,
+                teamSide,
+                actionType,
+                mapId,
+                actionNumber  = veto.CurrentActionNumber,
+                side,
+                createdBy     = userId,
+            });
     }
 
     private async Task SetNextActionAsync(

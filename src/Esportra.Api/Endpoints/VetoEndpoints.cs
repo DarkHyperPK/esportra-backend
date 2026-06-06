@@ -33,6 +33,16 @@ public static class VetoEndpoints
             return state is null ? Results.NotFound() : Results.Ok(state);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/veto/{matchId}/history ────────────────────────────────────
+        app.MapGet("/api/veto/{matchId}/history", async (
+            Guid            matchId,
+            VetoDbService   veto,
+            CancellationToken ct) =>
+        {
+            var history = await veto.GetEnrichedHistoryAsync(matchId, ct);
+            return Results.Ok(history);
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/veto/{matchId}/init ────────────────────────────────────
         app.MapPost("/api/veto/{matchId}/init", async (
             Guid                      matchId,
@@ -109,6 +119,7 @@ public static class VetoEndpoints
                 var result = await veto.BanMapAsync(matchId, req.MapId, userCtx.UserIdGuid, ct);
                 await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
+                await BroadcastHistoryAsync(hub, veto, matchId, ct);
                 return Results.Ok(result);
             }
             catch (UnauthorizedAccessException)
@@ -146,6 +157,7 @@ public static class VetoEndpoints
                 var result = await veto.PickMapAsync(matchId, req.MapId, userCtx.UserIdGuid, ct);
                 await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
+                await BroadcastHistoryAsync(hub, veto, matchId, ct);
 
                 if (result.Status == "completed")
                 {
@@ -193,6 +205,7 @@ public static class VetoEndpoints
                 var result = await veto.PickSideAsync(matchId, req.MapId, req.Side, userCtx.UserIdGuid, ct);
                 await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.VetoAction, result, ct);
+                await BroadcastHistoryAsync(hub, veto, matchId, ct);
 
                 if (result.Status == "completed")
                 {
@@ -372,6 +385,17 @@ public static class VetoEndpoints
                 tournament = new { game = row.tournament_game },
             });
         });
+    }
+
+    private static async Task BroadcastHistoryAsync(
+        IHubContext<VetoHub> hub,
+        VetoDbService veto,
+        Guid matchId,
+        CancellationToken ct)
+    {
+        var history = await veto.GetEnrichedHistoryAsync(matchId, ct);
+        await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
+            .SendAsync(VetoHubEvents.VetoHistoryUpdated, history, ct);
     }
 }
 

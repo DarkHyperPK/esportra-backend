@@ -87,14 +87,19 @@ public static class VetoEngine
     // ── Next action resolution ────────────────────────────────────────────────
 
     /// <summary>
-    /// Given the current action number and bestOf, returns the next action.
+    /// Given the current action number, bestOf, game, and pool size, returns the next action.
     /// Returns null when the veto sequence is complete.
     /// </summary>
-    public static (string? Action, string? TeamSide)? NextAction(int bestOf, int currentActionNumber)
+    public static (string? Action, string? TeamSide)? NextAction(
+        int bestOf, int currentActionNumber, string game, int poolSize)
     {
-        var next = VetoSequences.GetStep(bestOf, currentActionNumber + 1);
+        var next = VetoSequences.GetStep(bestOf, currentActionNumber + 1, game, poolSize);
         return next is null ? null : (next.Action, next.Team);
     }
+
+    /// <summary>Backward-compatible default: Valorant pool of 7.</summary>
+    public static (string? Action, string? TeamSide)? NextAction(int bestOf, int currentActionNumber)
+        => NextAction(bestOf, currentActionNumber, "valorant", 7);
 
     /// <summary>Returns the team ID that should act next.</summary>
     public static string? ResolveCurrentTeamId(string teamSide, string? team1Id, string? team2Id)

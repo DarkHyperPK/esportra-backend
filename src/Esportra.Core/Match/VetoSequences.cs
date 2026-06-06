@@ -1,62 +1,114 @@
 namespace Esportra.Core.Match;
 
 /// <summary>
-/// Defines the veto step sequences for BO1, BO3, and BO5.
-/// Both Valorant and CS2 share the same sequences (only map pool differs).
+/// Dynamic veto step sequences derived from pool size, best-of, and game BO1 style.
+/// Mirrors frontend <c>sequences.ts</c>.
 /// </summary>
 public static class VetoSequences
 {
-    private static readonly VetoStep[] Bo1 =
-    [
-        new(1, "ban",       "T1"),
-        new(2, "ban",       "T2"),
-        new(3, "ban",       "T1"),
-        new(4, "ban",       "T2"),
-        new(5, "ban",       "T1"),
-        new(6, "pick",      "T1"),
-        new(7, "pick_side", "T2"),
-    ];
+    public enum Bo1Style { PureBan, BanPick }
 
-    private static readonly VetoStep[] Bo3 =
-    [
-        new(1, "ban",       "T1"),
-        new(2, "ban",       "T2"),
-        new(3, "pick",      "T1"),
-        new(4, "pick_side", "T2"),
-        new(5, "pick",      "T2"),
-        new(6, "pick_side", "T1"),
-        new(7, "ban",       "T2"),
-        new(8, "ban",       "T1"),
-        new(9, "pick_side", "T1", IsDecider: true),
-    ];
+    public sealed record VetoGameConfig(string Game, int MapPoolSize, Bo1Style Bo1Style);
 
-    private static readonly VetoStep[] Bo5 =
-    [
-        new(1,  "ban",       "T1"),
-        new(2,  "ban",       "T2"),
-        new(3,  "pick",      "T1"),
-        new(4,  "pick_side", "T2"),
-        new(5,  "pick",      "T2"),
-        new(6,  "pick_side", "T1"),
-        new(7,  "pick",      "T1"),
-        new(8,  "pick_side", "T2"),
-        new(9,  "pick",      "T2"),
-        new(10, "pick_side", "T1"),
-        new(11, "pick_side", "T1", IsDecider: true),
-    ];
+    private static readonly VetoGameConfig ValorantConfig = new("valorant", 7, Bo1Style.BanPick);
+    private static readonly VetoGameConfig Cs2Config       = new("cs2", 7, Bo1Style.PureBan);
+    private static readonly VetoGameConfig R6Config        = new("r6s", 9, Bo1Style.PureBan);
 
-    public static IReadOnlyList<VetoStep> GetSequence(int bestOf) => bestOf switch
+    /// <summary>Returns game-specific pool size and BO1 style.</summary>
+    public static VetoGameConfig GetGameConfig(string game)
     {
-        3 => Bo3,
-        5 => Bo5,
-        _ => Bo1,
-    };
+        var key = NormalizeGameKey(game);
+        return key switch
+        {
+            "cs2" or "counter-strike 2" or "counter strike 2" => Cs2Config,
+            "r6" or "r6s" or "rainbow six siege" or "rainbow six" or "siege" => R6Config,
+            _ => ValorantConfig,
+        };
+    }
 
-    /// <summary>Returns the step for the given 1-based action number.</summary>
+    /// <summary>Generate sequence for the given best-of, game, and pool size.</summary>
+    public static IReadOnlyList<VetoStep> GetSequence(int bestOf, string game, int poolSize)
+    {
+        var config = GetGameConfig(game);
+        return GenerateSequence(poolSize, bestOf, config.Bo1Style);
+    }
+
+    /// <summary>Backward-compatible default: Valorant pool of 7.</summary>
+    public static IReadOnlyList<VetoStep> GetSequence(int bestOf)
+        => GetSequence(bestOf, "valorant", 7);
+
+    public static VetoStep? GetStep(int bestOf, int actionNumber, string game, int poolSize)
+        => GetSequence(bestOf, game, poolSize).FirstOrDefault(s => s.ActionNumber == actionNumber);
+
     public static VetoStep? GetStep(int bestOf, int actionNumber)
-        => GetSequence(bestOf).FirstOrDefault(s => s.ActionNumber == actionNumber);
+        => GetStep(bestOf, actionNumber, "valorant", 7);
 
-    /// <summary>Returns which team should act at the given action number.</summary>
+    public static string GetTeamSideForAction(int bestOf, int actionNumber, string game, int poolSize)
+        => GetStep(bestOf, actionNumber, game, poolSize)?.Team ?? "T1";
+
     public static string GetTeamSideForAction(int bestOf, int actionNumber)
-        => GetStep(bestOf, actionNumber)?.Team ?? "T1";
+        => GetTeamSideForAction(bestOf, actionNumber, "valorant", 7);
+
+    // ── Generators (mirror frontend sequences.ts) ────────────────────────────
+
+    internal static IReadOnlyList<VetoStep> GenerateSequence(int poolSize, int bestOf, Bo1Style bo1Style)
+    {
+        if (bestOf == 1) return GenerateBo1(poolSize, bo1Style);
+        if (bestOf is 3 or 5) return GenerateBoX(poolSize, bestOf);
+        return GenerateBo1(poolSize, bo1Style);
+    }
+
+    private static List<VetoStep> GenerateBo1(int poolSize, Bo1Style style)
+    {
+        var steps = new List<VetoStep>();
+        var n = 1;
+
+        if (style == Bo1Style.PureBan)
+        {
+            for (var i = 0; i < poolSize - 1; i++)
+                steps.Add(new(n++, "ban", i % 2 == 0 ? "T1" : "T2"));
+            steps.Add(new(n, "pick_side", "T1", IsDecider: true));
+        }
+        else
+        {
+            for (var i = 0; i < poolSize - 2; i++)
+                steps.Add(new(n++, "ban", i % 2 == 0 ? "T1" : "T2"));
+            steps.Add(new(n++, "pick", "T1"));
+            steps.Add(new(n, "pick_side", "T2"));
+        }
+
+        return steps;
+    }
+
+    private static List<VetoStep> GenerateBoX(int poolSize, int bestOf)
+    {
+        var steps = new List<VetoStep>();
+        var n = 1;
+        var explicitPicks = bestOf - 1;
+        var remainingBans = poolSize - bestOf - 2;
+
+        if (remainingBans < 0)
+            throw new InvalidOperationException(
+                $"Map pool ({poolSize}) too small for BO{bestOf}. Need at least {bestOf + 2} maps.");
+
+        steps.Add(new(n++, "ban", "T1"));
+        steps.Add(new(n++, "ban", "T2"));
+
+        for (var i = 0; i < explicitPicks; i++)
+        {
+            var picker = i % 2 == 0 ? "T1" : "T2";
+            var sidePicker = picker == "T1" ? "T2" : "T1";
+            steps.Add(new(n++, "pick", picker));
+            steps.Add(new(n++, "pick_side", sidePicker));
+        }
+
+        for (var i = 0; i < remainingBans; i++)
+            steps.Add(new(n++, "ban", i % 2 == 0 ? "T1" : "T2"));
+
+        steps.Add(new(n, "pick_side", "T1", IsDecider: true));
+        return steps;
+    }
+
+    private static string NormalizeGameKey(string game)
+        => game.Trim().ToLowerInvariant();
 }

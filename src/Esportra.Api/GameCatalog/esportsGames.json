@@ -175,6 +175,78 @@
       }
     },
     {
+      "name": "Rainbow Six Siege",
+      "slug": "rainbow-six-siege",
+      "category": "5v5 Tactical FPS",
+      "type": "bracket",
+      "formats": [
+        {
+          "name": "5v5",
+          "value": "5v5",
+          "teamSize": 5
+        }
+      ],
+      "defaultFormat": "5v5",
+      "logo": "/games/r6s-logo.png",
+      "features": {
+        "mapVeto": true,
+        "mapPool": true,
+        "mapPoolSize": 9,
+        "assistedReporting": false,
+        "seriesFormats": [
+          "bo1",
+          "bo3",
+          "bo5"
+        ],
+        "hasSidePick": true,
+        "isTeamGame": true,
+        "isBattleRoyale": false
+      },
+      "modes": [
+        {
+          "name": "5v5",
+          "key": "5v5",
+          "value": "5v5",
+          "teamSize": 5,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 7,
+          "aliases": [
+            "5v5"
+          ]
+        }
+      ],
+      "defaultMode": "5v5",
+      "aliases": [
+        "r6",
+        "r6s",
+        "rainbow six",
+        "rainbow six siege",
+        "siege"
+      ],
+      "tournamentCapabilities": {
+        "defaultStructure": "single_elimination",
+        "supportedStructures": [
+          {
+            "key": "single_elimination",
+            "name": "Single Elimination"
+          },
+          {
+            "key": "double_elimination",
+            "name": "Double Elimination"
+          },
+          {
+            "key": "swiss",
+            "name": "Swiss"
+          },
+          {
+            "key": "round_robin",
+            "name": "Round Robin"
+          }
+        ]
+      }
+    },
+    {
       "name": "League of Legends",
       "slug": "lol",
       "category": "5v5 MOBA",
@@ -909,6 +981,6 @@
       }
     }
   ],
-  "catalogVersion": "2026.06.19-staging-tournament-catalog",
+  "catalogVersion": "2026.06.07-r6s-veto-catalog",
   "schemaVersion": 1
 }

@@ -64,4 +64,7 @@ public static class VetoHubEvents
 
     /// <summary>Veto was reset by organizer.</summary>
     public const string VetoReset = "VetoReset";
+
+    /// <summary>Veto action history updated. Payload: array of VetoActionHistory.</summary>
+    public const string VetoHistoryUpdated = "VetoHistoryUpdated";
 }

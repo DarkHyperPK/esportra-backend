@@ -50,3 +50,30 @@ public sealed record VetoStep(
     string Action,    // ban | pick | pick_side
     string Team,      // T1 | T2
     bool   IsDecider = false);
+
+public sealed record VetoActionHistory(
+    Guid    Id,
+    Guid    VetoId,
+    Guid    MatchId,
+    Guid?   TournamentId,
+    Guid?   TeamId,
+    string? TeamSide,
+    string  ActionType,
+    string? MapId,
+    int     ActionNumber,
+    string? Side,
+    Guid?   CreatedBy,
+    string? CreatedAt);
+
+/// <summary>Enriched veto history row for API responses.</summary>
+public sealed record VetoHistoryEntry(
+    int     ActionNumber,
+    string  TeamSide,
+    Guid?   TeamId,
+    string? TeamName,
+    string  Action,
+    string  MapId,
+    string? MapName,
+    string? MapImageUrl,
+    string? Side,
+    string? CreatedAt);

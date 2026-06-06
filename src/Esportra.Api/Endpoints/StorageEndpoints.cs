@@ -15,7 +15,7 @@ public static class StorageEndpoints
     // Allowed file extensions for uploads
     private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico"
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico"
     };
     private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
