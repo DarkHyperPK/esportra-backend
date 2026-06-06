@@ -341,19 +341,19 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             var isTeam1 = veto.CurrentTeamId == veto.Team1Id;
             var appendSql = isTeam1
                 ? @"UPDATE public.match_map_vetos
-                       SET team1_picked_maps = team1_picked_maps || @entry::jsonb,
+                       SET team1_picked_maps = COALESCE(team1_picked_maps, '[]'::jsonb) || @entry::jsonb,
                            selected_map_id = @mapId::uuid
                      WHERE match_id = @matchId
                        AND NOT EXISTS (
-                           SELECT 1 FROM jsonb_array_elements(team1_picked_maps) m
+                           SELECT 1 FROM jsonb_array_elements(COALESCE(team1_picked_maps, '[]'::jsonb)) m
                             WHERE m->>'map_id' = @mapId
                        )"
                 : @"UPDATE public.match_map_vetos
-                       SET team2_picked_maps = team2_picked_maps || @entry::jsonb,
+                       SET team2_picked_maps = COALESCE(team2_picked_maps, '[]'::jsonb) || @entry::jsonb,
                            selected_map_id = @mapId::uuid
                      WHERE match_id = @matchId
                        AND NOT EXISTS (
-                           SELECT 1 FROM jsonb_array_elements(team2_picked_maps) m
+                           SELECT 1 FROM jsonb_array_elements(COALESCE(team2_picked_maps, '[]'::jsonb)) m
                             WHERE m->>'map_id' = @mapId
                        )";
             await conn.ExecuteAsync(appendSql, new { matchId, mapId, entry = newEntry });
@@ -463,15 +463,16 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         int updated;
         if (isPick)
         {
+            var pickEntry = JsonSerializer.Serialize(new[] { new { map_id = mapId, side = (string?)null } });
             updated = await conn.ExecuteAsync($@"
                 UPDATE public.match_map_vetos
-                   SET {arrayCol} = {arrayCol} || @entry::jsonb
+                   SET {arrayCol} = COALESCE({arrayCol}, '[]'::jsonb) || @entry::jsonb
                  WHERE match_id = @matchId
                    AND current_action_number = @expectedAction",
                 new
                 {
                     matchId,
-                    entry = JsonSerializer.Serialize(new { map_id = mapId, side = (string?)null }),
+                    entry = pickEntry,
                     expectedAction = veto.CurrentActionNumber,
                 });
         }

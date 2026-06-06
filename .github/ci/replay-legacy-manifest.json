@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 136,
+  "postBaselineScriptCount": 137,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -163,6 +163,15 @@
         "game",
         "map_name"
       ]
+    },
+    "match_map_vetos": {
+      "firstSeenIn": "20260607120000_fix_null_veto_picked_maps.sql",
+      "operations": [
+        "alter",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
     },
     "on": {
       "firstSeenIn": "20260403210000_add_booking_code_columns.sql",
