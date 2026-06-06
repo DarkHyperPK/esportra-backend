@@ -1278,10 +1278,7 @@ public static class BRGroupEndpoints
                             });
                         }
 
-                        var pendingEvidenceCount = await conn.ExecuteScalarAsync<int>(
-                            "SELECT COUNT(*) FROM br_round_evidence WHERE round_id = @roundId AND reviewed = FALSE",
-                            new { roundId },
-                            tx);
+                        var pendingEvidenceCount = await CountPendingEvidenceAsync(conn, roundId, tx);
                         if (pendingEvidenceCount > 0)
                         {
                             tx.Rollback();
@@ -1916,16 +1913,24 @@ public static class BRGroupEndpoints
             }
 
             var entityId = teamId ?? participantId!.Value;
-            var pendingCount = await GetPendingEvidenceCountAsync(conn, roundId);
-            var evidencePayload = new
+            try
             {
-                stageId = stageId.ToString(),
-                groupId = groupId.ToString(),
-                roundId = roundId.ToString(),
-                entityId = entityId.ToString(),
-                pendingCount,
-            };
-            await BroadcastBrAsync(brHub, BRHubEvents.EvidenceSubmitted, stageId, groupId, roundId, evidencePayload, ct);
+                var pendingCount = await GetPendingEvidenceCountAsync(conn, roundId);
+                var evidencePayload = new
+                {
+                    stageId = stageId.ToString(),
+                    groupId = groupId.ToString(),
+                    roundId = roundId.ToString(),
+                    entityId = entityId.ToString(),
+                    pendingCount,
+                };
+                await BroadcastBrAsync(brHub, BRHubEvents.EvidenceSubmitted, stageId, groupId, roundId, evidencePayload, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[BRGroupEndpoints] Evidence saved for round {roundId} but post-submit notify failed: {ex.Message}");
+            }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -3533,12 +3538,21 @@ public static class BRGroupEndpoints
         }
     }
 
+    private static async Task<int> CountPendingEvidenceAsync(
+        IDbConnection conn,
+        Guid roundId,
+        IDbTransaction? tx = null)
+    {
+        var count = await conn.ExecuteScalarAsync<long>(
+            "SELECT COUNT(*) FROM br_round_evidence WHERE round_id = @roundId AND reviewed = FALSE",
+            new { roundId },
+            tx);
+        return Convert.ToInt32(count);
+    }
+
     private static async Task<int> GetPendingEvidenceCountAsync(
         IDbConnection conn,
         Guid roundId,
         IDbTransaction? tx = null) =>
-        await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM br_round_evidence WHERE round_id = @roundId AND reviewed = FALSE",
-            new { roundId },
-            tx);
+        await CountPendingEvidenceAsync(conn, roundId, tx);
 }
