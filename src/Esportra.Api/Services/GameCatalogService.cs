@@ -71,8 +71,8 @@ public sealed partial class GameCatalogService(
                 await DeleteCatalogRowsAsync(conn, tx, versionId.Value);
             }
 
-            foreach (var game in games)
-                await InsertGameAsync(conn, tx, versionId.Value, game);
+            for (var index = 0; index < games.Length; index++)
+                await InsertGameAsync(conn, tx, versionId.Value, games[index], index);
 
             await conn.ExecuteAsync("UPDATE public.game_catalog_versions SET is_active = FALSE WHERE is_active = TRUE", transaction: tx);
             await conn.ExecuteAsync(
@@ -370,7 +370,7 @@ public sealed partial class GameCatalogService(
             """,
             new { versionId }, tx);
 
-    private async Task InsertGameAsync(IDbConnection conn, IDbTransaction tx, Guid versionId, JsonElement game)
+    private async Task InsertGameAsync(IDbConnection conn, IDbTransaction tx, Guid versionId, JsonElement game, int sortIndex)
     {
         var slug = RequiredString(game, "slug");
         var name = RequiredString(game, "name");
@@ -379,13 +379,20 @@ public sealed partial class GameCatalogService(
         var defaultMode = OptionalString(game, "defaultMode") ?? OptionalString(game, "defaultFormat") ?? RequiredString(modes[0], "key");
         var featuresJson = game.TryGetProperty("features", out var features) ? features.GetRawText() : "{}";
         var brConfigJson = game.TryGetProperty("brConfig", out var brConfig) ? brConfig.GetRawText() : null;
+        var logoUrl = OptionalString(game, "logo");
+        var iconUrl = OptionalString(game, "icon");
+        var coverUrl = OptionalString(game, "cover");
+        var sortOrder = OptionalInt(game, "sortOrder") ?? sortIndex;
 
         await conn.ExecuteAsync(
             """
             INSERT INTO public.game_catalog_games
-                (version_id, slug, name, category, game_type, default_mode_key, features, br_config, raw)
+                (version_id, slug, name, category, game_type, default_mode_key,
+                 features, br_config, raw, logo_url, icon_url, cover_url, sort_order)
             VALUES
-                (@versionId, @slug, @name, @category, @type, @defaultMode, @featuresJson::jsonb, @brConfigJson::jsonb, @raw::jsonb)
+                (@versionId, @slug, @name, @category, @type, @defaultMode,
+                 @featuresJson::jsonb, @brConfigJson::jsonb, @raw::jsonb,
+                 @logoUrl, @iconUrl, @coverUrl, @sortOrder)
             """,
             new
             {
@@ -397,7 +404,11 @@ public sealed partial class GameCatalogService(
                 defaultMode,
                 featuresJson,
                 brConfigJson,
-                raw = game.GetRawText()
+                raw = game.GetRawText(),
+                logoUrl,
+                iconUrl,
+                coverUrl,
+                sortOrder,
             }, tx);
 
         foreach (var mode in modes)
