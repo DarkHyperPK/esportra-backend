@@ -146,7 +146,6 @@ public static class VetoEndpoints
             IDatHostService            dathost,
             IHubContext<MatchHub>      matchHub,
             IConfiguration             config,
-            IHostEnvironment           env,
             ILogger<VetoDbService>     vetoLogger,
             ILogger<DatHostService>    serverLogger,
             CancellationToken         ct) =>
@@ -186,11 +185,6 @@ public static class VetoEndpoints
             catch (Exception ex)
             {
                 vetoLogger.LogError(ex, "Veto pick failed for match {MatchId}", matchId);
-                if (env.IsProduction())
-                {
-                    return Results.Json(new { error = "Something went wrong. Please try again or contact support if the issue persists." }, statusCode: 500);
-                }
-
                 return Results.Json(new
                 {
                     error = "Something went wrong. Please try again or contact support if the issue persists.",
