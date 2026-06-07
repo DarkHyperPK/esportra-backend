@@ -536,7 +536,8 @@ public sealed partial class GameCatalogService(
     private static async Task<CatalogVersionRow?> GetActiveVersionAsync(IDbConnection conn) =>
         await conn.QuerySingleOrDefaultAsync<CatalogVersionRow>(
             """
-            SELECT id, catalog_version AS catalogVersion, schema_version AS schemaVersion, content_hash AS contentHash
+            SELECT id AS Id, catalog_version AS CatalogVersion, schema_version AS SchemaVersion,
+                   content_hash AS ContentHash, status AS Status, source AS Source
             FROM public.game_catalog_versions
             WHERE is_active = TRUE AND status = 'active'
             LIMIT 1
@@ -803,25 +804,30 @@ public sealed partial class GameCatalogService(
         }
     }
 
-    internal sealed record CatalogVersionRow(
-        Guid Id,
-        string CatalogVersion,
-        int SchemaVersion,
-        string ContentHash,
-        string Status = "active",
-        string Source = "packaged");
-    internal sealed record GameRow(
-        string Slug,
-        string Name,
-        string? Category,
-        string GameType,
-        string DefaultModeKey,
-        string FeaturesJson,
-        string? BrConfigJson,
-        string? LogoUrl = null,
-        string? IconUrl = null,
-        string? CoverUrl = null,
-        int SortOrder = 0);
+    internal sealed class CatalogVersionRow
+    {
+        public Guid Id { get; set; }
+        public string CatalogVersion { get; set; } = string.Empty;
+        public int SchemaVersion { get; set; }
+        public string ContentHash { get; set; } = string.Empty;
+        public string Status { get; set; } = "active";
+        public string Source { get; set; } = "packaged";
+    }
+
+    internal sealed class GameRow
+    {
+        public string Slug { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string? Category { get; set; }
+        public string GameType { get; set; } = string.Empty;
+        public string DefaultModeKey { get; set; } = string.Empty;
+        public string FeaturesJson { get; set; } = "{}";
+        public string? BrConfigJson { get; set; }
+        public string? LogoUrl { get; set; }
+        public string? IconUrl { get; set; }
+        public string? CoverUrl { get; set; }
+        public int SortOrder { get; set; }
+    }
     public sealed class ModeRow
     {
         public string ModeKey { get; set; } = string.Empty;
