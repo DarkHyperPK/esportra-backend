@@ -21,6 +21,7 @@ public class DatHostService : IDatHostService
 {
     private readonly HttpClient _http;
     private readonly ILogger<DatHostService> _logger;
+    private readonly bool _configured;
     private const string BaseUrl = "https://dathost.net/api/0.1";
 
     public DatHostService(HttpClient http, IConfiguration config, ILogger<DatHostService> logger)
@@ -28,14 +29,29 @@ public class DatHostService : IDatHostService
         _http = http;
         _logger = logger;
 
-        var email = config["DatHost:Email"] ?? throw new InvalidOperationException("DatHost:Email not configured");
-        var password = config["DatHost:Password"] ?? throw new InvalidOperationException("DatHost:Password not configured");
+        var email = config["DatHost:Email"];
+        var password = config["DatHost:Password"];
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            _configured = false;
+            _logger.LogWarning("DatHost credentials not configured — CS2 server provisioning disabled");
+            return;
+        }
+
+        _configured = true;
         var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{email}:{password}"));
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
     }
 
+    private void EnsureConfigured()
+    {
+        if (!_configured)
+            throw new DatHostException("DatHost is not configured on this environment");
+    }
+
     public async Task<DatHostServer> CreateServerAsync(DatHostCreateRequest request, CancellationToken ct = default)
     {
+        EnsureConfigured();
         var form = new Dictionary<string, string>
         {
             ["name"] = request.Name,
@@ -78,6 +94,7 @@ public class DatHostService : IDatHostService
 
     public async Task<DatHostServer> GetServerAsync(string serverId, CancellationToken ct = default)
     {
+        EnsureConfigured();
         var response = await _http.GetAsync($"{BaseUrl}/game-servers/{serverId}", ct);
         response.EnsureSuccessStatusCode();
         var json = await response.Content.ReadAsStringAsync(ct);
@@ -87,6 +104,7 @@ public class DatHostService : IDatHostService
 
     public async Task StartServerAsync(string serverId, CancellationToken ct = default)
     {
+        EnsureConfigured();
         var response = await _http.PostAsync($"{BaseUrl}/game-servers/{serverId}/start", null, ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -99,6 +117,7 @@ public class DatHostService : IDatHostService
 
     public async Task StopServerAsync(string serverId, CancellationToken ct = default)
     {
+        EnsureConfigured();
         var response = await _http.PostAsync($"{BaseUrl}/game-servers/{serverId}/stop", null, ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -109,6 +128,7 @@ public class DatHostService : IDatHostService
 
     public async Task DeleteServerAsync(string serverId, CancellationToken ct = default)
     {
+        EnsureConfigured();
         var response = await _http.DeleteAsync($"{BaseUrl}/game-servers/{serverId}", ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -123,6 +143,7 @@ public class DatHostService : IDatHostService
 
     public async Task SendConsoleCommandAsync(string serverId, string command, CancellationToken ct = default)
     {
+        EnsureConfigured();
         var form = new Dictionary<string, string> { ["line"] = command };
         var content = new FormUrlEncodedContent(form);
         var response = await _http.PostAsync($"{BaseUrl}/game-servers/{serverId}/console", content, ct);
