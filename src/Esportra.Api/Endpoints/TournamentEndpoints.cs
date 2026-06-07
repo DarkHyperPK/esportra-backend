@@ -472,13 +472,15 @@ public static class TournamentEndpoints
                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
-                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region
+                        rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region,
+                        reserved_invite_slots, invite_expiry_days
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @gameMode, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
-                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion
+                        @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion,
+                        @reservedInviteSlots, @inviteExpiryDays
                     )
                     RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, start_date, end_date, registration_deadline,
@@ -521,10 +523,18 @@ public static class TournamentEndpoints
                         region               = req.Region,
                         currency             = req.Currency ?? "USD",
                         serverRegion         = req.ServerRegion,
+                        reservedInviteSlots  = Math.Max(req.ReservedInviteSlots ?? 0, 0),
+                        inviteExpiryDays     = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365),
                     },
                     tx);
 
                 var tournamentId = (Guid)tournament.id;
+
+                if (req.MaxTeams > 0 && (req.ReservedInviteSlots ?? 0) > req.MaxTeams)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." });
+                }
 
                 var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(req.StartDate, req.EndDate ?? req.StartDate.AddHours(2));
                 if (dateOrderError is not null)
@@ -690,6 +700,24 @@ public static class TournamentEndpoints
             if (registrationDeadlineError is not null)
                 return Results.BadRequest(new { error = registrationDeadlineError });
 
+            var effectiveMaxTeams = req.MaxTeams ?? (int?)existingTournament.max_teams;
+            if (effectiveMaxTeams is > 0 && req.ReservedInviteSlots is > 0 && req.ReservedInviteSlots > effectiveMaxTeams)
+                return Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." });
+
+            if (req.ReservedInviteSlots.HasValue)
+            {
+                var activeInviteCount = await conn.ExecuteScalarAsync<int>(
+                    """
+                    SELECT COUNT(*)::int
+                    FROM public.tournament_invitations
+                    WHERE tournament_id = @id
+                      AND status <> 'revoked'
+                    """,
+                    new { id });
+                if (req.ReservedInviteSlots.Value < activeInviteCount)
+                    return Results.BadRequest(new { error = $"Reserved invite slots cannot be less than active invitations ({activeInviteCount})." });
+            }
+
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 UPDATE tournaments SET
@@ -718,6 +746,8 @@ public static class TournamentEndpoints
                     region               = COALESCE(@region, region),
                     currency             = COALESCE(@currency, currency),
                     settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
+                    reserved_invite_slots = COALESCE(@reservedInviteSlots, reserved_invite_slots),
+                    invite_expiry_days   = COALESCE(@inviteExpiryDays, invite_expiry_days),
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
                 WHERE id = @id
@@ -725,7 +755,8 @@ public static class TournamentEndpoints
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
                          status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
-                         rewards, stream_url, rules, payment_instructions, region, currency, settings, organizer_id, created_at, updated_at
+                         rewards, stream_url, rules, payment_instructions, region, currency, settings,
+                         reserved_invite_slots, invite_expiry_days, organizer_id, created_at, updated_at
                 """,
                 new
                 {
@@ -757,6 +788,10 @@ public static class TournamentEndpoints
                     settings             = req.Settings is not null
                                              ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
                                              : null,
+                    reservedInviteSlots  = req.ReservedInviteSlots,
+                    inviteExpiryDays     = req.InviteExpiryDays.HasValue
+                                             ? Math.Clamp(req.InviteExpiryDays.Value, 1, 365)
+                                             : (int?)null,
                     deletedAt            = req.DeletedAt,
                     clearDeletedAt       = req.ClearDeletedAt,
                 });
@@ -3986,7 +4021,9 @@ public sealed record CreateTournamentRequest(
     string?    PaymentInstructions  = null,
     string?    Currency             = null,
     string?    ServerRegion         = null,
-    string?    TournamentType       = null);
+    string?    TournamentType       = null,
+    int?       ReservedInviteSlots  = null,
+    int?       InviteExpiryDays     = null);
 
 public sealed record StageRequest(
     string  Name,
@@ -4024,7 +4061,9 @@ public sealed record UpdateTournamentRequest(
     object?   Settings             = null,
     string?   PaymentInstructions  = null,
     string?   Currency             = null,
-    string?   WinnerTeamName       = null);
+    string?   WinnerTeamName       = null,
+    int?      ReservedInviteSlots  = null,
+    int?      InviteExpiryDays     = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId            = null,
