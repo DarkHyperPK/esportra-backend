@@ -17,7 +17,7 @@ public enum ActionType
     Feature, Unfeature
 }
 
-public enum TargetType { User, Tournament, Venue, Payment, Team, Match, Dispute, System, Sponsor, Season }
+public enum TargetType { User, Tournament, Venue, Payment, Team, Match, Dispute, System, Sponsor }
 
 public enum AuditSeverity { Low, Medium, High, Critical }
 

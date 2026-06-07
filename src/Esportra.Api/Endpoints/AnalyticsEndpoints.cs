@@ -158,8 +158,7 @@ public static class AnalyticsEndpoints
                 organization_id = (object?)org?.id,
                 hasOrganization,
                 hasApprovedLicense,
-                canCreateTournament,
-                canCreateSeason = canCreateTournament
+                canCreateTournament
             });
         }).RequireAuthorization("Authenticated");
     }

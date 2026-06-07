@@ -2,7 +2,7 @@
 """
 Ensure migrations that touch staging-only tables are safe on production-shaped DBs.
 
-Production may not yet have seasons, catalog, or invitation tables. Any migration
+Production may not yet have catalog or invitation tables. Any migration
 that GRANTs, REVOKEs, or ALTERs those tables must guard with to_regclass / IF EXISTS.
 """
 
@@ -20,16 +20,6 @@ MIGRATIONS_DIR = (
 # Tables that may exist on staging but not on production yet.
 PROD_ABSENT_TABLES: frozenset[str] = frozenset(
     {
-        "seasons",
-        "season_nodes",
-        "season_tournaments",
-        "season_participants",
-        "season_standings",
-        "season_qualification_records",
-        "season_point_rules",
-        "season_advancement_rules",
-        "season_staff",
-        "season_announcements",
         "tournament_invitations",
         "game_catalog_games",
         "game_catalog_requests",

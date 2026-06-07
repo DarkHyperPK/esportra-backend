@@ -500,8 +500,6 @@ public static class TournamentInvitationEndpoints
                 "SELECT 1 FROM public.tournaments WHERE id = @tournamentId FOR UPDATE",
                 new { tournamentId }, tx);
 
-            Guid? seasonId = await TryAutoEnrollSeasonAsync(conn, tx, tournamentId, teamId);
-
             var participant = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO public.tournament_participants
@@ -541,7 +539,6 @@ public static class TournamentInvitationEndpoints
             try
             {
                 await cache.RemoveByTagAsync("tournament-list", ct);
-                if (seasonId.HasValue) await SeasonEndpointHelpers.InvalidateSeasonCacheAsync(cache, seasonId.Value, ct);
             }
             catch { }
 
@@ -552,11 +549,11 @@ public static class TournamentInvitationEndpoints
                 TargetType.Tournament,
                 tournamentId,
                 (string)tournament.name,
-                new { invite_id = (Guid)invite.id, team_id = teamId, user_id = userCtx.UserIdGuid, season_id = seasonId },
+                new { invite_id = (Guid)invite.id, team_id = teamId, user_id = userCtx.UserIdGuid },
                 AuditSeverity.Medium,
                 ct);
 
-            return Results.Ok(new { success = true, tournamentId, seasonId, participant });
+            return Results.Ok(new { success = true, tournamentId, participant });
         }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/invitations/resend ────────────────────────
@@ -841,51 +838,6 @@ public static class TournamentInvitationEndpoints
             chars[i] = alphabet[RandomNumberGenerator.GetInt32(alphabet.Length)];
         }
         return new string(chars);
-    }
-
-    private static async Task<Guid?> TryAutoEnrollSeasonAsync(IDbConnection conn, IDbTransaction tx, Guid tournamentId, Guid teamId)
-    {
-        var hasSeasonTables = await conn.QuerySingleAsync<bool>(
-            """
-            SELECT to_regclass('public.season_tournaments') IS NOT NULL
-               AND to_regclass('public.season_participants') IS NOT NULL
-            """,
-            transaction: tx);
-        if (!hasSeasonTables) return null;
-
-        var seasonId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-            "SELECT season_id FROM public.season_tournaments WHERE tournament_id = @tournamentId LIMIT 1",
-            new { tournamentId }, tx);
-        if (seasonId is null) return null;
-
-        var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT name, logo_url, slug FROM public.teams WHERE id = @teamId",
-            new { teamId }, tx);
-        if (team is null) return seasonId;
-
-        await conn.ExecuteAsync(
-            """
-            INSERT INTO public.season_participants
-                (season_id, team_id, team_name, team_logo_url, team_slug, status, registered_by)
-            VALUES
-                (@seasonId, @teamId, @teamName, @teamLogoUrl, @teamSlug, 'approved', NULL)
-            ON CONFLICT (season_id, team_id) DO UPDATE SET
-                status = CASE
-                    WHEN public.season_participants.status = 'rejected' THEN 'approved'
-                    ELSE public.season_participants.status
-                END,
-                updated_at = NOW()
-            """,
-            new
-            {
-                seasonId,
-                teamId,
-                teamName = (string)team.name,
-                teamLogoUrl = (string?)team.logo_url,
-                teamSlug = (string?)team.slug
-            }, tx);
-
-        return seasonId;
     }
 }
 
