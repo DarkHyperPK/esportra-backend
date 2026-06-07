@@ -7,9 +7,11 @@ using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Audit;
+using Esportra.Api.Services;
 using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
+using System.Text.Json;
 
 namespace Esportra.Api.Endpoints;
 
@@ -274,19 +276,22 @@ public static class TournamentInvitationEndpoints
 
             tx.Commit();
 
-            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
-            var tournamentUrl = $"{frontendUrl}/tournaments/{((string?)tournament.slug ?? id.ToString())}";
             var sentCount = 0;
             foreach (var invite in updated)
             {
                 try
                 {
+                    var redeemUrl = BuildInviteRedeemUrl(
+                        config,
+                        (string)invite.code,
+                        (string?)tournament.slug,
+                        id);
                     await email.SendAsync((string)invite.email, EmailType.TournamentInvite, new
                     {
                         captainName = "Captain",
                         tournamentName = (string)tournament.name,
                         code = (string)invite.code,
-                        tournamentUrl,
+                        tournamentUrl = redeemUrl,
                         expiryDate = ((DateTime)invite.expires_at).ToString("MMM dd, yyyy")
                     }, ct);
                     sentCount++;
@@ -365,10 +370,95 @@ public static class TournamentInvitationEndpoints
             return Results.NoContent();
         }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
 
+        app.MapGet("/api/invitations/preview", async (
+            string? code,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var normalizedCode = NormalizeInvitationCode(code);
+            if (string.IsNullOrWhiteSpace(normalizedCode))
+                return Results.BadRequest(new { error = "Invitation code is required." });
+
+            using var conn = db.CreateConnection();
+
+            var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ti.id, ti.tournament_id, ti.email, ti.status, ti.expires_at,
+                       t.name AS tournament_name, t.slug AS tournament_slug, t.game,
+                       t.game_mode, t.team_size, t.status AS tournament_status
+                FROM public.tournament_invitations ti
+                JOIN public.tournaments t ON t.id = ti.tournament_id
+                WHERE ti.code = @code
+                """,
+                new { code = normalizedCode });
+
+            if (invite is null)
+            {
+                return Results.Ok(new
+                {
+                    canRedeem = false,
+                    emailMatch = false,
+                    status = "not_found",
+                    message = "Invitation code was not found."
+                });
+            }
+
+            var emailMatch = string.Equals(
+                ((string)invite.email).Trim(),
+                userCtx.Email.Trim(),
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!emailMatch)
+            {
+                return Results.Ok(new
+                {
+                    canRedeem = false,
+                    emailMatch = false,
+                    status = (string)invite.status,
+                    message = "This code is locked to another email address."
+                });
+            }
+
+            var status = ((string)invite.status).ToLowerInvariant();
+            var expiresAt = (DateTime?)invite.expires_at;
+            var isExpired = expiresAt is null || expiresAt <= DateTime.UtcNow;
+            var tournamentStatus = ((string)invite.tournament_status).ToLowerInvariant();
+            var tournamentOpen = tournamentStatus is "open" or "published";
+
+            string? message = null;
+            var canRedeem = status == "sent" && !isExpired && tournamentOpen;
+            if (status == "redeemed") message = "This invitation has already been used.";
+            else if (status == "revoked") message = "This invitation was revoked by the organizer.";
+            else if (status == "draft") message = "This invitation has not been sent yet.";
+            else if (isExpired) message = "This invitation has expired. Ask the organizer to resend it.";
+            else if (!tournamentOpen) message = "Tournament is not accepting registrations.";
+
+            return Results.Ok(new
+            {
+                canRedeem,
+                emailMatch = true,
+                status,
+                tournamentId = (Guid)invite.tournament_id,
+                tournamentSlug = (string?)invite.tournament_slug,
+                tournamentName = (string)invite.tournament_name,
+                tournamentGame = (string?)invite.game,
+                tournamentGameMode = (string?)invite.game_mode,
+                tournamentTeamSize = (int?)invite.team_size,
+                tournamentStatus = (string)invite.tournament_status,
+                expiresAt,
+                message
+            });
+        }).WithMetadata(new RateLimitPolicyMetadata("default")).RequireAuthorization("Authenticated");
+
         app.MapPost("/api/invitations/redeem", async (
             [FromBody] RedeemInviteRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
             HybridCache cache,
             AuditService audit,
             CancellationToken ct) =>
@@ -376,184 +466,228 @@ public static class TournamentInvitationEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var code = (req.Code ?? string.Empty).Trim().ToUpperInvariant();
+            var code = NormalizeInvitationCode(req.Code);
             if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Invitation code is required." });
             if (string.IsNullOrWhiteSpace(userCtx.Email)) return Results.BadRequest(new { error = "Your account email could not be verified." });
+            if (!req.TeamId.HasValue) return Results.BadRequest(new { error = "Select a team to redeem this invitation." });
+            if (!req.RosterId.HasValue) return Results.BadRequest(new { error = "Select a roster that matches this tournament." });
 
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
 
-            var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT ti.id, ti.tournament_id, ti.email, ti.status, ti.expires_at,
-                       t.name AS tournament_name
-                FROM public.tournament_invitations ti
-                JOIN public.tournaments t ON t.id = ti.tournament_id
-                WHERE ti.code = @code
-                FOR UPDATE OF ti
-                """,
-                new { code }, tx);
-            if (invite is null) { tx.Rollback(); return Results.NotFound(new { error = "Invitation code was not found." }); }
-
-            var tournamentId = (Guid)invite.tournament_id;
-            if (!string.Equals((string)invite.status, "sent", StringComparison.OrdinalIgnoreCase))
-            {
-                tx.Rollback();
-                return Results.BadRequest(new { error = "Invitation code is not active." });
-            }
-
-            var expiresAt = (DateTime?)invite.expires_at;
-            if (expiresAt is null || expiresAt <= DateTime.UtcNow)
-            {
-                await conn.ExecuteAsync(
-                    "UPDATE public.tournament_invitations SET status = 'expired', updated_at = NOW() WHERE id = @id",
-                    new { id = (Guid)invite.id }, tx);
-                tx.Commit();
-                return Results.BadRequest(new { error = "Invitation code has expired." });
-            }
-
-            if (!string.Equals(((string)invite.email).Trim(), userCtx.Email.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                tx.Rollback();
-                return Results.Forbid();
-            }
-
-            var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT id, name, status, max_teams
-                FROM public.tournaments
-                WHERE id = @tournamentId AND deleted_at IS NULL
-                FOR UPDATE
-                """,
-                new { tournamentId }, tx);
-            if (tournament is null) { tx.Rollback(); return Results.NotFound(new { error = "Tournament was not found." }); }
-            if ((string)tournament.status is not "open" and not "published")
-            {
-                tx.Rollback();
-                return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
-            }
-
-            var captainTeam = req.TeamId.HasValue
-                ? await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    """
-                    SELECT tm.team_id, teams.name AS team_name
-                    FROM public.team_members tm
-                    JOIN public.teams ON teams.id = tm.team_id
-                    WHERE tm.user_id = @userId
-                      AND tm.team_id = @teamId
-                      AND tm.role = 'captain'
-                      AND tm.is_active = TRUE
-                    LIMIT 1
-                    """,
-                    new { userId = userCtx.UserIdGuid, teamId = req.TeamId.Value }, tx)
-                : await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    """
-                    SELECT tm.team_id, teams.name AS team_name
-                    FROM public.team_members tm
-                    JOIN public.teams ON teams.id = tm.team_id
-                    WHERE tm.user_id = @userId
-                      AND tm.role = 'captain'
-                      AND tm.is_active = TRUE
-                    ORDER BY teams.created_at ASC
-                    LIMIT 1
-                    """,
-                    new { userId = userCtx.UserIdGuid }, tx);
-
-            if (captainTeam is null)
-            {
-                tx.Rollback();
-                return Results.BadRequest(new { error = "You must be the captain of an active team to redeem this invitation." });
-            }
-
-            var teamId = (Guid)captainTeam.team_id;
-            var alreadyRegistered = await conn.QuerySingleAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM public.tournament_participants
-                    WHERE tournament_id = @tournamentId
-                      AND status NOT IN ('cancelled', 'rejected', 'disqualified')
-                      AND (user_id = @userId OR team_captain_id = @userId OR team_id = @teamId)
-                )
-                """,
-                new { tournamentId, userId = userCtx.UserIdGuid, teamId }, tx);
-            if (alreadyRegistered)
-            {
-                tx.Rollback();
-                return Results.Conflict(new { error = "Your team is already registered for this tournament." });
-            }
-
-            int? maxTeams = (int?)tournament.max_teams;
-            if (maxTeams.HasValue && maxTeams.Value > 0)
-            {
-                var currentCount = await conn.QuerySingleAsync<int>(
-                    "SELECT COUNT(*) FROM public.tournament_participants WHERE tournament_id = @tournamentId AND status NOT IN ('rejected', 'cancelled')",
-                    new { tournamentId }, tx);
-                if (currentCount >= maxTeams.Value)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = "Tournament has reached maximum capacity." });
-                }
-            }
-            // Lock tournament row to prevent race conditions on capacity
-            await conn.ExecuteAsync(
-                "SELECT 1 FROM public.tournaments WHERE id = @tournamentId FOR UPDATE",
-                new { tournamentId }, tx);
-
-            var participant = await conn.QuerySingleAsync<dynamic>(
-                """
-                INSERT INTO public.tournament_participants
-                    (tournament_id, user_id, team_id, team_captain_id, team_name,
-                     team_members, team_contact_email, status, participant_type, source,
-                     entry_fee_amount, entry_fee_paid, payment_status)
-                VALUES
-                    (@tournamentId, @userId, @teamId, @userId, @teamName,
-                     '[]'::jsonb, @email, 'approved'::registration_status, 'team'::registration_type, 'invite',
-                     0, TRUE, 'not_required')
-                RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
-                          status, participant_type, source, created_at
-                """,
-                new
-                {
-                    tournamentId,
-                    userId = userCtx.UserIdGuid,
-                    teamId,
-                    teamName = (string)captainTeam.team_name,
-                    email = userCtx.Email
-                }, tx);
-
-            await conn.ExecuteAsync(
-                """
-                UPDATE public.tournament_invitations
-                SET status = 'redeemed',
-                    redeemed_by = @userId,
-                    redeemed_team_id = @teamId,
-                    redeemed_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = @inviteId
-                """,
-                new { userId = userCtx.UserIdGuid, teamId, inviteId = (Guid)invite.id }, tx);
-
-            tx.Commit();
-
             try
             {
-                await cache.RemoveByTagAsync("tournament-list", ct);
+                var invite = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT ti.id, ti.tournament_id, ti.email, ti.status, ti.expires_at,
+                           t.name AS tournament_name, t.slug AS tournament_slug
+                    FROM public.tournament_invitations ti
+                    JOIN public.tournaments t ON t.id = ti.tournament_id
+                    WHERE ti.code = @code
+                    FOR UPDATE OF ti
+                    """,
+                    new { code }, tx);
+                if (invite is null) { tx.Rollback(); return Results.NotFound(new { error = "Invitation code was not found." }); }
+
+                var tournamentId = (Guid)invite.tournament_id;
+                if (!string.Equals((string)invite.status, "sent", StringComparison.OrdinalIgnoreCase))
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Invitation code is not active." });
+                }
+
+                var expiresAt = (DateTime?)invite.expires_at;
+                if (expiresAt is null || expiresAt <= DateTime.UtcNow)
+                {
+                    await conn.ExecuteAsync(
+                        "UPDATE public.tournament_invitations SET status = 'expired', updated_at = NOW() WHERE id = @id",
+                        new { id = (Guid)invite.id }, tx);
+                    tx.Commit();
+                    return Results.BadRequest(new { error = "Invitation code has expired." });
+                }
+
+                if (!string.Equals(((string)invite.email).Trim(), userCtx.Email.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    tx.Rollback();
+                    return Results.Forbid();
+                }
+
+                var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id, name, slug, status, max_teams
+                    FROM public.tournaments
+                    WHERE id = @tournamentId AND deleted_at IS NULL
+                    FOR UPDATE
+                    """,
+                    new { tournamentId }, tx);
+                if (tournament is null) { tx.Rollback(); return Results.NotFound(new { error = "Tournament was not found." }); }
+                if ((string)tournament.status is not "open" and not "published")
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
+                }
+
+                var teamId = req.TeamId.Value;
+                var rosterId = req.RosterId.Value;
+
+                try
+                {
+                    await gameCatalog.ValidateRegistrationAsync(conn, tx, tournamentId, teamId, rosterId, userCtx.UserIdGuid);
+                }
+                catch (GameCatalogValidationException ex)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+
+                var teamMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT t.id, t.name AS team_name, t.owner_id
+                    FROM public.teams t
+                    WHERE t.id = @teamId
+                    """,
+                    new { teamId }, tx);
+                if (teamMeta is null)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Team was not found." });
+                }
+
+                var rosterMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id, name AS roster_name
+                    FROM public.team_rosters
+                    WHERE id = @rosterId AND team_id = @teamId
+                    """,
+                    new { rosterId, teamId }, tx);
+                if (rosterMeta is null)
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Roster was not found for this team." });
+                }
+
+                var alreadyRegistered = await conn.QuerySingleAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM public.tournament_participants
+                        WHERE tournament_id = @tournamentId
+                          AND status NOT IN ('cancelled', 'rejected', 'disqualified')
+                          AND (user_id = @userId OR team_captain_id = @userId OR team_id = @teamId)
+                    )
+                    """,
+                    new { tournamentId, userId = userCtx.UserIdGuid, teamId }, tx);
+                if (alreadyRegistered)
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = "Your team is already registered for this tournament." });
+                }
+
+                int? maxTeams = (int?)tournament.max_teams;
+                if (maxTeams.HasValue && maxTeams.Value > 0)
+                {
+                    var currentCount = await conn.QuerySingleAsync<int>(
+                        "SELECT COUNT(*) FROM public.tournament_participants WHERE tournament_id = @tournamentId AND status NOT IN ('rejected', 'cancelled')",
+                        new { tournamentId }, tx);
+                    if (currentCount >= maxTeams.Value)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Tournament has reached maximum capacity." });
+                    }
+                }
+
+                var memberNames = (await conn.QueryAsync<string>(
+                    """
+                    SELECT COALESCE(NULLIF(p.username, ''), NULLIF(p.full_name, ''), p.id::text) AS display_name
+                    FROM public.team_roster_members trm
+                    JOIN public.profiles p ON p.id = trm.user_id
+                    WHERE trm.roster_id = @rosterId
+                    ORDER BY COALESCE(trm.is_starter, TRUE) DESC, p.username ASC
+                    """,
+                    new { rosterId }, tx)).AsList();
+
+                var captainName = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT COALESCE(NULLIF(username, ''), NULLIF(full_name, ''), id::text) FROM public.profiles WHERE id = @ownerId",
+                    new { ownerId = (Guid)teamMeta.owner_id }, tx);
+                if (!string.IsNullOrWhiteSpace(captainName) && !memberNames.Contains(captainName, StringComparer.OrdinalIgnoreCase))
+                    memberNames.Insert(0, captainName);
+
+                var teamMembersJson = JsonSerializer.Serialize(memberNames);
+                var teamName = string.IsNullOrWhiteSpace((string?)rosterMeta.roster_name)
+                    ? (string)teamMeta.team_name
+                    : (string)rosterMeta.roster_name;
+
+                var participant = await conn.QuerySingleAsync<dynamic>(
+                    """
+                    INSERT INTO public.tournament_participants
+                        (tournament_id, user_id, team_id, team_captain_id, team_name,
+                         team_members, team_contact_email, roster_id, roster_name,
+                         status, participant_type, source, entry_fee_amount, entry_fee_paid, payment_status)
+                    VALUES
+                        (@tournamentId, @userId, @teamId, @userId, @teamName,
+                         @teamMembers::jsonb, @email, @rosterId, @rosterName,
+                         'approved'::registration_status, 'team'::registration_type, 'invite',
+                         0, TRUE, 'not_required')
+                    RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
+                              roster_id, roster_name, status, participant_type, source, created_at
+                    """,
+                    new
+                    {
+                        tournamentId,
+                        userId = userCtx.UserIdGuid,
+                        teamId,
+                        teamName,
+                        teamMembers = teamMembersJson,
+                        email = userCtx.Email,
+                        rosterId,
+                        rosterName = (string?)rosterMeta.roster_name
+                    }, tx);
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE public.tournament_invitations
+                    SET status = 'redeemed',
+                        redeemed_by = @userId,
+                        redeemed_team_id = @teamId,
+                        redeemed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = @inviteId
+                    """,
+                    new { userId = userCtx.UserIdGuid, teamId, inviteId = (Guid)invite.id }, tx);
+
+                tx.Commit();
+
+                try
+                {
+                    await cache.RemoveByTagAsync("tournament-list", ct);
+                }
+                catch { }
+
+                await audit.LogCustomAsync(
+                    userCtx.UserIdGuid,
+                    userCtx.Email,
+                    "tournament_invite_redeemed",
+                    TargetType.Tournament,
+                    tournamentId,
+                    (string)tournament.name,
+                    new { invite_id = (Guid)invite.id, team_id = teamId, roster_id = rosterId, user_id = userCtx.UserIdGuid },
+                    AuditSeverity.Medium,
+                    ct);
+
+                return Results.Ok(new
+                {
+                    success = true,
+                    tournamentId,
+                    tournamentSlug = (string?)tournament.slug ?? (string?)invite.tournament_slug,
+                    tournamentName = (string)tournament.name,
+                    participant
+                });
             }
-            catch { }
-
-            await audit.LogCustomAsync(
-                userCtx.UserIdGuid,
-                userCtx.Email,
-                "tournament_invite_redeemed",
-                TargetType.Tournament,
-                tournamentId,
-                (string)tournament.name,
-                new { invite_id = (Guid)invite.id, team_id = teamId, user_id = userCtx.UserIdGuid },
-                AuditSeverity.Medium,
-                ct);
-
-            return Results.Ok(new { success = true, tournamentId, participant });
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/invitations/resend ────────────────────────
@@ -609,19 +743,22 @@ public static class TournamentInvitationEndpoints
             tx.Commit();
 
             // Re-send emails
-            var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
-            var tournamentUrl = $"{frontendUrl}/tournaments/{((string?)tournament.slug ?? id.ToString())}";
             var sentCount = 0;
             foreach (var invite in updated)
             {
                 try
                 {
+                    var redeemUrl = BuildInviteRedeemUrl(
+                        config,
+                        (string)invite.code,
+                        (string?)tournament.slug,
+                        id);
                     await email.SendAsync((string)invite.email, EmailType.TournamentInvite, new
                     {
                         captainName = "Captain",
                         tournamentName = (string)tournament.name,
                         code = (string)invite.code,
-                        tournamentUrl,
+                        tournamentUrl = redeemUrl,
                         expiryDate = ((DateTime)invite.expires_at).ToString("MMM dd, yyyy")
                     }, ct);
                     sentCount++;
@@ -839,11 +976,32 @@ public static class TournamentInvitationEndpoints
         }
         return new string(chars);
     }
+
+    private static string NormalizeInvitationCode(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+        var trimmed = raw.Trim().ToUpperInvariant();
+        Span<char> buffer = stackalloc char[trimmed.Length];
+        var length = 0;
+        foreach (var ch in trimmed)
+        {
+            if (char.IsLetterOrDigit(ch) || ch == '-')
+                buffer[length++] = ch;
+        }
+        return length == 0 ? string.Empty : new string(buffer[..length]);
+    }
+
+    private static string BuildInviteRedeemUrl(IConfiguration config, string code, string? slug, Guid tournamentId)
+    {
+        var frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
+        var tournamentKey = string.IsNullOrWhiteSpace(slug) ? tournamentId.ToString() : slug;
+        return $"{frontendUrl}/invitations/redeem?code={Uri.EscapeDataString(code)}&tournament={Uri.EscapeDataString(tournamentKey)}";
+    }
 }
 
 public sealed record DraftInvitesRequest(List<string>? Emails = null);
 public sealed record SendInvitesRequest(Guid[]? InvitationIds = null);
-public sealed record RedeemInviteRequest(string Code, Guid? TeamId = null);
+public sealed record RedeemInviteRequest(string Code, Guid? TeamId = null, Guid? RosterId = null);
 public sealed record ResendInvitesRequest(Guid[]? InvitationIds = null);
 public sealed record CsvImportRequest(string? CsvContent = null);
 

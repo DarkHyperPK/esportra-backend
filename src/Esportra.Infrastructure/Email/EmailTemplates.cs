@@ -215,7 +215,7 @@ public static class EmailTemplates
         Wrap($"Invitation code for {E(tournamentName)}", "Tournament Invitation", $"""
             {H1("Tournament Invitation")}
             {P($"Hi {(string.IsNullOrWhiteSpace(captainName) ? "Captain" : E(captainName))}, you've been invited to join <strong style='color:#f9fafb;'>{E(tournamentName)}</strong>.")}
-            {P("Use the invitation code below on the tournament page. The code is locked to this email address and can only be redeemed once by a team captain.")}
+            {P("Use the invitation code below to redeem your guaranteed team slot. The code is locked to this email address and can only be redeemed once by a team captain.")}
             <div style="margin:24px 0;padding:18px;border:1px solid #7c3aed;border-radius:10px;background:#181028;text-align:center;">
               <div style="font-size:12px;color:#c4b5fd;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">Invite Code</div>
               <div style="font-family:Consolas,Monaco,monospace;font-size:28px;font-weight:800;letter-spacing:4px;color:#fff;">{E(code)}</div>
