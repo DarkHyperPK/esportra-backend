@@ -205,7 +205,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                 (@id, @match_id, @tournament_id, @team1_id, @team2_id, @best_of, 'in_progress',
                  @current_team_id, @current_action, @action_number,
                  '{}', '{}',
-                 '[]'::jsonb, '[]'::jsonb,
+                 '[]'::json, '[]'::json,
                  @selected_map_pool, now(), @game, @team1_token, @team2_token, now())
             ON CONFLICT (match_id) DO UPDATE SET
                 best_of = @best_of,
@@ -215,8 +215,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                 current_action_number = @action_number,
                 team1_banned_maps = '{}',
                 team2_banned_maps = '{}',
-                team1_picked_maps = '[]'::jsonb,
-                team2_picked_maps = '[]'::jsonb,
+                team1_picked_maps = '[]'::json,
+                team2_picked_maps = '[]'::json,
                 selected_map_id = null,
                 selected_map_pool = @selected_map_pool,
                 completed_at = null,
@@ -311,16 +311,20 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         // Update side on existing picked entries
         var updated = await conn.ExecuteAsync(@"
             UPDATE public.match_map_vetos
-               SET team1_picked_maps = COALESCE((
-                     SELECT jsonb_agg(
-                       CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
-                     ) FROM jsonb_array_elements(COALESCE(team1_picked_maps::jsonb, '[]'::jsonb)) AS m
-                   ), '[]'::jsonb),
-                   team2_picked_maps = COALESCE((
-                     SELECT jsonb_agg(
-                       CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
-                     ) FROM jsonb_array_elements(COALESCE(team2_picked_maps::jsonb, '[]'::jsonb)) AS m
-                   ), '[]'::jsonb)
+               SET team1_picked_maps = (
+                     COALESCE((
+                       SELECT jsonb_agg(
+                         CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
+                       ) FROM jsonb_array_elements((COALESCE(team1_picked_maps::text, '[]'))::jsonb) AS m
+                     ), '[]'::jsonb)
+                   )::json,
+                   team2_picked_maps = (
+                     COALESCE((
+                       SELECT jsonb_agg(
+                         CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
+                       ) FROM jsonb_array_elements((COALESCE(team2_picked_maps::text, '[]'))::jsonb) AS m
+                     ), '[]'::jsonb)
+                   )::json
              WHERE match_id = @matchId
                AND current_action_number = @expectedAction",
             new { matchId, mapId, side, expectedAction = veto.CurrentActionNumber });
@@ -338,21 +342,25 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             var isTeam1 = veto.CurrentTeamId == veto.Team1Id;
             var appendSql = isTeam1
                 ? @"UPDATE public.match_map_vetos
-                       SET team1_picked_maps = COALESCE(team1_picked_maps::jsonb, '[]'::jsonb)
-                           || jsonb_build_array(jsonb_build_object('map_id', @mapId, 'side', @side)),
+                       SET team1_picked_maps = (
+                             (COALESCE(team1_picked_maps::text, '[]'))::jsonb
+                             || jsonb_build_array(jsonb_build_object('map_id', @mapId::text, 'side', @side))
+                           )::json,
                            selected_map_id = @mapId::uuid
                      WHERE match_id = @matchId
                        AND NOT EXISTS (
-                           SELECT 1 FROM jsonb_array_elements(COALESCE(team1_picked_maps::jsonb, '[]'::jsonb)) m
+                           SELECT 1 FROM jsonb_array_elements((COALESCE(team1_picked_maps::text, '[]'))::jsonb) m
                             WHERE m->>'map_id' = @mapId
                        )"
                 : @"UPDATE public.match_map_vetos
-                       SET team2_picked_maps = COALESCE(team2_picked_maps::jsonb, '[]'::jsonb)
-                           || jsonb_build_array(jsonb_build_object('map_id', @mapId, 'side', @side)),
+                       SET team2_picked_maps = (
+                             (COALESCE(team2_picked_maps::text, '[]'))::jsonb
+                             || jsonb_build_array(jsonb_build_object('map_id', @mapId::text, 'side', @side))
+                           )::json,
                            selected_map_id = @mapId::uuid
                      WHERE match_id = @matchId
                        AND NOT EXISTS (
-                           SELECT 1 FROM jsonb_array_elements(COALESCE(team2_picked_maps::jsonb, '[]'::jsonb)) m
+                           SELECT 1 FROM jsonb_array_elements((COALESCE(team2_picked_maps::text, '[]'))::jsonb) m
                             WHERE m->>'map_id' = @mapId
                        )";
             await conn.ExecuteAsync(appendSql, new { matchId, mapId, side });
@@ -389,8 +397,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                    current_action_number = 0,
                    team1_banned_maps = '{}',
                    team2_banned_maps = '{}',
-                   team1_picked_maps = '[]'::jsonb,
-                   team2_picked_maps = '[]'::jsonb,
+                   team1_picked_maps = '[]'::json,
+                   team2_picked_maps = '[]'::json,
                    selected_map_id = null,
                    started_at = null,
                    completed_at = null,
@@ -464,8 +472,10 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         {
             updated = await conn.ExecuteAsync($@"
                 UPDATE public.match_map_vetos
-                   SET {arrayCol} = COALESCE({arrayCol}::jsonb, '[]'::jsonb)
-                       || jsonb_build_array(jsonb_build_object('map_id', @mapId, 'side', null::text))
+                   SET {arrayCol} = (
+                         (COALESCE({arrayCol}::text, '[]'))::jsonb
+                         || jsonb_build_array(jsonb_build_object('map_id', @mapId::text, 'side', null::text))
+                       )::json
                  WHERE match_id = @matchId
                    AND current_action_number = @expectedAction",
                 new
