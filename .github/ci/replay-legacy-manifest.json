@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 138,
+  "postBaselineScriptCount": 136,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -102,7 +102,6 @@
       "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
       "operations": [
         "alter",
-        "index",
         "join",
         "references"
       ],
@@ -228,7 +227,6 @@
       "firstSeenIn": "20260413230000_organizations.sql",
       "operations": [
         "alter",
-        "join",
         "references"
       ],
       "columnsMentioned": [],
