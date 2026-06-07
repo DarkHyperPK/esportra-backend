@@ -2,12 +2,13 @@ using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Database;
 
 namespace Esportra.Api.Services;
 
-public sealed class GameCatalogService(
+public sealed partial class GameCatalogService(
     IDbConnectionFactory db,
     IWebHostEnvironment env,
     ILogger<GameCatalogService> logger)
@@ -17,6 +18,20 @@ public sealed class GameCatalogService(
 
     public async Task ImportPackagedCatalogAsync(CancellationToken ct = default)
     {
+        using var conn = db.CreateConnection();
+        var hasAdminActive = await conn.QuerySingleAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.game_catalog_versions
+                WHERE is_active = TRUE AND status = 'active' AND source = 'admin'
+            )
+            """);
+        if (hasAdminActive)
+        {
+            logger.LogInformation("Skipping packaged catalog import — an admin-published catalog is active.");
+            return;
+        }
+
         var catalogPath = ResolveCatalogPath();
         if (!File.Exists(catalogPath))
             throw new FileNotFoundException("Packaged game catalog is missing.", catalogPath);
@@ -33,7 +48,6 @@ public sealed class GameCatalogService(
 
         ValidateCatalog(games);
 
-        using var conn = db.CreateConnection();
         using var tx = conn.BeginTransaction();
         try
         {
@@ -95,10 +109,11 @@ public sealed class GameCatalogService(
         var games = (await conn.QueryAsync<GameRow>(
             """
             SELECT slug, name, category, game_type AS gameType, default_mode_key AS defaultModeKey,
-                   features::text AS featuresJson, br_config::text AS brConfigJson
+                   features::text AS featuresJson, br_config::text AS brConfigJson,
+                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl, sort_order AS sortOrder
             FROM public.game_catalog_games
             WHERE version_id = @versionId
-            ORDER BY name ASC
+            ORDER BY sort_order ASC, name ASC
             """,
             new { versionId = version.Id })).AsList();
 
@@ -392,10 +407,12 @@ public sealed class GameCatalogService(
                 """
                 INSERT INTO public.game_catalog_game_modes
                     (version_id, game_slug, mode_key, name, team_size, participant_mode,
-                     allows_substitutes, max_roster_size, aliases, display_group, variant_label, raw)
+                     allows_substitutes, max_roster_size, aliases, display_group, variant_label,
+                     map_pool_filter, features_override, raw)
                 VALUES
                     (@versionId, @slug, @modeKey, @name, @teamSize, @participantMode,
-                     @allowsSubstitutes, @maxRosterSize, @aliases, @displayGroup, @variantLabel, @raw::jsonb)
+                     @allowsSubstitutes, @maxRosterSize, @aliases, @displayGroup, @variantLabel,
+                     @mapPoolFilter, @featuresOverrideJson::jsonb, @raw::jsonb)
                 """,
                 new
                 {
@@ -410,6 +427,8 @@ public sealed class GameCatalogService(
                     aliases = ReadStringArray(mode, "aliases").Append(modeKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                     displayGroup = OptionalString(mode, "modeGroup"),
                     variantLabel = OptionalString(mode, "variantLabel"),
+                    mapPoolFilter = NormalizeMapPoolFilter(OptionalString(mode, "mapPoolFilter")),
+                    featuresOverrideJson = OptionalModeFeaturesJson(mode),
                     raw = mode.GetRawText()
                 }, tx);
         }
@@ -529,12 +548,14 @@ public sealed class GameCatalogService(
             """
             SELECT mode_key AS modeKey, name, team_size AS teamSize, participant_mode AS participantMode,
                    allows_substitutes AS allowsSubstitutes, max_roster_size AS maxRosterSize, aliases,
-                   display_group AS modeGroup, variant_label AS variantLabel
+                   display_group AS modeGroup, variant_label AS variantLabel,
+                   map_pool_filter AS mapPoolFilter, features_override::text AS featuresOverrideJson
             FROM public.game_catalog_game_modes
             WHERE version_id = @versionId AND game_slug = @slug
             ORDER BY COALESCE(display_group, name) ASC, team_size ASC, name ASC
             """,
             new { versionId, game.Slug }).AsList();
+        EnrichModeRows(modes);
 
         var structures = conn.Query<StructureRow>(
             """
@@ -542,6 +563,15 @@ public sealed class GameCatalogService(
             FROM public.game_catalog_tournament_structures
             WHERE version_id = @versionId AND game_slug = @slug
             ORDER BY name ASC
+            """,
+            new { versionId, game.Slug }).AsList();
+
+        var aliases = conn.Query<string>(
+            """
+            SELECT alias
+            FROM public.game_catalog_game_aliases
+            WHERE version_id = @versionId AND game_slug = @slug
+            ORDER BY alias ASC
             """,
             new { versionId, game.Slug }).AsList();
 
@@ -553,6 +583,11 @@ public sealed class GameCatalogService(
             game.DefaultModeKey,
             ParseJson(game.FeaturesJson),
             BrCatalogBrConfigHelper.EnrichBrConfigForApi(game.BrConfigJson),
+            game.LogoUrl,
+            game.IconUrl,
+            game.CoverUrl,
+            game.SortOrder,
+            aliases,
             modes,
             structures);
     }
@@ -564,7 +599,8 @@ public sealed class GameCatalogService(
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE AND status = 'active' LIMIT 1
             )
             SELECT g.slug, g.name, g.category, g.game_type AS gameType, g.default_mode_key AS defaultModeKey,
-                   g.features::text AS featuresJson, g.br_config::text AS brConfigJson
+                   g.features::text AS featuresJson, g.br_config::text AS brConfigJson,
+                   g.logo_url AS logoUrl, g.icon_url AS iconUrl, g.cover_url AS coverUrl, g.sort_order AS sortOrder
             FROM public.game_catalog_game_aliases a
             JOIN active_version av ON av.id = a.version_id
             JOIN public.game_catalog_games g ON g.version_id = a.version_id AND g.slug = a.game_slug
@@ -582,13 +618,16 @@ public sealed class GameCatalogService(
             )
             SELECT m.mode_key AS modeKey, m.name, m.team_size AS teamSize, m.participant_mode AS participantMode,
                    m.allows_substitutes AS allowsSubstitutes, m.max_roster_size AS maxRosterSize, m.aliases,
-                   m.display_group AS modeGroup, m.variant_label AS variantLabel
+                   m.display_group AS modeGroup, m.variant_label AS variantLabel,
+                   m.map_pool_filter AS mapPoolFilter, m.features_override::text AS featuresOverrideJson
             FROM public.game_catalog_game_modes m
             JOIN active_version av ON av.id = m.version_id
             WHERE m.game_slug = @gameSlug
             ORDER BY m.mode_key ASC
             """,
             new { gameSlug }, tx)).AsList();
+
+        EnrichModeRows(modes);
 
         if (modes.Count == 0) throw new GameCatalogValidationException($"No game modes are configured for '{gameSlug}'.");
 
@@ -722,8 +761,67 @@ public sealed class GameCatalogService(
             ? value.EnumerateArray().Where(i => i.ValueKind == JsonValueKind.String).Select(i => i.GetString()!).Where(s => !string.IsNullOrWhiteSpace(s))
             : Array.Empty<string>();
 
-    private sealed record CatalogVersionRow(Guid Id, string CatalogVersion, int SchemaVersion, string ContentHash);
-    private sealed record GameRow(string Slug, string Name, string? Category, string GameType, string DefaultModeKey, string FeaturesJson, string? BrConfigJson);
+    private static string? NormalizeMapPoolFilter(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null
+        : value.Trim().ToLowerInvariant() switch
+        {
+            "standard" => "standard",
+            "skirmish" => "skirmish",
+            _ => throw new InvalidOperationException($"Invalid mapPoolFilter '{value}'. Use 'standard' or 'skirmish'.")
+        };
+
+    private static string? OptionalModeFeaturesJson(JsonElement mode)
+    {
+        if (!mode.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Object)
+            return null;
+        return features.GetRawText();
+    }
+
+    internal static string? NormalizeMapPoolFilterOrNull(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "standard" => "standard",
+            "skirmish" => "skirmish",
+            _ => throw new GameCatalogValidationException($"Invalid mapPoolFilter '{value}'. Use 'standard' or 'skirmish'.")
+        };
+    }
+
+    private static void EnrichModeRows(IEnumerable<ModeRow> modes)
+    {
+        foreach (var mode in modes)
+        {
+            if (string.IsNullOrWhiteSpace(mode.FeaturesOverrideJson))
+            {
+                mode.Features = null;
+                continue;
+            }
+
+            var parsed = ParseJson(mode.FeaturesOverrideJson);
+            mode.Features = parsed is System.Collections.IDictionary dict && dict.Count == 0 ? null : parsed;
+        }
+    }
+
+    internal sealed record CatalogVersionRow(
+        Guid Id,
+        string CatalogVersion,
+        int SchemaVersion,
+        string ContentHash,
+        string Status = "active",
+        string Source = "packaged");
+    internal sealed record GameRow(
+        string Slug,
+        string Name,
+        string? Category,
+        string GameType,
+        string DefaultModeKey,
+        string FeaturesJson,
+        string? BrConfigJson,
+        string? LogoUrl = null,
+        string? IconUrl = null,
+        string? CoverUrl = null,
+        int SortOrder = 0);
     public sealed class ModeRow
     {
         public string ModeKey { get; set; } = string.Empty;
@@ -735,6 +833,12 @@ public sealed class GameCatalogService(
         public string[] Aliases { get; set; } = Array.Empty<string>();
         public string? ModeGroup { get; set; }
         public string? VariantLabel { get; set; }
+        public string? MapPoolFilter { get; set; }
+
+        [JsonIgnore]
+        public string? FeaturesOverrideJson { get; set; }
+
+        public object? Features { get; set; }
     }
     public sealed record StructureRow(string StructureKey, string Name, bool IsDefault);
     private sealed record TournamentRegistrationCatalogRow(Guid Id, string Game, string? GameMode, int? TeamSize);
@@ -778,5 +882,23 @@ public sealed record GameCatalogGameResponse(
     string DefaultModeKey,
     object Features,
     object BrConfig,
+    string? Logo,
+    string? Icon,
+    string? Cover,
+    int SortOrder,
+    IReadOnlyList<string> Aliases,
     IReadOnlyList<GameCatalogService.ModeRow> Modes,
     IReadOnlyList<GameCatalogService.StructureRow> TournamentStructures);
+
+public sealed record GameCatalogVersionSummary(
+    Guid Id,
+    string CatalogVersion,
+    int SchemaVersion,
+    string ContentHash,
+    string Status,
+    string Source,
+    bool IsActive,
+    DateTimeOffset? ImportedAt,
+    DateTimeOffset? PublishedAt,
+    Guid? CreatedBy,
+    Guid? PublishedBy);

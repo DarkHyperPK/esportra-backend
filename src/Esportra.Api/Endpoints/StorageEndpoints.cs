@@ -36,7 +36,7 @@ public static class StorageEndpoints
         "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
         "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
         "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
-        "system.assets.partners", "system.assets.website", "system.assets.games",
+        "system.assets.partners", "system.assets.website", "system.assets.games", "game-assets",
         "users.documents.kyc", "venue-images", "venues.images", "venues.layouts"
     };
 

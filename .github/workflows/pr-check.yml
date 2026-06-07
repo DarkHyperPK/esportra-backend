@@ -22,6 +22,24 @@ jobs:
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
 
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run tests
+        run: dotnet test --no-restore -c Release
+
   # ── Phase 5: forward-reference linter ──────────────────────────────────────
   # Scans all migration scripts in execution order and reports any DDL that
   # references a table created in a LATER script. Fails before the replay test

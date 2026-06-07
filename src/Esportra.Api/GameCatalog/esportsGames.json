@@ -56,7 +56,13 @@
             "swiftplay",
             "1v1",
             "skirmish_1v1"
-          ]
+          ],
+          "mapPoolFilter": "skirmish",
+          "features": {
+            "mapVeto": false,
+            "mapPool": false,
+            "mapPoolSize": 0
+          }
         },
         {
           "name": "Skirmish 2v2",
@@ -71,7 +77,13 @@
           "aliases": [
             "2v2",
             "skirmish_2v2"
-          ]
+          ],
+          "mapPoolFilter": "skirmish",
+          "features": {
+            "mapVeto": false,
+            "mapPool": false,
+            "mapPoolSize": 0
+          }
         }
       ],
       "defaultMode": "5v5",
@@ -981,6 +993,6 @@
       }
     }
   ],
-  "catalogVersion": "2026.06.07-r6s-veto-catalog",
+  "catalogVersion": "2026.06.08-mode-overlays-catalog",
   "schemaVersion": 1
 }

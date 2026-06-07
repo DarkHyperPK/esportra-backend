@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Dapper;
 using Esportra.Infrastructure.Database;
@@ -15,8 +16,15 @@ public static class GameEndpoints
 {
     public static void MapGameEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/games/catalog", async (GameCatalogService catalog, CancellationToken ct) =>
-            Results.Ok(await catalog.GetCatalogAsync(ct)));
+        app.MapGet("/api/games/catalog", async (HttpContext ctx, GameCatalogService catalog, CancellationToken ct) =>
+        {
+            var response = await catalog.GetCatalogAsync(ct);
+            ctx.Response.Headers.CacheControl = "public, max-age=600";
+            ctx.Response.Headers.ETag = $"\"{response.ContentHash}\"";
+            if (GameCatalogHttpHelper.MatchesETag(ctx.Request.Headers.IfNoneMatch.ToString(), response.ContentHash))
+                return Results.StatusCode(StatusCodes.Status304NotModified);
+            return Results.Ok(response);
+        });
 
         app.MapGet("/api/games/catalog/{slugOrAlias}", async (string slugOrAlias, GameCatalogService catalog, CancellationToken ct) =>
         {

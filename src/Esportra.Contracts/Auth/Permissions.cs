@@ -47,6 +47,10 @@ public static class Permissions
     public const string ContentModerate = "content:moderate";
     public const string ContentCreate   = "content:create";
     public const string ContentDelete   = "content:delete";
+
+    // Games catalog
+    public const string GamesView   = "games:view";
+    public const string GamesManage = "games:manage";
 }
 
 /// <summary>
@@ -71,6 +75,7 @@ public static class AdminRoles
                 Permissions.DisputesView, Permissions.DisputesResolve,
                 Permissions.VenuesView, Permissions.VenuesApprove,
                 Permissions.AnalyticsView, Permissions.SystemAudit,
+                Permissions.GamesView, Permissions.GamesManage,
             ],
             [Moderator] =
             [
