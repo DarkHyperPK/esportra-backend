@@ -146,6 +146,8 @@ public static class VetoEndpoints
             IDatHostService            dathost,
             IHubContext<MatchHub>      matchHub,
             IConfiguration             config,
+            IHostEnvironment           env,
+            ILogger<VetoDbService>     vetoLogger,
             ILogger<DatHostService>    serverLogger,
             CancellationToken         ct) =>
         {
@@ -180,6 +182,21 @@ public static class VetoEndpoints
                 return ex.Message.StartsWith("CONFLICT")
                     ? Results.Conflict(new { error = "The map veto was updated. Please refresh and try again." })
                     : Results.BadRequest(new { error = "This veto action is not valid right now." });
+            }
+            catch (Exception ex)
+            {
+                vetoLogger.LogError(ex, "Veto pick failed for match {MatchId}", matchId);
+                if (env.IsProduction())
+                {
+                    return Results.Json(new { error = "Something went wrong. Please try again or contact support if the issue persists." }, statusCode: 500);
+                }
+
+                return Results.Json(new
+                {
+                    error = "Something went wrong. Please try again or contact support if the issue persists.",
+                    detail = ex.Message,
+                    inner = ex.InnerException?.Message,
+                }, statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
