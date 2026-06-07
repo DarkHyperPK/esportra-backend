@@ -2,6 +2,7 @@ using System.Text;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
+using Esportra.Api.Services;
 using Esportra.Api.HealthChecks;
 using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
@@ -335,6 +336,7 @@ builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<CheckinWalkoversJob>();
 builder.Services.AddHostedService<DiscordDmDispatcherJob>();
 builder.Services.AddHostedService<InviteExpiryJob>();
+builder.Services.AddHostedService<R6MapAssetSeedService>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();

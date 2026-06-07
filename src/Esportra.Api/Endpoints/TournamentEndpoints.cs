@@ -3140,17 +3140,21 @@ public static class TournamentEndpoints
         app.MapGet("/api/tournaments/{id}/map-pool", async (
             Guid                 id,
             IDbConnectionFactory db,
+            IConfiguration       config,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
-            var maps = await conn.QueryAsync<dynamic>(
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var maps = GameMapImageHelper.EnrichRows(
+                await conn.QueryAsync<GameMapRow>(
                 """
                 SELECT gm.id::text as id, gm.game, gm.map_name, gm.map_image_url, gm.is_active
                 FROM public.tournament_map_pools tmp
                 JOIN public.game_maps gm ON gm.id = tmp.map_id
                 WHERE tmp.tournament_id = @id
                 ORDER BY gm.map_name ASC
-                """, new { id });
+                """, new { id }),
+                supabaseUrl);
             return Results.Ok(maps);
         });
 

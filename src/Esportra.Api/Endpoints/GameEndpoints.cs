@@ -103,7 +103,8 @@ public static class GameEndpoints
         app.MapGet("/api/games/maps", async (
             string               game,
             string?              mode,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IConfiguration       config) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
@@ -127,7 +128,10 @@ public static class GameEndpoints
 
             sql += " ORDER BY map_name ASC";
 
-            var maps = await conn.QueryAsync<dynamic>(sql, new { game });
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var maps = GameMapImageHelper.EnrichRows(
+                await conn.QueryAsync<GameMapRow>(sql, new { game }),
+                supabaseUrl);
 
             return Results.Ok(maps);
         }); // Public
@@ -138,7 +142,8 @@ public static class GameEndpoints
             string               game,
             bool?                is_active,
             string?              map_name,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IConfiguration       config) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
@@ -149,7 +154,10 @@ public static class GameEndpoints
             if (!string.IsNullOrWhiteSpace(map_name)) sql += " AND map_name ILIKE @map_name";
             sql += " ORDER BY map_name ASC";
 
-            var maps = await conn.QueryAsync<dynamic>(sql, new { game, is_active, map_name });
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var maps = GameMapImageHelper.EnrichRows(
+                await conn.QueryAsync<GameMapRow>(sql, new { game, is_active, map_name }),
+                supabaseUrl);
             return Results.Ok(maps);
         }); // Public
 

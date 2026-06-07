@@ -37,10 +37,22 @@ public static class VetoEndpoints
         app.MapGet("/api/veto/{matchId}/history", async (
             Guid            matchId,
             VetoDbService   veto,
+            IConfiguration  config,
             CancellationToken ct) =>
         {
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
             var history = await veto.GetEnrichedHistoryAsync(matchId, ct);
-            return Results.Ok(history);
+            var enriched = history
+                .Select(entry => entry with
+                {
+                    MapImageUrl = Esportra.Core.Games.R6MapCatalog.ResolveImageUrl(
+                        Esportra.Core.Games.R6MapCatalog.GameName,
+                        entry.MapName,
+                        entry.MapImageUrl,
+                        supabaseUrl),
+                })
+                .ToList();
+            return Results.Ok(enriched);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/veto/{matchId}/init ────────────────────────────────────
