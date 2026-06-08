@@ -7,8 +7,9 @@ namespace Esportra.Api.Hubs;
 /// <summary>
 /// Real-time map veto — replaces useMapVetoMachine Supabase subscription.
 /// Groups: veto:{matchId}
+/// Anonymous read-only subscribe is allowed so token-link captains receive live updates.
 /// </summary>
-[Authorize]
+[AllowAnonymous]
 public sealed class VetoHub : Hub
 {
     private readonly VetoDbService _veto;
