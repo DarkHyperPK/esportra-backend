@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
 using Esportra.Api.Helpers;
+using Esportra.Api.Services;
 
 namespace Esportra.Api.Endpoints;
 
@@ -39,6 +40,42 @@ public static class AdminEndpoints
         return s;
     }
 
+    private static async Task EvictUserContextAsync(
+        HybridCache cache,
+        Guid userId,
+        HttpContext ctx,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            await cache.RemoveAsync($"user-ctx:{userId}", ct);
+        }
+        catch (Exception ex)
+        {
+            var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
+            logger.LogWarning(ex, "UserContext cache eviction failed for {UserId}", userId);
+        }
+    }
+
+    private static async Task EvictUsersWithAdminRoleAsync(
+        HybridCache cache,
+        System.Data.IDbConnection conn,
+        Guid roleId,
+        HttpContext ctx,
+        CancellationToken ct = default)
+    {
+        var userIds = await conn.QueryAsync<Guid>(new CommandDefinition(
+            "SELECT user_id FROM public.admin_user_roles WHERE role_id = @roleId",
+            new { roleId },
+            cancellationToken: ct));
+
+        foreach (var userId in userIds)
+        {
+            await EvictUserContextAsync(cache, userId, ctx, ct);
+        }
+    }
+
     public static void MapAdminEndpoints(this WebApplication app)
     {
         // ── POST /api/admin/users/{userId}/action ─────────────────────────────
@@ -50,6 +87,7 @@ public static class AdminEndpoints
             IDbConnectionFactory     db,
             ISupabaseAdminClient     supabase,
             AuditService             audit,
+            HybridCache              cache,
             HttpContext              ctx,
             CancellationToken        ct) =>
         {
@@ -76,16 +114,22 @@ public static class AdminEndpoints
                     userCtx.UserIdGuid, userCtx.Email,
                     ActionType.Delete, TargetType.User,
                     userId, targetName ?? userId.ToString(), ct: ct);
+                await EvictUserContextAsync(cache, userId, ctx, ct);
                 return result;
             }
 
-            return req.Action switch
+            var actionResult = req.Action switch
             {
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
                 "assign_role" => await AssignRoleToUserAsync(userId, req, conn, ct),
                 "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, ct),
                 _ => Results.BadRequest(new { error = $"Unknown action: {req.Action}" })
             };
+
+            if (req.Action is "update-role" or "assign_role" or "revoke_role")
+                await EvictUserContextAsync(cache, userId, ctx, ct);
+
+            return actionResult;
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/admin/users/cleanup ─────────────────────────────────────
@@ -801,7 +845,7 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.RbacDeleteRole);
 
         // ── POST /api/admin/users/{userId}/suspend ──────────────────────────────
         app.MapPost("/api/admin/users/{userId}/suspend", async (
@@ -1112,6 +1156,9 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.AdminUsersView, StringComparer.OrdinalIgnoreCase))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = userId.HasValue
@@ -1138,18 +1185,21 @@ public static class AdminEndpoints
                     LIMIT 500
                     """);
             return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.AdminUsersView);
 
         // ── POST /api/admin/admin-user-roles ─────────────────────────────────────
         app.MapPost("/api/admin/admin-user-roles", async (
             [FromBody] AdminUserRoleAssignRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            HybridCache          cache,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.AdminUsersAssignRole, StringComparer.OrdinalIgnoreCase))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
@@ -1159,8 +1209,9 @@ public static class AdminEndpoints
                 ON CONFLICT DO NOTHING
                 """,
                 req);
+            await EvictUserContextAsync(cache, req.UserId, ctx, ct);
             return Results.Created($"/api/admin/admin-user-roles?user_id={req.UserId}", new { success = true });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.AdminUsersAssignRole);
 
         // ── DELETE /api/admin/admin-user-roles ───────────────────────────────────
         app.MapDelete("/api/admin/admin-user-roles", async (
@@ -1168,18 +1219,22 @@ public static class AdminEndpoints
             Guid                 roleId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            HybridCache          cache,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.AdminUsersRevokeRole, StringComparer.OrdinalIgnoreCase))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
                 "DELETE FROM admin_user_roles WHERE user_id = @userId AND role_id = @roleId",
                 new { userId, roleId });
+            await EvictUserContextAsync(cache, userId, ctx, ct);
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.AdminUsersRevokeRole);
 
         // ── GET /api/admin/my-context ─────────────────────────────────────────
         // Returns the current user's resolved admin roles and permissions from DB.
@@ -1193,6 +1248,7 @@ public static class AdminEndpoints
             {
                 adminRoles  = userCtx.AdminRoles,
                 permissions = userCtx.Permissions,
+                isSuperAdmin = userCtx.IsSuperAdmin,
             });
         }).RequireAuthorization("Authenticated");
 
@@ -1206,6 +1262,9 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.RbacView, StringComparer.OrdinalIgnoreCase))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
@@ -1221,7 +1280,7 @@ public static class AdminEndpoints
                 new { q, qp = string.IsNullOrWhiteSpace(q) ? null : EscapeLike(q) },
                 cancellationToken: ct));
             return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.RbacView);
 
         // ── GET /api/admin/permissions ────────────────────────────────────────
         // Returns all available permissions grouped by resource.
@@ -1232,17 +1291,21 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.RbacView, StringComparer.OrdinalIgnoreCase))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
                 """
-                SELECT id, name, description, resource, action
+                SELECT id, name, description, resource, action,
+                       label, category, risk_level, sort_order, is_system
                 FROM admin_permissions
-                ORDER BY resource, action
+                ORDER BY category NULLS LAST, sort_order, resource, action
                 """,
                 cancellationToken: ct));
             return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.RbacView);
 
         // ── GET /api/admin/roles/{roleId} ─────────────────────────────────────
         // Returns a single role with its assigned permissions and user count.
@@ -1254,6 +1317,9 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.RbacView, StringComparer.OrdinalIgnoreCase))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -1271,11 +1337,12 @@ public static class AdminEndpoints
 
             var permissions = await conn.QueryAsync<dynamic>(new CommandDefinition(
                 """
-                SELECT ap.id, ap.name, ap.description, ap.resource, ap.action
+                SELECT ap.id, ap.name, ap.description, ap.resource, ap.action,
+                       ap.label, ap.category, ap.risk_level, ap.sort_order, ap.is_system
                 FROM admin_permissions ap
                 JOIN admin_role_permissions arp ON arp.permission_id = ap.id
                 WHERE arp.role_id = @roleId
-                ORDER BY ap.resource, ap.action
+                ORDER BY ap.category NULLS LAST, ap.sort_order, ap.resource, ap.action
                 """,
                 new { roleId },
                 cancellationToken: ct));
@@ -1290,7 +1357,7 @@ public static class AdminEndpoints
                 role.user_count,
                 permissions
             });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.RbacView);
 
         // ── POST /api/admin/roles ─────────────────────────────────────────────
         // Create a custom admin role with assigned permissions.
@@ -1303,7 +1370,8 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin"))
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.RbacCreateRole, StringComparer.OrdinalIgnoreCase))
                 return Results.Forbid();
 
             // Validate key format: lowercase, alphanumeric + underscores, 3-50 chars
@@ -1384,7 +1452,7 @@ public static class AdminEndpoints
                 description = req.Description ?? "",
                 permission_count = req.PermissionIds.Length
             });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.RbacCreateRole);
 
         // ── PUT /api/admin/roles/{roleId} ─────────────────────────────────────
         // Update an existing custom role's name, description, and permissions.
@@ -1394,13 +1462,15 @@ public static class AdminEndpoints
             HttpContext                       ctx,
             IDbConnectionFactory             db,
             AuditService                     audit,
+            HybridCache                      cache,
             CancellationToken                ct) =>
         {
             var protectedRoleKeys = new HashSet<string> { "super_admin", "ops_admin", "moderator", "finance_admin", "support_admin" };
 
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin"))
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.RbacEditRole, StringComparer.OrdinalIgnoreCase))
                 return Results.Forbid();
 
             if (string.IsNullOrWhiteSpace(req.Name))
@@ -1497,8 +1567,10 @@ public static class AdminEndpoints
                 },
                 ct: ct);
 
+            await EvictUsersWithAdminRoleAsync(cache, conn, roleId, ctx, ct);
+
             return Results.Ok(new { success = true, id = roleId, name = req.Name });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.RbacEditRole);
 
         // ── DELETE /api/admin/roles/{roleId} ──────────────────────────────────
         // Delete a custom admin role. Built-in roles cannot be deleted.
@@ -1513,7 +1585,8 @@ public static class AdminEndpoints
 
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin"))
+            if (!userCtx.IsSuperAdmin &&
+                !userCtx.Permissions.Contains(Permissions.RbacDeleteRole, StringComparer.OrdinalIgnoreCase))
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();
@@ -1624,6 +1697,7 @@ public static class AdminEndpoints
             [FromBody] AdminUpdateUserRequest req,
             HttpContext                     ctx,
             IDbConnectionFactory            db,
+            HybridCache                     cache,
             CancellationToken               ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1659,6 +1733,7 @@ public static class AdminEndpoints
             }
 
             txn.Commit();
+            await EvictUserContextAsync(cache, userId, ctx, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
@@ -1790,22 +1865,109 @@ public static class AdminEndpoints
             [FromBody] AdminUpdateTournamentRequest req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
+            AuditService                         audit,
+            OperationsAuthorizationService       opsAuth,
             CancellationToken                   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.TournamentsEdit)) return Results.Forbid();
+
+            var requiredPermissions = new List<string>();
+            if (req.Name is not null || req.Game is not null || req.Format is not null ||
+                req.PrizePool.HasValue || req.MaxTeams.HasValue || req.StartDate.HasValue)
+                requiredPermissions.Add(Permissions.TournamentsEdit);
+            if (req.Status is "approved")
+                requiredPermissions.Add(Permissions.TournamentsApprove);
+            if (req.Status is "cancelled")
+                requiredPermissions.Add(Permissions.TournamentsCancel);
+            if (req.Status is not null && req.Status is not "approved" and not "cancelled")
+                requiredPermissions.Add(Permissions.TournamentsEdit);
+            if (req.IsFeatured is true)
+                requiredPermissions.Add(Permissions.TournamentsFeature);
+            if (req.IsFeatured is false)
+                requiredPermissions.Add(Permissions.TournamentsUnfeature);
+
+            if (requiredPermissions.Count == 0)
+                requiredPermissions.Add(Permissions.TournamentsEdit);
+
+            foreach (var permission in requiredPermissions.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!await opsAuth.CanMutateTournamentAsync(userCtx, id, permission, ct))
+                    return Results.Forbid();
+            }
 
             using var conn = db.CreateConnection();
+            var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                new CommandDefinition(
+                    """
+                    SELECT id, name, game, format, status::text AS status, prize_pool, max_teams,
+                           start_date, is_featured
+                    FROM tournaments
+                    WHERE id = @id
+                    """,
+                    new { id },
+                    cancellationToken: ct));
+            if (existing is null) return Results.NotFound();
+
             var affected = await conn.ExecuteAsync(
-                """
+                new CommandDefinition(
+                    """
                 UPDATE tournaments SET
                     status      = CASE WHEN @Status IS NOT NULL THEN @Status::tournament_status ELSE status END,
                     is_featured = COALESCE(@IsFeatured, is_featured),
+                    name        = COALESCE(@Name, name),
+                    game        = COALESCE(@Game, game),
+                    format      = COALESCE(@Format, format),
+                    prize_pool  = COALESCE(@PrizePool, prize_pool),
+                    max_teams   = COALESCE(@MaxTeams, max_teams),
+                    start_date  = COALESCE(@StartDate, start_date),
                     updated_at  = now()
                 WHERE id = @id
                 """,
-                new { id, req.Status, req.IsFeatured });
+                    new
+                    {
+                        id,
+                        req.Status,
+                        req.IsFeatured,
+                        req.Name,
+                        req.Game,
+                        req.Format,
+                        req.PrizePool,
+                        req.MaxTeams,
+                        req.StartDate
+                    },
+                    cancellationToken: ct));
+
+            var actionType = req.Status switch
+            {
+                "approved"  => ActionType.Approve,
+                "cancelled" => ActionType.Cancel,
+                _ when req.IsFeatured is true  => ActionType.Feature,
+                _ when req.IsFeatured is false => ActionType.Unfeature,
+                _ => ActionType.Update
+            };
+
+            await audit.LogAsync(
+                userCtx.UserIdGuid, userCtx.Email,
+                actionType, TargetType.Tournament,
+                id, (string?)existing.name ?? id.ToString(),
+                new
+                {
+                    before = new
+                    {
+                        name = existing.name,
+                        game = existing.game,
+                        format = existing.format,
+                        status = existing.status,
+                        prize_pool = existing.prize_pool,
+                        max_teams = existing.max_teams,
+                        start_date = existing.start_date,
+                        is_featured = existing.is_featured
+                    },
+                    requested = req,
+                    reason = req.Reason
+                },
+                ct: ct);
 
             return affected == 0 ? Results.NotFound() : Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
@@ -1816,17 +1978,31 @@ public static class AdminEndpoints
             HttpContext                            ctx,
             IDbConnectionFactory                   db,
             AuditService                           audit,
+            OperationsAuthorizationService         opsAuth,
             CancellationToken                      ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.TournamentsEdit))
-                return Results.Forbid();
 
             if (req.TournamentIds is not { Length: > 0 })
                 return Results.BadRequest(new { error = "TournamentIds must not be empty." });
             if (req.TournamentIds.Length > 100)
                 return Results.BadRequest(new { error = "Cannot process more than 100 tournaments at once." });
+
+            var requiredPermission = req.Action switch
+            {
+                "approve"   => Permissions.TournamentsApprove,
+                "cancel"    => Permissions.TournamentsCancel,
+                "feature"   => Permissions.TournamentsFeature,
+                "unfeature" => Permissions.TournamentsUnfeature,
+                _           => Permissions.TournamentsEdit
+            };
+
+            foreach (var tournamentId in req.TournamentIds.Distinct())
+            {
+                if (!await opsAuth.CanMutateTournamentAsync(userCtx, tournamentId, requiredPermission, ct))
+                    return Results.Forbid();
+            }
 
             var sql = req.Action switch
             {
@@ -2805,6 +2981,9 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
+
             using var conn = db.CreateConnection();
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -2818,29 +2997,55 @@ public static class AdminEndpoints
                 new { userId });
             if (profile is null) return Results.NotFound(new { error = "User not found" });
 
-            var licenses = await conn.QueryAsync<dynamic>(
+            async Task<IEnumerable<dynamic>> SafeQueryAsync(string segment, string sql, object? param = null)
+            {
+                try
+                {
+                    return await conn.QueryAsync<dynamic>(new CommandDefinition(sql, param, cancellationToken: ct));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Admin user detail segment {Segment} failed for {UserId}", segment, userId);
+                    return Array.Empty<dynamic>();
+                }
+            }
+
+            var licenses = await SafeQueryAsync(
+                "licenses",
                 "SELECT id, license_id, license_type, status, issued_at, expires_at, notes FROM licenses WHERE user_id = @userId ORDER BY issued_at DESC",
                 new { userId });
-            var userRoles = await conn.QueryAsync<dynamic>(
-                "SELECT role, is_active FROM user_roles WHERE user_id = @userId",
+            var userRoles = await SafeQueryAsync(
+                "user_roles",
+                "SELECT role, COALESCE(is_active, TRUE) AS is_active FROM user_roles WHERE user_id = @userId",
                 new { userId });
-            var verifiedRoles = await conn.QueryAsync<dynamic>(
+            var verifiedRoles = await SafeQueryAsync(
+                "verified_roles",
                 "SELECT role, status, is_active, verified_at FROM verified_roles WHERE user_id = @userId",
                 new { userId });
-            var organizations = await conn.QueryAsync<dynamic>(
+            var organizations = await SafeQueryAsync(
+                "organizations",
                 "SELECT id, name, slug, logo_url FROM organizations WHERE owner_id = @userId",
                 new { userId });
-            var venues = await conn.QueryAsync<dynamic>(
+            var venues = await SafeQueryAsync(
+                "venues",
                 "SELECT id, name, city, country, status FROM venues WHERE owner_id = @userId",
                 new { userId });
-            var tournaments = await conn.QueryAsync<dynamic>(
+            var tournaments = await SafeQueryAsync(
+                "tournaments",
                 "SELECT id, name, game, status::text AS status FROM tournaments WHERE organizer_id = @userId ORDER BY created_at DESC LIMIT 20",
                 new { userId });
-            var connectedAccounts = await conn.QueryAsync<dynamic>(
+            var connectedAccounts = await SafeQueryAsync(
+                "connected_accounts",
                 "SELECT provider, provider_id, created_at, updated_at FROM auth.identities WHERE user_id = @userId",
                 new { userId });
-            var teams = await conn.QueryAsync<dynamic>(
-                "SELECT t.id, t.name, t.tag, t.logo_url, tm.role FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE tm.user_id = @userId AND tm.status = 'accepted'",
+            var teams = await SafeQueryAsync(
+                "teams",
+                """
+                SELECT t.id, t.name, t.tag, t.logo_url, tm.role
+                FROM team_members tm
+                JOIN teams t ON t.id = tm.team_id
+                WHERE tm.user_id = @userId AND tm.is_active = TRUE
+                """,
                 new { userId });
 
             return Results.Ok(new
@@ -2855,7 +3060,7 @@ public static class AdminEndpoints
                 connected_accounts = connectedAccounts,
                 teams
             });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.UsersView);
 
         // ── POST /api/admin/licenses ──────────────────────────────────────────
         // Manually assign a license to a user (super admin)
@@ -4483,38 +4688,38 @@ public static class AdminEndpoints
             var countSql = """
                 SELECT COUNT(*) FROM (
                     SELECT id FROM audit_logs
-                    WHERE target_type = @targetType AND target_id = @targetId
+                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                     UNION ALL
                     SELECT id FROM staff_audit_log
-                    WHERE target_type = @targetType AND target_id = @targetId
+                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                 ) combined
                 """;
             var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-                countSql, new { targetType = normalizedType, targetId }, cancellationToken: ct));
+                countSql, new { targetType = normalizedType, targetIdText = targetId.ToString() }, cancellationToken: ct));
 
             var sql = """
                 SELECT id, admin_id, admin_name, action_type, target_type,
                        target_id, target_name, details, severity, created_at
                 FROM (
                     SELECT id, admin_id, admin_name, action_type, target_type,
-                           target_id, target_name, details, severity, created_at
+                           target_id::text AS target_id, target_name, details, severity, created_at
                     FROM audit_logs
-                    WHERE target_type = @targetType AND target_id = @targetId
+                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                     UNION ALL
                     SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
                            sal.action AS action_type, sal.target_type,
-                           sal.target_id, NULL AS target_name, sal.details,
+                           sal.target_id::text AS target_id, NULL AS target_name, sal.details,
                            NULL AS severity, sal.created_at
                     FROM staff_audit_log sal
                     LEFT JOIN profiles p ON p.id = sal.actor_id
-                    WHERE sal.target_type = @targetType AND sal.target_id = @targetId
+                    WHERE lower(sal.target_type) = @targetType AND sal.target_id::text = @targetIdText
                 ) combined
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType = normalizedType, targetId, limit = clampedLimit, offset }, cancellationToken: ct));
+                sql, new { targetType = normalizedType, targetIdText = targetId.ToString(), limit = clampedLimit, offset }, cancellationToken: ct));
             DapperJsonbHelper.FixJsonb(rows);
 
             return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
@@ -4768,9 +4973,16 @@ public static class AdminEndpoints
         // ── ADMIN SESSION MANAGEMENT ─────────────────────────────────────────────
         // ══════════════════════════════════════════════════════════════════════════
 
+        static bool HasPermission(UserContext userCtx, string permission) =>
+            userCtx.IsSuperAdmin ||
+            userCtx.Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+
+        static bool HasSecurityPermission(UserContext userCtx, string permission) =>
+            HasPermission(userCtx, permission);
+
         // ── GET /api/admin/sessions/active ───────────────────────────────────────
-        // Lists currently active admin sessions using a database-first approach.
-        // Queries profiles + admin_user_roles directly, avoiding Supabase Auth API pagination.
+        // Lists admin users with last recorded login/revoke activity from audit_logs.
+        // This is not a live Supabase JWT session registry.
         app.MapGet("/api/admin/sessions/active", async (
             HttpContext           ctx,
             IDbConnectionFactory  db,
@@ -4781,7 +4993,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!HasSecurityPermission(userCtx, Permissions.SecurityViewSessions)) return Results.Forbid();
 
             var clampedLimit = Math.Clamp(limit, 1, 100);
             var clampedPage  = Math.Max(1, page);
@@ -4808,13 +5020,21 @@ public static class AdminEndpoints
                        p.created_at AS "createdAt",
                        (SELECT MAX(al.created_at) FROM audit_logs al
                         WHERE al.admin_id = p.id AND al.action_type = 'login') AS "lastSignInAt",
+                       (SELECT MAX(al.created_at) FROM audit_logs al
+                        WHERE al.admin_id = p.id
+                          AND al.created_at > NOW() - INTERVAL '15 minutes') AS "lastActivityAt",
+                       EXISTS (
+                         SELECT 1 FROM audit_logs al
+                         WHERE al.admin_id = p.id
+                           AND al.created_at > NOW() - INTERVAL '15 minutes'
+                       ) AS "hasRecentActivity",
                        ARRAY_AGG(ar.key) AS roles
                 FROM admin_user_roles aur
                 JOIN profiles p ON p.id = aur.user_id
                 JOIN admin_roles ar ON ar.id = aur.role_id
                 WHERE (@search IS NULL OR p.email ILIKE @searchPattern ESCAPE '\' OR p.username ILIKE @searchPattern ESCAPE '\')
                 GROUP BY p.id, p.email, p.username, p.full_name, p.avatar_url, p.created_at
-                ORDER BY "lastSignInAt" DESC NULLS LAST
+                ORDER BY "lastActivityAt" DESC NULLS LAST, "lastSignInAt" DESC NULLS LAST
                 LIMIT @limit OFFSET @offset
                 """;
 
@@ -4834,11 +5054,19 @@ public static class AdminEndpoints
                 return dict;
             }).ToList();
 
-            return Results.Ok(new { items, total, page = clampedPage, limit = clampedLimit });
-        }).RequireAuthorization("Admin");
+            return Results.Ok(new
+            {
+                items,
+                total,
+                page = clampedPage,
+                limit = clampedLimit,
+                source = "admin_users_with_roles",
+                description = "Admin users with last recorded login and recent audit activity. Not live JWT sessions.",
+            });
+        }).RequireAuthorization(Permissions.SecurityViewSessions);
 
         // ── GET /api/admin/sessions/audit ────────────────────────────────────────
-        // Returns recent admin login/logout activity from audit_logs.
+        // Returns recent admin login/logout/session-revoke activity from audit_logs.
         app.MapGet("/api/admin/sessions/audit", async (
             HttpContext           ctx,
             IDbConnectionFactory  db,
@@ -4849,7 +5077,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!HasSecurityPermission(userCtx, Permissions.SecurityViewSessions)) return Results.Forbid();
 
             var clampedLimit = Math.Clamp(limit, 1, 100);
             var clampedPage  = Math.Max(1, page);
@@ -4857,13 +5085,19 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Filter to login/logout actions where the actor is an admin
+            // Filter to login/logout/revoke actions where the actor or target is an admin
             var conditions = new List<string>
             {
-                "al.action_type IN ('login', 'logout')",
                 """
-                EXISTS (
-                    SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.admin_id
+                (
+                  al.action_type IN ('login', 'logout')
+                  OR (al.action_type = 'logout' AND al.details->>'action' = 'session_revoke')
+                )
+                """,
+                """
+                (
+                  EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.admin_id)
+                  OR EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.target_id)
                 )
                 """
             };
@@ -4906,7 +5140,7 @@ public static class AdminEndpoints
             DapperJsonbHelper.FixJsonb(rows);
 
             return Results.Ok(new { items = rows, total, page = clampedPage, limit = clampedLimit });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.SecurityViewSessions);
 
         // ── POST /api/admin/sessions/{userId}/revoke ─────────────────────────────
         // Force logout a user by invalidating their Supabase Auth refresh tokens
@@ -4923,7 +5157,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!HasSecurityPermission(userCtx, Permissions.SecurityRevokeSessions)) return Results.Forbid();
 
             // Cannot revoke own session
             if (userCtx.UserIdGuid == userId)
@@ -4985,7 +5219,7 @@ public static class AdminEndpoints
                     ? "Session revoked with partial enforcement"
                     : "Session revoked successfully"
             });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.SecurityRevokeSessions);
 
         // ── GET /api/admin/sessions/online-count ─────────────────────────────────
         // Returns count of distinct users active in the last 15 minutes,
@@ -4997,19 +5231,22 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!HasSecurityPermission(userCtx, Permissions.SecurityViewSessions)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
             var count = await conn.ExecuteScalarAsync<int>(new CommandDefinition("""
-                SELECT COUNT(DISTINCT admin_id)
-                FROM audit_logs
-                WHERE created_at > NOW() - INTERVAL '15 minutes'
-                  AND admin_id IS NOT NULL
+                SELECT COUNT(DISTINCT al.admin_id)
+                FROM audit_logs al
+                WHERE al.created_at > NOW() - INTERVAL '15 minutes'
+                  AND al.admin_id IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.admin_id
+                  )
                 """, cancellationToken: ct));
 
-            return Results.Ok(new { count, windowMinutes = 15 });
-        }).RequireAuthorization("Admin");
+            return Results.Ok(new { count, windowMinutes = 15, source = "recent_admin_audit_activity" });
+        }).RequireAuthorization(Permissions.SecurityViewSessions);
 
         // ══════════════════════════════════════════════════════════════════════
         // IP ALLOWLIST MANAGEMENT (super_admin only)
@@ -7305,7 +7542,16 @@ public sealed record UpdateApplicationRequest(string? Status = null, string? Not
 public sealed record AdminUserRoleAssignRequest(Guid UserId, Guid RoleId);
 public sealed record CreateAdminRoleRequest(string Name, string Key, string Description, Guid[] PermissionIds);
 public sealed record UpdateAdminRoleRequest(string Name, string Description, Guid[] PermissionIds);
-public sealed record AdminUpdateTournamentRequest(string? Status = null, bool? IsFeatured = null);
+public sealed record AdminUpdateTournamentRequest(
+    string? Status = null,
+    [property: JsonPropertyName("is_featured")] bool? IsFeatured = null,
+    string? Name = null,
+    string? Game = null,
+    string? Format = null,
+    [property: JsonPropertyName("prize_pool")] decimal? PrizePool = null,
+    [property: JsonPropertyName("max_teams")] int? MaxTeams = null,
+    [property: JsonPropertyName("start_date")] DateTimeOffset? StartDate = null,
+    string? Reason = null);
 public sealed record AdminUpdateUserRequest(bool? IsAdmin = null, Guid[]? AdminRoles = null);
 public sealed record CreateAdminAlertRequest(
     string? Type = null,

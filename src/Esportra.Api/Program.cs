@@ -320,6 +320,9 @@ builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<OperationsAuditService>();
+builder.Services.AddScoped<GhostModeTokenService>();
+builder.Services.AddScoped<OperationsAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.GameCatalogService>();
 builder.Services.AddScoped<Esportra.Api.Services.GameCatalogAssetService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
@@ -481,6 +484,8 @@ app.Use(async (ctx, next) =>
 });
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
+app.UseGhostMode();        // Validate and audit short-lived impersonation tokens
+app.UseAdminMutationAudit(); // Pre-audit destructive admin mutations before endpoint execution
 app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
 
@@ -494,6 +499,7 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 // ── Phase 1: Edge Function replacements ───────────────────────────────────────
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();
 app.MapSteamAccountEndpoints();
 app.MapGameEndpoints();
