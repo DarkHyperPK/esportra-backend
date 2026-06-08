@@ -652,8 +652,7 @@ public static class VetoEndpoints
         using var conn = db.CreateConnection();
         var row = await conn.QuerySingleOrDefaultAsync<PublicVetoAccessRow>(
             """
-            SELECT t.is_public AS IsPublic,
-                   t.settings::text AS SettingsJson
+            SELECT t.settings::text AS SettingsJson
             FROM public.match_map_vetos mmv
             JOIN public.tournaments t ON t.id = mmv.tournament_id
             WHERE mmv.match_id = @matchId
@@ -661,7 +660,7 @@ public static class VetoEndpoints
             """,
             new { matchId });
 
-        if (row is null || !row.IsPublic || IsMapVetoDisabled(row.SettingsJson))
+        if (row is null || IsMapVetoDisabled(row.SettingsJson))
             return null;
 
         return new PublicVetoAccess(matchId);
@@ -718,7 +717,7 @@ public static class VetoEndpoints
         string TeamSide,
         bool HasMockParticipants);
 
-    private sealed record PublicVetoAccessRow(bool IsPublic, string? SettingsJson);
+    private sealed record PublicVetoAccessRow(string? SettingsJson);
 
     private sealed record PublicVetoAccess(Guid MatchId);
 }
