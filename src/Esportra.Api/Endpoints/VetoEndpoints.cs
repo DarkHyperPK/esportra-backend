@@ -74,10 +74,17 @@ public static class VetoEndpoints
 
             try
             {
-                // Idempotent: if veto already exists, return it
                 var existing = await veto.GetAsync(matchId, ct);
                 if (existing is not null)
-                    return Results.Ok(existing);
+                {
+                    var needsRestart =
+                        string.Equals(existing.Status, "pending", StringComparison.OrdinalIgnoreCase)
+                        && existing.CurrentTeamId is null
+                        && existing.CurrentActionNumber == 0;
+
+                    if (!needsRestart)
+                        return Results.Ok(existing);
+                }
 
                 using var conn = db.CreateConnection();
                 var tournament = await conn.QuerySingleOrDefaultAsync<TournamentVetoGateRow>(
@@ -128,6 +135,7 @@ public static class VetoEndpoints
 
                 await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                     .SendAsync(VetoHubEvents.StateSync, result, ct);
+                await BroadcastHistoryAsync(hub, veto, matchId, ct);
 
                 return Results.Ok(result);
             }
@@ -315,6 +323,7 @@ public static class VetoEndpoints
 
             await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
                 .SendAsync(VetoHubEvents.VetoReset, matchId, ct);
+            await BroadcastHistoryAsync(hub, veto, matchId, ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
