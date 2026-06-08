@@ -395,6 +395,7 @@ public static class VetoEndpoints
         app.MapGet("/api/veto/token/{token}", async (
             string               token,
             IDbConnectionFactory db,
+            VetoDbService        veto,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
@@ -402,7 +403,9 @@ public static class VetoEndpoints
             // S5: Look up by cryptographic link token (not by match_id/team2_id)
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT mmv.*,
+                SELECT mmv.match_id,
+                       mmv.team1_link_token,
+                       mmv.team2_link_token,
                        m.status     AS match_status,
                        m.best_of    AS match_best_of,
                        t.game       AS tournament_game,
@@ -421,35 +424,37 @@ public static class VetoEndpoints
 
             if (row is null) return Results.NotFound(new { error = "Map veto not found." });
 
+            var state = await veto.GetAsync((Guid)row.match_id, ct);
+            if (state is null) return Results.NotFound(new { error = "Map veto not found." });
+
             // Determine which team this token belongs to
             string? teamSide = row.team1_link_token == token ? "team1" : "team2";
 
             return Results.Ok(new
             {
-                match_id         = row.match_id,
-                tournament_id    = row.tournament_id,
-                team1_id         = row.team1_id,
-                team2_id         = row.team2_id,
-                best_of          = row.best_of,
-                status           = row.status,
-                current_team_id  = row.current_team_id,
-                current_action   = row.current_action,
-                current_action_number = row.current_action_number,
-                turn_started_at  = row.turn_started_at,
-                turn_duration_seconds = row.turn_duration_seconds,
-                team1_banned_maps = row.team1_banned_maps,
-                team2_banned_maps = row.team2_banned_maps,
-                team1_picked_maps = row.team1_picked_maps,
-                team2_picked_maps = row.team2_picked_maps,
-                selected_map_id   = row.selected_map_id,
-                selected_map_pool = row.selected_map_pool,
-                started_at        = row.started_at,
-                completed_at      = row.completed_at,
-                game              = row.game,
+                id               = state.Id,
+                match_id         = state.MatchId,
+                tournament_id    = state.TournamentId,
+                team1_id         = state.Team1Id,
+                team2_id         = state.Team2Id,
+                best_of          = state.BestOf,
+                status           = state.Status,
+                current_team_id  = state.CurrentTeamId,
+                current_action   = state.CurrentAction,
+                current_action_number = state.CurrentActionNumber,
+                team1_banned_maps = state.Team1BannedMaps,
+                team2_banned_maps = state.Team2BannedMaps,
+                team1_picked_maps = state.Team1PickedMaps,
+                team2_picked_maps = state.Team2PickedMaps,
+                selected_map_id   = state.SelectedMapId,
+                selected_map_pool = state.SelectedMapPool,
+                started_at        = state.StartedAt,
+                completed_at      = state.CompletedAt,
+                game              = state.Game,
                 stage_id         = (object?)null,
                 team_side        = teamSide,
-                team1_link_token = (string?)row.team1_link_token,
-                team2_link_token = (string?)row.team2_link_token,
+                team1_link_token = state.Team1LinkToken,
+                team2_link_token = state.Team2LinkToken,
                 match = new
                 {
                     status  = row.match_status,
