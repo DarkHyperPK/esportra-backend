@@ -150,6 +150,49 @@ public static class StaffAuthHelper
             new { userId, matchId, perm = requiredPermission });
     }
 
+    public static async Task<bool> CanAccessMatchRoomAsync(
+        IDbConnection conn, Guid userId, Guid matchId)
+    {
+        var isParticipant = await conn.QuerySingleAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM brkt_matches bm
+                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId
+                  AND tm.user_id = @userId
+                  AND tm.is_active = TRUE
+                  AND tm.role != 'coach'
+            )
+            """,
+            new { userId, matchId });
+        if (isParticipant) return true;
+
+        var hasBracketAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermBracketEdit);
+        if (hasBracketAccess) return true;
+
+        var hasDisputeAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermDisputesAssist);
+        if (hasDisputeAccess) return true;
+
+        return await conn.QuerySingleAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM admin_user_roles WHERE user_id = @userId)",
+            new { userId });
+    }
+
+    public static async Task<bool> IsMatchOrganizerOrStaffAsync(
+        IDbConnection conn, Guid userId, Guid matchId)
+    {
+        var hasBracketAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermBracketEdit);
+        if (hasBracketAccess) return true;
+
+        var hasDisputeAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermDisputesAssist);
+        if (hasDisputeAccess) return true;
+
+        return await conn.QuerySingleAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM admin_user_roles WHERE user_id = @userId)",
+            new { userId });
+    }
+
     /// <summary>
     /// Quick check: is the user a platform admin (any admin role)?
     /// Use as a final fallback after the SQL check returns false.

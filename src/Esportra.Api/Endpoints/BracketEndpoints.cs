@@ -625,10 +625,17 @@ public static class BracketEndpoints
         // ── GET /api/brackets/matches/{id} ────────────────────────────────────
         app.MapGet("/api/brackets/matches/{id}", async (
             Guid                 id,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
+                return Results.Forbid();
+
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT m.*,
@@ -645,7 +652,7 @@ public static class BracketEndpoints
                 WHERE m.id = @id
                 """, new { id });
             return match is null ? Results.NotFound() : Results.Ok(match);
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/events ──────────────────────────────────────────
         // Returns bracket match events (scores, status changes, etc.)

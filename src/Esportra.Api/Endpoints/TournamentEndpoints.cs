@@ -669,13 +669,22 @@ public static class TournamentEndpoints
 
             // Only organizer or admin can update
             var existingTournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT organizer_id, game, game_mode, team_size, format FROM tournaments WHERE id = @id", new { id });
+                """
+                SELECT organizer_id, game, game_mode, team_size, format, status,
+                       start_date, end_date, registration_deadline, max_teams
+                FROM tournaments
+                WHERE id = @id
+                """,
+                new { id });
             if (existingTournament is null) return Results.NotFound();
             if ((Guid)existingTournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
                 return Results.Forbid();
 
-            // ── Mock tournament guard: block publish if mock participants exist ──
-            if (req.Status is "open" or "published")
+            // ── Mock tournament guard: block only transitions into live/published states ──
+            var existingStatus = (string?)existingTournament.status;
+            var isPublishingTransition = req.Status is "open" or "published"
+                && !string.Equals(req.Status, existingStatus, StringComparison.OrdinalIgnoreCase);
+            if (isPublishingTransition)
             {
                 var mockCount = await conn.ExecuteScalarAsync<int>(
                     "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
@@ -3648,6 +3657,14 @@ public static class TournamentEndpoints
                 var isPublic = (bool)tournament.is_public;
                 logger.LogInformation("[mock/generate] Tournament status={Status} isPublic={IsPublic} format={Format} maxTeams={Max}",
                     tStatus, isPublic, (string)tournament.format, (int)tournament.max_teams);
+
+                if (isPublic || tStatus != "draft")
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "Mock teams can only be generated while the tournament is a private draft."
+                    });
+                }
 
                 var safety = await CheckMockSimulationSafetyAsync(conn, tx, id);
                 if (!safety.CanRegenerate)

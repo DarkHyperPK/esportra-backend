@@ -1,4 +1,5 @@
 using Dapper;
+using Esportra.Api.Helpers;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -86,11 +87,13 @@ public sealed class ChatHub : Hub
 
             var username = (string?)(userInfo?.username) ?? "Unknown";
             var teamId   = (Guid?)(userInfo?.team_id);
+            var isOrganizer = await StaffAuthHelper.IsMatchOrganizerOrStaffAsync(
+                conn, Guid.Parse(userId), Guid.Parse(matchId));
 
             const string sql = """
                 INSERT INTO match_messages (match_id, sender_id, sender_name, team_id, content, message_type, created_at)
                 VALUES (@MatchId, @SenderId, @SenderName, @TeamId, @Content, 'user', NOW())
-                RETURNING id::text, match_id::text, sender_id::text, sender_name, team_id::text, content, message_type, created_at;
+                RETURNING id::text, match_id::text, sender_id::text, sender_name, team_id::text, content, message_type, created_at, @IsOrganizer AS is_organizer;
                 """;
 
             var message = await conn.QuerySingleAsync<MessageDto>(sql, new
@@ -100,6 +103,7 @@ public sealed class ChatHub : Hub
                 SenderName = username,
                 TeamId     = teamId,
                 Content    = content.Trim(),
+                IsOrganizer = isOrganizer,
             });
 
             await Clients.Group(ChatGroup(matchId))
@@ -154,22 +158,8 @@ public sealed class ChatHub : Hub
     private async Task<bool> IsMatchParticipantAsync(string userId, string matchId)
     {
         using var conn = _db.CreateConnection();
-        var isParticipant = await conn.QuerySingleOrDefaultAsync<bool>(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM brkt_matches bm
-                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role != 'coach'
-                UNION ALL
-                SELECT 1 FROM brkt_matches bm
-                JOIN brkt_versions bv ON bv.id = bm.version_id
-                JOIN tournament_stages ts ON ts.id = bv.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE bm.id = @matchId AND t.organizer_id = @userId
-            )
-            """,
-            new { matchId = Guid.Parse(matchId), userId = Guid.Parse(userId) });
-        return isParticipant;
+        return await StaffAuthHelper.CanAccessMatchRoomAsync(
+            conn, Guid.Parse(userId), Guid.Parse(matchId));
     }
 }
 
@@ -183,7 +173,8 @@ public sealed record MessageDto(
     string?  TeamId,
     string   Content,
     string   MessageType,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    bool     IsOrganizer);
 
 /// <summary>Events broadcast to chat group clients.</summary>
 public static class ChatHubEvents

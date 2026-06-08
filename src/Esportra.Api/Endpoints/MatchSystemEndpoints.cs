@@ -729,16 +729,45 @@ public static class MatchSystemEndpoints
         // ── GET /api/matches/{id}/messages ───────────────────────────────────
         app.MapGet("/api/matches/{id}/messages", async (
             Guid                 id,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
+                return Results.Forbid();
+
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, match_id, sender_id, sender_name, team_id,
-                       content, message_type, metadata, created_at
-                FROM match_messages
-                WHERE match_id = @id
+                SELECT mm.id, mm.match_id, mm.sender_id, mm.sender_name, mm.team_id,
+                       mm.content, mm.message_type, mm.metadata, mm.created_at,
+                       EXISTS (
+                           SELECT 1
+                           FROM brkt_matches bm
+                           JOIN brkt_versions bv ON bv.id = bm.version_id
+                           JOIN tournaments t ON t.id = bv.tournament_id
+                           LEFT JOIN organizations o ON o.id = t.organization_id
+                           LEFT JOIN organization_staff os
+                                  ON os.user_id = mm.sender_id
+                                 AND os.status = 'active'
+                                 AND os.organization_id = t.organization_id
+                           LEFT JOIN staff_tournament_assignments sta
+                                  ON sta.organization_staff_id = os.id
+                                 AND sta.tournament_id = t.id
+                           WHERE bm.id = mm.match_id
+                             AND (
+                                 t.organizer_id = mm.sender_id
+                                 OR o.owner_id = mm.sender_id
+                                 OR os.role = 'admin'
+                                 OR (sta.id IS NOT NULL AND ('bracket:edit' = ANY(os.permissions) OR 'disputes:assist' = ANY(os.permissions)))
+                                 OR EXISTS(SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = mm.sender_id)
+                             )
+                       ) AS is_organizer
+                FROM match_messages mm
+                WHERE mm.match_id = @id
                 ORDER BY created_at ASC
                 LIMIT 500
                 """,
@@ -820,10 +849,17 @@ public static class MatchSystemEndpoints
         // ── GET /api/matches/{id}/checkins ────────────────────────────────────
         app.MapGet("/api/matches/{id}/checkins", async (
             Guid                 id,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
+                return Results.Forbid();
+
             var rows = await conn.QueryAsync<dynamic>(
                 "SELECT match_id::text, team_id::text, user_id::text, checked_in_at FROM match_checkins WHERE match_id = @id", new { id });
             return Results.Ok(rows);
@@ -1018,10 +1054,17 @@ public static class MatchSystemEndpoints
         // ── GET /api/matches/{matchId}/time-proposals ───────────────────────
         app.MapGet("/api/matches/{matchId}/time-proposals", async (
             Guid                 matchId,
+            HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId))
+                return Results.Forbid();
+
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT id::text, match_id::text, proposed_by::text, proposed_time, status,

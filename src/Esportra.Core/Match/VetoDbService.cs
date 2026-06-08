@@ -274,6 +274,24 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         return (await GetAsync(matchId, ct))!;
     }
 
+    public async Task<MatchMapVeto> BanMapForTeamTokenAsync(
+        Guid matchId, string mapId, string teamSide, CancellationToken ct = default)
+    {
+        var veto = await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException("Veto not found");
+
+        ValidateAction(veto, VetoEvent.BanMap, mapId);
+        AssertTokenTeamCanAct(veto, teamSide);
+
+        bool isTeam1 = veto.CurrentTeamId == veto.Team1Id;
+        string col = isTeam1 ? "team1_banned_maps" : "team2_banned_maps";
+        var next = NextActionFor(veto);
+
+        await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, null, "ban");
+
+        return (await GetAsync(matchId, ct))!;
+    }
+
     // ── Pick (with FSM + optimistic lock) ────────────────────────────────────
 
     public async Task<MatchMapVeto> PickMapAsync(
@@ -290,6 +308,24 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
 
         var next = NextActionFor(veto);
         await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, userId, "pick", isPick: true);
+
+        return (await GetAsync(matchId, ct))!;
+    }
+
+    public async Task<MatchMapVeto> PickMapForTeamTokenAsync(
+        Guid matchId, string mapId, string teamSide, CancellationToken ct = default)
+    {
+        var veto = await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException("Veto not found");
+
+        ValidateAction(veto, VetoEvent.PickMap, mapId);
+        AssertTokenTeamCanAct(veto, teamSide);
+
+        bool isTeam1 = veto.CurrentTeamId == veto.Team1Id;
+        string col = isTeam1 ? "team1_picked_maps" : "team2_picked_maps";
+
+        var next = NextActionFor(veto);
+        await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, null, "pick", isPick: true);
 
         return (await GetAsync(matchId, ct))!;
     }
@@ -367,6 +403,78 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         }
 
         await RecordHistoryAsync(conn, veto, mapId, userId, "pick_side", side);
+
+        var next = NextActionFor(veto);
+        await SetNextActionAsync(matchId, veto, next);
+
+        return (await GetAsync(matchId, ct))!;
+    }
+
+    public async Task<MatchMapVeto> PickSideForTeamTokenAsync(
+        Guid matchId, string mapId, string side, string teamSide, CancellationToken ct = default)
+    {
+        var veto = await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException("Veto not found");
+
+        ValidateAction(veto, VetoEvent.PickSide, mapId);
+        AssertTokenTeamCanAct(veto, teamSide);
+
+        using var conn = db.CreateConnection();
+
+        var updated = await conn.ExecuteAsync(@"
+            UPDATE public.match_map_vetos
+               SET team1_picked_maps = (
+                     COALESCE((
+                       SELECT jsonb_agg(
+                         CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
+                       ) FROM jsonb_array_elements((COALESCE(team1_picked_maps::text, '[]'))::jsonb) AS m
+                     ), '[]'::jsonb)
+                   )::json,
+                   team2_picked_maps = (
+                     COALESCE((
+                       SELECT jsonb_agg(
+                         CASE WHEN m->>'map_id' = @mapId THEN m || jsonb_build_object('side', @side) ELSE m END
+                       ) FROM jsonb_array_elements((COALESCE(team2_picked_maps::text, '[]'))::jsonb) AS m
+                     ), '[]'::jsonb)
+                   )::json
+             WHERE match_id = @matchId
+               AND current_action_number = @expectedAction",
+            new { matchId, mapId, side, expectedAction = veto.CurrentActionNumber });
+
+        if (updated == 0)
+            throw new InvalidOperationException("CONFLICT: veto state changed (optimistic lock)");
+
+        var step = CurrentStepFor(veto);
+        if (step?.IsDecider == true)
+        {
+            var isTeam1 = veto.CurrentTeamId == veto.Team1Id;
+            var appendSql = isTeam1
+                ? @"UPDATE public.match_map_vetos
+                       SET team1_picked_maps = (
+                             (COALESCE(team1_picked_maps::text, '[]'))::jsonb
+                             || jsonb_build_array(jsonb_build_object('map_id', @mapId::text, 'side', @side))
+                           )::json,
+                           selected_map_id = @mapId::uuid
+                     WHERE match_id = @matchId
+                       AND NOT EXISTS (
+                           SELECT 1 FROM jsonb_array_elements((COALESCE(team1_picked_maps::text, '[]'))::jsonb) m
+                            WHERE m->>'map_id' = @mapId
+                       )"
+                : @"UPDATE public.match_map_vetos
+                       SET team2_picked_maps = (
+                             (COALESCE(team2_picked_maps::text, '[]'))::jsonb
+                             || jsonb_build_array(jsonb_build_object('map_id', @mapId::text, 'side', @side))
+                           )::json,
+                           selected_map_id = @mapId::uuid
+                     WHERE match_id = @matchId
+                       AND NOT EXISTS (
+                           SELECT 1 FROM jsonb_array_elements((COALESCE(team2_picked_maps::text, '[]'))::jsonb) m
+                            WHERE m->>'map_id' = @mapId
+                       )";
+            await conn.ExecuteAsync(appendSql, new { matchId, mapId, side });
+        }
+
+        await RecordHistoryAsync(conn, veto, mapId, null, "pick_side", side);
 
         var next = NextActionFor(veto);
         await SetNextActionAsync(matchId, veto, next);
@@ -455,13 +563,23 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             throw new UnauthorizedAccessException("NOT_YOUR_TURN: you are not captain of the acting team");
     }
 
+    private static void AssertTokenTeamCanAct(MatchMapVeto veto, string teamSide)
+    {
+        if (veto.CurrentTeamId is null)
+            throw new InvalidOperationException("No current team assigned");
+
+        var expectedTeamId = teamSide == "team1" ? veto.Team1Id : teamSide == "team2" ? veto.Team2Id : null;
+        if (expectedTeamId is null || veto.CurrentTeamId != expectedTeamId)
+            throw new UnauthorizedAccessException("NOT_YOUR_TURN: token is not for the acting team");
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     private async Task AdvanceOrCompleteAsync(
         Guid matchId, MatchMapVeto veto,
         (string? Action, string? TeamSide)? next,
         string arrayCol, string mapId, string? side,
-        Guid userId, string actionType,
+        Guid? userId, string actionType,
         bool isPick = false)
     {
         using var conn = db.CreateConnection();
@@ -527,7 +645,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         System.Data.IDbConnection conn,
         MatchMapVeto veto,
         string mapId,
-        Guid userId,
+        Guid? userId,
         string actionType,
         string? side)
     {

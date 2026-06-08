@@ -432,6 +432,20 @@ public static class VetoEndpoints
                 team2_id         = row.team2_id,
                 best_of          = row.best_of,
                 status           = row.status,
+                current_team_id  = row.current_team_id,
+                current_action   = row.current_action,
+                current_action_number = row.current_action_number,
+                turn_started_at  = row.turn_started_at,
+                turn_duration_seconds = row.turn_duration_seconds,
+                team1_banned_maps = row.team1_banned_maps,
+                team2_banned_maps = row.team2_banned_maps,
+                team1_picked_maps = row.team1_picked_maps,
+                team2_picked_maps = row.team2_picked_maps,
+                selected_map_id   = row.selected_map_id,
+                selected_map_pool = row.selected_map_pool,
+                started_at        = row.started_at,
+                completed_at      = row.completed_at,
+                game              = row.game,
                 stage_id         = (object?)null,
                 team_side        = teamSide,
                 team1_link_token = (string?)row.team1_link_token,
@@ -446,6 +460,133 @@ public static class VetoEndpoints
                 tournament = new { game = row.tournament_game },
             });
         });
+
+        app.MapGet("/api/veto/token/{token}/history", async (
+            string token,
+            IDbConnectionFactory db,
+            VetoDbService veto,
+            IConfiguration config,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var tokenContext = await ResolveTokenContextAsync(conn, token);
+            if (tokenContext is null) return Results.NotFound(new { error = "Map veto not found." });
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var history = await veto.GetEnrichedHistoryAsync(tokenContext.MatchId, ct);
+            var enriched = history
+                .Select(entry => entry with
+                {
+                    MapImageUrl = Esportra.Core.Games.R6MapCatalog.ResolveImageUrl(
+                        Esportra.Core.Games.R6MapCatalog.GameName,
+                        entry.MapName,
+                        entry.MapImageUrl,
+                        supabaseUrl),
+                })
+                .ToList();
+            return Results.Ok(enriched);
+        });
+
+        app.MapPost("/api/veto/token/{token}/ban", async (
+            string token,
+            [FromBody] VetoActionRequest req,
+            IDbConnectionFactory db,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
+            await HandleTokenActionAsync(token, req.MapId, null, "ban", db, veto, hub, ct));
+
+        app.MapPost("/api/veto/token/{token}/pick", async (
+            string token,
+            [FromBody] VetoActionRequest req,
+            IDbConnectionFactory db,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
+            await HandleTokenActionAsync(token, req.MapId, null, "pick", db, veto, hub, ct));
+
+        app.MapPost("/api/veto/token/{token}/pick-side", async (
+            string token,
+            [FromBody] VetoPickSideRequest req,
+            IDbConnectionFactory db,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
+            await HandleTokenActionAsync(token, req.MapId, req.Side, "pick-side", db, veto, hub, ct));
+    }
+
+    private static async Task<IResult> HandleTokenActionAsync(
+        string token,
+        string mapId,
+        string? side,
+        string action,
+        IDbConnectionFactory db,
+        VetoDbService veto,
+        IHubContext<VetoHub> hub,
+        CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+        var tokenContext = await ResolveTokenContextAsync(conn, token);
+        if (tokenContext is null) return Results.NotFound(new { error = "Map veto not found." });
+        if (!tokenContext.HasMockParticipants)
+            return Results.Json(new { error = "Login required for live tournament veto links." }, statusCode: StatusCodes.Status401Unauthorized);
+
+        try
+        {
+            var result = action switch
+            {
+                "ban" => await veto.BanMapForTeamTokenAsync(tokenContext.MatchId, mapId, tokenContext.TeamSide, ct),
+                "pick" => await veto.PickMapForTeamTokenAsync(tokenContext.MatchId, mapId, tokenContext.TeamSide, ct),
+                "pick-side" => await veto.PickSideForTeamTokenAsync(tokenContext.MatchId, mapId, side ?? "", tokenContext.TeamSide, ct),
+                _ => throw new InvalidOperationException("Unsupported veto action.")
+            };
+
+            await hub.Clients.Group(VetoHub.VetoGroup(tokenContext.MatchId.ToString()))
+                .SendAsync(VetoHubEvents.VetoAction, result, ct);
+            await BroadcastHistoryAsync(hub, veto, tokenContext.MatchId, ct);
+
+            if (result.Status == "completed")
+            {
+                await hub.Clients.Group(VetoHub.VetoGroup(tokenContext.MatchId.ToString()))
+                    .SendAsync(VetoHubEvents.VetoComplete, result, ct);
+            }
+
+            return Results.Ok(result);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Results.Json(new { error = "This team link cannot act on the current turn." }, statusCode: 403);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex.Message.StartsWith("CONFLICT")
+                ? Results.Conflict(new { error = "The map veto was updated. Please refresh and try again." })
+                : Results.BadRequest(new { error = "This veto action is not valid right now." });
+        }
+    }
+
+    private static async Task<TokenVetoContext?> ResolveTokenContextAsync(
+        System.Data.IDbConnection conn,
+        string token)
+    {
+        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            """
+            SELECT mmv.match_id,
+                   CASE WHEN mmv.team1_link_token = @token THEN 'team1' ELSE 'team2' END AS team_side,
+                   EXISTS (
+                       SELECT 1
+                       FROM tournament_participants tp
+                       WHERE tp.tournament_id = mmv.tournament_id
+                         AND tp.is_mock = TRUE
+                   ) AS has_mock_participants
+            FROM match_map_vetos mmv
+            WHERE mmv.team1_link_token = @token OR mmv.team2_link_token = @token
+            """,
+            new { token });
+
+        return row is null
+            ? null
+            : new TokenVetoContext((Guid)row.match_id, (string)row.team_side, (bool)row.has_mock_participants);
     }
 
     private static async Task BroadcastHistoryAsync(
@@ -481,6 +622,11 @@ public static class VetoEndpoints
         string? GameMode,
         int? TeamSize,
         string? SettingsJson);
+
+    private sealed record TokenVetoContext(
+        Guid MatchId,
+        string TeamSide,
+        bool HasMockParticipants);
 }
 
 public sealed record VetoInitRequest(

@@ -659,7 +659,9 @@ public static class MatchEndpoints
             // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            var isPlatformAdminForGoLive = StaffAuthHelper.IsPlatformAdmin(userCtx);
+            var canForceGoLive = allowed || isPlatformAdminForGoLive;
+            if (!allowed && !isPlatformAdminForGoLive)
             {
                 var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
                     """
@@ -679,7 +681,7 @@ public static class MatchEndpoints
             var scheduledTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
                 "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
                 new { matchId });
-            if (scheduledTime.HasValue && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15))
+            if (scheduledTime.HasValue && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15) && !(req.Force && canForceGoLive))
                 return Results.BadRequest(new { error = $"Match is scheduled for {scheduledTime.Value:u}. Cannot go live more than 15 minutes early." });
 
             var rows = await conn.ExecuteAsync(
@@ -1077,7 +1079,7 @@ public sealed record FinalizeRequest(
     Guid? WinnerId = null,
     Guid? LoserId  = null);
 
-public sealed record GoLiveRequest(string? PartyCode);
+public sealed record GoLiveRequest(string? PartyCode, bool Force = false);
 
 public sealed record SaveScoreRequest(
     int     Team1Score,
