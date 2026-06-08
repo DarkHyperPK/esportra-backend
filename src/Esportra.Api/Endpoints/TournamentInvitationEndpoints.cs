@@ -31,7 +31,7 @@ public static class TournamentInvitationEndpoints
             using var conn = db.CreateConnection();
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, name, reserved_invite_slots
+                SELECT id, name, reserved_invite_slots, settings
                 FROM public.tournaments
                 WHERE id = @id AND deleted_at IS NULL
                 """,
@@ -63,7 +63,7 @@ public static class TournamentInvitationEndpoints
                 """,
                 new { id })).AsList();
 
-            var reservedSlots = Math.Max((int)(tournament.reserved_invite_slots ?? 0), 0);
+            var reservedSlots = TournamentInviteSlots.ResolveFromRow(tournament);
             var activeSlots = invitations.Count(i => !string.Equals((string)i.status, "revoked", StringComparison.OrdinalIgnoreCase));
             var usedSlots = invitations.Count(i => string.Equals((string)i.status, "redeemed", StringComparison.OrdinalIgnoreCase));
 
@@ -106,7 +106,7 @@ public static class TournamentInvitationEndpoints
 
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, name, reserved_invite_slots
+                SELECT id, name, reserved_invite_slots, settings
                 FROM public.tournaments
                 WHERE id = @id AND deleted_at IS NULL
                 FOR UPDATE
@@ -115,7 +115,7 @@ public static class TournamentInvitationEndpoints
             if (tournament is null) { tx.Rollback(); return Results.NotFound(); }
             if (!await CanManageTournamentAsync(conn, id, userCtx, tx)) { tx.Rollback(); return Results.Forbid(); }
 
-            var reservedSlots = Math.Max((int)(tournament.reserved_invite_slots ?? 0), 0);
+            var reservedSlots = TournamentInviteSlots.ResolveFromRow(tournament);
             if (reservedSlots <= 0)
             {
                 tx.Rollback();
@@ -808,7 +808,7 @@ public static class TournamentInvitationEndpoints
 
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, name, reserved_invite_slots
+                SELECT id, name, reserved_invite_slots, settings
                 FROM public.tournaments
                 WHERE id = @id AND deleted_at IS NULL
                 FOR UPDATE
@@ -817,7 +817,7 @@ public static class TournamentInvitationEndpoints
             if (tournament is null) { tx.Rollback(); return Results.NotFound(); }
             if (!await CanManageTournamentAsync(conn, id, userCtx, tx)) { tx.Rollback(); return Results.Forbid(); }
 
-            var reservedSlots = Math.Max((int)(tournament.reserved_invite_slots ?? 0), 0);
+            var reservedSlots = TournamentInviteSlots.ResolveFromRow(tournament);
             if (reservedSlots <= 0) { tx.Rollback(); return Results.BadRequest(new { error = "Reserved invite slots are not configured." }); }
 
             var activeInviteCount = await conn.QuerySingleAsync<int>(
@@ -836,11 +836,11 @@ public static class TournamentInvitationEndpoints
             var newEmails = emails.Where(e => !existingEmails.Contains(e)).ToArray();
             if (newEmails.Length == 0) { tx.Rollback(); return Results.Ok(new { imported = 0, skipped = emails.Length, reason = "All emails already have active invitations." }); }
 
-            var available = reservedSlots - activeInviteCount;
-            if (available <= 0) { tx.Rollback(); return Results.BadRequest(new { error = "No invite slots remaining." }); }
+            int availableSlots = reservedSlots - activeInviteCount;
+            if (availableSlots <= 0) { tx.Rollback(); return Results.BadRequest(new { error = "No invite slots remaining." }); }
 
             // Cap to available slots
-            var toImport = newEmails.Take(available).ToArray();
+            string[] toImport = newEmails.Take(availableSlots).ToArray();
             var inviteIds = toImport.Select(_ => Guid.NewGuid()).ToArray();
             var codes = await GenerateUniqueInvitationCodesAsync(conn, tx, toImport.Length);
 
@@ -869,7 +869,7 @@ public static class TournamentInvitationEndpoints
             {
                 imported = toImport.Length,
                 skipped = existingEmails.Count,
-                capped = Math.Max(newEmails.Length - available, 0),
+                capped = Math.Max(newEmails.Length - availableSlots, 0),
                 inviteIds
             });
         }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
@@ -910,14 +910,17 @@ public static class TournamentInvitationEndpoints
                 """,
                 new { id });
 
-            var reservedSlots = await conn.QuerySingleOrDefaultAsync<int?>(
-                "SELECT reserved_invite_slots FROM public.tournaments WHERE id = @id",
+            var tournamentRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT reserved_invite_slots, settings FROM public.tournaments WHERE id = @id",
                 new { id });
+            var reservedSlots = tournamentRow is null
+                ? 0
+                : TournamentInviteSlots.ResolveFromRow(tournamentRow);
 
             return Results.Ok(new
             {
                 stats,
-                reserved_slots = reservedSlots ?? 0,
+                reserved_slots = reservedSlots,
             });
         }).RequireAuthorization("Organizer");
     }

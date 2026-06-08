@@ -523,14 +523,15 @@ public static class TournamentEndpoints
                         region               = req.Region,
                         currency             = req.Currency ?? "USD",
                         serverRegion         = req.ServerRegion,
-                        reservedInviteSlots  = Math.Max(req.ReservedInviteSlots ?? 0, 0),
+                        reservedInviteSlots  = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings),
                         inviteExpiryDays     = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365),
                     },
                     tx);
 
                 var tournamentId = (Guid)tournament.id;
 
-                if (req.MaxTeams > 0 && (req.ReservedInviteSlots ?? 0) > req.MaxTeams)
+                var reservedSlotsForCreate = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings);
+                if (req.MaxTeams > 0 && reservedSlotsForCreate > req.MaxTeams)
                 {
                     tx.Rollback();
                     return Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." });
@@ -701,10 +702,16 @@ public static class TournamentEndpoints
                 return Results.BadRequest(new { error = registrationDeadlineError });
 
             var effectiveMaxTeams = req.MaxTeams ?? (int?)existingTournament.max_teams;
-            if (effectiveMaxTeams is > 0 && req.ReservedInviteSlots is > 0 && req.ReservedInviteSlots > effectiveMaxTeams)
+            int? reservedSlotsForUpdate = req.ReservedInviteSlots.HasValue
+                ? req.ReservedInviteSlots.Value
+                : req.Settings is not null && TournamentInviteSlots.TryReadFromSettingsIfPresent(req.Settings, out var settingsSlots)
+                    ? settingsSlots
+                    : null;
+
+            if (effectiveMaxTeams is > 0 && reservedSlotsForUpdate is > 0 && reservedSlotsForUpdate > effectiveMaxTeams)
                 return Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." });
 
-            if (req.ReservedInviteSlots.HasValue)
+            if (reservedSlotsForUpdate.HasValue)
             {
                 var activeInviteCount = await conn.ExecuteScalarAsync<int>(
                     """
@@ -714,7 +721,7 @@ public static class TournamentEndpoints
                       AND status <> 'revoked'
                     """,
                     new { id });
-                if (req.ReservedInviteSlots.Value < activeInviteCount)
+                if (reservedSlotsForUpdate.Value < activeInviteCount)
                     return Results.BadRequest(new { error = $"Reserved invite slots cannot be less than active invitations ({activeInviteCount})." });
             }
 
@@ -788,7 +795,7 @@ public static class TournamentEndpoints
                     settings             = req.Settings is not null
                                              ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
                                              : null,
-                    reservedInviteSlots  = req.ReservedInviteSlots,
+                    reservedInviteSlots  = reservedSlotsForUpdate,
                     inviteExpiryDays     = req.InviteExpiryDays.HasValue
                                              ? Math.Clamp(req.InviteExpiryDays.Value, 1, 365)
                                              : (int?)null,
@@ -1045,7 +1052,7 @@ public static class TournamentEndpoints
             var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT status, max_teams, entry_fee, payment_instructions, game,
-                       reserved_invite_slots,
+                       reserved_invite_slots, settings,
                        COALESCE(settings->>'registrationType', 'open') AS registration_type
                 FROM tournaments
                 WHERE id = @id
@@ -1065,7 +1072,7 @@ public static class TournamentEndpoints
             int? maxTeams = (int?)tourn.max_teams;
             if (maxTeams.HasValue && maxTeams.Value > 0)
             {
-                var reservedSlots = Math.Max((int)(tourn.reserved_invite_slots ?? 0), 0);
+                var reservedSlots = TournamentInviteSlots.ResolveFromRow(tourn);
                 var openCap       = Math.Max(maxTeams.Value - reservedSlots, 0);
 
                 if (reservedSlots > 0)
