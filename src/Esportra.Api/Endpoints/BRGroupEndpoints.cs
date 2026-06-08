@@ -3329,21 +3329,8 @@ public static class BRGroupEndpoints
             """,
             new { stageId });
 
-        if (tournament is null)
-            return false;
-
-        var status = ((string)tournament.status).ToLowerInvariant();
-
-        if (!string.Equals(status, "draft", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null)
-            return false;
-
-        return (Guid)tournament.organizer_id == userCtx.UserIdGuid
-            || StaffAuthHelper.IsPlatformAdmin(userCtx)
-            || await StaffAuthHelper.CanActOnStageAsync(conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+        // Link-accessible tournaments (draft, private, public) expose stage data to anyone with the URL.
+        return tournament is not null;
     }
 
     private static async Task<List<Guid>> LockStageGroupsAsync(IDbConnection conn, IDbTransaction tx, Guid stageId)

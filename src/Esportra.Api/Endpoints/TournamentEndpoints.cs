@@ -406,19 +406,6 @@ public static class TournamentEndpoints
                     new { tournamentId })
                 : 0;
 
-            var tournamentStatus = (string)tournament.status;
-            var hasStaffAccess = staffPermissions is { Length: > 0 };
-            var isAdmin = userCtx?.Roles.Contains("admin") == true;
-
-            // Draft tournaments are organizer/staff/admin only — private link-only applies after publish.
-            if (string.Equals(tournamentStatus, "draft", StringComparison.OrdinalIgnoreCase)
-                && !isOrganizer
-                && !hasStaffAccess
-                && !isAdmin)
-            {
-                return Results.NotFound();
-            }
-
             return Results.Ok(new
             {
                 tournament,
@@ -3999,20 +3986,9 @@ public static class TournamentEndpoints
         if (tournament is null)
             return false;
 
-        var status = ((string)tournament.status).ToLowerInvariant();
-
-        // Non-draft tournaments (public or private) are viewable via direct link.
-        if (!string.Equals(status, "draft", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null)
-            return false;
-
-        if ((Guid)tournament.organizer_id == userCtx.UserIdGuid || userCtx.Roles.Contains("admin"))
-            return true;
-
-        return await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, tournamentId);
+        // Draft, private, and public tournaments are all viewable via direct link (slug or id).
+        // Discovery/browse remains gated separately by is_public on list endpoints.
+        return true;
     }
 }
 
