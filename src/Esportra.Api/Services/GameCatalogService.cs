@@ -176,7 +176,32 @@ public sealed partial class GameCatalogService(
         if (HasBattleRoyaleSettings(settings) && !isBattleRoyale)
             throw new GameCatalogValidationException($"{resolvedGame.Name} is not a battle royale game, but battle royale settings were provided.");
 
-        return new TournamentCatalogResolution(resolvedGame.Name, resolvedGame.Slug, mode.ModeKey, mode.TeamSize, structure.StructureKey);
+        return new TournamentCatalogResolution(
+            resolvedGame.Name,
+            resolvedGame.Slug,
+            mode.ModeKey,
+            mode.TeamSize,
+            structure.StructureKey,
+            EffectiveBoolFeature(features, mode.FeaturesOverrideJson, "mapVeto"));
+    }
+
+    public async Task<bool> SupportsMapVetoAsync(
+        string game,
+        string? gameMode,
+        int? teamSize = null,
+        IDbConnection? existingConnection = null,
+        IDbTransaction? tx = null)
+    {
+        var ownsConnection = existingConnection is null;
+        using var owned = ownsConnection ? db.CreateConnection() : null;
+        var conn = existingConnection ?? owned!;
+
+        var resolvedGame = await ResolveGameAsync(conn, game, tx)
+            ?? throw new GameCatalogValidationException($"Unsupported game '{game}'.");
+
+        var mode = await ResolveModeAsync(conn, resolvedGame.Slug, gameMode, teamSize, tx);
+        var features = ParseObject(resolvedGame.FeaturesJson);
+        return EffectiveBoolFeature(features, mode.FeaturesOverrideJson, "mapVeto");
     }
 
     public async Task<GameModeCatalogResolution> ResolveGameModeAsync(
@@ -741,6 +766,31 @@ public sealed partial class GameCatalogService(
         return JsonDocument.Parse(json).RootElement.Clone();
     }
 
+    private static bool EffectiveBoolFeature(JsonElement baseFeatures, string? modeOverrideJson, string featureName)
+    {
+        if (!string.IsNullOrWhiteSpace(modeOverrideJson))
+        {
+            try
+            {
+                using var overrideDoc = JsonDocument.Parse(modeOverrideJson);
+                if (overrideDoc.RootElement.ValueKind == JsonValueKind.Object
+                    && overrideDoc.RootElement.TryGetProperty(featureName, out var overrideValue)
+                    && (overrideValue.ValueKind == JsonValueKind.True || overrideValue.ValueKind == JsonValueKind.False))
+                {
+                    return overrideValue.GetBoolean();
+                }
+            }
+            catch
+            {
+                // Ignore malformed mode overrides; catalog validation handles persisted data quality.
+            }
+        }
+
+        return baseFeatures.ValueKind == JsonValueKind.Object
+            && baseFeatures.TryGetProperty(featureName, out var value)
+            && value.ValueKind == JsonValueKind.True;
+    }
+
     private static object ParseJson(string? json) => string.IsNullOrWhiteSpace(json)
         ? new Dictionary<string, object?>()
         : JsonSerializer.Deserialize<JsonElement>(json);
@@ -871,7 +921,8 @@ public sealed record TournamentCatalogResolution(
     string GameSlug,
     string GameMode,
     int TeamSize,
-    string TournamentStructure);
+    string TournamentStructure,
+    bool SupportsMapVeto);
 
 public sealed record GameModeCatalogResolution(
     string GameName,

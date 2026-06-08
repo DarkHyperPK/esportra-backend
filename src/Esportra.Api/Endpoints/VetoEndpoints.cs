@@ -1,8 +1,10 @@
+using System.Text.Json;
 using Dapper;
+using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Match;
-using Esportra.Api.Hubs;
 using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -61,6 +63,8 @@ public static class VetoEndpoints
             [FromBody] VetoInitRequest req,
             HttpContext                ctx,
             VetoDbService              veto,
+            IDbConnectionFactory       db,
+            GameCatalogService         gameCatalog,
             IHubContext<VetoHub>       hub,
             ILogger<VetoDbService>    logger,
             CancellationToken         ct) =>
@@ -74,6 +78,35 @@ public static class VetoEndpoints
                 var existing = await veto.GetAsync(matchId, ct);
                 if (existing is not null)
                     return Results.Ok(existing);
+
+                using var conn = db.CreateConnection();
+                var tournament = await conn.QuerySingleOrDefaultAsync<TournamentVetoGateRow>(
+                    """
+                    SELECT game,
+                           game_mode AS GameMode,
+                           team_size AS TeamSize,
+                           settings::text AS SettingsJson
+                    FROM public.tournaments
+                    WHERE id = @tournamentId
+                    """,
+                    new { tournamentId = req.TournamentId });
+
+                if (tournament is null)
+                    return Results.NotFound(new { error = "Tournament was not found." });
+
+                var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                    tournament.Game,
+                    tournament.GameMode,
+                    tournament.TeamSize,
+                    conn);
+
+                if (!supportsMapVeto || IsMapVetoDisabled(tournament.SettingsJson))
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "Map veto is not enabled for this tournament."
+                    });
+                }
 
                 // S2: Only organizer or captain can init
                 var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct);
@@ -102,6 +135,11 @@ public static class VetoEndpoints
             {
                 logger.LogWarning(ex, "Veto init failed for match {MatchId}", matchId);
                 return Results.BadRequest(new { error = "Couldn't start the map veto. Please try again." });
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                logger.LogWarning(ex, "Veto init catalog validation failed for match {MatchId}", matchId);
+                return Results.BadRequest(new { error = ex.Message });
             }
             catch (Exception ex)
             {
@@ -420,6 +458,29 @@ public static class VetoEndpoints
         await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
             .SendAsync(VetoHubEvents.VetoHistoryUpdated, history, ct);
     }
+
+    private static bool IsMapVetoDisabled(string? settingsJson)
+    {
+        if (string.IsNullOrWhiteSpace(settingsJson)) return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(settingsJson);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("mapVetoEnabled", out var value)
+                && value.ValueKind == JsonValueKind.False;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private sealed record TournamentVetoGateRow(
+        string Game,
+        string? GameMode,
+        int? TeamSize,
+        string? SettingsJson);
 }
 
 public sealed record VetoInitRequest(

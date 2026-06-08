@@ -1,5 +1,6 @@
 using System.Data;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Helpers;
@@ -31,6 +32,27 @@ public static class TournamentEndpoints
 
     private static readonly HashSet<string> AllowedCreateStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "draft", "open", "published" };
+
+    private static string? SerializeTournamentSettings(object? settings, bool supportsMapVeto)
+    {
+        if (settings is null) return null;
+
+        var json = JsonSerializer.Serialize(settings);
+        var node = JsonNode.Parse(json);
+        if (node is JsonObject obj)
+        {
+            if (!supportsMapVeto)
+                obj["mapVetoEnabled"] = false;
+
+            return obj.ToJsonString();
+        }
+
+        var fallback = new JsonObject();
+        if (!supportsMapVeto)
+            fallback["mapVetoEnabled"] = false;
+
+        return fallback.ToJsonString();
+    }
 
     private static string? NormalizeTournamentStatusGroup(string? statusGroup)
     {
@@ -503,20 +525,18 @@ public static class TournamentEndpoints
                         startDate            = req.StartDate,
                         endDate              = req.EndDate ?? req.StartDate.AddHours(2),
                         registrationDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
-                        status               = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "open",
+                        status               = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "draft",
                         bannerUrl            = req.BannerUrl,
                         logoUrl              = req.LogoUrl,
                         organizationId       = organizationId,
                         venueId              = Guid.TryParse(req.VenueId, out var venGuid) ? venGuid : (Guid?)null,
-                        isPublic             = req.IsPublic ?? true,
+                        isPublic             = req.IsPublic ?? false,
                         checkInRequired      = req.CheckInRequired ?? false,
                         checkInDeadline      = req.CheckInDeadline,
                         autoRemoveUnchecked  = req.AutoRemoveUnchecked ?? false,
                         rewards              = req.Rewards,
                         streamUrl            = req.StreamUrl,
-                        settings             = req.Settings is not null
-                            ? JsonSerializer.Serialize(req.Settings)
-                            : "{}",
+                        settings             = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto) ?? "{}",
                         organizerId          = userCtx.UserIdGuid,
                         rules                = req.Rules,
                         paymentInstructions  = req.PaymentInstructions,
@@ -792,9 +812,7 @@ public static class TournamentEndpoints
                     paymentInstructions  = req.PaymentInstructions,
                     region               = req.Region,
                     currency             = req.Currency,
-                    settings             = req.Settings is not null
-                                             ? System.Text.Json.JsonSerializer.Serialize(req.Settings)
-                                             : null,
+                    settings             = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto),
                     reservedInviteSlots  = reservedSlotsForUpdate,
                     inviteExpiryDays     = req.InviteExpiryDays.HasValue
                                              ? Math.Clamp(req.InviteExpiryDays.Value, 1, 365)
@@ -4014,7 +4032,7 @@ public sealed record CreateTournamentRequest(
     string?    OrganizationId       = null,
     string?    VenueId              = null,
     string?    Region               = null,
-    bool?      IsPublic             = true,
+    bool?      IsPublic             = false,
     bool?      CheckInRequired      = false,
     DateTime?  CheckInDeadline      = null,
     bool?      AutoRemoveUnchecked  = false,
