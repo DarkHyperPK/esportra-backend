@@ -11,6 +11,7 @@ public sealed record UserContext
     public string[] Roles      { get; init; } = [];   // e.g. ["casual","organizer"]
     public string[] AdminRoles { get; init; } = [];   // e.g. ["ops_admin","moderator"]
     public string[] Permissions { get; init; } = [];  // e.g. ["users:ban","disputes:resolve"]
+    public bool IsSuperAdmin => AdminRoles.Contains(Esportra.Contracts.Auth.AdminRoles.SuperAdmin, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// UserId parsed as Guid — use this when passing to Dapper so Npgsql
