@@ -30,7 +30,7 @@ public static class TournamentEndpoints
     };
 
     private static readonly HashSet<string> AllowedCreateStatuses = new(StringComparer.OrdinalIgnoreCase)
-        { "draft", "open" };
+        { "draft", "open", "published" };
 
     private static string? NormalizeTournamentStatusGroup(string? statusGroup)
     {
@@ -405,6 +405,19 @@ public static class TournamentEndpoints
                     "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tournamentId AND is_mock = TRUE",
                     new { tournamentId })
                 : 0;
+
+            var tournamentStatus = (string)tournament.status;
+            var hasStaffAccess = staffPermissions is { Length: > 0 };
+            var isAdmin = userCtx?.Roles.Contains("admin") == true;
+
+            // Draft tournaments are organizer/staff/admin only — private link-only applies after publish.
+            if (string.Equals(tournamentStatus, "draft", StringComparison.OrdinalIgnoreCase)
+                && !isOrganizer
+                && !hasStaffAccess
+                && !isAdmin)
+            {
+                return Results.NotFound();
+            }
 
             return Results.Ok(new
             {
@@ -3977,19 +3990,29 @@ public static class TournamentEndpoints
     private static async Task<bool> CanViewTournamentPublicDataAsync(IDbConnection conn, HttpContext ctx, Guid tournamentId)
     {
         var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT organizer_id, is_public FROM public.tournaments WHERE id = @tournamentId AND deleted_at IS NULL",
+            """
+            SELECT organizer_id, status::text AS status, is_public
+            FROM public.tournaments
+            WHERE id = @tournamentId AND deleted_at IS NULL
+            """,
             new { tournamentId });
         if (tournament is null)
             return false;
 
-        if ((bool)tournament.is_public)
+        var status = ((string)tournament.status).ToLowerInvariant();
+
+        // Non-draft tournaments (public or private) are viewable via direct link.
+        if (!string.Equals(status, "draft", StringComparison.OrdinalIgnoreCase))
             return true;
 
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null)
             return false;
 
-        return (Guid)tournament.organizer_id == userCtx.UserIdGuid || userCtx.Roles.Contains("admin");
+        if ((Guid)tournament.organizer_id == userCtx.UserIdGuid || userCtx.Roles.Contains("admin"))
+            return true;
+
+        return await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, tournamentId);
     }
 }
 

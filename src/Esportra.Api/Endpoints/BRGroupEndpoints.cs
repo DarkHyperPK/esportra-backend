@@ -3321,7 +3321,7 @@ public static class BRGroupEndpoints
     {
         var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
             """
-            SELECT t.id, t.organizer_id, t.is_public
+            SELECT t.id, t.organizer_id, t.is_public, t.status::text AS status
             FROM public.tournament_stages s
             JOIN public.tournaments t ON t.id = s.tournament_id
             WHERE s.id = @stageId
@@ -3332,7 +3332,9 @@ public static class BRGroupEndpoints
         if (tournament is null)
             return false;
 
-        if ((bool)tournament.is_public)
+        var status = ((string)tournament.status).ToLowerInvariant();
+
+        if (!string.Equals(status, "draft", StringComparison.OrdinalIgnoreCase))
             return true;
 
         var userCtx = ctx.Items["UserContext"] as UserContext;
