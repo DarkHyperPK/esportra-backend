@@ -208,6 +208,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                  '[]'::json, '[]'::json,
                  @selected_map_pool, now(), @game, @team1_token, @team2_token, now())
             ON CONFLICT (match_id) DO UPDATE SET
+                team1_id = @team1_id,
+                team2_id = @team2_id,
                 best_of = @best_of,
                 status = 'in_progress',
                 current_team_id = @current_team_id,
@@ -223,8 +225,14 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                 started_at = now(),
                 turn_started_at = now(),
                 game = @game,
-                team1_link_token = COALESCE(match_map_vetos.team1_link_token, @team1_token),
-                team2_link_token = COALESCE(match_map_vetos.team2_link_token, @team2_token)",
+                team1_link_token = CASE
+                    WHEN match_map_vetos.team1_id IS DISTINCT FROM @team1_id THEN @team1_token
+                    ELSE COALESCE(match_map_vetos.team1_link_token, @team1_token)
+                END,
+                team2_link_token = CASE
+                    WHEN match_map_vetos.team2_id IS DISTINCT FROM @team2_id THEN @team2_token
+                    ELSE COALESCE(match_map_vetos.team2_link_token, @team2_token)
+                END",
             new
             {
                 id,
