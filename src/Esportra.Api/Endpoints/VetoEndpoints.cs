@@ -518,6 +518,47 @@ public static class VetoEndpoints
             IHubContext<VetoHub> hub,
             CancellationToken ct) =>
             await HandleTokenActionAsync(token, req.MapId, req.Side, "pick-side", db, veto, hub, ct));
+
+        // ── Public read-only veto (no auth, no token links) ─────────────────
+        app.MapGet("/api/public/veto/{matchId:guid}", async (
+            Guid matchId,
+            VetoDbService veto,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var access = await ResolvePublicVetoAccessAsync(db, matchId, ct);
+            if (access is null) return Results.NotFound();
+
+            var state = await veto.GetAsync(matchId, ct);
+            if (state is null) return Results.NotFound();
+
+            return Results.Ok(ToPublicVetoState(state));
+        }).AllowAnonymous();
+
+        app.MapGet("/api/public/veto/{matchId:guid}/history", async (
+            Guid matchId,
+            VetoDbService veto,
+            IDbConnectionFactory db,
+            IConfiguration config,
+            CancellationToken ct) =>
+        {
+            var access = await ResolvePublicVetoAccessAsync(db, matchId, ct);
+            if (access is null) return Results.NotFound();
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var history = await veto.GetEnrichedHistoryAsync(matchId, ct);
+            var enriched = history
+                .Select(entry => entry with
+                {
+                    MapImageUrl = Esportra.Core.Games.R6MapCatalog.ResolveImageUrl(
+                        Esportra.Core.Games.R6MapCatalog.GameName,
+                        entry.MapName,
+                        entry.MapImageUrl,
+                        supabaseUrl),
+                })
+                .ToList();
+            return Results.Ok(enriched);
+        }).AllowAnonymous();
     }
 
     private static async Task<IResult> HandleTokenActionAsync(
@@ -533,8 +574,6 @@ public static class VetoEndpoints
         using var conn = db.CreateConnection();
         var tokenContext = await ResolveTokenContextAsync(conn, token);
         if (tokenContext is null) return Results.NotFound(new { error = "Map veto not found." });
-        if (!tokenContext.HasMockParticipants)
-            return Results.Json(new { error = "Login required for live tournament veto links." }, statusCode: StatusCodes.Status401Unauthorized);
 
         try
         {
@@ -605,6 +644,52 @@ public static class VetoEndpoints
             .SendAsync(VetoHubEvents.VetoHistoryUpdated, history, ct);
     }
 
+    private static async Task<PublicVetoAccess?> ResolvePublicVetoAccessAsync(
+        IDbConnectionFactory db,
+        Guid matchId,
+        CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+        var row = await conn.QuerySingleOrDefaultAsync<PublicVetoAccessRow>(
+            """
+            SELECT t.is_public AS IsPublic,
+                   t.settings::text AS SettingsJson
+            FROM public.match_map_vetos mmv
+            JOIN public.tournaments t ON t.id = mmv.tournament_id
+            WHERE mmv.match_id = @matchId
+              AND t.deleted_at IS NULL
+            """,
+            new { matchId });
+
+        if (row is null || !row.IsPublic || IsMapVetoDisabled(row.SettingsJson))
+            return null;
+
+        return new PublicVetoAccess(matchId);
+    }
+
+    private static object ToPublicVetoState(MatchMapVeto state) => new
+    {
+        state.Id,
+        state.MatchId,
+        state.TournamentId,
+        state.Team1Id,
+        state.Team2Id,
+        state.BestOf,
+        state.Status,
+        state.CurrentTeamId,
+        state.CurrentAction,
+        state.CurrentActionNumber,
+        state.Team1BannedMaps,
+        state.Team2BannedMaps,
+        state.Team1PickedMaps,
+        state.Team2PickedMaps,
+        state.SelectedMapId,
+        state.SelectedMapPool,
+        state.StartedAt,
+        state.CompletedAt,
+        state.Game,
+    };
+
     private static bool IsMapVetoDisabled(string? settingsJson)
     {
         if (string.IsNullOrWhiteSpace(settingsJson)) return false;
@@ -632,6 +717,10 @@ public static class VetoEndpoints
         Guid MatchId,
         string TeamSide,
         bool HasMockParticipants);
+
+    private sealed record PublicVetoAccessRow(bool IsPublic, string? SettingsJson);
+
+    private sealed record PublicVetoAccess(Guid MatchId);
 }
 
 public sealed record VetoInitRequest(
