@@ -469,8 +469,6 @@ public static class TournamentInvitationEndpoints
             var code = NormalizeInvitationCode(req.Code);
             if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Invitation code is required." });
             if (string.IsNullOrWhiteSpace(userCtx.Email)) return Results.BadRequest(new { error = "Your account email could not be verified." });
-            if (!req.TeamId.HasValue) return Results.BadRequest(new { error = "Select a team to redeem this invitation." });
-            if (!req.RosterId.HasValue) return Results.BadRequest(new { error = "Select a roster that matches this tournament." });
 
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
@@ -514,7 +512,7 @@ public static class TournamentInvitationEndpoints
 
                 var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT id, name, slug, status, max_teams
+                    SELECT id, name, slug, status, max_teams, game, team_size, game_mode
                     FROM public.tournaments
                     WHERE id = @tournamentId AND deleted_at IS NULL
                     FOR UPDATE
@@ -527,60 +525,37 @@ public static class TournamentInvitationEndpoints
                     return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
                 }
 
-                var teamId = req.TeamId.Value;
-                var rosterId = req.RosterId.Value;
+                var teamSize = (int?)tournament.team_size ?? 1;
+                var isSoloTournament = teamSize == 1;
+
+                if (!isSoloTournament)
+                {
+                    if (!req.TeamId.HasValue)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Select a team to redeem this invitation." });
+                    }
+                    if (!req.RosterId.HasValue)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Select a roster that matches this tournament." });
+                    }
+                }
 
                 try
                 {
-                    await gameCatalog.ValidateRegistrationAsync(conn, tx, tournamentId, teamId, rosterId, userCtx.UserIdGuid);
+                    await gameCatalog.ValidateRegistrationAsync(
+                        conn,
+                        tx,
+                        tournamentId,
+                        isSoloTournament ? null : req.TeamId,
+                        isSoloTournament ? null : req.RosterId,
+                        userCtx.UserIdGuid);
                 }
                 catch (GameCatalogValidationException ex)
                 {
                     tx.Rollback();
                     return Results.BadRequest(new { error = ex.Message });
-                }
-
-                var teamMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    """
-                    SELECT t.id, t.name AS team_name, t.owner_id
-                    FROM public.teams t
-                    WHERE t.id = @teamId
-                    """,
-                    new { teamId }, tx);
-                if (teamMeta is null)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = "Team was not found." });
-                }
-
-                var rosterMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    """
-                    SELECT id, name AS roster_name
-                    FROM public.team_rosters
-                    WHERE id = @rosterId AND team_id = @teamId
-                    """,
-                    new { rosterId, teamId }, tx);
-                if (rosterMeta is null)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = "Roster was not found for this team." });
-                }
-
-                var alreadyRegistered = await conn.QuerySingleAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1
-                        FROM public.tournament_participants
-                        WHERE tournament_id = @tournamentId
-                          AND status NOT IN ('cancelled', 'rejected', 'disqualified')
-                          AND (user_id = @userId OR team_captain_id = @userId OR team_id = @teamId)
-                    )
-                    """,
-                    new { tournamentId, userId = userCtx.UserIdGuid, teamId }, tx);
-                if (alreadyRegistered)
-                {
-                    tx.Rollback();
-                    return Results.Conflict(new { error = "Your team is already registered for this tournament." });
                 }
 
                 int? maxTeams = (int?)tournament.max_teams;
@@ -596,52 +571,183 @@ public static class TournamentInvitationEndpoints
                     }
                 }
 
-                var memberNames = (await conn.QueryAsync<string>(
-                    """
-                    SELECT COALESCE(NULLIF(p.username, ''), NULLIF(p.full_name, ''), p.id::text) AS display_name
-                    FROM public.team_roster_members trm
-                    JOIN public.profiles p ON p.id = trm.user_id
-                    WHERE trm.roster_id = @rosterId
-                    ORDER BY COALESCE(trm.is_starter, TRUE) DESC, p.username ASC
-                    """,
-                    new { rosterId }, tx)).AsList();
+                dynamic participant;
+                Guid redeemedTeamId;
+                Guid? rosterId = null;
 
-                var captainName = await conn.QuerySingleOrDefaultAsync<string>(
-                    "SELECT COALESCE(NULLIF(username, ''), NULLIF(full_name, ''), id::text) FROM public.profiles WHERE id = @ownerId",
-                    new { ownerId = (Guid)teamMeta.owner_id }, tx);
-                if (!string.IsNullOrWhiteSpace(captainName) && !memberNames.Contains(captainName, StringComparer.OrdinalIgnoreCase))
-                    memberNames.Insert(0, captainName);
-
-                var teamMembersJson = JsonSerializer.Serialize(memberNames);
-                var teamName = string.IsNullOrWhiteSpace((string?)rosterMeta.roster_name)
-                    ? (string)teamMeta.team_name
-                    : (string)rosterMeta.roster_name;
-
-                var participant = await conn.QuerySingleAsync<dynamic>(
-                    """
-                    INSERT INTO public.tournament_participants
-                        (tournament_id, user_id, team_id, team_captain_id, team_name,
-                         team_members, team_contact_email, roster_id, roster_name,
-                         status, participant_type, source, entry_fee_amount, entry_fee_paid, payment_status)
-                    VALUES
-                        (@tournamentId, @userId, @teamId, @userId, @teamName,
-                         @teamMembers::jsonb, @email, @rosterId, @rosterName,
-                         'approved'::registration_status, 'team'::registration_type, 'invite',
-                         0, TRUE, 'not_required')
-                    RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
-                              roster_id, roster_name, status, participant_type, source, created_at
-                    """,
-                    new
+                if (isSoloTournament)
+                {
+                    var alreadyRegistered = await conn.QuerySingleAsync<bool>(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM public.tournament_participants
+                            WHERE tournament_id = @tournamentId
+                              AND user_id = @userId
+                              AND status NOT IN ('cancelled', 'rejected', 'disqualified')
+                        )
+                        """,
+                        new { tournamentId, userId = userCtx.UserIdGuid }, tx);
+                    if (alreadyRegistered)
                     {
-                        tournamentId,
-                        userId = userCtx.UserIdGuid,
-                        teamId,
-                        teamName,
-                        teamMembers = teamMembersJson,
-                        email = userCtx.Email,
-                        rosterId,
-                        rosterName = (string?)rosterMeta.roster_name
-                    }, tx);
+                        tx.Rollback();
+                        return Results.Conflict(new { error = "You are already registered for this tournament." });
+                    }
+
+                    var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT username, avatar_url FROM profiles WHERE id = @uid",
+                        new { uid = userCtx.UserIdGuid }, tx);
+
+                    var vtId = Guid.NewGuid();
+                    var vtTag = $"solo-{vtId:N}";
+                    var displayName = (string?)profile?.username ?? "Solo Player";
+
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members, logo_url)
+                        VALUES (@vtId, @name, @tag, @game, @ownerId, true, 1, @logo)
+                        """,
+                        new
+                        {
+                            vtId,
+                            name = displayName,
+                            tag = vtTag,
+                            game = (string)tournament.game,
+                            ownerId = userCtx.UserIdGuid,
+                            logo = (string?)profile?.avatar_url,
+                        }, tx);
+
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO team_members (team_id, user_id, role, is_active)
+                        VALUES (@teamId, @userId, 'captain', true)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        new { teamId = vtId, userId = userCtx.UserIdGuid }, tx);
+
+                    var teamMembersJson = JsonSerializer.Serialize(new[] { displayName });
+                    redeemedTeamId = vtId;
+
+                    participant = await conn.QuerySingleAsync<dynamic>(
+                        """
+                        INSERT INTO public.tournament_participants
+                            (tournament_id, user_id, team_id, team_captain_id, team_name,
+                             team_members, team_contact_email,
+                             status, participant_type, source, entry_fee_amount, entry_fee_paid, payment_status)
+                        VALUES
+                            (@tournamentId, @userId, @teamId, @userId, @teamName,
+                             @teamMembers::jsonb, @email,
+                             'approved'::registration_status, 'solo'::registration_type, 'invite',
+                             0, TRUE, 'not_required')
+                        RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
+                                  roster_id, roster_name, status, participant_type, source, created_at
+                        """,
+                        new
+                        {
+                            tournamentId,
+                            userId = userCtx.UserIdGuid,
+                            teamId = vtId,
+                            teamName = displayName,
+                            teamMembers = teamMembersJson,
+                            email = userCtx.Email,
+                        }, tx);
+                }
+                else
+                {
+                    var teamId = req.TeamId!.Value;
+                    rosterId = req.RosterId!.Value;
+
+                    var teamMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT t.id, t.name AS team_name, t.owner_id
+                        FROM public.teams t
+                        WHERE t.id = @teamId
+                        """,
+                        new { teamId }, tx);
+                    if (teamMeta is null)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Team was not found." });
+                    }
+
+                    var rosterMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT id, name AS roster_name
+                        FROM public.team_rosters
+                        WHERE id = @rosterId AND team_id = @teamId
+                        """,
+                        new { rosterId, teamId }, tx);
+                    if (rosterMeta is null)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Roster was not found for this team." });
+                    }
+
+                    var alreadyRegistered = await conn.QuerySingleAsync<bool>(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM public.tournament_participants
+                            WHERE tournament_id = @tournamentId
+                              AND status NOT IN ('cancelled', 'rejected', 'disqualified')
+                              AND (user_id = @userId OR team_captain_id = @userId OR team_id = @teamId)
+                        )
+                        """,
+                        new { tournamentId, userId = userCtx.UserIdGuid, teamId }, tx);
+                    if (alreadyRegistered)
+                    {
+                        tx.Rollback();
+                        return Results.Conflict(new { error = "Your team is already registered for this tournament." });
+                    }
+
+                    var memberNames = (await conn.QueryAsync<string>(
+                        """
+                        SELECT COALESCE(NULLIF(p.username, ''), NULLIF(p.full_name, ''), p.id::text) AS display_name
+                        FROM public.team_roster_members trm
+                        JOIN public.profiles p ON p.id = trm.user_id
+                        WHERE trm.roster_id = @rosterId
+                        ORDER BY COALESCE(trm.is_starter, TRUE) DESC, p.username ASC
+                        """,
+                        new { rosterId }, tx)).AsList();
+
+                    var captainName = await conn.QuerySingleOrDefaultAsync<string>(
+                        "SELECT COALESCE(NULLIF(username, ''), NULLIF(full_name, ''), id::text) FROM public.profiles WHERE id = @ownerId",
+                        new { ownerId = (Guid)teamMeta.owner_id }, tx);
+                    if (!string.IsNullOrWhiteSpace(captainName) && !memberNames.Contains(captainName, StringComparer.OrdinalIgnoreCase))
+                        memberNames.Insert(0, captainName);
+
+                    var teamMembersJson = JsonSerializer.Serialize(memberNames);
+                    var teamName = string.IsNullOrWhiteSpace((string?)rosterMeta.roster_name)
+                        ? (string)teamMeta.team_name
+                        : (string)rosterMeta.roster_name;
+                    redeemedTeamId = teamId;
+
+                    participant = await conn.QuerySingleAsync<dynamic>(
+                        """
+                        INSERT INTO public.tournament_participants
+                            (tournament_id, user_id, team_id, team_captain_id, team_name,
+                             team_members, team_contact_email, roster_id, roster_name,
+                             status, participant_type, source, entry_fee_amount, entry_fee_paid, payment_status)
+                        VALUES
+                            (@tournamentId, @userId, @teamId, @userId, @teamName,
+                             @teamMembers::jsonb, @email, @rosterId, @rosterName,
+                             'approved'::registration_status, 'team'::registration_type, 'invite',
+                             0, TRUE, 'not_required')
+                        RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
+                                  roster_id, roster_name, status, participant_type, source, created_at
+                        """,
+                        new
+                        {
+                            tournamentId,
+                            userId = userCtx.UserIdGuid,
+                            teamId,
+                            teamName,
+                            teamMembers = teamMembersJson,
+                            email = userCtx.Email,
+                            rosterId,
+                            rosterName = (string?)rosterMeta.roster_name
+                        }, tx);
+                }
 
                 await conn.ExecuteAsync(
                     """
@@ -653,7 +759,7 @@ public static class TournamentInvitationEndpoints
                         updated_at = NOW()
                     WHERE id = @inviteId
                     """,
-                    new { userId = userCtx.UserIdGuid, teamId, inviteId = (Guid)invite.id }, tx);
+                    new { userId = userCtx.UserIdGuid, teamId = redeemedTeamId, inviteId = (Guid)invite.id }, tx);
 
                 tx.Commit();
 
@@ -670,7 +776,7 @@ public static class TournamentInvitationEndpoints
                     TargetType.Tournament,
                     tournamentId,
                     (string)tournament.name,
-                    new { invite_id = (Guid)invite.id, team_id = teamId, roster_id = rosterId, user_id = userCtx.UserIdGuid },
+                    new { invite_id = (Guid)invite.id, team_id = redeemedTeamId, roster_id = rosterId, user_id = userCtx.UserIdGuid },
                     AuditSeverity.Medium,
                     ct);
 

@@ -931,6 +931,11 @@
           "name": "1v1",
           "value": "1v1",
           "teamSize": 1
+        },
+        {
+          "name": "2v2",
+          "value": "2v2",
+          "teamSize": 2
         }
       ],
       "defaultFormat": "1v1",
@@ -960,6 +965,18 @@
           "maxRosterSize": 1,
           "aliases": [
             "1v1"
+          ]
+        },
+        {
+          "name": "2v2",
+          "key": "2v2",
+          "value": "2v2",
+          "teamSize": 2,
+          "participantMode": "team",
+          "allowsSubstitutes": true,
+          "maxRosterSize": 3,
+          "aliases": [
+            "2v2"
           ]
         }
       ],
@@ -993,6 +1010,6 @@
       }
     }
   ],
-  "catalogVersion": "2026.06.08-mode-overlays-catalog",
+  "catalogVersion": "2026.06.08-eafc-2v2-catalog",
   "schemaVersion": 1
 }
