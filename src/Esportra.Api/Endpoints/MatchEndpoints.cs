@@ -677,11 +677,13 @@ public static class MatchEndpoints
 
             var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
 
-            // Check scheduled_time — can't go live before scheduled time (15min grace)
+            // Organizers/staff may go live any time; players/captains only within 15 minutes of schedule.
             var scheduledTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
                 "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
                 new { matchId });
-            if (scheduledTime.HasValue && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15) && !(req.Force && canForceGoLive))
+            if (scheduledTime.HasValue
+                && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15)
+                && !canForceGoLive)
                 return Results.BadRequest(new { error = $"Match is scheduled for {scheduledTime.Value:u}. Cannot go live more than 15 minutes early." });
 
             var rows = await conn.ExecuteAsync(
