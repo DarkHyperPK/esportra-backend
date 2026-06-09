@@ -25,10 +25,12 @@ UPDATE public.team_roster_members trm
 SET roster_role = 'coach'::public.roster_member_role,
     is_starter = false
 FROM public.team_rosters tr
-JOIN public.team_members tm ON tm.team_id = tr.team_id AND tm.user_id = trm.user_id
+INNER JOIN public.team_members tm
+    ON tm.team_id = tr.team_id
+   AND tm.is_active = true
+   AND tm.role = 'coach'
 WHERE tr.id = trm.roster_id
-  AND tm.is_active = true
-  AND tm.role = 'coach';
+  AND tm.user_id = trm.user_id;
 
 UPDATE public.team_roster_members
 SET is_starter = (roster_role = 'starter'::public.roster_member_role);
