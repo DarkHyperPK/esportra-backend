@@ -7,6 +7,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -965,14 +966,15 @@ public static class MatchSystemEndpoints
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.id, m.match_number, m.scheduled_time, m.team1_id, m.team2_id,
                        m.status, m.round_index, m.bracket_type,
-                       t1.name AS team1_name, t2.name AS team2_name
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
                 JOIN brkt_versions v ON v.id = m.version_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE v.stage_id = @stageId
                 ORDER BY m.round_index, m.match_number
                 """,
@@ -1462,15 +1464,20 @@ public static class MatchSystemEndpoints
 
             // Verify organizer/staff access
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
+                $"""
                 SELECT bm.id, bm.team1_id, bm.team2_id, bm.team1_score, bm.team2_score,
                        bm.match_number, bm.best_of, bm.status, bm.bracket_type, bm.round_index,
-                       t1.name AS team1_name, t2.name AS team2_name,
+                       COALESCE(t1.name, tp1.team_name) AS team1_name,
+                       COALESCE(t2.name, tp2.team_name) AS team2_name,
+                       t1.logo_url AS team1_logo,
+                       t2.logo_url AS team2_logo,
+                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
+                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind,
                        bv.tournament_id
                 FROM brkt_matches bm
                 JOIN brkt_versions bv ON bv.id = bm.version_id
-                LEFT JOIN teams t1 ON t1.id = bm.team1_id
-                LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                {BracketTeamResolutionSql.BracketMatchTeam1Joins}
+                {BracketTeamResolutionSql.BracketMatchTeam2Joins}
                 WHERE bm.id = @matchId
                 """, new { matchId = id });
             if (match is null) return Results.NotFound();

@@ -1,6 +1,7 @@
 ﻿using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
+using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Esportra.Api.Endpoints;
@@ -108,10 +109,11 @@ public static class OrganizerEndpoints
                 endDt = startDt.AddDays(1);
 
             var matches = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.id, m.scheduled_time, m.status,
                        m.round_index, m.match_number,
-                       t1.name AS team1_name, t2.name AS team2_name,
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns},
                        t.id AS tournament_id, t.name AS tournament_name,
                        t.game AS tournament_game, t.slug AS tournament_slug,
                        ts.name AS stage_name
@@ -119,8 +121,8 @@ public static class OrganizerEndpoints
                 JOIN brkt_versions v ON v.id = m.version_id
                 JOIN tournament_stages ts ON ts.id = v.stage_id
                 JOIN tournaments t ON t.id = ts.tournament_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE (
                     t.organizer_id = @organizerId
                     OR EXISTS (

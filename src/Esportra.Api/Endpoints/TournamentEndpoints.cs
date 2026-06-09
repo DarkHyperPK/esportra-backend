@@ -7,6 +7,7 @@ using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Distributed;
@@ -333,6 +334,7 @@ public static class TournamentEndpoints
             string               slugOrId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   gameCatalog,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
@@ -428,9 +430,23 @@ public static class TournamentEndpoints
                     new { tournamentId })
                 : 0;
 
+            string participantMode;
+            try
+            {
+                participantMode = await gameCatalog.ResolveParticipantModeAsync(
+                    (string)tournament.game,
+                    tournament.game_mode as string,
+                    (int?)tournament.team_size);
+            }
+            catch
+            {
+                participantMode = ((int?)tournament.team_size ?? 1) > 1 ? "team" : "solo";
+            }
+
             return Results.Ok(new
             {
                 tournament,
+                participantMode,
                 participants,
                 stages,
                 isOrganizer,
@@ -928,6 +944,21 @@ public static class TournamentEndpoints
                 }
             }
 
+            if (updated is not null && req.DeletedAt is not null && !req.ClearDeletedAt)
+            {
+                using var tx = conn.BeginTransaction();
+                try
+                {
+                    await MockTeamCleanup.DeleteForTournamentAsync(conn, tx, id, ct);
+                    tx.Commit();
+                }
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
+            }
+
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Organizer");
@@ -953,7 +984,19 @@ public static class TournamentEndpoints
             if (row.deleted_at is null)
                 return Results.BadRequest(new { error = "Tournament must be moved to trash before it can be permanently deleted." });
 
-            await conn.ExecuteAsync("DELETE FROM tournaments WHERE id = @id", new { id });
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                await MockTeamCleanup.DeleteForTournamentAsync(conn, tx, id, ct);
+                await conn.ExecuteAsync("DELETE FROM tournaments WHERE id = @id", new { id }, tx);
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return Results.Ok(new { deleted = true });
         }).RequireAuthorization("Organizer");
@@ -1156,33 +1199,18 @@ public static class TournamentEndpoints
                     "SELECT username, avatar_url FROM profiles WHERE id = @uid",
                     new { uid = userCtx.UserIdGuid }, txn);
 
-                var vtId  = Guid.NewGuid();
-                var vtTag = $"solo-{vtId:N}";
-
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members, logo_url)
-                    VALUES (@vtId, @name, @tag, @game, @ownerId, true, 1, @logo)
-                    """,
-                    new
-                    {
+                var vtId = Guid.NewGuid();
+                teamIdGuid = await TeamCreationHelper.CreateSoloAdapterTeamAsync(
+                    conn,
+                    txn,
+                    new TeamCreationHelper.SoloAdapterParams(
                         vtId,
-                        name = (string?)profile?.username ?? "Solo Player",
-                        tag  = vtTag,
-                        game = (string)tourn.game,
-                        ownerId = userCtx.UserIdGuid,
-                        logo = (string?)profile?.avatar_url,
-                    }, txn);
-
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO team_members (team_id, user_id, role, is_active)
-                    VALUES (@teamId, @userId, 'captain', true)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    new { teamId = vtId, userId = userCtx.UserIdGuid }, txn);
-
-                teamIdGuid = vtId;
+                        (string?)profile?.username ?? "Solo Player",
+                        (string)tourn.game,
+                        userCtx.UserIdGuid,
+                        (string?)profile?.avatar_url),
+                    userCtx.UserIdGuid,
+                    ct);
             }
 
             // Determine if this is a paid tournament
@@ -1194,20 +1222,36 @@ public static class TournamentEndpoints
             var   paymentStatus   = isPaid ? "pending" : "not_required";
             var   entryFeePaid    = !isPaid; // free = already paid; paid = not yet
 
+            string teamMembersJson;
+            string? rosterLineupJson = null;
+            if (rosterIdGuid.HasValue)
+            {
+                (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
+                    conn, rosterIdGuid.Value, txn);
+            }
+            else if (!string.IsNullOrWhiteSpace(req.TeamMembers))
+            {
+                teamMembersJson = $"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]";
+            }
+            else
+            {
+                teamMembersJson = "[]";
+            }
+
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
                 INSERT INTO tournament_participants
                     (tournament_id, user_id, team_id, team_captain_id, team_name,
-                     team_members, team_contact_email, roster_id, roster_name,
+                     team_members, roster_lineup, team_contact_email, roster_id, roster_name,
                      status, participant_type, source, entry_fee_amount, entry_fee_paid,
                      payment_status, payment_receipt_url)
                 VALUES (@tournamentId, @userId, @teamId, @teamCaptainId, @teamName,
-                        @teamMembers::jsonb, @teamContactEmail, @rosterId, @rosterName,
+                        @teamMembers::jsonb, @rosterLineup::jsonb, @teamContactEmail, @rosterId, @rosterName,
                         @regStatus::registration_status, @participantType::registration_type, 'open',
                         @entryFeeAmount, @entryFeePaid,
                         @paymentStatus, @paymentReceiptUrl)
                 RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
-                         team_members, team_contact_email, roster_id, roster_name,
+                         team_members, roster_lineup, team_contact_email, roster_id, roster_name,
                          status, participant_type, source, entry_fee_amount, entry_fee_paid,
                          payment_status, payment_receipt_url, created_at
                 """,
@@ -1218,7 +1262,8 @@ public static class TournamentEndpoints
                     teamId           = teamIdGuid,
                     teamCaptainId    = captainIdGuid ?? userCtx.UserIdGuid,
                     teamName         = req.TeamName,
-                    teamMembers      = req.TeamMembers is not null ? $"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]" : "[]",
+                    teamMembers      = teamMembersJson,
+                    rosterLineup     = rosterLineupJson,
                     teamContactEmail = req.TeamContactEmail,
                     rosterId         = rosterIdGuid,
                     rosterName       = req.RosterName,
@@ -1555,11 +1600,17 @@ public static class TournamentEndpoints
 
             // 5. Get user's captain teams for registration options
             var captainTeams = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT t.id, t.name, t.logo_url
                 FROM teams t
-                WHERE t.owner_id = @userId
-                   OR t.id IN (SELECT team_id FROM team_members WHERE user_id = @userId AND role = 'captain' AND is_active = TRUE)
+                WHERE (t.owner_id = @userId
+                   OR t.id IN (
+                       SELECT team_id FROM team_members
+                       WHERE user_id = @userId AND role = 'captain' AND is_active = TRUE
+                   ))
+                  AND {TeamKindSql.RealTeamWhere}
+                ORDER BY t.created_at DESC
+                LIMIT 50
                 """,
                 new { userId = userCtx.UserIdGuid });
 
@@ -1724,10 +1775,44 @@ public static class TournamentEndpoints
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
-            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM tournament_participants WHERE id = @pid AND tournament_id = @id",
-                new { pid, id });
-            return row is null ? Results.NotFound() : Results.Ok(row);
+            var flat = await conn.QueryAsync<dynamic>(
+                """
+                SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
+                       tp.participant_type::text AS participant_type,
+                       tp.status::text AS status, tp.created_at, tp.checked_in_at, tp.is_mock,
+                       COALESCE(t.name, tp.team_name) AS team_name, t.logo_url AS team_logo_url,
+                       t.tag AS team_tag,
+                       COALESCE(t.is_solo, false) AS is_solo,
+                       COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind,
+                       tm.user_id AS member_user_id,
+                       p.username AS member_username,
+                       sp.username AS solo_username,
+                       sp.full_name AS solo_full_name,
+                       sp.riot_tag AS solo_riot_tag,
+                       sp.avatar_url AS solo_avatar_url
+                FROM tournament_participants tp
+                LEFT JOIN teams t ON t.id = tp.team_id
+                LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = true
+                LEFT JOIN profiles p ON p.id = tm.user_id
+                LEFT JOIN profiles sp ON sp.id = tp.user_id
+                WHERE tp.tournament_id = @id AND tp.id = @pid
+                ORDER BY tp.created_at ASC
+                """, new { id, pid });
+
+            var rows = flat.AsList();
+            if (rows.Count == 0) return Results.NotFound();
+
+            var first = rows[0];
+            var members = rows
+                .Where(m => m.member_user_id is not null)
+                .Select(m => new { user_id = (Guid)m.member_user_id, username = (string)m.member_username })
+                .Distinct()
+                .ToList();
+
+            return Results.Ok(ParticipantResponseHelper.EnrichParticipant(
+                first,
+                members,
+                string.Join(", ", members.Select(m => m.username))));
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
@@ -1834,6 +1919,9 @@ public static class TournamentEndpoints
                        tp.participant_type::text AS participant_type,
                        tp.status::text AS status, tp.created_at, tp.checked_in_at, tp.is_mock,
                        COALESCE(t.name, tp.team_name) AS team_name, t.logo_url AS team_logo_url,
+                       t.tag AS team_tag,
+                       COALESCE(t.is_solo, false) AS is_solo,
+                       COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind,
                        tm.user_id AS member_user_id,
                        p.username AS member_username,
                        sp.username AS solo_username,
@@ -1862,26 +1950,10 @@ public static class TournamentEndpoints
                         .Distinct()
                         .ToList();
 
-                    return new
-                    {
-                        id = (Guid)first.id,
-                        tournament_id = (Guid)first.tournament_id,
-                        user_id = first.user_id as Guid?,
-                        team_id = first.team_id as Guid?,
-                        participant_type = first.participant_type as string,
-                        status = (string)first.status,
-                        created_at = first.created_at,
-                        checked_in_at = first.checked_in_at as DateTime?,
-                        is_mock = first.is_mock as bool?,
-                        team_name = first.team_name as string,
-                        team_logo_url = first.team_logo_url as string,
-                        team_members = string.Join(", ", members.Select(m => m.username)),
+                    return ParticipantResponseHelper.EnrichParticipant(
+                        first,
                         members,
-                        solo_username = first.solo_username as string,
-                        solo_full_name = first.solo_full_name as string,
-                        solo_riot_tag = first.solo_riot_tag as string,
-                        solo_avatar_url = first.solo_avatar_url as string,
-                    };
+                        string.Join(", ", members.Select(m => m.username)));
                 })
                 .ToList();
 
@@ -3631,7 +3703,6 @@ public static class TournamentEndpoints
             [FromBody] MockGenerateRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
-            TournamentWinnerService winnerService,
             ILoggerFactory       loggerFactory,
             CancellationToken    ct) =>
         {
@@ -3680,7 +3751,7 @@ public static class TournamentEndpoints
 
                 logger.LogInformation("[mock/generate] Generating {Count} mock participants", count);
 
-                await ClearMockSimulationDataAsync(conn, tx, winnerService, id, ct);
+                await ClearMockSimulationDataAsync(conn, tx, id, ct);
 
                 logger.LogInformation("[mock/generate] Cleared existing mock data, inserting {Count} rows", count);
 
@@ -3690,34 +3761,26 @@ public static class TournamentEndpoints
                 var rows            = mockNames.Select(name =>
                 {
                     var mockId = Guid.NewGuid();
-                    return new
-                    {
+                    return new TeamCreationHelper.MockTeamParams(
                         mockId,
-                        tournamentId = id,
-                        teamName = name,
-                        tag = $"mock-{mockId:N}"[..18],
-                        game = (string)tournament.game,
-                        ownerId = (Guid)tournament.organizer_id,
-                        isSolo = teamSize == 1,
-                        maxMembers = Math.Max(teamSize, 1),
-                        participantType,
-                        mockStatus = "checked_in",
-                    };
+                        name,
+                        TeamCreationHelper.BuildMockTag(mockId),
+                        (string)tournament.game,
+                        (Guid)tournament.organizer_id,
+                        teamSize == 1,
+                        Math.Max(teamSize, 1));
                 }).ToList();
 
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members)
-                    VALUES (@mockId, @teamName, @tag, @game, @ownerId, @isSolo, @maxMembers)
-                    ON CONFLICT (id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        tag = EXCLUDED.tag,
-                        game = EXCLUDED.game,
-                        owner_id = EXCLUDED.owner_id,
-                        is_solo = EXCLUDED.is_solo,
-                        max_members = EXCLUDED.max_members
-                    """,
-                    rows, tx);
+                var participantRows = rows.Select(r => new
+                {
+                    mockId = r.MockId,
+                    tournamentId = id,
+                    teamName = r.TeamName,
+                    participantType,
+                    mockStatus = "checked_in",
+                }).ToList();
+
+                await TeamCreationHelper.UpsertMockTeamsAsync(conn, tx, rows);
 
                 await conn.ExecuteAsync(
                     """
@@ -3727,7 +3790,7 @@ public static class TournamentEndpoints
                         (@mockId, @tournamentId, @mockId, @teamName, @participantType::registration_type,
                          @mockStatus::registration_status, TRUE, NOW(), NOW(), NOW())
                     """,
-                    rows, tx);
+                    participantRows, tx);
 
                 tx.Commit();
                 logger.LogInformation("[mock/generate] Committed {Count} mock participants for tournament {Id}", count, id);
@@ -3754,7 +3817,6 @@ public static class TournamentEndpoints
             Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
-            TournamentWinnerService winnerService,
             ILoggerFactory       loggerFactory,
             CancellationToken    ct) =>
         {
@@ -3778,7 +3840,7 @@ public static class TournamentEndpoints
                 if (!safety.CanRegenerate)
                     return Results.Json(MockOperationError(safety.Error, ctx.TraceIdentifier), statusCode: StatusCodes.Status409Conflict);
 
-                await ClearMockSimulationDataAsync(conn, tx, winnerService, id, ct);
+                await ClearMockSimulationDataAsync(conn, tx, id, ct);
 
                 tx.Commit();
 
@@ -3854,42 +3916,12 @@ public static class TournamentEndpoints
     private static async Task ClearMockSimulationDataAsync(
         IDbConnection conn,
         IDbTransaction tx,
-        TournamentWinnerService winnerService,
         Guid tournamentId,
         CancellationToken ct)
     {
         // Stage participants and bracket versions are derived simulation state.
         // They are cleared together so regeneration reflects the current max_teams
         // and cannot leave stale teams attached to a bracket.
-        var hasMockWinner = await conn.ExecuteScalarAsync<bool>(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM public.tournaments t
-                WHERE t.id = @tournamentId
-                  AND t.winner_id IS NOT NULL
-                  AND EXISTS (
-                  SELECT 1
-                  FROM public.tournament_participants tp
-                  WHERE tp.tournament_id = t.id
-                    AND tp.team_id = t.winner_id
-                    AND COALESCE(tp.is_mock, FALSE) = TRUE
-                  )
-            )
-            """,
-            new { tournamentId }, tx);
-
-        if (hasMockWinner)
-        {
-            await winnerService.ClearWinnerAsync(
-                conn,
-                tx,
-                tournamentId,
-                reopenCompleted: true,
-                reason: "mock tournament cleanup",
-                ct);
-        }
-
         await conn.ExecuteAsync(
             """
             UPDATE public.tournament_stages
@@ -3971,18 +4003,6 @@ public static class TournamentEndpoints
             "DELETE FROM public.brkt_advancements WHERE version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)",
             new { tournamentId }, tx);
         await conn.ExecuteAsync(
-            """
-            DELETE FROM public.br_group_teams gt
-            USING public.tournament_participants tp
-            JOIN public.tournament_stages ts ON ts.tournament_id = tp.tournament_id
-            JOIN public.br_groups g ON g.stage_id = ts.id
-            WHERE gt.group_id = g.id
-              AND gt.participant_id = tp.id
-              AND tp.tournament_id = @tournamentId
-              AND COALESCE(tp.is_mock, FALSE) = TRUE
-            """,
-            new { tournamentId }, tx);
-        await conn.ExecuteAsync(
             "DELETE FROM public.stage_participants WHERE stage_id IN (SELECT id FROM public.tournament_stages WHERE tournament_id = @tournamentId)",
             new { tournamentId }, tx);
         await conn.ExecuteAsync(
@@ -3991,20 +4011,8 @@ public static class TournamentEndpoints
         await conn.ExecuteAsync(
             "DELETE FROM public.brkt_versions WHERE tournament_id = @tournamentId",
             new { tournamentId }, tx);
-        await conn.ExecuteAsync(
-            """
-            WITH deleted_mock_participants AS (
-                DELETE FROM public.tournament_participants
-                WHERE tournament_id = @tournamentId
-                  AND is_mock = TRUE
-                RETURNING team_id
-            )
-            DELETE FROM public.teams t
-            USING deleted_mock_participants d
-            WHERE t.id = d.team_id
-              AND t.tag LIKE 'mock-%'
-            """,
-            new { tournamentId }, tx);
+
+        await MockTeamCleanup.DeleteForTournamentAsync(conn, tx, tournamentId, ct);
     }
 
     private sealed record MockSimulationSafety(bool CanRegenerate, string? Error);
@@ -4112,6 +4120,7 @@ public sealed record RegisterTournamentRequest(
     string? TeamCaptainId     = null,
     string? TeamName          = null,
     string? TeamMembers       = null,
+    string? RosterLineup      = null,
     string? RosterId          = null,
     string? RosterName        = null,
     string? TeamContactEmail  = null,

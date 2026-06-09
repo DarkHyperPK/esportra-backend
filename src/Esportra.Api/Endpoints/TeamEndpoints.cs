@@ -4,6 +4,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Tournaments;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -28,6 +29,7 @@ public static class TeamEndpoints
         app.MapGet("/api/teams", async (
             string?              ids,
             string?              owner_id,
+            string?              game,
             string?              q,
             int                  limit  = 50,
             int                  offset = 0,
@@ -47,20 +49,29 @@ public static class TeamEndpoints
                     .ToArray();
                 if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
                 var byIds = await conn.QueryAsync<dynamic>(
-                    "SELECT id::text, name, owner_id::text, logo_url, created_at FROM teams WHERE id = ANY(@idList)", new { idList });
+                    """
+                    SELECT id::text, name, owner_id::text, logo_url, created_at,
+                           COALESCE(team_kind, CASE WHEN COALESCE(is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind
+                    FROM teams
+                    WHERE id = ANY(@idList)
+                    """,
+                    new { idList });
                 return Results.Ok(byIds);
             }
 
             Guid? ownerGuid = Guid.TryParse(owner_id, out var og) ? og : null;
             var teams = await conn.QueryAsync<dynamic>(
-                """
-                SELECT * FROM teams
-                WHERE (@ownerGuid IS NULL OR owner_id = @ownerGuid)
-                  AND (@q IS NULL OR name ILIKE '%' || @q || '%')
-                ORDER BY created_at DESC
+                $"""
+                SELECT t.*
+                FROM teams t
+                WHERE (@ownerGuid IS NULL OR t.owner_id = @ownerGuid)
+                  AND (@q IS NULL OR t.name ILIKE '%' || @q || '%')
+                  AND (@game IS NULL OR LOWER(t.game) = LOWER(@game))
+                  AND {TeamKindSql.RealTeamWhere}
+                ORDER BY t.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { ownerGuid, q, limit, offset });
+                new { ownerGuid, game, q, limit, offset });
             return Results.Ok(teams);
         });
 
@@ -77,7 +88,7 @@ public static class TeamEndpoints
 
             using var conn = db.CreateConnection();
             var teams = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT t.*,
                        COALESCE(jsonb_agg(
                            jsonb_build_object(
@@ -100,7 +111,7 @@ public static class TeamEndpoints
                     UNION
                     SELECT id FROM teams WHERE owner_id = @userId
                 )
-                AND t.is_solo = false
+                AND {TeamKindSql.RealTeamWhere}
                 GROUP BY t.id
                 ORDER BY t.created_at DESC
                 """,
@@ -165,9 +176,9 @@ public static class TeamEndpoints
                 var team = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                      owner_id, is_active, country_code)
+                                      owner_id, is_active, country_code, team_kind)
                     VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                            @ownerId, TRUE, @countryCode)
+                            @ownerId, TRUE, @countryCode, 'team')
                     RETURNING id, name, tag, game, game_format, logo_url, description,
                              owner_id, is_active, country_code, created_at
                     """,
@@ -176,7 +187,7 @@ public static class TeamEndpoints
                         name        = req.Name,
                         tag         = req.Tag,
                         game        = req.Game ?? "General",
-                        gameFormat  = req.GameFormat ?? "squad",
+                        gameFormat  = req.GameFormat,
                         logoUrl     = req.LogoUrl,
                         description = req.Description,
                         ownerId     = userCtx.UserIdGuid,
@@ -643,6 +654,18 @@ public static class TeamEndpoints
                     """,
                     new { teamId = invite.team_id, userId = userCtx.UserIdGuid }, tx);
 
+                if (invite.roster_id is not null)
+                {
+                    var rosterId = (Guid)invite.roster_id;
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
+                        VALUES (@rosterId, @userId, 'substitute'::public.roster_member_role, FALSE)
+                        ON CONFLICT (roster_id, user_id) DO NOTHING
+                        """,
+                        new { rosterId, userId = userCtx.UserIdGuid }, tx);
+                }
+
                 tx.Commit();
             }
             catch
@@ -848,8 +871,9 @@ public static class TeamEndpoints
                                'username', p.username,
                                'avatar_url', p.avatar_url,
                                'card_image_url', p.card_image_url,
-                               'is_starter', rm.is_starter
-                           ) ORDER BY rm.created_at
+                               'is_starter', rm.is_starter,
+                               'roster_role', rm.roster_role
+                           ) ORDER BY rm.display_order, rm.created_at
                        ) FILTER (WHERE rm.user_id IS NOT NULL), '[]') AS members
                 FROM team_rosters r
                 LEFT JOIN team_roster_members rm ON rm.roster_id = r.id
@@ -936,12 +960,17 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT trm.user_id, trm.is_starter, trm.role,
+                SELECT trm.user_id, trm.is_starter, trm.roster_role::text AS roster_role,
+                       tm.role::text AS team_role,
                        p.username, p.full_name, p.avatar_url, p.riot_tag, p.steam_tag
                 FROM team_roster_members trm
+                JOIN team_rosters tr ON tr.id = trm.roster_id
+                LEFT JOIN team_members tm ON tm.team_id = tr.team_id AND tm.user_id = trm.user_id AND tm.is_active = TRUE
                 LEFT JOIN profiles p ON p.id = trm.user_id
                 WHERE trm.roster_id = @rosterId
-                ORDER BY trm.is_starter DESC, p.username ASC
+                ORDER BY trm.display_order ASC,
+                         CASE trm.roster_role WHEN 'starter' THEN 0 WHEN 'substitute' THEN 1 WHEN 'coach' THEN 2 ELSE 3 END,
+                         trm.is_starter DESC, p.username ASC
                 """,
                 new { rosterId });
             return Results.Ok(rows);
@@ -961,10 +990,35 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
+            var userIdGuid = Guid.Parse(req.UserId);
+            var teamMemberRole = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT role::text
+                FROM team_members
+                WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
+                """,
+                new { teamId = id, userId = userIdGuid });
+
+            var rosterRole = ResolveRosterRole(req.RosterRole, req.IsStarter, teamMemberRole);
+            if (IsPlayerLineupRole(rosterRole) && string.Equals(teamMemberRole, "coach", StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "Team coaches must use the coach lineup role." });
+
             await conn.ExecuteAsync(
-                "INSERT INTO team_roster_members (roster_id, user_id) VALUES (@rosterId, @userId) ON CONFLICT DO NOTHING",
-                new { rosterId, userId = Guid.Parse(req.UserId) });
-            return Results.Ok(new { success = true });
+                """
+                INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
+                VALUES (@rosterId, @userId, @rosterRole::public.roster_member_role, @isStarter)
+                ON CONFLICT (roster_id, user_id) DO UPDATE
+                    SET roster_role = EXCLUDED.roster_role,
+                        is_starter = EXCLUDED.is_starter
+                """,
+                new
+                {
+                    rosterId,
+                    userId = userIdGuid,
+                    rosterRole,
+                    isStarter = rosterRole == "starter",
+                });
+            return Results.Ok(new { success = true, rosterRole, isStarter = rosterRole == "starter" });
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/teams/{id}/rosters/{rosterId}/members/{userId} ────────
@@ -1002,10 +1056,75 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
+            var teamMemberRole = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT tm.role::text
+                FROM team_roster_members trm
+                JOIN team_rosters tr ON tr.id = trm.roster_id
+                JOIN team_members tm ON tm.team_id = tr.team_id AND tm.user_id = trm.user_id AND tm.is_active = TRUE
+                WHERE trm.roster_id = @rosterId AND trm.user_id = @userId
+                """,
+                new { rosterId, userId });
+
+            var rosterRole = req.IsStarter ? "starter" : "substitute";
+            if (string.Equals(teamMemberRole, "coach", StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "Team coaches must use the coach lineup role." });
+
             await conn.ExecuteAsync(
-                "UPDATE team_roster_members SET is_starter = @isStarter WHERE roster_id = @rosterId AND user_id = @userId",
-                new { isStarter = req.IsStarter, rosterId, userId });
-            return Results.Ok(new { success = true });
+                """
+                UPDATE team_roster_members
+                SET is_starter = @isStarter,
+                    roster_role = @rosterRole::public.roster_member_role
+                WHERE roster_id = @rosterId AND user_id = @userId
+                """,
+                new { isStarter = req.IsStarter, rosterRole, rosterId, userId });
+            return Results.Ok(new { success = true, rosterRole, isStarter = req.IsStarter });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/teams/{id}/rosters/{rosterId}/members/{userId}/role ──────
+        app.MapPut("/api/teams/{id}/rosters/{rosterId}/members/{userId}/role", async (
+            Guid                            id,
+            Guid                            rosterId,
+            Guid                            userId,
+            [FromBody] UpdateRosterRoleRequest req,
+            HttpContext                     ctx,
+            IDbConnectionFactory            db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.RosterRole is not ("starter" or "substitute" or "coach"))
+                return Results.BadRequest(new { error = "Roster role must be starter, substitute, or coach." });
+
+            using var conn = db.CreateConnection();
+            await AssertCaptain(conn, id, userCtx.UserIdGuid);
+
+            var teamMemberRole = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT tm.role::text
+                FROM team_roster_members trm
+                JOIN team_rosters tr ON tr.id = trm.roster_id
+                JOIN team_members tm ON tm.team_id = tr.team_id AND tm.user_id = trm.user_id AND tm.is_active = TRUE
+                WHERE trm.roster_id = @rosterId AND trm.user_id = @userId
+                """,
+                new { rosterId, userId });
+
+            if (IsPlayerLineupRole(req.RosterRole) && string.Equals(teamMemberRole, "coach", StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "Team coaches must use the coach lineup role." });
+
+            if (req.RosterRole == "coach" && !string.Equals(teamMemberRole, "coach", StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "Only team-level coaches can be assigned as lineup coaches." });
+
+            var isStarter = req.RosterRole == "starter";
+            await conn.ExecuteAsync(
+                """
+                UPDATE team_roster_members
+                SET roster_role = @rosterRole::public.roster_member_role,
+                    is_starter = @isStarter
+                WHERE roster_id = @rosterId AND user_id = @userId
+                """,
+                new { rosterRole = req.RosterRole, isStarter, rosterId, userId });
+            return Results.Ok(new { success = true, rosterRole = req.RosterRole, isStarter });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/invite ────────────────────
@@ -1205,24 +1324,33 @@ public static class TeamEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/teams/my-captain-teams ──────────────────────────────────
-        // Returns teams where the current user is captain
+        // Returns real teams where the current user is captain (excludes solo/mock adapters).
         app.MapGet("/api/teams/my-captain-teams", async (
             HttpContext          ctx,
+            string?              game,
+            int                  limit,
+            int                  offset,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var pageLimit  = Math.Clamp(limit <= 0 ? 50 : limit, 1, 100);
+            var pageOffset = Math.Max(offset, 0);
+
             using var conn = db.CreateConnection();
             var teams = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT t.*
                 FROM teams t
                 JOIN team_members tm ON tm.team_id = t.id
                 WHERE tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
+                  AND {TeamKindSql.RealTeamWhere}
+                  AND (@game IS NULL OR LOWER(t.game) = LOWER(@game))
                 ORDER BY t.name ASC
-                """, new { userId = userCtx.UserIdGuid });
+                LIMIT @pageLimit OFFSET @pageOffset
+                """, new { userId = userCtx.UserIdGuid, game, pageLimit, pageOffset });
             return Results.Ok(teams);
         }).RequireAuthorization("Authenticated");
 
@@ -1235,13 +1363,14 @@ public static class TeamEndpoints
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT t.id, t.name, t.tag, t.game, t.logo_url,
                        p.id AS captain_id, p.username AS captain_username, p.avatar_url AS captain_avatar
                 FROM teams t
                 JOIN team_members tm ON tm.team_id = t.id AND tm.role = 'captain' AND tm.is_active = TRUE
                 JOIN profiles p ON p.id = tm.user_id
                 WHERE (@game IS NULL OR t.game = @game)
+                  AND {TeamKindSql.RealTeamWhere}
                 ORDER BY t.name ASC
                 LIMIT 100
                 """, new { game });
@@ -1328,11 +1457,12 @@ public static class TeamEndpoints
             if (effectiveUserId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    """
+                    $"""
                     SELECT tm.*, t.name AS team_name, t.logo_url AS team_logo, t.game
                     FROM team_members tm
                     JOIN teams t ON t.id = tm.team_id
                     WHERE tm.user_id = @effectiveUserId AND tm.is_active = TRUE
+                      AND {TeamKindSql.RealTeamWhere}
                     ORDER BY tm.joined_at DESC
                     """, new { effectiveUserId });
                 return Results.Ok(rows);
@@ -1363,6 +1493,23 @@ public static class TeamEndpoints
     }
 
     // ── Authorization helpers ─────────────────────────────────────────────────
+
+    private static bool IsPlayerLineupRole(string rosterRole) =>
+        rosterRole is "starter" or "substitute";
+
+    private static string ResolveRosterRole(string? requestedRole, bool? isStarter, string? teamMemberRole)
+    {
+        if (string.Equals(teamMemberRole, "coach", StringComparison.OrdinalIgnoreCase))
+            return "coach";
+
+        if (requestedRole is "starter" or "substitute" or "coach")
+            return requestedRole;
+
+        if (isStarter.HasValue)
+            return isStarter.Value ? "starter" : "substitute";
+
+        return "starter";
+    }
 
     /// <summary>Throws 403 if the user is not the team owner (top-level owner_id check).</summary>
     private static async Task AssertOwner(IDbConnection conn, Guid teamId, Guid userId)
@@ -1438,7 +1585,9 @@ public sealed record CreateRosterRequest(string Name, string Game, string? Forma
 
 public sealed record UpdateRosterRequest(string Name);
 
-public sealed record RosterMemberRequest(string UserId);
+public sealed record RosterMemberRequest(string UserId, string? RosterRole = null, bool? IsStarter = null);
+
+public sealed record UpdateRosterRoleRequest(string RosterRole);
 
 public sealed record ToggleStarterRequest(bool IsStarter);
 

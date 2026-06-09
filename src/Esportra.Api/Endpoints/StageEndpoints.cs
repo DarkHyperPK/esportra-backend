@@ -5,6 +5,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
+using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -911,31 +912,17 @@ public static class StageEndpoints
             var rows = missingMocks.Select(row =>
             {
                 var mockId = (Guid)row.id;
-                return new
-                {
+                return new TeamCreationHelper.MockTeamParams(
                     mockId,
-                    teamName = (string)row.team_name,
-                    tag = $"mock-{mockId:N}"[..18],
-                    game = (string)row.game,
-                    ownerId = (Guid)row.organizer_id,
-                    isSolo = (int)row.team_size == 1,
-                    maxMembers = Math.Max((int)row.team_size, 1),
-                };
+                    (string)row.team_name,
+                    TeamCreationHelper.BuildMockTag(mockId),
+                    (string)row.game,
+                    (Guid)row.organizer_id,
+                    (int)row.team_size == 1,
+                    Math.Max((int)row.team_size, 1));
             }).ToList();
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members)
-                VALUES (@mockId, @teamName, @tag, @game, @ownerId, @isSolo, @maxMembers)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    tag = EXCLUDED.tag,
-                    game = EXCLUDED.game,
-                    owner_id = EXCLUDED.owner_id,
-                    is_solo = EXCLUDED.is_solo,
-                    max_members = EXCLUDED.max_members
-                """,
-                rows);
+            await TeamCreationHelper.UpsertMockTeamsAsync(conn, null, rows);
         }
 
         await conn.ExecuteAsync(

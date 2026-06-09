@@ -535,7 +535,9 @@ public static class BracketEndpoints
                 SELECT m.*,
                        l.x, l.y,
                        COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
+                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
+                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
@@ -641,6 +643,8 @@ public static class BracketEndpoints
                 SELECT m.*,
                        COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
                        COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
+                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
+                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind,
                        ts.best_of AS stage_best_of
                 FROM brkt_matches m
                 LEFT JOIN teams t1 ON t1.id = m.team1_id
@@ -766,7 +770,9 @@ public static class BracketEndpoints
                 SELECT m.*,
                        l.x, l.y,
                        COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
+                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
+                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
                 LEFT JOIN teams t1 ON t1.id = m.team1_id

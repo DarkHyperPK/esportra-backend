@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Database;
+using Esportra.Core.Tournaments;
 
 namespace Esportra.Api.Services;
 
@@ -231,8 +232,22 @@ public sealed partial class GameCatalogService(
             mode.ParticipantMode,
             mode.AllowsSubstitutes,
             mode.MaxRosterSize,
+            mode.MaxSubstitutes,
+            mode.AllowsCoaches,
+            mode.MaxCoaches,
             mode.ModeGroup,
             mode.VariantLabel);
+    }
+
+    public async Task<string> ResolveParticipantModeAsync(
+        string game,
+        string? gameMode,
+        int? teamSize = null,
+        IDbConnection? existingConnection = null,
+        IDbTransaction? tx = null)
+    {
+        var mode = await ResolveGameModeAsync(game, gameMode, teamSize, existingConnection, tx);
+        return mode.ParticipantMode;
     }
 
     public async Task ValidateRegistrationAsync(
@@ -281,6 +296,9 @@ public sealed partial class GameCatalogService(
             SELECT id, name, game, game_format AS gameFormat, owner_id AS ownerId
             FROM public.teams
             WHERE id = @teamId AND is_active = TRUE
+              AND COALESCE(team_kind, CASE WHEN COALESCE(is_solo, false) THEN 'solo' ELSE 'team' END) = 'team'
+              AND COALESCE(is_solo, false) = false
+              AND COALESCE(tag, '') NOT LIKE 'mock-%'
             """,
             new { teamId }, tx);
         if (team is null) throw new GameCatalogValidationException("Team was not found.");
@@ -318,23 +336,38 @@ public sealed partial class GameCatalogService(
 
         var memberRows = (await conn.QueryAsync<RosterMemberCatalogRow>(
             """
-            SELECT user_id AS userId, COALESCE(is_starter, TRUE) AS isStarter
-            FROM public.team_roster_members
-            WHERE roster_id = @rosterId
+            SELECT trm.user_id AS userId,
+                   trm.roster_role::text AS rosterRole,
+                   COALESCE(trm.is_starter, TRUE) AS isStarter,
+                   tm.role::text AS teamMemberRole
+            FROM public.team_roster_members trm
+            JOIN public.team_rosters tr ON tr.id = trm.roster_id
+            LEFT JOIN public.team_members tm
+                ON tm.team_id = tr.team_id AND tm.user_id = trm.user_id AND tm.is_active = TRUE
+            WHERE trm.roster_id = @rosterId
             """,
             new { rosterId }, tx)).AsList();
 
-        var allMembers = memberRows.Select(m => m.UserId).Append(team.OwnerId).Distinct().ToHashSet();
-        var starters = memberRows.Where(m => m.IsStarter).Select(m => m.UserId).Append(team.OwnerId).Distinct().ToHashSet();
-
-        if (starters.Count != mode.TeamSize)
-            throw new GameCatalogValidationException($"Roster must have exactly {mode.TeamSize} starter(s) for {mode.Name}. It currently has {starters.Count}.");
-
-        if (!mode.AllowsSubstitutes && allMembers.Count > mode.TeamSize)
-            throw new GameCatalogValidationException($"{mode.Name} does not allow substitutes.");
-
-        if (mode.MaxRosterSize.HasValue && allMembers.Count > mode.MaxRosterSize.Value)
-            throw new GameCatalogValidationException($"Roster has {allMembers.Count} members, exceeding the {mode.MaxRosterSize.Value}-member limit for {mode.Name}.");
+        try
+        {
+            RosterLineupValidator.Validate(
+                new RosterModeRules(
+                    mode.TeamSize,
+                    mode.AllowsSubstitutes,
+                    mode.MaxRosterSize,
+                    mode.MaxSubstitutes,
+                    mode.AllowsCoaches,
+                    mode.MaxCoaches),
+                memberRows.Select(m => new RosterLineupMember(
+                    m.UserId,
+                    m.RosterRole ?? (m.IsStarter ? "starter" : "substitute"),
+                    m.IsStarter,
+                    m.TeamMemberRole)).ToList());
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new GameCatalogValidationException(ex.Message);
+        }
     }
 
     private string ResolveCatalogPath()
@@ -443,11 +476,13 @@ public sealed partial class GameCatalogService(
                 """
                 INSERT INTO public.game_catalog_game_modes
                     (version_id, game_slug, mode_key, name, team_size, participant_mode,
-                     allows_substitutes, max_roster_size, aliases, display_group, variant_label,
+                     allows_substitutes, max_roster_size, max_substitutes, allows_coaches, max_coaches,
+                     aliases, display_group, variant_label,
                      map_pool_filter, features_override, raw)
                 VALUES
                     (@versionId, @slug, @modeKey, @name, @teamSize, @participantMode,
-                     @allowsSubstitutes, @maxRosterSize, @aliases, @displayGroup, @variantLabel,
+                     @allowsSubstitutes, @maxRosterSize, @maxSubstitutes, @allowsCoaches, @maxCoaches,
+                     @aliases, @displayGroup, @variantLabel,
                      @mapPoolFilter, @featuresOverrideJson::jsonb, @raw::jsonb)
                 """,
                 new
@@ -460,6 +495,9 @@ public sealed partial class GameCatalogService(
                     participantMode = OptionalString(mode, "participantMode") ?? "team",
                     allowsSubstitutes = OptionalBool(mode, "allowsSubstitutes") ?? true,
                     maxRosterSize = OptionalInt(mode, "maxRosterSize"),
+                    maxSubstitutes = OptionalInt(mode, "maxSubstitutes"),
+                    allowsCoaches = OptionalBool(mode, "allowsCoaches") ?? true,
+                    maxCoaches = OptionalInt(mode, "maxCoaches") ?? 2,
                     aliases = ReadStringArray(mode, "aliases").Append(modeKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                     displayGroup = OptionalString(mode, "modeGroup"),
                     variantLabel = OptionalString(mode, "variantLabel"),
@@ -584,7 +622,9 @@ public sealed partial class GameCatalogService(
         var modes = conn.Query<ModeRow>(
             """
             SELECT mode_key AS modeKey, name, team_size AS teamSize, participant_mode AS participantMode,
-                   allows_substitutes AS allowsSubstitutes, max_roster_size AS maxRosterSize, aliases,
+                   allows_substitutes AS allowsSubstitutes, max_roster_size AS maxRosterSize,
+                   max_substitutes AS maxSubstitutes, allows_coaches AS allowsCoaches, max_coaches AS maxCoaches,
+                   aliases,
                    display_group AS modeGroup, variant_label AS variantLabel,
                    map_pool_filter AS mapPoolFilter, features_override::text AS featuresOverrideJson
             FROM public.game_catalog_game_modes
@@ -654,7 +694,9 @@ public sealed partial class GameCatalogService(
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE AND status = 'active' LIMIT 1
             )
             SELECT m.mode_key AS modeKey, m.name, m.team_size AS teamSize, m.participant_mode AS participantMode,
-                   m.allows_substitutes AS allowsSubstitutes, m.max_roster_size AS maxRosterSize, m.aliases,
+                   m.allows_substitutes AS allowsSubstitutes, m.max_roster_size AS maxRosterSize,
+                   m.max_substitutes AS maxSubstitutes, m.allows_coaches AS allowsCoaches, m.max_coaches AS maxCoaches,
+                   m.aliases,
                    m.display_group AS modeGroup, m.variant_label AS variantLabel,
                    m.map_pool_filter AS mapPoolFilter, m.features_override::text AS featuresOverrideJson
             FROM public.game_catalog_game_modes m
@@ -897,6 +939,9 @@ public sealed partial class GameCatalogService(
         public string ParticipantMode { get; set; } = "team";
         public bool AllowsSubstitutes { get; set; }
         public int? MaxRosterSize { get; set; }
+        public int? MaxSubstitutes { get; set; }
+        public bool AllowsCoaches { get; set; } = true;
+        public int MaxCoaches { get; set; } = 2;
         public string[] Aliases { get; set; } = Array.Empty<string>();
         public string? ModeGroup { get; set; }
         public string? VariantLabel { get; set; }
@@ -911,7 +956,7 @@ public sealed partial class GameCatalogService(
     private sealed record TournamentRegistrationCatalogRow(Guid Id, string Game, string? GameMode, int? TeamSize);
     private sealed record TeamCatalogRow(Guid Id, string Name, string? Game, string? GameFormat, Guid OwnerId);
     private sealed record RosterCatalogRow(Guid Id, Guid TeamId, string? Game, string? Format, int TeamSize);
-    private sealed record RosterMemberCatalogRow(Guid UserId, bool IsStarter);
+    private sealed record RosterMemberCatalogRow(Guid UserId, string? RosterRole, bool IsStarter, string? TeamMemberRole);
 }
 
 public sealed class GameCatalogValidationException(string message) : Exception(message);
@@ -933,6 +978,9 @@ public sealed record GameModeCatalogResolution(
     string ParticipantMode,
     bool AllowsSubstitutes,
     int? MaxRosterSize,
+    int? MaxSubstitutes,
+    bool AllowsCoaches,
+    int MaxCoaches,
     string? ModeGroup,
     string? VariantLabel);
 

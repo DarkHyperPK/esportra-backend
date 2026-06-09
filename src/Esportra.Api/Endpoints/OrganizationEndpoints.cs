@@ -3,6 +3,7 @@ using System.Dynamic;
 using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Tournaments;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -664,49 +665,65 @@ public static class OrganizationEndpoints
                 return Results.Forbid();
 
             int affected;
-            switch (action)
+            using var tx = conn.BeginTransaction();
+            try
             {
-                case "soft-delete":
-                    affected = await conn.ExecuteAsync(
-                        """
-                        UPDATE tournaments
-                        SET deleted_at = COALESCE(@deletedAt, NOW()), updated_at = NOW()
-                        WHERE organization_id = @orgId
-                          AND id = ANY(@ids)
-                          AND deleted_at IS NULL
-                        """,
-                        new
-                        {
-                            orgId,
-                            ids = req.TournamentIds,
-                            deletedAt = req.DeletedAt ?? DateTimeOffset.UtcNow,
-                        });
-                    break;
+                switch (action)
+                {
+                    case "soft-delete":
+                        affected = await conn.ExecuteAsync(
+                            """
+                            UPDATE tournaments
+                            SET deleted_at = COALESCE(@deletedAt, NOW()), updated_at = NOW()
+                            WHERE organization_id = @orgId
+                              AND id = ANY(@ids)
+                              AND deleted_at IS NULL
+                            """,
+                            new
+                            {
+                                orgId,
+                                ids = req.TournamentIds,
+                                deletedAt = req.DeletedAt ?? DateTimeOffset.UtcNow,
+                            },
+                            tx);
+                        await MockTeamCleanup.DeleteForTournamentsAsync(conn, tx, req.TournamentIds, ct);
+                        break;
 
-                case "restore":
-                    affected = await conn.ExecuteAsync(
-                        """
-                        UPDATE tournaments
-                        SET deleted_at = NULL,
-                            status = 'open'::tournament_status,
-                            updated_at = NOW()
-                        WHERE organization_id = @orgId
-                          AND id = ANY(@ids)
-                          AND deleted_at IS NOT NULL
-                        """,
-                        new { orgId, ids = req.TournamentIds });
-                    break;
+                    case "restore":
+                        affected = await conn.ExecuteAsync(
+                            """
+                            UPDATE tournaments
+                            SET deleted_at = NULL,
+                                status = 'open'::tournament_status,
+                                updated_at = NOW()
+                            WHERE organization_id = @orgId
+                              AND id = ANY(@ids)
+                              AND deleted_at IS NOT NULL
+                            """,
+                            new { orgId, ids = req.TournamentIds },
+                            tx);
+                        break;
 
-                default:
-                    affected = await conn.ExecuteAsync(
-                        """
-                        DELETE FROM tournaments
-                        WHERE organization_id = @orgId
-                          AND id = ANY(@ids)
-                          AND deleted_at IS NOT NULL
-                        """,
-                        new { orgId, ids = req.TournamentIds });
-                    break;
+                    default:
+                        await MockTeamCleanup.DeleteForTournamentsAsync(conn, tx, req.TournamentIds, ct);
+                        affected = await conn.ExecuteAsync(
+                            """
+                            DELETE FROM tournaments
+                            WHERE organization_id = @orgId
+                              AND id = ANY(@ids)
+                              AND deleted_at IS NOT NULL
+                            """,
+                            new { orgId, ids = req.TournamentIds },
+                            tx);
+                        break;
+                }
+
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
             }
 
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }

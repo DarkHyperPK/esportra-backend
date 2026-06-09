@@ -113,11 +113,13 @@ public sealed partial class GameCatalogService
                     """
                     INSERT INTO public.game_catalog_game_modes
                         (version_id, game_slug, mode_key, name, team_size, participant_mode,
-                         allows_substitutes, max_roster_size, aliases, display_group, variant_label,
+                         allows_substitutes, max_roster_size, max_substitutes, allows_coaches, max_coaches,
+                         aliases, display_group, variant_label,
                          map_pool_filter, features_override, raw)
                     VALUES
                         (@versionId, @slug, @modeKey, @name, @teamSize, @participantMode,
-                         @allowsSubstitutes, @maxRosterSize, @aliases, @modeGroup, @variantLabel,
+                         @allowsSubstitutes, @maxRosterSize, @maxSubstitutes, @allowsCoaches, @maxCoaches,
+                         @aliases, @modeGroup, @variantLabel,
                          @mapPoolFilter, @featuresOverrideJson::jsonb, @raw::jsonb)
                     """,
                     new
@@ -130,6 +132,9 @@ public sealed partial class GameCatalogService
                         participantMode = mode.ParticipantMode,
                         allowsSubstitutes = mode.AllowsSubstitutes,
                         maxRosterSize = mode.MaxRosterSize,
+                        maxSubstitutes = mode.MaxSubstitutes,
+                        allowsCoaches = mode.AllowsCoaches,
+                        maxCoaches = mode.MaxCoaches,
                         aliases = (mode.Aliases ?? Array.Empty<string>())
                             .Append(mode.ModeKey)
                             .Distinct(StringComparer.OrdinalIgnoreCase)

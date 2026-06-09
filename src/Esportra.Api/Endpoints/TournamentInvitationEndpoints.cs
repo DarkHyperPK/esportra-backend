@@ -7,6 +7,7 @@ using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Audit;
+using Esportra.Core.Tournaments;
 using Esportra.Api.Services;
 using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
@@ -526,7 +527,22 @@ public static class TournamentInvitationEndpoints
                 }
 
                 var teamSize = (int?)tournament.team_size ?? 1;
-                var isSoloTournament = teamSize == 1;
+                string participantMode;
+                try
+                {
+                    participantMode = await gameCatalog.ResolveParticipantModeAsync(
+                        (string)tournament.game,
+                        tournament.game_mode as string,
+                        teamSize,
+                        conn,
+                        tx);
+                }
+                catch
+                {
+                    participantMode = teamSize > 1 ? "team" : "solo";
+                }
+
+                var isSoloTournament = participantMode == "solo";
 
                 if (!isSoloTournament)
                 {
@@ -599,34 +615,21 @@ public static class TournamentInvitationEndpoints
                         new { uid = userCtx.UserIdGuid }, tx);
 
                     var vtId = Guid.NewGuid();
-                    var vtTag = $"solo-{vtId:N}";
                     var displayName = (string?)profile?.username ?? "Solo Player";
 
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members, logo_url)
-                        VALUES (@vtId, @name, @tag, @game, @ownerId, true, 1, @logo)
-                        """,
-                        new
-                        {
+                    redeemedTeamId = await TeamCreationHelper.CreateSoloAdapterTeamAsync(
+                        conn,
+                        tx,
+                        new TeamCreationHelper.SoloAdapterParams(
                             vtId,
-                            name = displayName,
-                            tag = vtTag,
-                            game = (string)tournament.game,
-                            ownerId = userCtx.UserIdGuid,
-                            logo = (string?)profile?.avatar_url,
-                        }, tx);
-
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO team_members (team_id, user_id, role, is_active)
-                        VALUES (@teamId, @userId, 'captain', true)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        new { teamId = vtId, userId = userCtx.UserIdGuid }, tx);
+                            displayName,
+                            (string)tournament.game,
+                            userCtx.UserIdGuid,
+                            (string?)profile?.avatar_url),
+                        userCtx.UserIdGuid,
+                        ct);
 
                     var teamMembersJson = JsonSerializer.Serialize(new[] { displayName });
-                    redeemedTeamId = vtId;
 
                     participant = await conn.QuerySingleAsync<dynamic>(
                         """
@@ -646,7 +649,7 @@ public static class TournamentInvitationEndpoints
                         {
                             tournamentId,
                             userId = userCtx.UserIdGuid,
-                            teamId = vtId,
+                            teamId = redeemedTeamId,
                             teamName = displayName,
                             teamMembers = teamMembersJson,
                             email = userCtx.Email,
@@ -662,6 +665,9 @@ public static class TournamentInvitationEndpoints
                         SELECT t.id, t.name AS team_name, t.owner_id
                         FROM public.teams t
                         WHERE t.id = @teamId
+                          AND COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'team'
+                          AND COALESCE(t.is_solo, false) = false
+                          AND COALESCE(t.tag, '') NOT LIKE 'mock-%'
                         """,
                         new { teamId }, tx);
                     if (teamMeta is null)
@@ -700,23 +706,9 @@ public static class TournamentInvitationEndpoints
                         return Results.Conflict(new { error = "Your team is already registered for this tournament." });
                     }
 
-                    var memberNames = (await conn.QueryAsync<string>(
-                        """
-                        SELECT COALESCE(NULLIF(p.username, ''), NULLIF(p.full_name, ''), p.id::text) AS display_name
-                        FROM public.team_roster_members trm
-                        JOIN public.profiles p ON p.id = trm.user_id
-                        WHERE trm.roster_id = @rosterId
-                        ORDER BY COALESCE(trm.is_starter, TRUE) DESC, p.username ASC
-                        """,
-                        new { rosterId }, tx)).AsList();
+                    var (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
+                        conn, rosterId!.Value, tx);
 
-                    var captainName = await conn.QuerySingleOrDefaultAsync<string>(
-                        "SELECT COALESCE(NULLIF(username, ''), NULLIF(full_name, ''), id::text) FROM public.profiles WHERE id = @ownerId",
-                        new { ownerId = (Guid)teamMeta.owner_id }, tx);
-                    if (!string.IsNullOrWhiteSpace(captainName) && !memberNames.Contains(captainName, StringComparer.OrdinalIgnoreCase))
-                        memberNames.Insert(0, captainName);
-
-                    var teamMembersJson = JsonSerializer.Serialize(memberNames);
                     var teamName = string.IsNullOrWhiteSpace((string?)rosterMeta.roster_name)
                         ? (string)teamMeta.team_name
                         : (string)rosterMeta.roster_name;
@@ -726,15 +718,15 @@ public static class TournamentInvitationEndpoints
                         """
                         INSERT INTO public.tournament_participants
                             (tournament_id, user_id, team_id, team_captain_id, team_name,
-                             team_members, team_contact_email, roster_id, roster_name,
+                             team_members, roster_lineup, team_contact_email, roster_id, roster_name,
                              status, participant_type, source, entry_fee_amount, entry_fee_paid, payment_status)
                         VALUES
                             (@tournamentId, @userId, @teamId, @userId, @teamName,
-                             @teamMembers::jsonb, @email, @rosterId, @rosterName,
+                             @teamMembers::jsonb, @rosterLineup::jsonb, @email, @rosterId, @rosterName,
                              'approved'::registration_status, 'team'::registration_type, 'invite',
                              0, TRUE, 'not_required')
                         RETURNING id, tournament_id, user_id, team_id, team_captain_id, team_name,
-                                  roster_id, roster_name, status, participant_type, source, created_at
+                                  roster_id, roster_name, roster_lineup, status, participant_type, source, created_at
                         """,
                         new
                         {
@@ -743,6 +735,7 @@ public static class TournamentInvitationEndpoints
                             teamId,
                             teamName,
                             teamMembers = teamMembersJson,
+                            rosterLineup = rosterLineupJson,
                             email = userCtx.Email,
                             rosterId,
                             rosterName = (string?)rosterMeta.roster_name

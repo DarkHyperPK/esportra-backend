@@ -15,6 +15,7 @@ using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
 using Esportra.Api.Helpers;
 using Esportra.Api.Services;
+using Esportra.Core.Tournaments;
 
 namespace Esportra.Api.Endpoints;
 
@@ -3648,10 +3649,11 @@ public static class AdminEndpoints
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct,
-            string?  search = null,
-            string?  game   = null,
-            int      limit  = 20,
-            int      offset = 0) =>
+            string?  search    = null,
+            string?  game      = null,
+            string?  team_kind = null,
+            int      limit     = 20,
+            int      offset    = 0) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3661,7 +3663,17 @@ public static class AdminEndpoints
             offset = Math.Max(offset, 0);
             using var conn = db.CreateConnection();
 
-            var conditions = new List<string> { "t.is_solo = FALSE" };
+            var conditions = new List<string>();
+            if (string.Equals(team_kind, "solo", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(team_kind, "mock", StringComparison.OrdinalIgnoreCase))
+            {
+                conditions.Add($"COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = @teamKindFilter");
+            }
+            else
+            {
+                conditions.Add(TeamKindSql.RealTeamWhere);
+            }
+
             if (!string.IsNullOrWhiteSpace(search))
                 conditions.Add("(t.name ILIKE @search OR t.tag ILIKE @search)");
             if (!string.IsNullOrWhiteSpace(game))
@@ -3670,15 +3682,21 @@ public static class AdminEndpoints
             var where = "WHERE " + string.Join(" AND ", conditions);
             var searchParam = search is not null ? $"%{search}%" : null;
             var gameParam = game is not null ? $"%{game}%" : null;
+            var teamKindFilter = string.Equals(team_kind, "solo", StringComparison.OrdinalIgnoreCase)
+                ? "solo"
+                : string.Equals(team_kind, "mock", StringComparison.OrdinalIgnoreCase)
+                    ? "mock"
+                    : null;
 
             var total = await conn.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM teams t {where}",
-                new { search = searchParam, game = gameParam });
+                new { search = searchParam, game = gameParam, teamKindFilter });
 
             var teams = await conn.QueryAsync<dynamic>(
                 $"""
                 SELECT t.id, t.name, t.tag, t.game, t.logo_url, t.owner_id, t.is_active,
                        t.country_code, t.created_at,
+                       COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind,
                        (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id AND tm.is_active = TRUE) AS member_count,
                        (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.team_id = t.id) AS tournament_count,
                        (SELECT COUNT(*) FROM tournaments tr WHERE tr.winner_id = t.id AND tr.status = 'completed') AS wins,
@@ -3689,20 +3707,28 @@ public static class AdminEndpoints
                 ORDER BY t.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { search = searchParam, game = gameParam, limit, offset });
+                new { search = searchParam, game = gameParam, teamKindFilter, limit, offset });
 
             // Aggregate stats
             var stats = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
-                    COUNT(*) FILTER (WHERE is_solo = FALSE) AS total_teams,
-                    COUNT(*) FILTER (WHERE is_solo = FALSE AND is_active = TRUE) AS active_teams,
-                    ROUND(AVG(mc)::numeric, 1) AS avg_members
+                    COUNT(*) FILTER (WHERE COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'team') AS total_teams,
+                    COUNT(*) FILTER (WHERE COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'team' AND t.is_active = TRUE) AS active_teams,
+                    COUNT(*) FILTER (WHERE COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'solo') AS solo_adapters,
+                    COUNT(*) FILTER (WHERE COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'mock') AS mock_teams,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'mock'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM tournament_participants tp
+                              WHERE tp.team_id = t.id AND COALESCE(tp.is_mock, false) = true
+                          )
+                    ) AS orphan_mock_teams,
+                    ROUND(AVG(mc) FILTER (WHERE COALESCE(t.team_kind, CASE WHEN COALESCE(t.is_solo, false) THEN 'solo' ELSE 'team' END) = 'team')::numeric, 1) AS avg_members
                 FROM teams t
                 LEFT JOIN LATERAL (
                     SELECT COUNT(*) AS mc FROM team_members tm WHERE tm.team_id = t.id AND tm.is_active = TRUE
                 ) m ON TRUE
-                WHERE t.is_solo = FALSE
                 """);
 
             return Results.Ok(new { teams, total, stats });
@@ -3900,6 +3926,7 @@ public static class AdminEndpoints
             [FromBody] AdminEditTeamReq   req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
+            AuditService                  audit,
             CancellationToken             ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3908,6 +3935,11 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
+            var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, name, tag, game, description, logo_url FROM teams WHERE id = @id",
+                new { id });
+            if (existing is null) return Results.NotFound();
+
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 UPDATE teams SET
@@ -3915,13 +3947,55 @@ public static class AdminEndpoints
                     tag         = COALESCE(@tag, tag),
                     description = COALESCE(@description, description),
                     game        = COALESCE(@game, game),
+                    logo_url    = CASE WHEN @removeLogo THEN NULL ELSE COALESCE(@logoUrl, logo_url) END,
                     updated_at  = NOW()
                 WHERE id = @id
-                RETURNING id, name, tag, game
+                RETURNING id, name, tag, game, description, logo_url
                 """,
-                new { id, name = req.Name, tag = req.Tag, description = req.Description, game = req.Game });
+                new
+                {
+                    id,
+                    name = req.Name,
+                    tag = req.Tag,
+                    description = req.Description,
+                    game = req.Game,
+                    logoUrl = req.LogoUrl,
+                    removeLogo = req.RemoveLogo,
+                });
 
-            return updated is null ? Results.NotFound() : Results.Ok(updated);
+            if (updated is null) return Results.NotFound();
+
+            var changes = new Dictionary<string, object?>();
+            if (req.Name is not null && (string?)existing.name != (string?)updated.name)
+                changes["name"] = new { old = (string?)existing.name, @new = (string?)updated.name };
+            if (req.Tag is not null && (string?)existing.tag != (string?)updated.tag)
+                changes["tag"] = new { old = (string?)existing.tag, @new = (string?)updated.tag };
+            if (req.Game is not null && (string?)existing.game != (string?)updated.game)
+                changes["game"] = new { old = (string?)existing.game, @new = (string?)updated.game };
+            if (req.Description is not null && (string?)existing.description != (string?)updated.description)
+                changes["description"] = new { old = (string?)existing.description, @new = (string?)updated.description };
+            if (req.RemoveLogo || req.LogoUrl is not null)
+            {
+                var previousLogo = (string?)existing.logo_url;
+                var nextLogo = (string?)updated.logo_url;
+                if (previousLogo != nextLogo)
+                    changes["logo_url"] = new { old = previousLogo, @new = nextLogo };
+            }
+
+            if (changes.Count > 0)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid,
+                    userCtx.Email,
+                    ActionType.Update,
+                    TargetType.Team,
+                    id,
+                    (string)updated.name,
+                    new { changes },
+                    ct: ct);
+            }
+
+            return Results.Ok(updated);
         }).RequireAuthorization("Admin");
 
         // ══════════════════════════════════════════════════════════════════════
@@ -7160,7 +7234,13 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
     }    private sealed record AdminTransferCaptainReq(string NewCaptainId);
-    private sealed record AdminEditTeamReq(string? Name = null, string? Tag = null, string? Description = null, string? Game = null);
+    private sealed record AdminEditTeamReq(
+        string? Name = null,
+        string? Tag = null,
+        string? Description = null,
+        string? Game = null,
+        string? LogoUrl = null,
+        bool RemoveLogo = false);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
