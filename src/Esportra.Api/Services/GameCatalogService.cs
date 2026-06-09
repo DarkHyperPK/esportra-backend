@@ -310,11 +310,11 @@ public sealed partial class GameCatalogService(
                 WHERE team_id = @teamId
                   AND user_id = @userId
                   AND is_active = TRUE
-                  AND role IN ('captain','owner','admin')
+                  AND role IN ('captain'::public.team_member_role, 'owner'::public.team_member_role)
             ) OR @ownerId = @userId
             """,
             new { teamId, userId, team.OwnerId }, tx);
-        if (!canRegister) throw new GameCatalogValidationException("Only a team captain, owner, or admin can register this team.");
+        if (!canRegister) throw new GameCatalogValidationException("Only a team captain or owner can register this team.");
 
         var roster = await conn.QuerySingleOrDefaultAsync<RosterCatalogRow>(
             """
@@ -781,7 +781,7 @@ public sealed partial class GameCatalogService(
         if (teamSize.HasValue && mode.TeamSize != teamSize.Value) return false;
         if (string.IsNullOrWhiteSpace(candidateKey)) return true;
         return string.Equals(mode.ModeKey, candidateKey, StringComparison.OrdinalIgnoreCase)
-            || mode.Aliases.Any(a => string.Equals(a, candidateKey, StringComparison.OrdinalIgnoreCase));
+            || (mode.Aliases ?? Array.Empty<string>()).Any(a => string.Equals(a, candidateKey, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool HasBattleRoyaleSettings(object? settings)
