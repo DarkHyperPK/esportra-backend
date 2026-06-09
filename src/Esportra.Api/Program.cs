@@ -275,7 +275,8 @@ builder.Services.AddCors(opts =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials());
+              .AllowCredentials()
+              .SetPreflightMaxAge(TimeSpan.FromHours(2)));
 });
 
 // ── Email service (SMTP via MailKit) ─────────────────────────────────────────
