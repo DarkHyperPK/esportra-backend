@@ -142,7 +142,7 @@ public static class BracketCompetitorResolver
             """
             SELECT COALESCE(
                 (SELECT user_id FROM tournament_participants
-                 WHERE id = @competitorId AND participant_type = 'solo'
+                 WHERE id = @competitorId AND user_id IS NOT NULL
                  LIMIT 1),
                 (SELECT user_id FROM team_members
                  WHERE team_id = @competitorId AND role = 'captain' AND is_active = TRUE

@@ -155,15 +155,31 @@ public static class MatchSystemEndpoints
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @id", new { id });
 
-            // Resolve tournament ID for notification link
-            var tournamentId = match?.version_id is not null
-                ? await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT tournament_id FROM brkt_versions WHERE id = @vid",
+            // Resolve tournament slug for notification link
+            var tournamentSlug = match?.version_id is not null
+                ? await conn.QuerySingleOrDefaultAsync<string?>(
+                    """
+                    SELECT t.slug FROM tournaments t
+                    JOIN brkt_versions v ON v.tournament_id = t.id
+                    WHERE v.id = @vid
+                    """,
                     new { vid = (Guid)match.version_id })
-                : (Guid?)null;
-            var matchLink = tournamentId is not null
-                ? $"/tournaments/{tournamentId}/captain-match/{id}"
+                : null;
+            var matchLink = !string.IsNullOrWhiteSpace(tournamentSlug)
+                ? $"/tournaments/{tournamentSlug}/captain-match/{id}"
                 : "/tournaments";
+
+            try
+            {
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(id.ToString()))
+                    .SendAsync(MatchHubEvents.ReportSubmitted,
+                        new { matchId = id, reportId = report.id?.ToString() }, ct);
+            }
+            catch (Exception signalrEx)
+            {
+                logger.LogWarning(signalrEx, "Report saved for match {MatchId} but SignalR broadcast failed", id);
+            }
 
             if (match is not null)
             {
@@ -199,11 +215,6 @@ public static class MatchSystemEndpoints
                                 link   = matchLink,
                                 data   = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
                             });
-
-                        await matchHub.Clients
-                            .Group(MatchHub.MatchGroup(id.ToString()))
-                            .SendAsync(MatchHubEvents.ReportSubmitted,
-                                new { matchId = id, reportId = report.id?.ToString() }, ct);
                     }
                 }
                 }

@@ -667,7 +667,7 @@ public static class TeamEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
-                        VALUES (@rosterId, @userId, 'substitute'::public.roster_member_role, FALSE)
+                        VALUES (@rosterId, @userId, 'starter'::public.roster_member_role, TRUE)
                         ON CONFLICT (roster_id, user_id) DO NOTHING
                         """,
                         new { rosterId, userId = userCtx.UserIdGuid }, tx);
