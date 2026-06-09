@@ -28,6 +28,11 @@ public static class TeamCreationHelper
 
     public static string BuildMockTag(Guid mockId) => $"mock-{mockId:N}"[..18];
 
+    /// <summary>
+    /// Legacy solo adapter team creation. Do not use for new solo registrations — use native
+    /// tournament_participants with team_id NULL and participant id in bracket slots.
+    /// </summary>
+    [Obsolete("Solo registration uses native tournament_participants; kept for backward compatibility only.")]
     public static async Task<Guid> CreateSoloAdapterTeamAsync(
         IDbConnection conn,
         IDbTransaction? tx,

@@ -15,9 +15,10 @@ public sealed class ParticipantEntryMetadataTests
         string? teamKind,
         bool isSolo,
         string tag,
-        string expected)
+        string expected,
+        string? participantType = null)
     {
-        Assert.Equal(expected, ParticipantEntryMetadata.ResolveTeamKind(isMock, teamKind, isSolo, tag));
+        Assert.Equal(expected, ParticipantEntryMetadata.ResolveTeamKind(isMock, teamKind, isSolo, tag, participantType));
     }
 
     [Theory]

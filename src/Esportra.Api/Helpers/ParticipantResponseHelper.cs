@@ -13,9 +13,9 @@ public static class ParticipantResponseHelper
         var teamKindRaw = first.team_kind as string;
         var isSolo = first.is_solo as bool?;
         var tag = first.team_tag as string;
-
-        var teamKind = ParticipantEntryMetadata.ResolveTeamKind(isMock, teamKindRaw, isSolo, tag);
         var participantType = first.participant_type as string;
+
+        var teamKind = ParticipantEntryMetadata.ResolveTeamKind(isMock, teamKindRaw, isSolo, tag, participantType);
         var entryKind = ParticipantEntryMetadata.ResolveEntryKind(isMock, teamKind, participantType);
 
         var teamName = first.team_name as string;

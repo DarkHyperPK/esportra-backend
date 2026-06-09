@@ -164,6 +164,14 @@ public static class StaffAuthHelper
                   AND tm.is_active = TRUE
                   AND tm.role != 'coach'
             )
+            OR EXISTS(
+                SELECT 1
+                FROM brkt_matches bm
+                JOIN tournament_participants tp ON tp.id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId
+                  AND tp.participant_type = 'solo'
+                  AND tp.user_id = @userId
+            )
             """,
             new { userId, matchId });
         if (isParticipant) return true;

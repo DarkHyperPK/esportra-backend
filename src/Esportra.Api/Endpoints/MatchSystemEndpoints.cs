@@ -59,20 +59,16 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a captain of the reporting team
-            if (!Guid.TryParse(req.ReportedByTeamId, out var reportingTeamId))
-                return Results.BadRequest(new { error = "Invalid team ID" });
+            // Verify caller may report for this competitor (team captain or solo participant)
+            if (!Guid.TryParse(req.ReportedByTeamId, out var reportingCompetitorId))
+                return Results.BadRequest(new { error = "Invalid competitor ID" });
 
-            var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND role = 'captain' AND is_active = TRUE)",
-                new { teamId = reportingTeamId, userId = userCtx.UserIdGuid });
-            if (!isCaptain) return Results.Forbid();
+            if (!await BracketCompetitorResolver.CanUserReportForCompetitorAsync(
+                    conn, userCtx.UserIdGuid, id, reportingCompetitorId))
+                return Results.Forbid();
 
-            // Verify the reporting team is actually in this match
-            var isTeamInMatch = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM brkt_matches WHERE id = @matchId AND (team1_id = @teamId OR team2_id = @teamId))",
-                new { matchId = id, teamId = reportingTeamId });
-            if (!isTeamInMatch) return Results.Forbid();
+            if (!await BracketCompetitorResolver.IsCompetitorInMatchAsync(conn, id, reportingCompetitorId))
+                return Results.Forbid();
 
             try
             {
@@ -138,7 +134,7 @@ public static class MatchSystemEndpoints
                     matchId           = id,
                     gameNumber        = req.GameNumber,
                     reportedBy        = userCtx.UserIdGuid,
-                    reportedByTeamId  = reportingTeamId,
+                    reportedByTeamId  = reportingCompetitorId,
                     riotMatchId       = (string?)req.RiotMatchId,
                     mapId             = Guid.TryParse(req.MapId, out var parsedMapId) ? (Guid?)parsedMapId : null,
                     mapName           = (string?)req.MapName,
@@ -174,25 +170,18 @@ public static class MatchSystemEndpoints
                     ? match.team2_id?.ToString()
                     : match.team1_id?.ToString();
 
-                if (!Guid.TryParse(opposingTeamId, out var opposingTeamGuid))
+                if (!Guid.TryParse(opposingTeamId, out var opposingCompetitorId))
                     return Results.Ok(report);
 
                 if (opposingTeamId is not null)
                 {
-                    var captain = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        """
-                        SELECT user_id FROM team_members
-                        WHERE team_id = @tid AND role = 'captain' AND is_active = TRUE
-                        LIMIT 1
-                        """,
-                        new { tid = opposingTeamGuid });
+                    var opposingUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(
+                        conn, opposingCompetitorId);
 
-                    if (captain?.user_id is not null)
+                    if (opposingUserId is not null)
                     {
-                        var captainId = captain.user_id is Guid g ? g : Guid.Parse(captain.user_id.ToString());
-                        var reporterTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                            "SELECT name FROM teams WHERE id = @id",
-                            new { id = Guid.Parse(req.ReportedByTeamId) });
+                        var reporterTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(
+                            conn, reportingCompetitorId);
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications
@@ -204,7 +193,7 @@ public static class MatchSystemEndpoints
                             """,
                             new
                             {
-                                userId = captainId,
+                                userId = opposingUserId.Value,
                                 title  = $"⚔️ Match Result Submitted",
                                 msg    = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
                                 link   = matchLink,
@@ -253,22 +242,16 @@ public static class MatchSystemEndpoints
             {
             using var conn = db.CreateConnection();
 
-            // Verify caller is a captain in this match (opposing team)
-            var captainTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT tm.team_id FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId = id, userId = userCtx.UserIdGuid });
-            if (captainTeamId is null) return Results.Forbid();
+            // Verify caller is a captain or solo participant in this match
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, id);
+            if (captainCompetitorId is null) return Results.Forbid();
 
-            // Prevent a team from accepting their own report
-            var reportingTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            // Prevent a competitor from accepting their own report
+            var reportingCompetitorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT reported_by_team_id FROM match_result_reports WHERE id = @rid AND match_id = @matchId",
                 new { rid, matchId = id });
-            if (reportingTeamId is not null && captainTeamId == reportingTeamId)
+            if (reportingCompetitorId is not null && captainCompetitorId == reportingCompetitorId)
                 return Results.BadRequest(new { error = "Cannot accept your own team's report." });
 
             // Mark report accepted
@@ -600,16 +583,10 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a captain of a team in this match
-            var captainTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT tm.team_id FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId = id, userId = userCtx.UserIdGuid });
-            if (captainTeamId is null) return Results.Forbid();
+            // Verify caller is a captain or solo participant in this match
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, id);
+            if (captainCompetitorId is null) return Results.Forbid();
 
             using var tx = conn.BeginTransaction();
 
@@ -878,22 +855,14 @@ public static class MatchSystemEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            if (!Guid.TryParse(req.TeamId, out var teamIdGuid))
-                return Results.BadRequest(new { error = "Invalid team ID." });
+            if (!Guid.TryParse(req.TeamId, out var competitorIdGuid))
+                return Results.BadRequest(new { error = "Invalid competitor ID." });
 
             using var conn = db.CreateConnection();
 
-            // Verify caller belongs to the team and is not a coach
-            var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE AND role != 'coach')",
-                new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
-            if (!isMember) return Results.Forbid();
-
-            // Verify the team is actually in this match
-            var isTeamInMatch = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM brkt_matches WHERE id = @matchId AND (team1_id = @teamId OR team2_id = @teamId))",
-                new { matchId = id, teamId = teamIdGuid });
-            if (!isTeamInMatch) return Results.Forbid();
+            if (!await BracketCompetitorResolver.CanUserCheckInForCompetitorAsync(
+                    conn, userCtx.UserIdGuid, id, competitorIdGuid))
+                return Results.Forbid();
 
             await conn.ExecuteAsync(
                 """
@@ -901,14 +870,14 @@ public static class MatchSystemEndpoints
                 VALUES (@matchId, @teamId, @userId, NOW())
                 ON CONFLICT (match_id, team_id) DO NOTHING
                 """,
-                new { matchId = id, teamId = teamIdGuid, userId = userCtx.UserIdGuid });
+                new { matchId = id, teamId = competitorIdGuid, userId = userCtx.UserIdGuid });
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.CheckInUpdated,
-                    new { matchId = id, teamId = teamIdGuid }, ct);
+                    new { matchId = id, teamId = competitorIdGuid }, ct);
 
-            return Results.Ok(new { success = true, matchId = id, teamId = teamIdGuid });
+            return Results.Ok(new { success = true, matchId = id, teamId = competitorIdGuid });
         }).RequireAuthorization("Authenticated");
     }
 
@@ -1095,16 +1064,9 @@ public static class MatchSystemEndpoints
 
             try
             {
-                // Verify caller is a captain of one of the teams in this match
-                var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                    """
-                    SELECT tm.team_id::text FROM team_members tm
-                    JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                    WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    LIMIT 1
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (captainTeam is null) return Results.Forbid();
+                var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                    conn, userCtx.UserIdGuid, matchId);
+                if (captainCompetitorId is null) return Results.Forbid();
 
                 var proposal = await conn.QuerySingleAsync<dynamic>(
                     """
@@ -1136,27 +1098,15 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            if (captainCompetitorId is null) return Results.Forbid();
 
             // Prevent accepting own proposal
-            var proposerTeamId = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM match_time_proposals mtp
-                JOIN team_members tm ON tm.user_id = mtp.proposed_by AND tm.role = 'captain' AND tm.is_active = TRUE
-                JOIN brkt_matches bm ON bm.id = mtp.match_id AND (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE mtp.id = @proposalId AND mtp.match_id = @matchId
-                LIMIT 1
-                """,
-                new { proposalId, matchId });
-            if (proposerTeamId is not null && captainTeam == proposerTeamId)
+            var proposerCompetitorId = await BracketCompetitorResolver.GetProposerCompetitorIdAsync(
+                conn, matchId, proposalId);
+            if (proposerCompetitorId is not null
+                && captainCompetitorId.ToString() == proposerCompetitorId)
                 return Results.BadRequest(new { error = "Cannot accept your own time proposal." });
 
             // Atomic: accept proposal + update match scheduled_time in a CTE
@@ -1191,15 +1141,9 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            if (captainCompetitorId is null) return Results.Forbid();
 
             await conn.ExecuteAsync(
                 """
@@ -1226,15 +1170,9 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            if (captainCompetitorId is null) return Results.Forbid();
 
             // Atomic: mark old as countered + insert new in a CTE
             var newProposal = await conn.QuerySingleAsync<dynamic>(
@@ -1294,11 +1232,12 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a member of the disputing team
-            var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
-                new { teamId = req.TeamId, userId = userCtx.UserIdGuid });
-            if (!isMember) return Results.Forbid();
+            if (!Guid.TryParse(req.TeamId, out var competitorId))
+                return Results.BadRequest(new { error = "Invalid competitor ID." });
+
+            if (!await BracketCompetitorResolver.CanUserCheckInForCompetitorAsync(
+                    conn, userCtx.UserIdGuid, matchId, competitorId))
+                return Results.Forbid();
 
             var evidenceUrls = (req.EvidenceUrls ?? []).ToArray();
 
@@ -1313,7 +1252,7 @@ public static class MatchSystemEndpoints
                 new
                 {
                     matchId,
-                    teamId       = req.TeamId,
+                    teamId       = competitorId,
                     userId       = userCtx.UserIdGuid,
                     reason       = req.Reason,
                     evidenceUrls,
@@ -1444,6 +1383,19 @@ public static class MatchSystemEndpoints
                 LEFT JOIN teams ON teams.id = tm.team_id
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 WHERE bm.id = @matchId
+                UNION ALL
+                SELECT tp.id AS team_id,
+                       COALESCE(tp.team_name, p.username) AS team_name,
+                       tp.user_id,
+                       COALESCE(p.full_name, p.username) AS username,
+                       ra.game_name, ra.tag_line, ra.puuid
+                FROM brkt_matches bm
+                JOIN tournament_participants tp
+                  ON tp.id IN (bm.team1_id, bm.team2_id)
+                 AND tp.participant_type = 'solo'
+                JOIN riot_accounts ra ON ra.user_id = tp.user_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE bm.id = @matchId
                 """,
                 new { matchId = id });
             return Results.Ok(rows);
@@ -1467,12 +1419,8 @@ public static class MatchSystemEndpoints
                 $"""
                 SELECT bm.id, bm.team1_id, bm.team2_id, bm.team1_score, bm.team2_score,
                        bm.match_number, bm.best_of, bm.status, bm.bracket_type, bm.round_index,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name,
-                       t1.logo_url AS team1_logo,
-                       t2.logo_url AS team2_logo,
-                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
-                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind,
+                       {BracketTeamResolutionSql.BracketMatchTeam1Columns},
+                       {BracketTeamResolutionSql.BracketMatchTeam2Columns},
                        bv.tournament_id
                 FROM brkt_matches bm
                 JOIN brkt_versions bv ON bv.id = bm.version_id
@@ -1520,6 +1468,17 @@ public static class MatchSystemEndpoints
                 LEFT JOIN teams ON teams.id = tm.team_id
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 WHERE tm.team_id IN (@team1Id, @team2Id) AND tm.is_active = true
+                UNION ALL
+                SELECT tp.id AS team_id,
+                       COALESCE(tp.team_name, p.username) AS team_name,
+                       tp.user_id,
+                       COALESCE(p.full_name, p.username) AS username,
+                       ra.game_name, ra.tag_line, ra.puuid
+                FROM tournament_participants tp
+                JOIN riot_accounts ra ON ra.user_id = tp.user_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE tp.id IN (@team1Id, @team2Id)
+                  AND tp.participant_type = 'solo'
                 """,
                 new { team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
 

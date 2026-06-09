@@ -614,21 +614,7 @@ public static class TournamentInvitationEndpoints
                         "SELECT username, avatar_url FROM profiles WHERE id = @uid",
                         new { uid = userCtx.UserIdGuid }, tx);
 
-                    var vtId = Guid.NewGuid();
                     var displayName = (string?)profile?.username ?? "Solo Player";
-
-                    redeemedTeamId = await TeamCreationHelper.CreateSoloAdapterTeamAsync(
-                        conn,
-                        tx,
-                        new TeamCreationHelper.SoloAdapterParams(
-                            vtId,
-                            displayName,
-                            (string)tournament.game,
-                            userCtx.UserIdGuid,
-                            (string?)profile?.avatar_url),
-                        userCtx.UserIdGuid,
-                        ct);
-
                     var teamMembersJson = JsonSerializer.Serialize(new[] { displayName });
 
                     participant = await conn.QuerySingleAsync<dynamic>(
@@ -638,7 +624,7 @@ public static class TournamentInvitationEndpoints
                              team_members, team_contact_email,
                              status, participant_type, source, entry_fee_amount, entry_fee_paid, payment_status)
                         VALUES
-                            (@tournamentId, @userId, @teamId, @userId, @teamName,
+                            (@tournamentId, @userId, NULL, @userId, @teamName,
                              @teamMembers::jsonb, @email,
                              'approved'::registration_status, 'solo'::registration_type, 'invite',
                              0, TRUE, 'not_required')
@@ -649,11 +635,12 @@ public static class TournamentInvitationEndpoints
                         {
                             tournamentId,
                             userId = userCtx.UserIdGuid,
-                            teamId = redeemedTeamId,
                             teamName = displayName,
                             teamMembers = teamMembersJson,
                             email = userCtx.Email,
                         }, tx);
+
+                    redeemedTeamId = (Guid)participant.id;
                 }
                 else
                 {

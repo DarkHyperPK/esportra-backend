@@ -78,10 +78,17 @@ public sealed class ChatHub : Hub
             // Fetch username and team_id for this match
             var userInfo = await conn.QuerySingleOrDefaultAsync<dynamic>("""
                 SELECT p.username,
-                       (SELECT tm.team_id FROM team_members tm
-                        JOIN brkt_matches bm ON tm.team_id IN (bm.team1_id, bm.team2_id)
-                        WHERE bm.id = @MatchId AND tm.user_id = @UserId
-                        LIMIT 1) AS team_id
+                       COALESCE(
+                           (SELECT tp.id FROM tournament_participants tp
+                            JOIN brkt_matches bm ON tp.id IN (bm.team1_id, bm.team2_id)
+                            WHERE bm.id = @MatchId AND tp.user_id = @UserId
+                              AND tp.participant_type = 'solo'
+                            LIMIT 1),
+                           (SELECT tm.team_id FROM team_members tm
+                            JOIN brkt_matches bm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                            WHERE bm.id = @MatchId AND tm.user_id = @UserId
+                            LIMIT 1)
+                       ) AS team_id
                 FROM profiles p WHERE p.id = @UserId
                 """, new { MatchId = Guid.Parse(matchId), UserId = Guid.Parse(userId) });
 

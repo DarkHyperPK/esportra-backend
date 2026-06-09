@@ -67,6 +67,11 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                   AND role::text IN ('captain','owner') AND is_active = TRUE
             ) OR EXISTS(
                 SELECT 1 FROM teams WHERE id = @teamId AND owner_id = @userId
+            ) OR EXISTS(
+                SELECT 1 FROM tournament_participants
+                WHERE id = @teamId
+                  AND participant_type = 'solo'
+                  AND user_id = @userId
             )",
             new { teamId, userId });
         return isCaptain;

@@ -1191,26 +1191,16 @@ public static class TournamentEndpoints
                 return Results.BadRequest(new { error = ex.Message });
             }
 
-            // Auto-create a virtual team for solo participants so that
-            // brkt_matches.team1_id / team2_id always references teams(id).
+            // Native solo participants: profile snapshot, no adapter team row.
+            string? soloDisplayName = null;
             if (participantType == "solo")
             {
                 var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     "SELECT username, avatar_url FROM profiles WHERE id = @uid",
                     new { uid = userCtx.UserIdGuid }, txn);
 
-                var vtId = Guid.NewGuid();
-                teamIdGuid = await TeamCreationHelper.CreateSoloAdapterTeamAsync(
-                    conn,
-                    txn,
-                    new TeamCreationHelper.SoloAdapterParams(
-                        vtId,
-                        (string?)profile?.username ?? "Solo Player",
-                        (string)tourn.game,
-                        userCtx.UserIdGuid,
-                        (string?)profile?.avatar_url),
-                    userCtx.UserIdGuid,
-                    ct);
+                soloDisplayName = (string?)profile?.username ?? "Solo Player";
+                teamIdGuid = null;
             }
 
             // Determine if this is a paid tournament
@@ -1228,6 +1218,10 @@ public static class TournamentEndpoints
             {
                 (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
                     conn, rosterIdGuid.Value, txn);
+            }
+            else if (participantType == "solo" && !string.IsNullOrWhiteSpace(soloDisplayName))
+            {
+                teamMembersJson = System.Text.Json.JsonSerializer.Serialize(new[] { soloDisplayName });
             }
             else if (!string.IsNullOrWhiteSpace(req.TeamMembers))
             {
@@ -1261,7 +1255,7 @@ public static class TournamentEndpoints
                     userId           = userCtx.UserIdGuid,
                     teamId           = teamIdGuid,
                     teamCaptainId    = captainIdGuid ?? userCtx.UserIdGuid,
-                    teamName         = req.TeamName,
+                    teamName         = participantType == "solo" ? soloDisplayName ?? req.TeamName : req.TeamName,
                     teamMembers      = teamMembersJson,
                     rosterLineup     = rosterLineupJson,
                     teamContactEmail = req.TeamContactEmail,
@@ -1792,7 +1786,9 @@ public static class TournamentEndpoints
                        sp.avatar_url AS solo_avatar_url
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
-                LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = true
+                LEFT JOIN team_members tm ON tm.team_id = tp.team_id
+                  AND tm.is_active = true
+                  AND COALESCE(tp.participant_type::text, '') != 'solo'
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
                 WHERE tp.tournament_id = @id AND tp.id = @pid
@@ -1803,6 +1799,7 @@ public static class TournamentEndpoints
             if (rows.Count == 0) return Results.NotFound();
 
             var first = rows[0];
+            var isSoloEntry = string.Equals(first.participant_type as string, "solo", StringComparison.OrdinalIgnoreCase);
             var members = rows
                 .Where(m => m.member_user_id is not null)
                 .Select(m => new { user_id = (Guid)m.member_user_id, username = (string)m.member_username })
@@ -1811,8 +1808,8 @@ public static class TournamentEndpoints
 
             return Results.Ok(ParticipantResponseHelper.EnrichParticipant(
                 first,
-                members,
-                string.Join(", ", members.Select(m => m.username))));
+                isSoloEntry ? null : members,
+                isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username))));
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
@@ -1930,7 +1927,9 @@ public static class TournamentEndpoints
                        sp.avatar_url AS solo_avatar_url
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
-                LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = true
+                LEFT JOIN team_members tm ON tm.team_id = tp.team_id
+                  AND tm.is_active = true
+                  AND COALESCE(tp.participant_type::text, '') != 'solo'
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
                 WHERE tp.tournament_id = @id {statusFilter}
@@ -1944,6 +1943,7 @@ public static class TournamentEndpoints
                 .Select(g =>
                 {
                     var first = g.First();
+                    var isSoloEntry = string.Equals(first.participant_type as string, "solo", StringComparison.OrdinalIgnoreCase);
                     var members = g
                         .Where(m => m.member_user_id is not null)
                         .Select(m => new { user_id = (Guid)m.member_user_id, username = (string)m.member_username })
@@ -1952,8 +1952,8 @@ public static class TournamentEndpoints
 
                     return ParticipantResponseHelper.EnrichParticipant(
                         first,
-                        members,
-                        string.Join(", ", members.Select(m => m.username)));
+                        isSoloEntry ? null : members,
+                        isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username)));
                 })
                 .ToList();
 

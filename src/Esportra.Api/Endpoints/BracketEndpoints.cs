@@ -6,6 +6,7 @@ using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
+using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -531,19 +532,15 @@ public static class BracketEndpoints
             if (version is null) return Results.NotFound(new { error = "Bracket not found." });
 
             var nodes = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.*,
                        l.x, l.y,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
-                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
-                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
-                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE m.version_id = @versionId
                 """,
                 new { versionId });
@@ -587,15 +584,13 @@ public static class BracketEndpoints
             if (versionId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    """
+                    $"""
                     SELECT m.*,
-                           COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                           COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                           {BracketTeamResolutionSql.Team1Columns},
+                           {BracketTeamResolutionSql.Team2Columns}
                     FROM brkt_matches m
-                    LEFT JOIN teams t1 ON t1.id = m.team1_id
-                    LEFT JOIN teams t2 ON t2.id = m.team2_id
-                    LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                    LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                    {BracketTeamResolutionSql.Team1Joins}
+                    {BracketTeamResolutionSql.Team2Joins}
                     WHERE m.version_id = @versionId
                     ORDER BY m.round_index, m.match_number
                     """, new { versionId });
@@ -605,16 +600,14 @@ public static class BracketEndpoints
             if (stageId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    """
+                    $"""
                     SELECT m.*,
-                           COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                           COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                           {BracketTeamResolutionSql.Team1Columns},
+                           {BracketTeamResolutionSql.Team2Columns}
                     FROM brkt_matches m
                     JOIN brkt_versions v ON v.id = m.version_id
-                    LEFT JOIN teams t1 ON t1.id = m.team1_id
-                    LEFT JOIN teams t2 ON t2.id = m.team2_id
-                    LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                    LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                    {BracketTeamResolutionSql.Team1Joins}
+                    {BracketTeamResolutionSql.Team2Joins}
                     WHERE v.stage_id = @stageId
                     ORDER BY v.version_number DESC, m.round_index, m.match_number
                     """, new { stageId });
@@ -639,18 +632,14 @@ public static class BracketEndpoints
                 return Results.Forbid();
 
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
+                $"""
                 SELECT m.*,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
-                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
-                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind,
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns},
                        ts.best_of AS stage_best_of
                 FROM brkt_matches m
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
-                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 LEFT JOIN brkt_versions bv ON bv.id = m.version_id
                 LEFT JOIN tournament_stages ts ON ts.id = bv.stage_id
                 WHERE m.id = @id
@@ -766,19 +755,15 @@ public static class BracketEndpoints
             if (version is null) return Results.NotFound(new { error = "Bracket not found." });
 
             var nodes = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.*,
                        l.x, l.y,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
-                       COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END) AS team1_kind,
-                       COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END) AS team2_kind
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
-                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE m.version_id = @id
                 """, new { id });
 
@@ -856,22 +841,20 @@ public static class BracketEndpoints
     {
         using var conn = db.CreateConnection();
 
-        var matches = (await conn.QueryAsync("""
+        var matches = (await conn.QueryAsync($"""
             SELECT m.id, m.match_number, m.round_index, m.team1_id, m.team2_id,
                    m.winner_id, m.loser_id, m.team1_score, m.team2_score,
                    m.status, m.scheduled_time, m.best_of, m.party_code,
                    m.bracket_type, m.group_id,
                    l.x AS x_pos, l.y AS y_pos,
                    bv.stage_id,
-                   COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                   COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                   {BracketTeamResolutionSql.Team1Columns},
+                   {BracketTeamResolutionSql.Team2Columns}
             FROM public.brkt_matches m
             LEFT JOIN public.brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
             LEFT JOIN public.brkt_versions bv ON bv.id = m.version_id
-            LEFT JOIN public.teams t1 ON t1.id = m.team1_id
-            LEFT JOIN public.teams t2 ON t2.id = m.team2_id
-            LEFT JOIN public.tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-            LEFT JOIN public.tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+            {BracketTeamResolutionSql.Team1Joins}
+            {BracketTeamResolutionSql.Team2Joins}
             WHERE m.version_id = @versionId
             ORDER BY m.round_index, m.match_number
             """, new { versionId })).AsList();

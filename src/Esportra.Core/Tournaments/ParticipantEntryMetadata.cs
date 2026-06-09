@@ -5,9 +5,10 @@ namespace Esportra.Core.Tournaments;
 /// </summary>
 public static class ParticipantEntryMetadata
 {
-    public static string ResolveTeamKind(bool? isMock, string? teamKind, bool? isSolo, string? tag)
+    public static string ResolveTeamKind(bool? isMock, string? teamKind, bool? isSolo, string? tag, string? participantType = null)
     {
         if (isMock == true) return "mock";
+        if (string.Equals(participantType, "solo", StringComparison.OrdinalIgnoreCase)) return "solo";
         if (teamKind is "team" or "solo" or "mock") return teamKind;
         if (isSolo == true) return "solo";
         var normalizedTag = tag ?? string.Empty;
