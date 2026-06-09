@@ -55,12 +55,6 @@ public static class RosterLineupValidator
         if (coaches.Count > mode.MaxCoaches)
             throw new InvalidOperationException(
                 $"Roster has {coaches.Count} coach(es), exceeding the limit of {mode.MaxCoaches}.");
-
-        foreach (var member in normalized.Where(m => m.RosterRole is "starter" or "substitute"))
-        {
-            if (string.Equals(member.TeamMemberRole, "coach", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("A team coach cannot be listed as a starter or substitute on the roster.");
-        }
     }
 
     public static string NormalizeRole(string? rosterRole, bool isStarter)
