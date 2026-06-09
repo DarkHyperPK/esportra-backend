@@ -171,10 +171,6 @@ public static class StageCompletionHelper
         dynamic stage,
         Guid stageId)
     {
-        var stageStatus = ((string?)stage.status ?? string.Empty).ToLowerInvariant();
-        if (stageStatus == "completed")
-            return true;
-
         var tournamentId = (Guid)stage.tournament_id;
         var stageOrder = (int)stage.stage_order;
 
@@ -191,13 +187,31 @@ public static class StageCompletionHelper
             new { tournamentId, nextOrder = stageOrder + 1 });
     }
 
+    public static async Task<bool> HasNextStageAsync(
+        IDbConnection conn,
+        Guid tournamentId,
+        int stageOrder)
+        => await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM tournament_stages
+                WHERE tournament_id = @tournamentId
+                  AND stage_order > @stageOrder
+            )
+            """,
+            new { tournamentId, stageOrder });
+
     public static async Task<string> EvaluateBracketProgressLabelAsync(
         IDbConnection conn,
         dynamic stage,
         Guid stageId)
     {
+        var tournamentId = (Guid)stage.tournament_id;
+        var stageOrder = (int)stage.stage_order;
+        var hasNextStage = await HasNextStageAsync(conn, tournamentId, stageOrder);
         var alreadyAdvanced = await IsStageAlreadyAdvancedAsync(conn, stage, stageId);
-        if (alreadyAdvanced)
+        if (alreadyAdvanced && hasNextStage)
             return "advanced";
 
         var version = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -228,6 +242,9 @@ public static class StageCompletionHelper
 
         if (matchStats.pending > 0)
             return "in_progress";
+
+        if (!hasNextStage)
+            return "completed";
 
         return "ready_to_advance";
     }

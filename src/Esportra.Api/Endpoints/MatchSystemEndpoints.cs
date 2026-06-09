@@ -65,10 +65,10 @@ public static class MatchSystemEndpoints
 
             if (!await BracketCompetitorResolver.CanUserReportForCompetitorAsync(
                     conn, userCtx.UserIdGuid, id, reportingCompetitorId))
-                return Results.Forbid();
+                return Results.Json(new { error = "Only a captain or solo participant in this match can submit a report." }, statusCode: 403);
 
             if (!await BracketCompetitorResolver.IsCompetitorInMatchAsync(conn, id, reportingCompetitorId))
-                return Results.Forbid();
+                return Results.Json(new { error = "The reporting competitor is not part of this match." }, statusCode: 403);
 
             try
             {
@@ -215,7 +215,10 @@ public static class MatchSystemEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to submit match report for match {MatchId}", id);
-                return Results.Json(new { error = "We couldn't submit your report. Please try again." }, statusCode: 500);
+                var traceId = ctx.TraceIdentifier;
+                return Results.Json(
+                    new { error = "We couldn't submit your report. Please verify scores and try again.", traceId },
+                    statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
@@ -716,7 +719,7 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
             if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
-                return Results.Forbid();
+                return Results.Json(new { error = "You do not have access to this match chat." }, statusCode: 403);
 
             var rows = await conn.QueryAsync<dynamic>(
                 """

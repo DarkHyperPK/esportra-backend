@@ -119,14 +119,16 @@ public static class TournamentEndpoints
                o.slug   AS organization_slug,
                p.username      AS organizer_username,
                p.full_name     AS organizer_full_name,
-               wt.name  AS winner_team_name,
+               COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                v.city   AS venue_city,
                v.country AS venue_country,
                gm.background_image AS game_background_image
         FROM tournaments t
         LEFT JOIN organizations o  ON o.id  = t.organization_id
         LEFT JOIN profiles      p  ON p.id  = t.organizer_id
-        LEFT JOIN teams        wt  ON wt.id = t.winner_id
+        LEFT JOIN teams wt ON wt.id = t.winner_id
+        LEFT JOIN tournament_participants wtp ON wtp.id = t.winner_id
+        LEFT JOIN profiles wp ON wp.id = wtp.user_id
         LEFT JOIN venues        v  ON v.id  = t.venue_id
         LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
         WHERE t.deleted_at IS NULL
@@ -209,14 +211,16 @@ public static class TournamentEndpoints
                            o.slug   AS organization_slug,
                            p.username      AS organizer_username,
                            p.full_name     AS organizer_full_name,
-                           wt.name  AS winner_team_name,
+                           COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                            v.city   AS venue_city,
                            v.country AS venue_country,
                            gm.background_image AS game_background_image
                     FROM tournaments t
                     LEFT JOIN organizations o  ON o.id  = t.organization_id
                     LEFT JOIN profiles      p  ON p.id  = t.organizer_id
-                    LEFT JOIN teams        wt  ON wt.id = t.winner_id
+                    LEFT JOIN teams wt ON wt.id = t.winner_id
+                    LEFT JOIN tournament_participants wtp ON wtp.id = t.winner_id
+                    LEFT JOIN profiles wp ON wp.id = wtp.user_id
                     LEFT JOIN venues        v  ON v.id  = t.venue_id
                     LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
                     WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
@@ -307,13 +311,15 @@ public static class TournamentEndpoints
                                o.slug AS organization_slug,
                                p.username   AS organizer_username,
                                p.full_name  AS organizer_full_name,
-                               wt.name AS winner_team_name,
+                               COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                                v.city   AS venue_city,
                                v.country AS venue_country
                         FROM tournaments t
                         LEFT JOIN organizations o ON o.id = t.organization_id
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
-                        LEFT JOIN teams        wt ON wt.id = t.winner_id
+                        LEFT JOIN teams wt ON wt.id = t.winner_id
+                        LEFT JOIN tournament_participants wtp ON wtp.id = t.winner_id
+                        LEFT JOIN profiles wp ON wp.id = wtp.user_id
                         LEFT JOIN venues        v ON v.id  = t.venue_id
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
@@ -349,13 +355,16 @@ public static class TournamentEndpoints
                        o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
                        p.username   AS organizer_username,  p.avatar_url AS organizer_avatar,
                        v.name       AS venue_name,
-                       wt.name      AS winner_team_name,    wt.logo_url AS winner_team_logo,
+                       COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
+                       COALESCE(wt.logo_url, wp.avatar_url) AS winner_team_logo,
                        gm.background_image AS game_background_image
                 FROM tournaments t
                 LEFT JOIN organizations o  ON o.id  = t.organization_id
                 LEFT JOIN profiles      p  ON p.id  = t.organizer_id
                 LEFT JOIN venues        v  ON v.id  = t.venue_id
-                LEFT JOIN teams        wt  ON wt.id = t.winner_id
+                LEFT JOIN teams wt ON wt.id = t.winner_id
+                LEFT JOIN tournament_participants wtp ON wtp.id = t.winner_id
+                LEFT JOIN profiles wp ON wp.id = wtp.user_id
                 LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
                 WHERE t.deleted_at IS NULL
                   AND (t.slug = @slugOrId

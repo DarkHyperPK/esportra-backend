@@ -365,16 +365,18 @@ public static class StageEndpoints
             }
 
             // 5. Check completion based on format
+            var bracketProgressLabel = await StageCompletionHelper.EvaluateBracketProgressLabelAsync(conn, stage, stageId);
+
             if (format is "single_elimination" or "double_elimination")
             {
                 var elimination = await CheckEliminationCompletion(conn, matches, advancementCount);
-                return Results.Ok(MergeBracketCompletion(elimination, alreadyAdvanced));
+                return Results.Ok(MergeBracketCompletion(elimination, alreadyAdvanced, bracketProgressLabel));
             }
 
             if (format is "swiss" or "round_robin")
             {
                 var roundRobin = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct);
-                return Results.Ok(MergeBracketCompletion(roundRobin, alreadyAdvanced));
+                return Results.Ok(MergeBracketCompletion(roundRobin, alreadyAdvanced, bracketProgressLabel));
             }
 
             return Results.Ok(new
@@ -670,7 +672,7 @@ public static class StageEndpoints
             ct);
     }
 
-    private static object MergeBracketCompletion(object bracketCore, bool alreadyAdvanced)
+    private static object MergeBracketCompletion(object bracketCore, bool alreadyAdvanced, string progressLabel)
     {
         var dict = bracketCore.GetType().GetProperties()
             .ToDictionary(p => p.Name, p => p.GetValue(bracketCore));
@@ -678,17 +680,6 @@ public static class StageEndpoints
         var isComplete = dict.TryGetValue("isComplete", out var completeValue) && completeValue is true;
         var reason = dict.TryGetValue("reason", out var reasonValue) ? reasonValue as string : null;
         var advancingTeams = dict.TryGetValue("advancingTeams", out var teamsValue) ? teamsValue : Array.Empty<object>();
-
-        string progressLabel;
-        if (alreadyAdvanced)
-            progressLabel = "advanced";
-        else if (isComplete)
-            progressLabel = "ready_to_advance";
-        else if (string.Equals(reason, "No bracket found", StringComparison.OrdinalIgnoreCase)
-                 || string.Equals(reason, "No matches found", StringComparison.OrdinalIgnoreCase))
-            progressLabel = "setup";
-        else
-            progressLabel = "in_progress";
 
         return new
         {

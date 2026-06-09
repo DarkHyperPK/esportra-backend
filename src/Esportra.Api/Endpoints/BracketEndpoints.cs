@@ -88,6 +88,7 @@ public static class BracketEndpoints
             BracketPersistenceService          persistence,
             IDbConnectionFactory               db,
             IHubContext<BracketHub>            bracketHub,
+            ILoggerFactory                     loggerFactory,
             CancellationToken                  ct) =>
         {
             var graph = await ctx.Request.ReadFromJsonAsync<BracketGraph>(s_snakeCase, ct);
@@ -95,6 +96,8 @@ public static class BracketEndpoints
 
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            var logger = loggerFactory.CreateLogger("BracketEndpoints.Persist");
 
             // Verify user is organizer or staff with bracket:edit on the tournament
             using var conn = db.CreateConnection();
@@ -109,9 +112,26 @@ public static class BracketEndpoints
 
             var errors = GraphValidator.Validate(graph);
             if (errors.Count > 0)
-                return Results.BadRequest(new { errors });
+                return Results.BadRequest(new { error = "Bracket validation failed.", errors });
 
-            var version = await persistence.SaveGraphAsync(graph, ct);
+            Guid versionId;
+            try
+            {
+                var version = await persistence.SaveGraphAsync(graph, ct);
+                versionId = version.Id;
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                var traceId = ctx.TraceIdentifier;
+                logger.LogError(ex, "Failed to persist bracket graph (trace {TraceId})", traceId);
+                return Results.Json(
+                    new { error = "Could not save bracket. Please try again.", traceId },
+                    statusCode: 500);
+            }
 
             // Notify subscribers
             if (graph.Version.TournamentId != Guid.Empty)
@@ -119,11 +139,11 @@ public static class BracketEndpoints
                 await bracketHub.Clients
                     .Group(BracketHub.TournamentGroup(graph.Version.TournamentId.ToString()))
                     .SendAsync(BracketHubEvents.VersionCreated,
-                        new { versionId = version.Id, tournamentId = graph.Version.TournamentId },
+                        new { versionId, tournamentId = graph.Version.TournamentId },
                         ct);
             }
 
-            return Results.Ok(new { success = true, versionId = version.Id });
+            return Results.Ok(new { success = true, versionId });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
