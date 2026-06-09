@@ -81,8 +81,12 @@ public static class BracketCompetitorResolver
                     EXISTS (
                         SELECT 1 FROM tournament_participants tp
                         WHERE tp.id = @competitorId
-                          AND tp.participant_type = 'solo'
                           AND tp.user_id = @userId
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM tournament_participants tp
+                        WHERE tp.team_id = @competitorId
+                          AND (tp.user_id = @userId OR tp.team_captain_id = @userId)
                     )
                     OR EXISTS (
                         SELECT 1 FROM team_members tm

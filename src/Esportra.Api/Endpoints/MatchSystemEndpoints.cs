@@ -11,6 +11,7 @@ using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Npgsql;
 
 namespace Esportra.Api.Endpoints;
 
@@ -166,14 +167,13 @@ public static class MatchSystemEndpoints
 
             if (match is not null)
             {
+                try
+                {
                 string? opposingTeamId = match.team1_id?.ToString() == req.ReportedByTeamId
                     ? match.team2_id?.ToString()
                     : match.team1_id?.ToString();
 
-                if (!Guid.TryParse(opposingTeamId, out var opposingCompetitorId))
-                    return Results.Ok(report);
-
-                if (opposingTeamId is not null)
+                if (Guid.TryParse(opposingTeamId, out var opposingCompetitorId))
                 {
                     var opposingUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(
                         conn, opposingCompetitorId);
@@ -200,17 +200,37 @@ public static class MatchSystemEndpoints
                                 data   = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
                             });
 
-                        // Push via NotificationHub
                         await matchHub.Clients
                             .Group(MatchHub.MatchGroup(id.ToString()))
                             .SendAsync(MatchHubEvents.ReportSubmitted,
                                 new { matchId = id, reportId = report.id?.ToString() }, ct);
                     }
                 }
+                }
+                catch (Exception notifyEx)
+                {
+                    logger.LogWarning(notifyEx, "Report saved for match {MatchId} but notification dispatch failed", id);
+                }
             }
 
             DapperJsonbHelper.FixJsonb(report);
             return Results.Ok(report);
+            }
+            catch (PostgresException pgEx)
+            {
+                logger.LogError(pgEx, "Database error submitting match report for match {MatchId} (SqlState={SqlState})", id, pgEx.SqlState);
+                var traceId = ctx.TraceIdentifier;
+                var message = pgEx.SqlState switch
+                {
+                    PostgresErrorCodes.ForeignKeyViolation =>
+                        "Could not link this report to the match competitor. Try again after the page refreshes.",
+                    "42P10" =>
+                        "Report submission is not configured on the database yet. Contact support with the reference ID.",
+                    PostgresErrorCodes.UndefinedColumn =>
+                        "Report submission schema is out of date. Contact support with the reference ID.",
+                    _ => "We couldn't submit your report. Please verify scores and try again.",
+                };
+                return Results.Json(new { error = message, traceId }, statusCode: 500);
             }
             catch (Exception ex)
             {
