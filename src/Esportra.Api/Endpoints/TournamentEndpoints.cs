@@ -745,6 +745,16 @@ public static class TournamentEndpoints
             var effectiveEndDate = req.EndDate ?? (DateTimeOffset?)existingTournament.end_date;
             var effectiveRegistrationDeadline = req.RegistrationDeadline ?? (DateTimeOffset?)existingTournament.registration_deadline;
 
+            // End-only updates (e.g. auto-extension) must stay on/after start.
+            if (effectiveStartDate is not null
+                && effectiveEndDate is not null
+                && effectiveEndDate < effectiveStartDate
+                && req.EndDate is not null
+                && req.StartDate is null)
+            {
+                effectiveEndDate = effectiveStartDate.Value.AddHours(4);
+            }
+
             var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(effectiveStartDate, effectiveEndDate);
             if (dateOrderError is not null)
                 return Results.BadRequest(new { error = dateOrderError });
@@ -833,7 +843,7 @@ public static class TournamentEndpoints
                     entryFee             = req.EntryFee,
                     prizePool            = req.PrizePool,
                     startDate            = req.StartDate,
-                    endDate              = req.EndDate,
+                    endDate              = req.EndDate is not null ? effectiveEndDate : null,
                     registrationDeadline = req.RegistrationDeadline,
                     bannerUrl            = req.BannerUrl,
                     logoUrl              = req.LogoUrl,
