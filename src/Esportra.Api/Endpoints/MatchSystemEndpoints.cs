@@ -839,7 +839,7 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
             if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
-                return Results.Forbid();
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
 
             var rows = await conn.QueryAsync<dynamic>(
                 "SELECT match_id::text, team_id::text, user_id::text, checked_in_at FROM match_checkins WHERE match_id = @id", new { id });
@@ -1037,7 +1037,7 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
             if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId))
-                return Results.Forbid();
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
 
             var rows = await conn.QueryAsync<dynamic>(
                 """

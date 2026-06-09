@@ -24,9 +24,16 @@ public static class BracketCompetitorResolver
                 FROM brkt_matches bm
                 JOIN tournament_participants tp
                   ON tp.id IN (bm.team1_id, bm.team2_id)
-                 AND tp.participant_type = 'solo'
                  AND tp.user_id = @userId
                 WHERE bm.id = @matchId
+                UNION ALL
+                SELECT tp.team_id
+                FROM brkt_matches bm
+                JOIN tournament_participants tp
+                  ON tp.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId
+                  AND tp.team_id IS NOT NULL
+                  AND (tp.user_id = @userId OR tp.team_captain_id = @userId)
                 UNION ALL
                 SELECT tm.team_id
                 FROM brkt_matches bm

@@ -50,10 +50,17 @@ public static class TeamEndpoints
                 if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
                 var byIds = await conn.QueryAsync<dynamic>(
                     """
-                    SELECT id::text, name, owner_id::text, logo_url, created_at,
-                           COALESCE(team_kind, CASE WHEN COALESCE(is_solo, false) THEN 'solo' ELSE 'team' END) AS team_kind
+                    SELECT id::text, name, logo_url, 'team' AS competitor_kind
                     FROM teams
                     WHERE id = ANY(@idList)
+                    UNION ALL
+                    SELECT tp.id::text,
+                           COALESCE(tp.team_name, p.username, 'Player') AS name,
+                           p.avatar_url AS logo_url,
+                           CASE WHEN tp.participant_type = 'solo' THEN 'solo' ELSE 'participant' END AS competitor_kind
+                    FROM tournament_participants tp
+                    LEFT JOIN profiles p ON p.id = tp.user_id
+                    WHERE tp.id = ANY(@idList)
                     """,
                     new { idList });
                 return Results.Ok(byIds);

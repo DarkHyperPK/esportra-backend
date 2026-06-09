@@ -167,10 +167,18 @@ public static class StaffAuthHelper
             OR EXISTS(
                 SELECT 1
                 FROM brkt_matches bm
-                JOIN tournament_participants tp ON tp.id IN (bm.team1_id, bm.team2_id)
+                JOIN tournament_participants tp
+                  ON tp.id IN (bm.team1_id, bm.team2_id)
+                 AND tp.user_id = @userId
                 WHERE bm.id = @matchId
-                  AND tp.participant_type = 'solo'
-                  AND tp.user_id = @userId
+            )
+            OR EXISTS(
+                SELECT 1
+                FROM brkt_matches bm
+                JOIN tournament_participants tp
+                  ON tp.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId
+                  AND (tp.user_id = @userId OR tp.team_captain_id = @userId)
             )
             """,
             new { userId, matchId });
