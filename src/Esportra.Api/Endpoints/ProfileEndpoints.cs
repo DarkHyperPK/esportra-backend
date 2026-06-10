@@ -1,5 +1,7 @@
-﻿using System.Text.Json;
+﻿using System.Globalization;
+using System.Text.Json;
 using Dapper;
+using Npgsql;
 using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
@@ -86,6 +88,20 @@ public static class ProfileEndpoints
             if (valid.Count == 0)
                 return Results.BadRequest(new { error = "No valid fields to update." });
 
+            if (valid.TryGetValue("date_of_birth", out var dobValue))
+            {
+                if (!ProfileFieldValidator.TryValidateDateOfBirth(dobValue, out var normalizedDob, out var dobError))
+                    return Results.BadRequest(new { error = dobError });
+                valid["date_of_birth"] = normalizedDob;
+            }
+
+            if (valid.TryGetValue("country_code", out var countryValue))
+            {
+                if (!ProfileFieldValidator.TryValidateCountryCode(countryValue, out var normalizedCountry, out var countryError))
+                    return Results.BadRequest(new { error = countryError });
+                valid["country_code"] = normalizedCountry;
+            }
+
             using var conn = db.CreateConnection();
 
             // Username uniqueness check
@@ -100,24 +116,64 @@ public static class ProfileEndpoints
 
             // Build SET clause dynamically (safe — only allow-listed column names)
             var jsonbFields = new HashSet<string> { "social_links" };
+            var dateFields = new HashSet<string> { "date_of_birth" };
             var setClauses = string.Join(", ", valid.Keys.Select(k =>
-                jsonbFields.Contains(k) ? $"{k} = @{k}::jsonb" : $"{k} = @{k}"));
+            {
+                if (jsonbFields.Contains(k)) return $"{k} = @{k}::jsonb";
+                if (dateFields.Contains(k)) return $"{k} = @{k}::date";
+                return $"{k} = @{k}";
+            }));
             var parameters = new DynamicParameters();
             foreach (var kv in valid)
             {
                 if (kv.Value is null)
+                {
                     parameters.Add(kv.Key, null, System.Data.DbType.String);
+                }
                 else if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
+                {
                     parameters.Add(kv.Key, je.GetRawText());
+                }
+                else if (dateFields.Contains(kv.Key))
+                {
+                    var dateStr = kv.Value switch
+                    {
+                        string s => s,
+                        JsonElement { ValueKind: JsonValueKind.String } dateElement => dateElement.GetString(),
+                        _ => kv.Value.ToString(),
+                    };
+
+                    if (!DateOnly.TryParseExact(
+                            dateStr,
+                            "yyyy-MM-dd",
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.None,
+                            out var parsedDate))
+                    {
+                        return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
+                    }
+
+                    parameters.Add(kv.Key, parsedDate);
+                }
                 else
+                {
                     parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
+                }
             }
             parameters.Add("id", id);
             parameters.Add("updated_at", DateTime.UtcNow);
 
-            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
-                parameters);
+            dynamic? row;
+            try
+            {
+                row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
+                    parameters);
+            }
+            catch (PostgresException ex) when (ex.SqlState is "22007" or "22008")
+            {
+                return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
+            }
 
             if (row is null) return Results.NotFound();
 
