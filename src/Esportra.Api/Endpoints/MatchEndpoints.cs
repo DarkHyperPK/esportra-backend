@@ -763,6 +763,7 @@ public static class MatchEndpoints
             HttpContext                  ctx,
             IDbConnectionFactory         db,
             IHubContext<BracketHub>      bracketHub,
+            IHubContext<MatchHub>        matchHub,
             TournamentWinnerService      winnerService,
             CancellationToken            ct) =>
         {
@@ -772,9 +773,10 @@ public static class MatchEndpoints
             using var conn = db.CreateConnection();
 
             // Verify caller has permission (organizer staff OR match captain for self-play)
-            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
-                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            var isOrganizerOrStaff = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate)
+                || StaffAuthHelper.IsPlatformAdmin(userCtx);
+            if (!isOrganizerOrStaff)
             {
                 var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
                     """
@@ -1035,6 +1037,49 @@ public static class MatchEndpoints
                 }
             }
             catch { /* Non-critical */ }
+
+            // Organizer/staff manual score is authoritative — clear open dispute artifacts
+            if (isOrganizerOrStaff)
+            {
+                var actorId = userCtx.UserIdGuid;
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE match_result_reports
+                    SET status = 'rejected', responded_at = NOW(), responded_by = @userId
+                    WHERE match_id = @matchId AND status IN ('disputed', 'pending')
+                    """,
+                    new { matchId, userId = actorId });
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE match_disputes
+                    SET status = 'resolved',
+                        resolution = 'Match score manually settled by organizer',
+                        resolved_at = NOW(),
+                        resolved_by = @userId
+                    WHERE match_id = @matchId AND status = 'pending'
+                    """,
+                    new { matchId, userId = actorId });
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE tournament_disputes
+                    SET status = 'resolved',
+                        resolution_notes = COALESCE(
+                            resolution_notes,
+                            'Match score manually settled by organizer'
+                        ),
+                        assigned_to_user_id = COALESCE(assigned_to_user_id, @userId),
+                        updated_at = NOW()
+                    WHERE match_id = @matchId AND status = 'open'
+                    """,
+                    new { matchId, userId = actorId });
+
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(matchId.ToString()))
+                    .SendAsync(MatchHubEvents.DisputeResolved,
+                        new { match_id = matchId, status = "resolved", source = "manual_score" }, ct);
+            }
 
             return Results.Ok(new { success = true, winnerId, loserId, stageId, stageComplete });
         }).RequireAuthorization("Authenticated");

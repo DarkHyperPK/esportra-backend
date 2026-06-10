@@ -2835,6 +2835,8 @@ public static class TournamentEndpoints
             HttpContext                          ctx,
             IDbConnectionFactory                db,
             IHubContext<NotificationHub>        notifHub,
+            IHubContext<MatchHub>               matchHub,
+            IHubContext<BracketHub>             bracketHub,
             ILoggerFactory                      loggerFactory,
             CancellationToken                   ct) =>
         {
@@ -2845,22 +2847,36 @@ public static class TournamentEndpoints
                 ctx.Request.Body, s_snakeCase, ct);
             if (req is null) return Results.BadRequest("Invalid body");
 
+            if (req.Status is not ("resolved" or "rejected"))
+                return Results.BadRequest(new { error = "Status must be 'resolved' or 'rejected'." });
+
             var logger = loggerFactory.CreateLogger("DisputeResolve");
             try
             {
             using var conn = db.CreateConnection();
 
-            // Verify caller is the tournament organizer for this dispute
+            var disputeRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT match_id, tournament_id, status FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+            if (disputeRow is null) return Results.NotFound(new { error = "Dispute not found" });
+
+            var currentStatus = (string?)disputeRow.status;
+            if (currentStatus is "resolved" or "rejected")
+                return Results.BadRequest(new { error = "This dispute has already been closed." });
+
+            Guid? disputeMatchId = disputeRow.match_id as Guid?;
+            Guid tournamentId = (Guid)disputeRow.tournament_id;
+
             var isOwner = await conn.ExecuteScalarAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournament_disputes d
-                    JOIN tournaments t ON t.id = d.tournament_id
-                    WHERE d.id = @disputeId AND t.organizer_id = @userId
-                )
-                """,
-                new { disputeId, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
+                new { tid = tournamentId, userId = userCtx.UserIdGuid });
+
+            var canAssist = disputeMatchId is not null
+                && await StaffAuthHelper.CanActOnBracketMatchAsync(
+                    conn, userCtx.UserIdGuid, disputeMatchId.Value, StaffAuthHelper.PermDisputesAssist);
+
+            if (!isOwner && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
 
             // Update dispute status
             await conn.ExecuteAsync(
@@ -2872,52 +2888,95 @@ public static class TournamentEndpoints
                 """,
                 new { disputeId, status = req.Status, notes = req.ResolutionNotes, userId = userCtx.UserIdGuid });
 
+            var enforcedReport = false;
+
             // If resolving with an accepted report: enforce scores on the match
-            if (req.Status == "resolved" && req.ReportId is not null
-                && Guid.TryParse(req.ReportId, out var reportId))
+            if (req.Status == "resolved" && req.ReportId is not null)
             {
+                if (!Guid.TryParse(req.ReportId, out var reportId))
+                    return Results.BadRequest(new { error = "Invalid report id." });
+
                 var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
                     SELECT mrr.match_id, mrr.team1_score, mrr.team2_score,
                            mrr.reported_by_team_id,
-                           bm.team1_id, bm.team2_id
+                           bm.team1_id, bm.team2_id, bm.version_id
                     FROM match_result_reports mrr
                     JOIN brkt_matches bm ON bm.id = mrr.match_id
                     WHERE mrr.id = @reportId
                     """,
                     new { reportId });
 
-                if (report is not null)
+                if (report is null)
+                    return Results.BadRequest(new { error = "Report not found." });
+
+                enforcedReport = true;
+                Guid matchId = (Guid)report.match_id;
+                if (disputeMatchId is not null && matchId != disputeMatchId.Value)
+                    return Results.BadRequest(new { error = "Report does not belong to this dispute's match." });
+
+                int t1Score  = (int)report.team1_score;
+                int t2Score  = (int)report.team2_score;
+
+                if (t1Score == t2Score)
+                    return Results.BadRequest(new { error = "Reported scores cannot be tied." });
+
+                Guid winnerId = t1Score > t2Score ? (Guid)report.team1_id : (Guid)report.team2_id;
+                Guid loserId  = t1Score > t2Score ? (Guid)report.team2_id : (Guid)report.team1_id;
+
+                // Enforce scores + winner on match
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE brkt_matches
+                    SET team1_score = @t1, team2_score = @t2,
+                        winner_id = @winner, loser_id = @loser, status = 'completed', updated_at = NOW()
+                    WHERE id = @matchId
+                    """,
+                    new { t1 = t1Score, t2 = t2Score, winner = winnerId, loser = loserId, matchId });
+
+                // Advance winner/loser through bracket edges
+                var advancements = await conn.QueryAsync<dynamic>(
+                    "SELECT target_match_id, target_slot, type FROM brkt_advancements WHERE source_match_id = @matchId",
+                    new { matchId });
+
+                foreach (var adv in advancements)
                 {
-                    Guid matchId = (Guid)report.match_id;
-                    int t1Score  = (int)report.team1_score;
-                    int t2Score  = (int)report.team2_score;
-
-                    // Determine winner
-                    Guid? winnerId = t1Score > t2Score ? (Guid?)report.team1_id
-                                  : t2Score > t1Score ? (Guid?)report.team2_id
-                                  : null;
-
-                    // Enforce scores + winner on match
+                    Guid teamId = (string?)adv.type == "winner" ? winnerId : loserId;
+                    string field = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
                     await conn.ExecuteAsync(
-                        """
-                        UPDATE brkt_matches
-                        SET team1_score = @t1, team2_score = @t2,
-                            winner_team_id = @winner, status = 'completed', updated_at = NOW()
-                        WHERE id = @matchId
-                        """,
-                        new { t1 = t1Score, t2 = t2Score, winner = winnerId, matchId });
+                        $"UPDATE brkt_matches SET {field} = @teamId WHERE id = @targetId",
+                        new { teamId, targetId = (Guid)adv.target_match_id });
+                }
 
-                    // Mark report as accepted, others for this match as rejected
-                    await conn.ExecuteAsync(
-                        """
-                        UPDATE match_result_reports SET status = 'accepted'  WHERE id = @reportId;
-                        UPDATE match_result_reports SET status = 'rejected'
-                          WHERE match_id = @matchId AND id != @reportId AND status = 'disputed';
-                        """,
-                        new { reportId, matchId });
+                // Mark report as accepted, others for this match as rejected
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE match_result_reports SET status = 'accepted'  WHERE id = @reportId;
+                    UPDATE match_result_reports SET status = 'rejected', responded_at = NOW(), responded_by = @userId
+                      WHERE match_id = @matchId AND id != @reportId AND status IN ('disputed', 'pending');
+                    """,
+                    new { reportId, matchId, userId = userCtx.UserIdGuid });
 
-                    // Notify both team captains about enforced result
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE match_disputes
+                    SET status = 'resolved',
+                        resolution = @notes,
+                        resolved_at = NOW(),
+                        resolved_by = @userId
+                    WHERE match_id = @matchId AND status = 'pending'
+                    """,
+                    new { matchId, notes = req.ResolutionNotes, userId = userCtx.UserIdGuid });
+
+                var versionId = (Guid?)report.version_id;
+                if (versionId is not null)
+                {
+                    await bracketHub.Clients
+                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                        .SendAsync(BracketHubEvents.MatchUpdated, new { versionId, matchId }, ct);
+                }
+
+                // Notify both team captains about enforced result
                     var captains = await conn.QueryAsync<dynamic>(
                         """
                         SELECT tm.user_id, t.name AS team_name,
@@ -2948,7 +3007,63 @@ public static class TournamentEndpoints
                         await notifHub.Clients.Group($"user:{captainId}")
                             .SendAsync("NewNotification", new { type = "result_accepted" }, ct);
                     }
+            }
+
+            if (disputeMatchId is not null && !enforcedReport)
+            {
+                var matchId = disputeMatchId.Value;
+                var actorId = userCtx.UserIdGuid;
+
+                if (req.Status == "resolved")
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE match_disputes
+                        SET status = 'resolved',
+                            resolution = @notes,
+                            resolved_at = NOW(),
+                            resolved_by = @userId
+                        WHERE match_id = @matchId AND status = 'pending'
+                        """,
+                        new { matchId, notes = req.ResolutionNotes, userId = actorId });
+
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE match_result_reports
+                        SET status = 'rejected', responded_at = NOW(), responded_by = @userId
+                        WHERE match_id = @matchId AND status = 'disputed'
+                        """,
+                        new { matchId, userId = actorId });
                 }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE match_disputes
+                        SET status = 'rejected',
+                            resolution = @notes,
+                            resolved_at = NOW(),
+                            resolved_by = @userId
+                        WHERE match_id = @matchId AND status = 'pending'
+                        """,
+                        new { matchId, notes = req.ResolutionNotes, userId = actorId });
+
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE match_result_reports
+                        SET status = 'rejected', responded_at = NOW(), responded_by = @userId
+                        WHERE match_id = @matchId AND status IN ('disputed', 'pending')
+                        """,
+                        new { matchId, userId = actorId });
+                }
+            }
+
+            if (disputeMatchId is not null)
+            {
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(disputeMatchId.Value.ToString()))
+                    .SendAsync(MatchHubEvents.DisputeResolved,
+                        new { match_id = disputeMatchId.Value, dispute_id = disputeId, status = req.Status }, ct);
             }
 
             // Notify the dispute filer (best-effort — don't fail the request)
