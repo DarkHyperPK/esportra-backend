@@ -94,7 +94,7 @@ public static class PublicToolEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             var item = await LoadBracketAsync(db, id, userCtx.UserIdGuid);
-            return item is null ? Results.NotFound() : Results.Ok(item);
+            return item is null ? Results.NotFound() : Results.Ok(ToBracketResponse(item));
         }).RequireAuthorization("Authenticated");
 
         app.MapGet("/api/tools/brackets/share/{token}", async (
