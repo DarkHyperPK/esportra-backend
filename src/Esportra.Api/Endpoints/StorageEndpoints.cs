@@ -267,6 +267,32 @@ public static class StorageEndpoints
             if (normalizedFolder.StartsWith("temp/", StringComparison.OrdinalIgnoreCase))
                 return normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
 
+            // Match-result dispute evidence (uploaded before tournament_dispute row exists)
+            if (normalizedFolder.StartsWith("matches/", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2 && Guid.TryParse(parts[1], out var matchId))
+                {
+                    var db = services.GetRequiredService<IDbConnectionFactory>();
+                    using var conn = db.CreateConnection();
+                    return await conn.ExecuteScalarAsync<bool>(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM brkt_matches bm
+                            JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                            WHERE bm.id = @matchId
+                              AND tm.user_id = @userId
+                              AND tm.is_active = true
+                        )
+                        OR EXISTS(
+                            SELECT 1 FROM match_result_reports mrr
+                            WHERE mrr.match_id = @matchId AND mrr.reported_by = @userId
+                        )
+                        """,
+                        new { matchId, userId = userCtx.UserIdGuid });
+                }
+            }
+
             if (normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
                 return true;
 

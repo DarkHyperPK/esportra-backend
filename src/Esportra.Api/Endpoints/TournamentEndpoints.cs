@@ -2573,8 +2573,16 @@ public static class TournamentEndpoints
                        ) ELSE '[]'::jsonb END AS riot_accounts,
                        -- Disputing party counter-evidence (match_disputes)
                        (SELECT row_to_json(sub)::jsonb FROM (
-                           SELECT md.id, md.reason, md.evidence_urls, md.disputed_by_team_id,
-                                  md.disputed_by_user_id, md.created_at, md.status,
+                           SELECT md.id, md.reason,
+                                  CASE
+                                      WHEN md.evidence_urls IS NOT NULL
+                                           AND COALESCE(array_length(md.evidence_urls, 1), 0) > 0
+                                      THEN md.evidence_urls
+                                      WHEN td.evidence_url IS NOT NULL
+                                      THEN ARRAY[td.evidence_url]::text[]
+                                      ELSE COALESCE(md.evidence_urls, '{}'::text[])
+                                  END AS evidence_urls,
+                                  md.disputed_by_team_id, md.disputed_by_user_id, md.created_at, md.status,
                                   COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
                                   CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
                                        WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
@@ -3136,8 +3144,16 @@ public static class TournamentEndpoints
                              AND tm.is_active = true
                        ) ELSE '[]'::jsonb END AS riot_accounts,
                        (SELECT row_to_json(sub)::jsonb FROM (
-                           SELECT md.id, md.reason, md.evidence_urls, md.disputed_by_team_id,
-                                  md.disputed_by_user_id, md.created_at, md.status,
+                           SELECT md.id, md.reason,
+                                  CASE
+                                      WHEN md.evidence_urls IS NOT NULL
+                                           AND COALESCE(array_length(md.evidence_urls, 1), 0) > 0
+                                      THEN md.evidence_urls
+                                      WHEN td.evidence_url IS NOT NULL
+                                      THEN ARRAY[td.evidence_url]::text[]
+                                      ELSE COALESCE(md.evidence_urls, '{}'::text[])
+                                  END AS evidence_urls,
+                                  md.disputed_by_team_id, md.disputed_by_user_id, md.created_at, md.status,
                                   COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
                                   CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
                                        WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
