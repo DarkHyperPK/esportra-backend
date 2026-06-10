@@ -674,16 +674,16 @@ public static class PublicToolEndpoints
         if (sessionId is null) return null;
         return (await conn.QueryAsync(
             """
-            SELECT a.action_number AS actionNumber,
-                   a.team_side AS teamSide,
-                   a.team_id AS teamId,
-                   CASE WHEN a.team_side = 'team1' THEN s.team1_name ELSE s.team2_name END AS teamName,
+            SELECT a.action_number,
+                   a.team_side,
+                   a.team_id,
+                   CASE WHEN a.team_side = 'team1' THEN s.team1_name ELSE s.team2_name END AS team_name,
                    a.action_type AS action,
-                   a.map_id AS mapId,
-                   gm.map_name AS mapName,
-                   gm.map_image_url AS mapImageUrl,
+                   a.map_id,
+                   gm.map_name,
+                   gm.map_image_url,
                    a.side,
-                   a.created_at AS createdAt
+                   a.created_at
             FROM public.public_veto_actions a
             JOIN public.public_veto_sessions s ON s.id = a.session_id
             LEFT JOIN public.game_maps gm ON gm.id::text = a.map_id
