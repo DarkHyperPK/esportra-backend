@@ -340,6 +340,9 @@ public static class PublicToolEndpoints
         if (names.Count == 1) return ToolResult<PublicBracketPayload>.Fail("Add at least two team names, or leave the list empty for an empty bracket.");
         if (names.Count != names.Distinct(StringComparer.OrdinalIgnoreCase).Count())
             return ToolResult<PublicBracketPayload>.Fail("Team names must be unique.");
+        if (req.BracketSize is int requestedSize && names.Count > requestedSize)
+            return ToolResult<PublicBracketPayload>.Fail(
+                $"You have {names.Count} teams but the bracket size is set to {requestedSize}. Increase the bracket size or remove extra teams.");
 
         var size = Math.Max(2, req.BracketSize ?? Math.Max(names.Count, 8));
         var teams = names.Select((name, index) => new PublicToolTeam(Guid.NewGuid(), name, index + 1)).ToList();
