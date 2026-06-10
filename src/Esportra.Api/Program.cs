@@ -484,6 +484,7 @@ app.Use(async (ctx, next) =>
 });
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
+app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
 app.UseGhostMode();        // Validate and audit short-lived impersonation tokens
 app.UseAdminMutationAudit(); // Pre-audit destructive admin mutations before endpoint execution
 app.UseRateLimit();        // Redis sliding-window rate limiter

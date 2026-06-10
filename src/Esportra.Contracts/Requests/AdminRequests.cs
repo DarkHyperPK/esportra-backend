@@ -13,7 +13,10 @@ public sealed record SendEmailRequest(
     string Type,   // EmailType enum name
     object Data);
 
-public sealed record SuspendUserRequest(string Reason);
+public sealed record SuspendUserRequest(
+    string Reason,
+    string? SuspensionType = null,
+    DateTime? SuspensionUntil = null);
 
 public sealed record BulkUserActionRequest(Guid[] UserIds, string Action, string? Reason = null);
 

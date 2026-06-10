@@ -2,6 +2,7 @@ using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
+using Esportra.Core.Notifications;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.BackgroundJobs;
@@ -257,12 +258,28 @@ public sealed class CheckinWalkoversJob(
                 message = "Your opponent failed to check in. You've been awarded a walkover victory!";
             }
 
+            var matchContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, match.match_id);
+            var matchLink = CaptainMatchLinkBuilder.BuildLink(matchContext.TournamentSlug, match.match_id);
+
             await conn.ExecuteAsync(
                 """
-                INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
-                VALUES (@userId, 'match_walkover', @title, @message, '/tournaments/captain', false)
+                INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
+                VALUES (@userId, 'match_walkover', @title, @message, @link,
+                        jsonb_build_object(
+                            'match_id', @matchId::text,
+                            'tournament_slug', @tournamentSlug
+                        )::jsonb,
+                        false)
                 """,
-                new { userId = captain.user_id, title, message });
+                new
+                {
+                    userId = captain.user_id,
+                    title,
+                    message,
+                    link = matchLink,
+                    matchId = match.match_id,
+                    tournamentSlug = matchContext.TournamentSlug,
+                });
 
             // Push via SignalR
             await notifHub.Clients

@@ -854,7 +854,10 @@ public static class AdminEndpoints
             [FromBody] SuspendUserRequest req,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            HybridCache          cache,
             AuditService         audit,
+            ILogger<Program>     logger,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -868,15 +871,49 @@ public static class AdminEndpoints
                 UPDATE profiles
                 SET is_suspended = true,
                     suspension_reason = @reason,
+                    suspension_type = @suspensionType,
+                    suspension_until = @suspensionUntil,
                     updated_at = NOW()
                 WHERE id = @userId
                 """,
-                new { userId, reason = req.Reason });
+                new
+                {
+                    userId,
+                    reason = req.Reason,
+                    suspensionType = req.SuspensionType,
+                    suspensionUntil = req.SuspensionUntil,
+                });
+
+            try
+            {
+                await supabase.LogoutUserAsync(userId.ToString(), ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Supabase force-logout failed for suspended user {UserId}", userId);
+            }
+
+            try
+            {
+                await cache.RemoveAsync($"user-ctx:{userId}", ct);
+                await cache.RemoveAsync($"user-suspension:{userId}", ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Cache eviction failed for suspended user {UserId}", userId);
+            }
+
             await audit.LogAsync(
                 userCtx.UserIdGuid, userCtx.Email,
                 ActionType.Suspend, TargetType.User,
                 userId, targetName ?? userId.ToString(),
-                new { reason = req.Reason }, ct: ct);
+                new
+                {
+                    reason = req.Reason,
+                    suspensionType = req.SuspensionType,
+                    suspensionUntil = req.SuspensionUntil,
+                },
+                ct: ct);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Admin");
 
@@ -885,6 +922,7 @@ public static class AdminEndpoints
             Guid                 userId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            HybridCache          cache,
             AuditService         audit,
             CancellationToken    ct) =>
         {
@@ -905,6 +943,17 @@ public static class AdminEndpoints
                 WHERE id = @userId
                 """,
                 new { userId });
+
+            try
+            {
+                await cache.RemoveAsync($"user-ctx:{userId}", ct);
+                await cache.RemoveAsync($"user-suspension:{userId}", ct);
+            }
+            catch
+            {
+                // Non-critical — suspension columns are cleared in DB
+            }
+
             await audit.LogAsync(
                 userCtx.UserIdGuid, userCtx.Email,
                 ActionType.Unsuspend, TargetType.User,
@@ -918,6 +967,7 @@ public static class AdminEndpoints
             HttpContext                      ctx,
             IDbConnectionFactory             db,
             ISupabaseAdminClient             supabase,
+            HybridCache                      cache,
             AuditService                     audit,
             ILogger<Program>                 logger,
             CancellationToken                ct) =>
@@ -1029,6 +1079,31 @@ public static class AdminEndpoints
 
             var affected = await conn.ExecuteAsync(
                 new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+            foreach (var userId in safeIds)
+            {
+                if (req.Action == "suspend")
+                {
+                    try
+                    {
+                        await supabase.LogoutUserAsync(userId.ToString(), ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Supabase force-logout failed for bulk-suspended user {UserId}", userId);
+                    }
+                }
+
+                try
+                {
+                    await cache.RemoveAsync($"user-ctx:{userId}", ct);
+                    await cache.RemoveAsync($"user-suspension:{userId}", ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Cache eviction failed for bulk action user {UserId}", userId);
+                }
+            }
 
             // Audit each affected user (email used as adminName — UserContext lacks display name)
             var auditDetails = req.Action == "suspend"

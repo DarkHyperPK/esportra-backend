@@ -1,5 +1,6 @@
 using Dapper;
 using Esportra.Contracts.Database;
+using Esportra.Core.Notifications;
 
 namespace Esportra.Core.Bracket;
 
@@ -376,6 +377,9 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
             """,
             new { t1 = team1Id, t2 = team2Id })).AsList();
 
+        var matchContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, matchId);
+        var matchLink = CaptainMatchLinkBuilder.BuildLink(matchContext.TournamentSlug, matchId);
+
         foreach (var captainId in captainIds)
         {
             await conn.ExecuteAsync(
@@ -383,10 +387,20 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
                 VALUES (@userId, 'match_ready', 'Match Ready',
                         'Your match is ready. Head to the Captain dashboard to start the map veto.',
-                        '/tournaments/captain',
-                        jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                        @link,
+                        jsonb_build_object(
+                            'match_id', @matchId::text,
+                            'tournament_slug', @tournamentSlug
+                        )::jsonb,
+                        false)
                 """,
-                new { userId = captainId, matchId });
+                new
+                {
+                    userId = captainId,
+                    matchId,
+                    link = matchLink,
+                    tournamentSlug = matchContext.TournamentSlug,
+                });
         }
     }
 }

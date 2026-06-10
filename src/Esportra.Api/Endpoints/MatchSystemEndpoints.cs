@@ -7,6 +7,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Esportra.Core.Notifications;
 using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
@@ -26,6 +27,31 @@ public static class MatchSystemEndpoints
         MapSchedulingEndpoints(app);
         MapTimeProposalEndpoints(app);
         MapDisputeEndpoints(app);
+
+        // ── GET /api/matches/{id}/captain-room-link ───────────────────────────
+        app.MapGet("/api/matches/{id}/captain-room-link", async (
+            Guid                 id,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
+                return Results.Forbid();
+
+            var matchContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, id);
+            var link = CaptainMatchLinkBuilder.BuildLink(matchContext.TournamentSlug, id);
+            return Results.Ok(new
+            {
+                link,
+                tournament_slug = matchContext.TournamentSlug,
+                match_id = id,
+            });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/matches/{id}/reports ─────────────────────────────────────
         app.MapGet("/api/matches/{id}/reports", async (
             Guid                 id,
@@ -686,15 +712,27 @@ public static class MatchSystemEndpoints
                 // 5. Notify reporter that their result is being disputed
                 if (reporterId is not null && reporterId != userCtx.UserIdGuid)
                 {
+                    var captainMatchLink = CaptainMatchLinkBuilder.BuildLink(slug, id);
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                         VALUES (@userId, 'result_disputed', '🚨 Result Disputed!',
                                 'The opposing team has challenged your reported result. An organizer will step in to review.',
-                                '/tournaments/captain',
-                                jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                                @link,
+                                jsonb_build_object(
+                                    'match_id', @matchId::text,
+                                    'tournament_slug', @tournamentSlug
+                                )::jsonb,
+                                false)
                         """,
-                        new { userId = reporterId, matchId = id }, tx);
+                        new
+                        {
+                            userId = reporterId,
+                            matchId = id,
+                            link = captainMatchLink,
+                            tournamentSlug = slug,
+                        },
+                        tx);
                 }
 
                 // 6. Notify tournament organizer
@@ -1351,15 +1389,14 @@ public static class MatchSystemEndpoints
                 var notifMessage = req.Status == "resolved"
                     ? $"Your match dispute has been resolved in your favor. Organizer note: {req.Resolution}"
                     : $"Your match dispute was reviewed and rejected. Organizer note: {req.Resolution}";
-                var notifData    = JsonSerializer.Serialize(new { match_id = matchId });
 
-                // Resolve tournament ID for notification link
-                var disputeTournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT v.tournament_id FROM brkt_matches m JOIN brkt_versions v ON v.id = m.version_id WHERE m.id = @matchId",
-                    new { matchId });
-                var disputeLink = disputeTournamentId is not null
-                    ? $"/tournaments/{disputeTournamentId}/captain-match/{matchId}"
-                    : "/tournaments";
+                var disputeContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, matchId);
+                var disputeLink = CaptainMatchLinkBuilder.BuildLink(disputeContext.TournamentSlug, matchId);
+                var notifDataWithSlug = JsonSerializer.Serialize(new
+                {
+                    match_id = matchId,
+                    tournament_slug = disputeContext.TournamentSlug,
+                });
 
                 // Notify the disputing user
                 await conn.ExecuteAsync(
@@ -1368,7 +1405,7 @@ public static class MatchSystemEndpoints
                     VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                     """,
                     new { userId = (Guid)dispute.disputed_by_user_id, type = notifType,
-                          title = notifTitle, message = notifMessage, link = disputeLink, data = notifData });
+                          title = notifTitle, message = notifMessage, link = disputeLink, data = notifDataWithSlug });
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1387,7 +1424,7 @@ public static class MatchSystemEndpoints
                         VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                         """,
                         new { userId = reporter, type = notifType, title = notifTitle,
-                              message = notifMessage, link = disputeLink, data = notifData });
+                              message = notifMessage, link = disputeLink, data = notifDataWithSlug });
                 }
             }
 
