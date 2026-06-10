@@ -692,9 +692,16 @@ public static class MatchEndpoints
                 {
                     if (canForceGoLive)
                     {
-                        var staffGuard = roomService.CanStaffForceGoLive(context, DateTime.UtcNow);
+                        var staffGuard = roomService.CanStaffForceGoLive(
+                            context, code, req.Force, DateTime.UtcNow);
                         if (!staffGuard.Allowed)
-                            return Results.Json(new { error = staffGuard.Message, code = staffGuard.Code }, statusCode: 400);
+                            return Results.Json(new
+                            {
+                                error = staffGuard.Message,
+                                code = staffGuard.Code,
+                                phase = staffGuard.Phase,
+                                nextAction = staffGuard.NextAction,
+                            }, statusCode: 400);
                     }
                     else
                     {
@@ -717,9 +724,10 @@ public static class MatchEndpoints
                         : (await conn.QuerySingleOrDefaultAsync<DateTime?>(
                             "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
                             new { matchId }), (string?)null);
-                    if (effectiveTime.HasValue
-                        && effectiveTime.Value > DateTime.UtcNow.AddMinutes(15))
-                        return Results.BadRequest(new { error = $"Match is scheduled for {effectiveTime.Value:u}. Cannot go live more than 15 minutes early." });
+                    var timingGuard = SelfPlayMatchRoomService.ValidateCaptainGoLiveTiming(
+                        effectiveTime, DateTime.UtcNow);
+                    if (!timingGuard.Allowed)
+                        return Results.Json(new { error = timingGuard.Message, code = timingGuard.Code }, statusCode: 400);
                 }
             }
             else if (!canForceGoLive)
@@ -727,9 +735,10 @@ public static class MatchEndpoints
                 var scheduledTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
                     "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
                     new { matchId });
-                if (scheduledTime.HasValue
-                    && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15))
-                    return Results.BadRequest(new { error = $"Match is scheduled for {scheduledTime.Value:u}. Cannot go live more than 15 minutes early." });
+                var timingGuard = SelfPlayMatchRoomService.ValidateCaptainGoLiveTiming(
+                    scheduledTime, DateTime.UtcNow);
+                if (!timingGuard.Allowed)
+                    return Results.Json(new { error = timingGuard.Message, code = timingGuard.Code }, statusCode: 400);
             }
 
             var rows = await conn.ExecuteAsync(

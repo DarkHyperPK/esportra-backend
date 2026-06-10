@@ -230,7 +230,10 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             return Deny("match_schedule_required", "A match time must be set before go-live.", room, SelfPlayNextAction.ProposeTime);
 
         if (effectiveTime.Value > nowUtc.AddMinutes(15))
-            return Deny("match_schedule_required", $"Match is scheduled for {effectiveTime.Value:u}. Cannot go live more than 15 minutes early.", room);
+            return Deny(
+                "go_live_too_early",
+                $"Match is scheduled for {effectiveTime.Value:u}. Cannot go live more than 15 minutes early.",
+                room);
 
         if (!ctx.Team1CheckedIn || !ctx.Team2CheckedIn)
             return Deny("self_play_checkins_required", "Both teams must check in before the match can go live.", room, SelfPlayNextAction.CheckIn);
@@ -244,8 +247,49 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         return SelfPlayGuardResult.Allow();
     }
 
-    public SelfPlayGuardResult CanStaffForceGoLive(SelfPlayMatchRoomContext ctx, DateTime nowUtc)
-        => SelfPlayGuardResult.Allow();
+    /// <summary>
+    /// Staff may bypass check-ins and schedule windows, but must supply a party code
+    /// unless <paramref name="allowEmergencyWithoutCode"/> is true (explicit Force flag).
+    /// </summary>
+    public SelfPlayGuardResult CanStaffForceGoLive(
+        SelfPlayMatchRoomContext ctx,
+        string? partyCode,
+        bool allowEmergencyWithoutCode,
+        DateTime nowUtc)
+    {
+        if (!IsSelfPlayActive(ctx))
+            return SelfPlayGuardResult.Allow();
+
+        var room = BuildPreviewState(ctx, nowUtc);
+        var status = NormalizeStatus(ctx.Status);
+
+        if (status != "pending")
+            return Deny("match_not_pending", "Match is not pending go-live.", room);
+
+        if (string.IsNullOrWhiteSpace(partyCode) && !allowEmergencyWithoutCode)
+            return Deny(
+                "party_code_required",
+                "Party code is required to go live.",
+                room,
+                SelfPlayNextAction.SubmitPartyCode);
+
+        return SelfPlayGuardResult.Allow();
+    }
+
+    public static SelfPlayGuardResult ValidateCaptainGoLiveTiming(
+        DateTime? effectiveScheduledTime,
+        DateTime nowUtc)
+    {
+        if (!effectiveScheduledTime.HasValue)
+            return SelfPlayGuardResult.Allow();
+
+        if (effectiveScheduledTime.Value > nowUtc.AddMinutes(15))
+            return SelfPlayGuardResult.Deny(
+                "go_live_too_early",
+                $"Match is scheduled for {effectiveScheduledTime.Value:u}. Cannot go live more than 15 minutes early.");
+
+        return SelfPlayGuardResult.Allow();
+    }
 
     public SelfPlayGuardResult CanProposeTime(SelfPlayMatchRoomContext ctx, DateTime nowUtc)
     {

@@ -234,12 +234,56 @@ public sealed class SelfPlayMatchRoomServiceTests
     }
 
     [Fact]
-    public void CanStaffForceGoLive_allowed()
+    public void CanCaptainGoLive_too_early_denied()
     {
         var service = new SelfPlayMatchRoomService(null!);
-        var ctx = BaseContext();
-        var result = service.CanStaffForceGoLive(ctx, DateTime.UtcNow);
+        var scheduled = DateTime.UtcNow.AddHours(2);
+        var ctx = BaseContext(
+            scheduledTime: scheduled,
+            team1CheckedIn: true,
+            team2CheckedIn: true);
+
+        var result = service.CanCaptainGoLive(ctx, ctx.Team1Id, "ABCDE", DateTime.UtcNow);
+
+        Assert.False(result.Allowed);
+        Assert.Equal("go_live_too_early", result.Code);
+    }
+
+    [Fact]
+    public void CanStaffForceGoLive_without_code_denied()
+    {
+        var service = new SelfPlayMatchRoomService(null!);
+        var ctx = BaseContext(scheduledTime: DateTime.UtcNow);
+        var result = service.CanStaffForceGoLive(ctx, "  ", allowEmergencyWithoutCode: false, DateTime.UtcNow);
+        Assert.False(result.Allowed);
+        Assert.Equal("party_code_required", result.Code);
+    }
+
+    [Fact]
+    public void CanStaffForceGoLive_with_code_allowed_without_checkins()
+    {
+        var service = new SelfPlayMatchRoomService(null!);
+        var ctx = BaseContext(scheduledTime: DateTime.UtcNow);
+        var result = service.CanStaffForceGoLive(ctx, "ABCDE", allowEmergencyWithoutCode: false, DateTime.UtcNow);
         Assert.True(result.Allowed);
+    }
+
+    [Fact]
+    public void CanStaffForceGoLive_emergency_force_allows_empty_code()
+    {
+        var service = new SelfPlayMatchRoomService(null!);
+        var ctx = BaseContext(scheduledTime: DateTime.UtcNow);
+        var result = service.CanStaffForceGoLive(ctx, "  ", allowEmergencyWithoutCode: true, DateTime.UtcNow);
+        Assert.True(result.Allowed);
+    }
+
+    [Fact]
+    public void ValidateCaptainGoLiveTiming_too_early()
+    {
+        var scheduled = DateTime.UtcNow.AddHours(1);
+        var result = SelfPlayMatchRoomService.ValidateCaptainGoLiveTiming(scheduled, DateTime.UtcNow);
+        Assert.False(result.Allowed);
+        Assert.Equal("go_live_too_early", result.Code);
     }
 
     [Fact]
