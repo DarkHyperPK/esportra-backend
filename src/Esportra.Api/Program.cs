@@ -339,6 +339,7 @@ builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<CheckinWalkoversJob>();
 builder.Services.AddHostedService<DiscordDmDispatcherJob>();
 builder.Services.AddHostedService<InviteExpiryJob>();
+builder.Services.AddHostedService<PublicVetoCleanupJob>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
@@ -508,6 +509,7 @@ app.MapGameCatalogAdminEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
+app.MapPublicToolEndpoints();
 
 // ── Phase 4: Domain API endpoints ─────────────────────────────────────────────
 app.MapProfileEndpoints();

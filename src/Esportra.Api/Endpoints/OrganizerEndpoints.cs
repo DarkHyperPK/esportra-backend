@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
