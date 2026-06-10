@@ -226,6 +226,24 @@ public static class PublicToolEndpoints
             var item = await LoadBracketAsync(db, id, userCtx.UserIdGuid);
             return Results.Ok(item is null ? null : ToBracketResponse(item));
         }).RequireAuthorization("Authenticated");
+
+        app.MapDelete("/api/tools/brackets/{id:guid}", async (
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var affected = await conn.ExecuteAsync(
+                """
+                DELETE FROM public.public_tool_brackets
+                 WHERE id = @id AND owner_user_id = @owner
+                """,
+                new { id, owner = userCtx.UserIdGuid });
+            return affected == 0 ? Results.NotFound() : Results.NoContent();
+        }).RequireAuthorization("Authenticated");
     }
 
     private static void MapPublicVetoEndpoints(WebApplication app)
