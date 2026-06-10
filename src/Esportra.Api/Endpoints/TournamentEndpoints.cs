@@ -2617,6 +2617,8 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizer/disputes/unread-count ─────────────────────────
+        // pending_count: open disputes awaiting organizer action (tab badge)
+        // unread_count: pending with unread activity (comments / updates since last read)
         app.MapGet("/api/organizer/disputes/unread-count", async (
             Guid?                tournamentId,
             HttpContext          ctx,
@@ -2628,46 +2630,66 @@ public static class TournamentEndpoints
             if (tournamentId is null) return Results.BadRequest(new { error = "tournament_id is required." });
 
             using var conn = db.CreateConnection();
-            var count = await conn.ExecuteScalarAsync<int>(
-                """
-                SELECT COUNT(*)::int
+
+            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
+                new { tournamentId, userId = userCtx.UserIdGuid });
+
+            var canAssist = await StaffAuthHelper.CanActOnTournamentAsync(
+                conn, userCtx.UserIdGuid, tournamentId.Value, StaffAuthHelper.PermDisputesAssist);
+
+            if (!isOrganizer && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            const string pendingFilter = """
                 FROM tournament_disputes td
-                JOIN tournaments t ON t.id = td.tournament_id
                 WHERE td.tournament_id = @tournamentId
                   AND td.status IN ('open', 'in_review')
                   AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
                   AND td.raised_by_user_id != @userId
-                  AND (t.organizer_id = @userId
-                       OR EXISTS (
-                           SELECT 1 FROM organization_staff os
-                           JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                           WHERE sta.tournament_id = td.tournament_id
-                             AND os.user_id = @userId AND os.status = 'active'
-                       ))
-                  AND (
-                      NOT EXISTS (
-                          SELECT 1 FROM dispute_read_receipts drr
-                          WHERE drr.dispute_id = td.id AND drr.user_id = @userId
-                      )
-                      OR td.updated_at > (
-                          SELECT drr.last_read_at FROM dispute_read_receipts drr
-                          WHERE drr.dispute_id = td.id AND drr.user_id = @userId
-                      )
-                      OR EXISTS (
-                          SELECT 1 FROM dispute_comments dc
-                          WHERE dc.dispute_id = td.id
-                            AND dc.is_internal = FALSE
-                            AND dc.user_id != @userId
-                            AND dc.created_at > COALESCE((
-                                SELECT drr.last_read_at FROM dispute_read_receipts drr
-                                WHERE drr.dispute_id = td.id AND drr.user_id = @userId
-                            ), '1970-01-01'::timestamptz)
-                      )
-                  )
-                """,
+                """;
+
+            var pendingCount = await conn.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*)::int {pendingFilter}",
                 new { tournamentId, userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { unread_count = count });
+            var unreadCount = pendingCount;
+            try
+            {
+                unreadCount = await conn.ExecuteScalarAsync<int>(
+                    $"""
+                    SELECT COUNT(*)::int
+                    {pendingFilter}
+                      AND (
+                          NOT EXISTS (
+                              SELECT 1 FROM dispute_read_receipts drr
+                              WHERE drr.dispute_id = td.id AND drr.user_id = @userId
+                          )
+                          OR td.updated_at > (
+                              SELECT drr.last_read_at FROM dispute_read_receipts drr
+                              WHERE drr.dispute_id = td.id AND drr.user_id = @userId
+                          )
+                          OR EXISTS (
+                              SELECT 1 FROM dispute_comments dc
+                              WHERE dc.dispute_id = td.id
+                                AND dc.is_internal = FALSE
+                                AND dc.user_id != @userId
+                                AND dc.created_at > COALESCE((
+                                    SELECT drr.last_read_at FROM dispute_read_receipts drr
+                                    WHERE drr.dispute_id = td.id AND drr.user_id = @userId
+                                ), '1970-01-01'::timestamptz)
+                          )
+                      )
+                    """,
+                    new { tournamentId, userId = userCtx.UserIdGuid });
+            }
+            catch
+            {
+                // dispute_read_receipts may not exist yet on older DBs — badge still shows pending
+                unreadCount = pendingCount;
+            }
+
+            return Results.Ok(new { unread_count = unreadCount, pending_count = pendingCount });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/organizer/disputes/{disputeId}/read ────────────────────
