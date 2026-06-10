@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
@@ -76,6 +77,8 @@ public static class MatchSystemEndpoints
             [FromBody] SubmitReportRequest req,
             HttpContext                    ctx,
             IDbConnectionFactory          db,
+            SelfPlayMatchRoomService      roomService,
+            GameCatalogService            gameCatalog,
             IHubContext<MatchHub>         matchHub,
             ILoggerFactory                loggerFactory,
             CancellationToken             ct) =>
@@ -99,6 +102,29 @@ public static class MatchSystemEndpoints
 
             try
             {
+            var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+                """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId = id });
+            if (gameRow?.Game is not null)
+            {
+                var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                    gameRow.Game, gameRow.GameMode, existingConnection: conn);
+                var roomContext = await roomService.LoadContextAsync(id, supportsMapVeto, ct);
+                if (roomContext is not null)
+                {
+                    var reportGuard = roomService.CanSubmitResult(
+                        roomContext, reportingCompetitorId, DateTime.UtcNow);
+                    if (!reportGuard.Allowed)
+                        return SelfPlayGuardResponse(reportGuard);
+                }
+            }
+
             // Block submission if same game is already disputed
             var existingDisputed = await conn.QuerySingleOrDefaultAsync<bool>(
                 """
@@ -896,6 +922,56 @@ public static class MatchSystemEndpoints
             return Results.Ok(msg);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/matches/{matchId}/room-state ─────────────────────────────
+        app.MapGet("/api/matches/{matchId}/room-state", async (
+            Guid                         matchId,
+            HttpContext                  ctx,
+            IDbConnectionFactory         db,
+            SelfPlayMatchRoomService     roomService,
+            GameCatalogService           gameCatalog,
+            CancellationToken            ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
+
+            var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+                """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId });
+            if (gameRow?.Game is null)
+                return Results.NotFound(new { error = "Match not found." });
+
+            var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                gameRow.Game, gameRow.GameMode, existingConnection: conn);
+
+            var context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+            if (context is null)
+                return Results.NotFound(new { error = "Match not found." });
+
+            var callerCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            var canForceGoLive = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                    conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate)
+                || StaffAuthHelper.IsPlatformAdmin(userCtx);
+
+            var room = roomService.BuildRoomState(
+                context,
+                callerCompetitorId,
+                canForceGoLive,
+                DateTime.UtcNow);
+
+            return Results.Ok(ToRoomStateResponse(room));
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/matches/{id}/checkins ────────────────────────────────────
         app.MapGet("/api/matches/{id}/checkins", async (
             Guid                 id,
@@ -921,6 +997,8 @@ public static class MatchSystemEndpoints
             [FromBody] CheckinRequest   req,
             HttpContext                 ctx,
             IDbConnectionFactory       db,
+            SelfPlayMatchRoomService   roomService,
+            GameCatalogService         gameCatalog,
             IHubContext<MatchHub>      matchHub,
             CancellationToken          ct) =>
         {
@@ -935,6 +1013,28 @@ public static class MatchSystemEndpoints
             if (!await BracketCompetitorResolver.CanUserCheckInForCompetitorAsync(
                     conn, userCtx.UserIdGuid, id, competitorIdGuid))
                 return Results.Forbid();
+
+            var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+                """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId = id });
+            if (gameRow?.Game is not null)
+            {
+                var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                    gameRow.Game, gameRow.GameMode, existingConnection: conn);
+                var context = await roomService.LoadContextAsync(id, supportsMapVeto, ct);
+                if (context is not null)
+                {
+                    var guard = roomService.CanCheckIn(context, competitorIdGuid, DateTime.UtcNow);
+                    if (!guard.Allowed)
+                        return SelfPlayGuardResponse(guard);
+                }
+            }
 
             await conn.ExecuteAsync(
                 """
@@ -1126,6 +1226,8 @@ public static class MatchSystemEndpoints
             [FromBody] ProposeTimeRequest       req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
+            SelfPlayMatchRoomService           roomService,
+            GameCatalogService                 gameCatalog,
             ILogger<Program>                    logger,
             CancellationToken                   ct) =>
         {
@@ -1139,6 +1241,11 @@ public static class MatchSystemEndpoints
                 var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
                     conn, userCtx.UserIdGuid, matchId);
                 if (captainCompetitorId is null) return Results.Forbid();
+
+                var proposalGuard = await TryGetProposalGuardAsync(
+                    conn, roomService, gameCatalog, matchId, ct);
+                if (proposalGuard is not null)
+                    return proposalGuard;
 
                 var proposal = await conn.QuerySingleAsync<dynamic>(
                     """
@@ -1163,6 +1270,8 @@ public static class MatchSystemEndpoints
             Guid                 proposalId,
             HttpContext           ctx,
             IDbConnectionFactory db,
+            SelfPlayMatchRoomService roomService,
+            GameCatalogService   gameCatalog,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1173,6 +1282,11 @@ public static class MatchSystemEndpoints
             var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
                 conn, userCtx.UserIdGuid, matchId);
             if (captainCompetitorId is null) return Results.Forbid();
+
+            var acceptGuard = await TryGetProposalGuardAsync(
+                conn, roomService, gameCatalog, matchId, ct);
+            if (acceptGuard is not null)
+                return acceptGuard;
 
             // Prevent accepting own proposal
             var proposerCompetitorId = await BracketCompetitorResolver.GetProposerCompetitorIdAsync(
@@ -1235,6 +1349,8 @@ public static class MatchSystemEndpoints
             [FromBody] ProposeTimeRequest         req,
             HttpContext                            ctx,
             IDbConnectionFactory                  db,
+            SelfPlayMatchRoomService             roomService,
+            GameCatalogService                   gameCatalog,
             CancellationToken                     ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1245,6 +1361,11 @@ public static class MatchSystemEndpoints
             var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
                 conn, userCtx.UserIdGuid, matchId);
             if (captainCompetitorId is null) return Results.Forbid();
+
+            var counterGuard = await TryGetProposalGuardAsync(
+                conn, roomService, gameCatalog, matchId, ct);
+            if (counterGuard is not null)
+                return counterGuard;
 
             // Atomic: mark old as countered + insert new in a CTE
             var newProposal = await conn.QuerySingleAsync<dynamic>(
@@ -1564,6 +1685,72 @@ public static class MatchSystemEndpoints
 
             return Results.Ok(new { match, reports, riotAccounts, games });
         }).RequireAuthorization("Authenticated");
+    }
+
+    private sealed record MatchGameRow(string Game, string? GameMode);
+
+    private static IResult SelfPlayGuardResponse(SelfPlayGuardResult guard)
+        => Results.Json(new
+        {
+            error = guard.Message,
+            code = guard.Code,
+            phase = guard.Phase,
+            nextAction = guard.NextAction,
+        }, statusCode: 400);
+
+    private static object ToRoomStateResponse(SelfPlayRoomState room)
+        => new
+        {
+            selfPlayEnabled = room.SelfPlayEnabled,
+            phase = room.Phase,
+            nextAction = room.NextAction,
+            message = room.Message,
+            effectiveScheduledTime = room.EffectiveScheduledTime,
+            scheduleSource = room.ScheduleSource,
+            checkinWindowMinutes = room.CheckinWindowMinutes,
+            checkinWindowOpen = room.CheckinWindowOpen,
+            checkinWindowClosed = room.CheckinWindowClosed,
+            bothCheckedIn = room.BothCheckedIn,
+            team1CheckedIn = room.Team1CheckedIn,
+            team2CheckedIn = room.Team2CheckedIn,
+            team1Id = room.Team1Id,
+            team2Id = room.Team2Id,
+            callerCompetitorId = room.CallerCompetitorId,
+            callerIsTeam1Captain = room.CallerIsTeam1Captain,
+            callerCanForceGoLive = room.CallerCanForceGoLive,
+            isMatchLive = room.IsMatchLive,
+            partyCode = room.PartyCode,
+            mapVetoEnabled = room.MapVetoEnabled,
+            mapVetoCompleted = room.MapVetoCompleted,
+        };
+
+    private static async Task<IResult?> TryGetProposalGuardAsync(
+        IDbConnection conn,
+        SelfPlayMatchRoomService roomService,
+        GameCatalogService gameCatalog,
+        Guid matchId,
+        CancellationToken ct)
+    {
+        var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+            """
+            SELECT t.game AS Game, t.game_mode AS GameMode
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
+            WHERE m.id = @matchId
+            """,
+            new { matchId });
+        if (gameRow?.Game is null)
+            return null;
+
+        var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+            gameRow.Game, gameRow.GameMode, existingConnection: conn);
+        var context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+        if (context is null)
+            return null;
+
+        var guard = roomService.CanProposeTime(context, DateTime.UtcNow);
+        return guard.Allowed ? null : SelfPlayGuardResponse(guard);
     }
 }
 

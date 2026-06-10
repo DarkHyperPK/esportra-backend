@@ -8,6 +8,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -648,6 +649,8 @@ public static class MatchEndpoints
             [FromBody] GoLiveRequest  req,
             HttpContext               ctx,
             IDbConnectionFactory      db,
+            SelfPlayMatchRoomService  roomService,
+            GameCatalogService        gameCatalog,
             IHubContext<MatchHub>     matchHub,
             CancellationToken         ct) =>
         {
@@ -661,30 +664,73 @@ public static class MatchEndpoints
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
             var isPlatformAdminForGoLive = StaffAuthHelper.IsPlatformAdmin(userCtx);
             var canForceGoLive = allowed || isPlatformAdminForGoLive;
+            var callerCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
             if (!allowed && !isPlatformAdminForGoLive)
             {
-                var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM team_members tm
-                        JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                        WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    )
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (!isCaptain) return Results.Forbid();
+                if (callerCompetitorId is null) return Results.Forbid();
             }
 
             var code = req.PartyCode?.Trim().ToUpperInvariant() ?? "";
 
-            // Organizers/staff may go live any time; players/captains only within 15 minutes of schedule.
-            var scheduledTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
-                "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+            var gameRow = await conn.QuerySingleOrDefaultAsync<GoLiveGameRow>(
+                """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
                 new { matchId });
-            if (scheduledTime.HasValue
-                && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15)
-                && !canForceGoLive)
-                return Results.BadRequest(new { error = $"Match is scheduled for {scheduledTime.Value:u}. Cannot go live more than 15 minutes early." });
+
+            if (gameRow?.Game is not null)
+            {
+                var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                    gameRow.Game, gameRow.GameMode, existingConnection: conn);
+                var context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+                if (context is not null && SelfPlayMatchRoomService.IsSelfPlayActive(context))
+                {
+                    if (canForceGoLive)
+                    {
+                        var staffGuard = roomService.CanStaffForceGoLive(context, DateTime.UtcNow);
+                        if (!staffGuard.Allowed)
+                            return Results.Json(new { error = staffGuard.Message, code = staffGuard.Code }, statusCode: 400);
+                    }
+                    else
+                    {
+                        var captainGuard = roomService.CanCaptainGoLive(
+                            context, callerCompetitorId, code, DateTime.UtcNow);
+                        if (!captainGuard.Allowed)
+                            return Results.Json(new
+                            {
+                                error = captainGuard.Message,
+                                code = captainGuard.Code,
+                                phase = captainGuard.Phase,
+                                nextAction = captainGuard.NextAction,
+                            }, statusCode: 400);
+                    }
+                }
+                else if (!canForceGoLive)
+                {
+                    var (effectiveTime, _) = context is not null
+                        ? SelfPlayMatchRoomService.ResolveEffectiveSchedule(context)
+                        : (await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                            "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                            new { matchId }), (string?)null);
+                    if (effectiveTime.HasValue
+                        && effectiveTime.Value > DateTime.UtcNow.AddMinutes(15))
+                        return Results.BadRequest(new { error = $"Match is scheduled for {effectiveTime.Value:u}. Cannot go live more than 15 minutes early." });
+                }
+            }
+            else if (!canForceGoLive)
+            {
+                var scheduledTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                    "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                    new { matchId });
+                if (scheduledTime.HasValue
+                    && scheduledTime.Value > DateTime.UtcNow.AddMinutes(15))
+                    return Results.BadRequest(new { error = $"Match is scheduled for {scheduledTime.Value:u}. Cannot go live more than 15 minutes early." });
+            }
 
             var rows = await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET status = 'in_progress', party_code = @code WHERE id = @matchId",
@@ -1080,6 +1126,8 @@ public sealed record WalkoverRequest(
 public sealed record FinalizeRequest(
     Guid? WinnerId = null,
     Guid? LoserId  = null);
+
+internal sealed record GoLiveGameRow(string Game, string? GameMode);
 
 public sealed record GoLiveRequest(string? PartyCode, bool Force = false);
 
