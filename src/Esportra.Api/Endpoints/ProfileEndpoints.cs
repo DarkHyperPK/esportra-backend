@@ -136,24 +136,11 @@ public static class ProfileEndpoints
                 }
                 else if (dateFields.Contains(kv.Key))
                 {
-                    var dateStr = kv.Value switch
-                    {
-                        string s => s,
-                        JsonElement { ValueKind: JsonValueKind.String } dateElement => dateElement.GetString(),
-                        _ => kv.Value.ToString(),
-                    };
-
-                    if (!DateOnly.TryParseExact(
-                            dateStr,
-                            "yyyy-MM-dd",
-                            CultureInfo.InvariantCulture,
-                            DateTimeStyles.None,
-                            out var parsedDate))
-                    {
+                    var dateStr = kv.Value as string;
+                    if (string.IsNullOrWhiteSpace(dateStr))
                         return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
-                    }
 
-                    parameters.Add(kv.Key, parsedDate);
+                    parameters.Add(kv.Key, dateStr.Trim());
                 }
                 else
                 {
@@ -174,13 +161,25 @@ public static class ProfileEndpoints
             {
                 return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
             }
+            catch (PostgresException ex)
+            {
+                return Results.BadRequest(new { error = $"Profile update failed: {ex.MessageText}" });
+            }
 
             if (row is null) return Results.NotFound();
 
             // Invalidate cache
-            await cache.RemoveAsync($"profile:{id}", ct);
+            try
+            {
+                await cache.RemoveAsync($"profile:{id}", ct);
+            }
+            catch
+            {
+                // Best-effort cache invalidation should not fail profile updates.
+            }
 
-            return Results.Ok(row);
+            var normalized = ProfileResponseNormalizer.ToDictionary(row);
+            return normalized is null ? Results.Ok(row) : Results.Ok(normalized);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/by-username/{username} ─────────────────────────
@@ -719,7 +718,10 @@ public static class ProfileEndpoints
                   """,
             new { id });
 
-        return profile is null ? Results.NotFound() : Results.Ok(profile);
+        if (profile is null) return Results.NotFound();
+
+        var normalized = ProfileResponseNormalizer.ToDictionary(profile);
+        return Results.Ok(normalized ?? profile);
     }
 
     // ── POST /api/profiles/resolve-players — batch resolve by tags/ids ───────
