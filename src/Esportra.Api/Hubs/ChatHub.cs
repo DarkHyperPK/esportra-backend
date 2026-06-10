@@ -84,8 +84,9 @@ public sealed class ChatHub : Hub
                 new { UserId = Guid.Parse(userId) });
 
             var username = (string?)(userInfo?.username) ?? "Unknown";
-            var isOrganizer = await StaffAuthHelper.IsMatchOrganizerOrStaffAsync(
-                conn, Guid.Parse(userId), Guid.Parse(matchId));
+            var userCtx = HubAuthHelper.GetUserContext(Context);
+            var isOrganizer = userCtx is not null && await StaffAuthHelper.IsMatchOrganizerOrStaffAsync(
+                conn, userCtx.UserIdGuid, Guid.Parse(matchId), userCtx);
 
             const string sql = """
                 INSERT INTO match_messages (match_id, sender_id, sender_name, team_id, content, message_type, created_at)
@@ -154,9 +155,12 @@ public sealed class ChatHub : Hub
     /// </summary>
     private async Task<bool> IsMatchParticipantAsync(string userId, string matchId)
     {
+        var userCtx = HubAuthHelper.GetUserContext(Context);
+        if (userCtx is null) return false;
+
         using var conn = _db.CreateConnection();
         return await StaffAuthHelper.CanAccessMatchRoomAsync(
-            conn, Guid.Parse(userId), Guid.Parse(matchId));
+            conn, userCtx.UserIdGuid, Guid.Parse(matchId), userCtx);
     }
 }
 

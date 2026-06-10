@@ -107,7 +107,7 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
             return true;
 
         using var conn = db.CreateConnection();
-        return await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId);
+        return await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx);
     }
 
     public async Task<bool> CanAccessMatchRoomAsync(
@@ -119,7 +119,7 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
             return true;
 
         using var conn = db.CreateConnection();
-        return await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId);
+        return await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx);
     }
 
     public async Task<bool> RequireManageTournamentOrForbid(

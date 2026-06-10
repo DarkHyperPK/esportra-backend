@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
@@ -22,10 +23,19 @@ public static class VetoEndpoints
         // ── GET /api/veto/{matchId} ──────────────────────────────────────────
         // S4: Require auth — veto state includes team strategy info
         app.MapGet("/api/veto/{matchId}", async (
-            Guid            matchId,
-            VetoDbService   veto,
-            CancellationToken ct) =>
+            Guid                 matchId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            VetoDbService        veto,
+            CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
+                return Results.Forbid();
+
             var state = await veto.GetAsync(matchId, ct);
             if (state is null)
             {
@@ -37,11 +47,20 @@ public static class VetoEndpoints
 
         // ── GET /api/veto/{matchId}/history ────────────────────────────────────
         app.MapGet("/api/veto/{matchId}/history", async (
-            Guid            matchId,
-            VetoDbService   veto,
-            IConfiguration  config,
-            CancellationToken ct) =>
+            Guid                 matchId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            VetoDbService        veto,
+            IConfiguration       config,
+            CancellationToken    ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
+                return Results.Forbid();
+
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
             var history = await veto.GetEnrichedHistoryAsync(matchId, ct);
             var enriched = history

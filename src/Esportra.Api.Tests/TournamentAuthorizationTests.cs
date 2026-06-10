@@ -46,17 +46,30 @@ public class TournamentAuthorizationTests
     }
 
     [Fact]
-    public void IsPlatformAdmin_Fails_ForPlayerSession()
+    public void IsPlatformAdmin_Succeeds_ForAnyAdminRole_ButMatchRoomRequiresPermission()
     {
         var user = new UserContext
         {
             UserId = Guid.NewGuid().ToString(),
-            Roles = ["casual", "player"],
-            AdminRoles = [],
-            Permissions = [],
+            AdminRoles = [AdminRoles.SupportAdmin],
+            Permissions = [Permissions.UsersView],
         };
 
-        Assert.False(StaffAuthHelper.IsPlatformAdmin(user));
+        Assert.True(StaffAuthHelper.IsPlatformAdmin(user));
+        Assert.False(StaffAuthHelper.HasMatchRoomAdminPermission(user));
+    }
+
+    [Fact]
+    public void HasMatchRoomAdminPermission_Succeeds_ForDisputesView()
+    {
+        var user = new UserContext
+        {
+            UserId = Guid.NewGuid().ToString(),
+            AdminRoles = [AdminRoles.Moderator],
+            Permissions = [Permissions.DisputesView],
+        };
+
+        Assert.True(StaffAuthHelper.HasMatchRoomAdminPermission(user));
     }
 
     [Fact]

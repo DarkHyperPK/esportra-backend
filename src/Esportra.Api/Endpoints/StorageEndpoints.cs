@@ -83,6 +83,9 @@ public static class StorageEndpoints
 
             var folder = form["folder"].FirstOrDefault() ?? "";
 
+            if (!await ValidateStorageUploadAsync(userCtx, bucket, folder, ctx.RequestServices))
+                return Results.Forbid();
+
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
                 ?? throw new InvalidOperationException("Supabase:Url not configured");
             var serviceKey = config["Supabase:ServiceKey"]
@@ -242,5 +245,61 @@ public static class StorageEndpoints
             return Results.Ok(new { deleted = true });
 
         }).RequireAuthorization("Authenticated");
+    }
+
+    private static async Task<bool> ValidateStorageUploadAsync(
+        UserContext userCtx,
+        string bucket,
+        string folder,
+        IServiceProvider services)
+    {
+        var userId = userCtx.UserId.ToString();
+        var normalizedFolder = folder.Replace('\\', '/').Trim('/');
+
+        if (bucket.Equals("tournaments.disputes.evidence", StringComparison.OrdinalIgnoreCase)
+            || bucket.Equals("match-evidence", StringComparison.OrdinalIgnoreCase))
+        {
+            if (userCtx.IsSuperAdmin
+                || userCtx.Permissions.Contains(Permissions.DisputesView, StringComparer.OrdinalIgnoreCase)
+                || userCtx.Permissions.Contains(Permissions.DisputesResolve, StringComparer.OrdinalIgnoreCase))
+                return true;
+
+            if (normalizedFolder.StartsWith("temp/", StringComparison.OrdinalIgnoreCase))
+                return normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
+
+            if (normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var firstSegment = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (firstSegment is not null && Guid.TryParse(firstSegment, out var disputeId))
+            {
+                var db = services.GetRequiredService<IDbConnectionFactory>();
+                using var conn = db.CreateConnection();
+                return await conn.ExecuteScalarAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM tournament_disputes
+                        WHERE id = @disputeId AND raised_by_user_id = @userId
+                    )
+                    """,
+                    new { disputeId, userId = userCtx.UserIdGuid });
+            }
+
+            return false;
+        }
+
+        if (bucket.Equals("users.documents.kyc", StringComparison.OrdinalIgnoreCase))
+        {
+            return userCtx.IsSuperAdmin
+                || userCtx.Permissions.Contains(Permissions.UsersView, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (bucket.StartsWith("users.", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.IsNullOrWhiteSpace(normalizedFolder)
+                || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return true;
     }
 }

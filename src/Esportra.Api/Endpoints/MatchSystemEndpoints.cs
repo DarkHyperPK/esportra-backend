@@ -749,7 +749,7 @@ public static class MatchSystemEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
                 return Results.Json(new { error = "You do not have access to this match chat." }, statusCode: 403);
 
             var rows = await conn.QueryAsync<dynamic>(
@@ -869,7 +869,7 @@ public static class MatchSystemEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
                 return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
 
             var rows = await conn.QueryAsync<dynamic>(
@@ -1067,7 +1067,7 @@ public static class MatchSystemEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId))
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
                 return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
 
             var rows = await conn.QueryAsync<dynamic>(

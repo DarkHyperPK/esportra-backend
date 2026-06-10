@@ -1,3 +1,4 @@
+using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -8,24 +9,19 @@ namespace Esportra.Api.Hubs;
 /// Groups: match:{matchId}
 /// </summary>
 [Authorize]
-public sealed class MatchHub : Hub
+public sealed class MatchHub(IDbConnectionFactory db, ILogger<MatchHub> logger) : Hub
 {
-    private readonly ILogger<MatchHub> _logger;
-
-    public MatchHub(ILogger<MatchHub> logger) => _logger = logger;
-
-    // ── Client-callable methods ───────────────────────────────────────────────
-
     public async Task JoinMatch(string matchId)
     {
+        if (!await HubAuthHelper.EnsureMatchRoomAccessAsync(Context, db, matchId))
+            throw new HubException("You don't have access to this match room.");
+
         await Groups.AddToGroupAsync(Context.ConnectionId, MatchGroup(matchId));
-        _logger.LogDebug("Client {Conn} joined match:{MatchId}", Context.ConnectionId, matchId);
+        logger.LogDebug("Client {Conn} joined match:{MatchId}", Context.ConnectionId, matchId);
     }
 
     public async Task LeaveMatch(string matchId) =>
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, MatchGroup(matchId));
-
-    // ── Group name helper ─────────────────────────────────────────────────────
 
     public static string MatchGroup(string matchId) => $"match:{matchId}";
 }

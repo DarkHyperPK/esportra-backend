@@ -151,7 +151,7 @@ public static class StaffAuthHelper
     }
 
     public static async Task<bool> CanAccessMatchRoomAsync(
-        IDbConnection conn, Guid userId, Guid matchId)
+        IDbConnection conn, Guid userId, Guid matchId, UserContext? userCtx = null)
     {
         var isParticipant = await conn.QuerySingleAsync<bool>(
             """
@@ -190,13 +190,11 @@ public static class StaffAuthHelper
         var hasDisputeAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermDisputesAssist);
         if (hasDisputeAccess) return true;
 
-        return await conn.QuerySingleAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM admin_user_roles WHERE user_id = @userId)",
-            new { userId });
+        return userCtx is not null && HasMatchRoomAdminPermission(userCtx);
     }
 
     public static async Task<bool> IsMatchOrganizerOrStaffAsync(
-        IDbConnection conn, Guid userId, Guid matchId)
+        IDbConnection conn, Guid userId, Guid matchId, UserContext? userCtx = null)
     {
         var hasBracketAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermBracketEdit);
         if (hasBracketAccess) return true;
@@ -204,9 +202,62 @@ public static class StaffAuthHelper
         var hasDisputeAccess = await CanActOnBracketMatchAsync(conn, userId, matchId, PermDisputesAssist);
         if (hasDisputeAccess) return true;
 
-        return await conn.QuerySingleAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM admin_user_roles WHERE user_id = @userId)",
-            new { userId });
+        return userCtx is not null && HasMatchRoomAdminPermission(userCtx);
+    }
+
+    public static async Task<bool> CanViewTournamentAsync(
+        IDbConnection conn, Guid userId, Guid tournamentId, UserContext? userCtx = null)
+    {
+        var visible = await conn.QuerySingleAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM tournaments t
+                WHERE t.id = @tournamentId
+                  AND t.deleted_at IS NULL
+                  AND (
+                      t.is_public = TRUE
+                      OR t.organizer_id = @userId
+                      OR EXISTS(
+                          SELECT 1 FROM tournament_participants tp
+                          WHERE tp.tournament_id = t.id
+                            AND (tp.user_id = @userId OR tp.team_captain_id = @userId)
+                      )
+                  )
+            )
+            """,
+            new { userId, tournamentId });
+        if (visible) return true;
+
+        if (await CanActOnTournamentAsync(conn, userId, tournamentId)) return true;
+        return userCtx is not null && HasTournamentViewPermission(userCtx);
+    }
+
+    public static async Task<bool> CanViewBracketVersionAsync(
+        IDbConnection conn, Guid userId, Guid versionId, UserContext? userCtx = null)
+    {
+        var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT tournament_id FROM brkt_versions WHERE id = @versionId",
+            new { versionId });
+        if (tournamentId is null) return false;
+
+        if (await CanViewTournamentAsync(conn, userId, tournamentId.Value, userCtx)) return true;
+        return await CanActOnBracketVersionAsync(conn, userId, versionId);
+    }
+
+    public static bool HasMatchRoomAdminPermission(UserContext userCtx)
+    {
+        if (userCtx.IsSuperAdmin) return true;
+        return userCtx.Permissions.Contains(Permissions.MatchesView, StringComparer.OrdinalIgnoreCase)
+            || userCtx.Permissions.Contains(Permissions.DisputesView, StringComparer.OrdinalIgnoreCase)
+            || userCtx.Permissions.Contains(Permissions.DisputesResolve, StringComparer.OrdinalIgnoreCase)
+            || userCtx.Permissions.Contains(Permissions.TournamentsEdit, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool HasTournamentViewPermission(UserContext userCtx)
+    {
+        if (userCtx.IsSuperAdmin) return true;
+        return userCtx.Permissions.Contains(Permissions.TournamentsView, StringComparer.OrdinalIgnoreCase)
+            || userCtx.Permissions.Contains(Permissions.TournamentsEdit, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>

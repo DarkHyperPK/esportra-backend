@@ -542,10 +542,18 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/cache ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/cache", async (
-            Guid                 versionId,
-            IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            Guid                           versionId,
+            HttpContext                    ctx,
+            IDbConnectionFactory           db,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken              ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanEditBracketByVersionAsync(userCtx, versionId, ct))
+                return Results.Forbid();
+
             var count = await RebuildUiCacheAsync(versionId, db, ct);
             return Results.Ok(new { success = true, versionId, matchCount = count });
         }).RequireAuthorization("Authenticated");
@@ -679,7 +687,7 @@ public static class BracketEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id))
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
                 return Results.Forbid();
 
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
