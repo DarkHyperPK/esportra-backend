@@ -1,10 +1,12 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
@@ -277,30 +279,35 @@ public static class PublicToolEndpoints
         app.MapPost("/api/tools/map-veto/team/{token}/ban", async (
             string token,
             PublicVetoActionRequest req,
-            IDbConnectionFactory db) =>
-            await ApplyPublicVetoActionAsync(db, token, "ban", req.MapId, null)).AllowAnonymous();
+            IDbConnectionFactory db,
+            IHubContext<VetoHub> hub) =>
+            await ApplyPublicVetoActionAsync(db, hub, token, "ban", req.MapId, null)).AllowAnonymous();
 
         app.MapPost("/api/tools/map-veto/team/{token}/pick", async (
             string token,
             PublicVetoActionRequest req,
-            IDbConnectionFactory db) =>
-            await ApplyPublicVetoActionAsync(db, token, "pick", req.MapId, null)).AllowAnonymous();
+            IDbConnectionFactory db,
+            IHubContext<VetoHub> hub) =>
+            await ApplyPublicVetoActionAsync(db, hub, token, "pick", req.MapId, null)).AllowAnonymous();
 
         app.MapPost("/api/tools/map-veto/team/{token}/pick-side", async (
             string token,
             PublicVetoPickSideRequest req,
-            IDbConnectionFactory db) =>
-            await ApplyPublicVetoActionAsync(db, token, "pick_side", req.MapId, req.Side)).AllowAnonymous();
+            IDbConnectionFactory db,
+            IHubContext<VetoHub> hub) =>
+            await ApplyPublicVetoActionAsync(db, hub, token, "pick_side", req.MapId, req.Side)).AllowAnonymous();
 
         app.MapPost("/api/tools/map-veto/host/{token}/reset", async (
             string token,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHubContext<VetoHub> hub) =>
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT * FROM public.public_veto_sessions WHERE host_token = @token AND expires_at > now()",
                 new { token });
             if (row is null) return Results.NotFound();
+            var sessionId = (Guid)row.id;
             var firstStep = VetoSequences.GetStep((int)row.best_of, 1, (string)row.game, ((string[])row.selected_map_pool).Length);
             if (firstStep is null) return Results.BadRequest(new { error = "Invalid veto sequence." });
             var currentTeamId = firstStep.Team == "T1" ? (Guid)row.team1_id : (Guid)row.team2_id;
@@ -321,7 +328,8 @@ public static class PublicToolEndpoints
                  WHERE id = @id;
                 DELETE FROM public.public_veto_actions WHERE session_id = @id;
                 """,
-                new { id = (Guid)row.id, currentTeamId, action = firstStep.Action });
+                new { id = sessionId, currentTeamId, action = firstStep.Action });
+            await BroadcastPublicVetoResetAsync(hub, sessionId);
             return Results.Ok(await LoadPublicVetoByTokenAsync(db, token, "host"));
         }).AllowAnonymous();
     }
@@ -514,7 +522,21 @@ public static class PublicToolEndpoints
         return row is null ? null : await ToPublicVetoResponseAsync(conn, row, token);
     }
 
-    private static async Task<IResult> ApplyPublicVetoActionAsync(IDbConnectionFactory db, string token, string action, string mapId, string? side)
+    private static async Task BroadcastPublicVetoUpdatedAsync(IHubContext<VetoHub> hub, Guid sessionId, CancellationToken ct = default) =>
+        await hub.Clients.Group(VetoHub.PublicToolVetoGroup(sessionId.ToString()))
+            .SendAsync(VetoHubEvents.PublicVetoUpdated, new { sessionId = sessionId.ToString() }, ct);
+
+    private static async Task BroadcastPublicVetoResetAsync(IHubContext<VetoHub> hub, Guid sessionId, CancellationToken ct = default) =>
+        await hub.Clients.Group(VetoHub.PublicToolVetoGroup(sessionId.ToString()))
+            .SendAsync(VetoHubEvents.PublicVetoReset, new { sessionId = sessionId.ToString() }, ct);
+
+    private static async Task<IResult> ApplyPublicVetoActionAsync(
+        IDbConnectionFactory db,
+        IHubContext<VetoHub> hub,
+        string token,
+        string action,
+        string mapId,
+        string? side)
     {
         using var conn = db.CreateConnection();
         var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -618,7 +640,10 @@ public static class PublicToolEndpoints
                 actionNumber = (int)row.current_action_number,
                 side
             });
-        return Results.Ok(await LoadPublicVetoByTokenAsync(db, token, "team"));
+        var sessionId = (Guid)row.id;
+        var response = await LoadPublicVetoByTokenAsync(db, token, "team");
+        await BroadcastPublicVetoUpdatedAsync(hub, sessionId);
+        return Results.Ok(response);
     }
 
     private static async Task<object?> ToPublicVetoResponseAsync(System.Data.IDbConnection conn, dynamic row, string token)

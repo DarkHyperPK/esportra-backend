@@ -37,9 +37,20 @@ public sealed class VetoHub : Hub
     public async Task LeaveVeto(string matchId) =>
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, VetoGroup(matchId));
 
+    public async Task JoinPublicToolVeto(string sessionId)
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, PublicToolVetoGroup(sessionId));
+        _logger.LogDebug("Client {Conn} joined public-tool-veto:{SessionId}", Context.ConnectionId, sessionId);
+    }
+
+    public async Task LeavePublicToolVeto(string sessionId) =>
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, PublicToolVetoGroup(sessionId));
+
     // ── Group name helper ─────────────────────────────────────────────────────
 
     public static string VetoGroup(string matchId) => $"veto:{matchId}";
+
+    public static string PublicToolVetoGroup(string sessionId) => $"public-tool-veto:{sessionId}";
 }
 
 /// <summary>
@@ -68,4 +79,10 @@ public static class VetoHubEvents
 
     /// <summary>Veto action history updated. Payload: array of VetoActionHistory.</summary>
     public const string VetoHistoryUpdated = "VetoHistoryUpdated";
+
+    /// <summary>Public tool veto session changed. Payload: { sessionId }.</summary>
+    public const string PublicVetoUpdated = "PublicVetoUpdated";
+
+    /// <summary>Public tool veto session reset. Payload: { sessionId }.</summary>
+    public const string PublicVetoReset = "PublicVetoReset";
 }
