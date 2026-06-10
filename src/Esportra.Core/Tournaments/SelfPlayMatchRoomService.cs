@@ -339,14 +339,18 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
 
     public static (DateTime? Time, string? Source) ResolveEffectiveSchedule(SelfPlayMatchRoomContext ctx)
     {
+        if (IsSelfPlayActive(ctx))
+        {
+            // Self-play: only a captain-accepted time proposal counts — never tournament
+            // start or organizer bulk schedule until teams agree.
+            if (ctx.AcceptedProposalTime.HasValue)
+                return (ctx.AcceptedProposalTime, "accepted_proposal");
+
+            return (null, null);
+        }
+
         if (ctx.MatchScheduledTime.HasValue)
             return (ctx.MatchScheduledTime, "match_schedule");
-
-        if (ctx.AcceptedProposalTime.HasValue)
-            return (ctx.AcceptedProposalTime, "accepted_proposal");
-
-        if (IsSelfPlayActive(ctx) && ctx.RoundIndex == 0 && ctx.TournamentStartDate.HasValue)
-            return (ctx.TournamentStartDate, "tournament_start");
 
         return (null, null);
     }

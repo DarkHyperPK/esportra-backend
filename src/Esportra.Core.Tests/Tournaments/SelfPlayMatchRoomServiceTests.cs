@@ -55,6 +55,8 @@ public sealed class SelfPlayMatchRoomServiceTests
         bool team2CheckedIn = false,
         int roundIndex = 0,
         DateTime? tournamentStart = null,
+        DateTime? acceptedProposalTime = null,
+        bool agreedSchedule = true,
         string? vetoStatus = null,
         bool mapVetoEnabled = false)
     {
@@ -64,6 +66,8 @@ public sealed class SelfPlayMatchRoomServiceTests
             TournamentId = Guid.NewGuid(),
             Status = status,
             MatchScheduledTime = scheduledTime,
+            AcceptedProposalTime = acceptedProposalTime
+                ?? (agreedSchedule ? scheduledTime : null),
             RoundIndex = roundIndex,
             TournamentStartDate = tournamentStart,
             Team1Id = Guid.NewGuid(),
@@ -98,14 +102,39 @@ public sealed class SelfPlayMatchRoomServiceTests
     }
 
     [Fact]
-    public void CalculatePhase_round1_uses_tournament_start()
+    public void ResolveEffectiveSchedule_self_play_ignores_organizer_and_tournament_times()
     {
         var start = new DateTime(2026, 6, 10, 16, 58, 0, DateTimeKind.Utc);
-        var ctx = BaseContext(roundIndex: 0, tournamentStart: start);
+        var ctx = BaseContext(roundIndex: 0, scheduledTime: start, tournamentStart: start, agreedSchedule: false);
         var (time, source) = SelfPlayMatchRoomService.ResolveEffectiveSchedule(ctx);
 
-        Assert.Equal(start, time);
-        Assert.Equal("tournament_start", source);
+        Assert.Null(time);
+        Assert.Null(source);
+    }
+
+    [Fact]
+    public void ResolveEffectiveSchedule_self_play_uses_accepted_proposal()
+    {
+        var agreed = new DateTime(2026, 6, 11, 20, 0, 0, DateTimeKind.Utc);
+        var ctx = BaseContext(acceptedProposalTime: agreed);
+        var (time, source) = SelfPlayMatchRoomService.ResolveEffectiveSchedule(ctx);
+
+        Assert.Equal(agreed, time);
+        Assert.Equal("accepted_proposal", source);
+    }
+
+    [Fact]
+    public void ResolveEffectiveSchedule_non_self_play_uses_organizer_schedule()
+    {
+        var scheduled = new DateTime(2026, 6, 10, 18, 0, 0, DateTimeKind.Utc);
+        var ctx = BaseContext(scheduledTime: scheduled) with
+        {
+            SchedulingConfig = SchedulingConfigSnapshot.Default,
+        };
+        var (time, source) = SelfPlayMatchRoomService.ResolveEffectiveSchedule(ctx);
+
+        Assert.Equal(scheduled, time);
+        Assert.Equal("match_schedule", source);
     }
 
     [Fact]
