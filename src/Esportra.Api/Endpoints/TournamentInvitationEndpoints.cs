@@ -79,7 +79,7 @@ public static class TournamentInvitationEndpoints
                     remainingSlots = Math.Max(reservedSlots - activeSlots, 0)
                 }
             });
-        }).WithMetadata(new RateLimitPolicyMetadata("default")).RequireAuthorization("Organizer");
+        }).WithMetadata(new RateLimitPolicyMetadata("default")).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/invitations/draft", async (
             Guid id,
@@ -182,7 +182,7 @@ public static class TournamentInvitationEndpoints
                 ct);
 
             return Results.Ok(new { invitations = created });
-        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
+        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/invitations/send", async (
             Guid id,
@@ -312,7 +312,7 @@ public static class TournamentInvitationEndpoints
                 ct);
 
             return Results.Ok(new { sent_count = sentCount, failed_count = updated.Count - sentCount, invitations = updated });
-        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
+        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         app.MapDelete("/api/invitations/{inviteId}", async (
             Guid inviteId,
@@ -369,7 +369,7 @@ public static class TournamentInvitationEndpoints
                 ct);
 
             return Results.NoContent();
-        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
+        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         app.MapGet("/api/invitations/preview", async (
             string? code,
@@ -860,7 +860,7 @@ public static class TournamentInvitationEndpoints
                 AuditSeverity.Low, ct);
 
             return Results.Ok(new { resent_count = sentCount, invitations = updated });
-        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
+        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/invitations/import-csv ────────────────────
         // Bulk import emails from CSV text (one email per line or comma-separated)
@@ -958,7 +958,7 @@ public static class TournamentInvitationEndpoints
                 capped = Math.Max(newEmails.Length - availableSlots, 0),
                 inviteIds
             });
-        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Organizer");
+        }).WithMetadata(new RateLimitPolicyMetadata("strict")).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/invitations/stats ──────────────────────────
         // Invitation analytics: breakdown by status, response rates, timing
@@ -1008,7 +1008,7 @@ public static class TournamentInvitationEndpoints
                 stats,
                 reserved_slots = reservedSlots,
             });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
     }
 
     private static async Task<bool> CanManageTournamentAsync(IDbConnection conn, Guid tournamentId, UserContext userCtx, IDbTransaction? tx = null)

@@ -99,8 +99,6 @@ builder.Services.AddAuthorization(opts =>
             policy.Requirements.Add(new PermissionRequirement(perm)));
     }
 
-    opts.AddPolicy("Organizer",    policy => policy.RequireAuthenticatedUser());
-    opts.AddPolicy("VenueOwner",   policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("Admin", policy =>
         policy.Requirements.Add(new AdminRequirement()));
@@ -330,6 +328,7 @@ builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
 builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
+builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");

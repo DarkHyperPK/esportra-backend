@@ -25,20 +25,23 @@ public static class StageEndpoints
             IDbConnectionFactory              db,
             TournamentWinnerService           winnerService,
             BattleRoyaleStageBootstrapService brBootstrap,
+            TournamentAuthorizationService      tournamentAuth,
             CancellationToken                 ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(
+                    userCtx, tournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
 
-            // Verify ownership/organizer
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT organizer_id, max_teams FROM tournaments WHERE id = @tournamentId FOR UPDATE",
                 new { tournamentId }, tx);
             if (tournament is null) return Results.NotFound();
-            if ((Guid)tournament.organizer_id != userCtx.UserIdGuid) return Results.Forbid();
             int? tournamentMaxTeams = (int?)tournament.max_teams is > 0
                 ? (int)tournament.max_teams
                 : null;
@@ -387,7 +390,7 @@ public static class StageEndpoints
                 advancingTeams = Array.Empty<object>(),
                 reason = "Unknown format"
             });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
 
         // ── POST /api/stages/{stageId}/advance ──────────────────────────────
@@ -526,7 +529,7 @@ public static class StageEndpoints
                 nextStageId,
                 advancedCount = advancingTeams.Count
             });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
 
         // ── GET /api/stages/{stageId}/next ──────────────────────────────────

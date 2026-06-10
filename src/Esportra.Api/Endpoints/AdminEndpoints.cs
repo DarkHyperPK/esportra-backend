@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
@@ -13,7 +14,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
-using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Core.Tournaments;
 
@@ -3421,7 +3421,7 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             // Only the user themselves or an admin can query roles
-            if (userCtx.UserIdGuid != userId && !userCtx.Roles.Contains("admin"))
+            if (userCtx.UserIdGuid != userId && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();

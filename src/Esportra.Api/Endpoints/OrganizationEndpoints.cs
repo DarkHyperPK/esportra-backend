@@ -2,6 +2,7 @@
 using System.Dynamic;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
 
@@ -85,7 +86,7 @@ public static class OrganizationEndpoints
                 )
                 """,
                 new { orgId, userId = userCtx.UserIdGuid });
-            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            if (!hasAccess && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var staff = await conn.QueryAsync<dynamic>(
                 """
@@ -224,7 +225,7 @@ public static class OrganizationEndpoints
             // 6. Staff invite notification is handled in-app only (via SignalR NotificationHub above)
 
             return Results.Ok(new { staffId = staffIdGuid });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/organizations/{orgId}/staff/{staffId} ────────────────────
         app.MapPut("/api/organizations/{orgId}/staff/{staffId}", async (
@@ -255,7 +256,7 @@ public static class OrganizationEndpoints
                 new { req.Role, req.Permissions });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/staff/{staffId} ─────────────────
         app.MapDelete("/api/organizations/{orgId}/staff/{staffId}", async (
@@ -279,7 +280,7 @@ public static class OrganizationEndpoints
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.remove", "staff", staffId, new { });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/staff/invites — pending for current user ───
         app.MapGet("/api/organizations/staff/invites", async (
@@ -402,7 +403,7 @@ public static class OrganizationEndpoints
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.assign_tournament", "staff", staffId,
                 new { tournamentIds = req.TournamentIds });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/staff/assignments/{assignmentId} ─
         app.MapDelete("/api/organizations/{orgId}/staff/assignments/{assignmentId}", async (
@@ -432,7 +433,7 @@ public static class OrganizationEndpoints
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId, new { });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{tournamentId}/assigned-staff ────────────────
         app.MapGet("/api/tournaments/{tournamentId}/assigned-staff", async (
@@ -523,7 +524,7 @@ public static class OrganizationEndpoints
                 )
                 """,
                 new { orgId, userId = userCtx.UserIdGuid });
-            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            if (!hasAccess && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
@@ -729,7 +730,7 @@ public static class OrganizationEndpoints
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
 
             return Results.Ok(new { success = true, affected, action });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/{orgId}/participants — aggregate org registrations ─
         // Single server-side read for the organizer management console. This avoids the
@@ -907,7 +908,7 @@ public static class OrganizationEndpoints
                 new { orgId, url = req.Url, type = req.Type, caption = req.Caption, albumId = req.AlbumId is not null ? Guid.Parse(req.AlbumId) : (Guid?)null });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/media/{mediaId} ────────────────
         app.MapDelete("/api/organizations/{orgId}/media/{mediaId}", async (
@@ -929,7 +930,7 @@ public static class OrganizationEndpoints
                 "DELETE FROM organization_media WHERE id = @mediaId AND organization_id = @orgId",
                 new { mediaId, orgId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/organizations/{orgId}/albums — create album ────────────
         app.MapPost("/api/organizations/{orgId}/albums", async (
@@ -955,7 +956,7 @@ public static class OrganizationEndpoints
                 """,
                 new { orgId, title = req.Title, description = req.Description });
             return Results.Ok(album);
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/albums/{albumId} ───────────────
         app.MapDelete("/api/organizations/{orgId}/albums/{albumId}", async (
@@ -978,7 +979,7 @@ public static class OrganizationEndpoints
                 "DELETE FROM organization_albums WHERE id = @albumId AND organization_id = @orgId",
                 new { albumId, orgId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/organizations/{orgId}/logo ──────────────────────────────
         app.MapPut("/api/organizations/{orgId}/logo", async (
@@ -1000,7 +1001,7 @@ public static class OrganizationEndpoints
                 "UPDATE organizations SET logo_url = @url WHERE id = @orgId",
                 new { orgId, url = req.Url });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/organizations/{orgId}/banner ────────────────────────────
         app.MapPut("/api/organizations/{orgId}/banner", async (
@@ -1022,7 +1023,7 @@ public static class OrganizationEndpoints
                 "UPDATE organizations SET banner_url = @url WHERE id = @orgId",
                 new { orgId, url = req.Url });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId} — safe delete via RPC ──────────
         app.MapDelete("/api/organizations/{orgId}", async (
@@ -1046,7 +1047,7 @@ public static class OrganizationEndpoints
                 "SELECT * FROM delete_organization_safely(@p_org_id)",
                 new { p_org_id = orgId });
             return Results.Ok(result);
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/by-slug/{slug} — fetch with org join ────────
         // Replaces ManageBracketPage's supabase query
@@ -1480,7 +1481,7 @@ public static class OrganizationEndpoints
 
             // Verify ownership or active staff
             if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid)
-                && !userCtx.Roles.Contains("admin"))
+                && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             if (!DateOnly.TryParse(from, out var fromDate) || !DateOnly.TryParse(to, out var toDate))

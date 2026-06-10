@@ -30,11 +30,32 @@ public static class BracketEndpoints
     {
         // ── POST /api/brackets/generate ───────────────────────────────────────
         app.MapPost("/api/brackets/generate", async (
-            [FromBody] GenerateBracketRequest req,
-            BracketPersistenceService         persistence,
-            IHubContext<BracketHub>           bracketHub,
-            CancellationToken                 ct) =>
+            HttpContext                         ctx,
+            [FromBody] GenerateBracketRequest   req,
+            BracketPersistenceService           persistence,
+            TournamentAuthorizationService      tournamentAuth,
+            IHubContext<BracketHub>             bracketHub,
+            CancellationToken                   ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.StageId is Guid stageId)
+            {
+                if (!await tournamentAuth.CanEditBracketByStageAsync(userCtx, stageId, ct))
+                    return Results.Forbid();
+            }
+            else if (req.TournamentId != Guid.Empty)
+            {
+                if (!await tournamentAuth.CanManageTournamentAsync(
+                        userCtx, req.TournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                    return Results.Forbid();
+            }
+            else
+            {
+                return Results.BadRequest(new { error = "TournamentId or StageId is required." });
+            }
+
             IBracketGenerator generator = req.Format.ToLowerInvariant() switch
             {
                 "double_elimination" => new DoubleEliminationGenerator(),
@@ -78,7 +99,7 @@ public static class BracketEndpoints
                 nodeCount  = graph.Nodes.Count,
                 edgeCount  = graph.Edges.Count,
             });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/persist ────────────────────────────────────────
         // Used by MatchRepository.ts to save a client-generated bracket graph.
@@ -87,6 +108,7 @@ public static class BracketEndpoints
             HttpContext                         ctx,
             BracketPersistenceService          persistence,
             IDbConnectionFactory               db,
+            TournamentAuthorizationService     tournamentAuth,
             IHubContext<BracketHub>            bracketHub,
             ILoggerFactory                     loggerFactory,
             CancellationToken                  ct) =>
@@ -99,15 +121,24 @@ public static class BracketEndpoints
 
             var logger = loggerFactory.CreateLogger("BracketEndpoints.Persist");
 
-            // Verify user is organizer or staff with bracket:edit on the tournament
             using var conn = db.CreateConnection();
             var stageId = graph.Version.StageId;
-            if (stageId is not null)
+            var tournamentId = graph.Version.TournamentId;
+
+            if (stageId is Guid resolvedStageId)
             {
-                var allowed = await StaffAuthHelper.CanActOnStageAsync(
-                    conn, userCtx.UserIdGuid, stageId.Value, StaffAuthHelper.PermBracketEdit);
-                if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                if (!await tournamentAuth.CanEditBracketByStageAsync(userCtx, resolvedStageId, ct))
                     return Results.Forbid();
+            }
+            else if (tournamentId != Guid.Empty)
+            {
+                if (!await tournamentAuth.CanManageTournamentAsync(
+                        userCtx, tournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                    return Results.Forbid();
+            }
+            else
+            {
+                return Results.BadRequest(new { error = "Bracket graph must include stageId or tournamentId." });
             }
 
             var errors = GraphValidator.Validate(graph);
@@ -175,7 +206,7 @@ public static class BracketEndpoints
             }
 
             return Results.Ok(new { advanced = count });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/{versionId}/reset ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/reset", async (
@@ -201,7 +232,7 @@ public static class BracketEndpoints
                 .SendAsync(BracketHubEvents.BracketReset, new { versionId }, ct);
 
             return Results.Ok(new { message = "Bracket reset." });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/brackets/{versionId} ─────────────────────────────────
         app.MapDelete("/api/brackets/{versionId}", async (
@@ -228,7 +259,7 @@ public static class BracketEndpoints
             {
                 return Results.Json(new { error = "We couldn't delete the bracket. Please try again." }, statusCode: 500);
             }
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/brackets/{versionId} ─────────────────────────────────────
         // Update version status (draft → active → archived) and activated_at.
@@ -291,7 +322,7 @@ public static class BracketEndpoints
             }
 
             return Results.Ok(new { success = true, versionId, status });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/{versionId}/standings ───────────────────────────
         app.MapGet("/api/brackets/{versionId}/standings", async (
@@ -351,7 +382,7 @@ public static class BracketEndpoints
                     ct);
 
             return Results.Ok(new { message = $"Round {req.CurrentRound + 1} generated." });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/swiss/{stageId}/round/{roundNumber} ─────────────────
         app.MapDelete("/api/swiss/{stageId}/round/{roundNumber:int}", async (
@@ -412,7 +443,7 @@ public static class BracketEndpoints
             }
 
             return Results.Ok(new { deletedCount = deleted });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
 
         // ── POST /api/brackets/advance ────────────────────────────────────────

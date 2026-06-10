@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
@@ -959,7 +959,7 @@ public static class MatchSystemEndpoints
                 new { json, stageId });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/stages/{stageId}/matches ───────────────────────────────
         app.MapGet("/api/stages/{stageId}/matches", async (
@@ -1020,7 +1020,7 @@ public static class MatchSystemEndpoints
                 new { ids, times, stageId });
 
             return Results.Ok(new { success = true, updated });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/matches/{matchId}/scheduled-time ───────────────────────
         app.MapPut("/api/matches/{matchId}/scheduled-time", async (
@@ -1047,7 +1047,7 @@ public static class MatchSystemEndpoints
                     : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind) });
 
             return Results.Ok(new { success = true, matchId });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1392,7 +1392,7 @@ public static class MatchSystemEndpoints
             }
 
             return Results.Ok(new { success = true, disputeId, status = req.Status });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/matches/{id}/riot-accounts ──────────────────────────────
         // Returns all Riot accounts for players in both teams of a match

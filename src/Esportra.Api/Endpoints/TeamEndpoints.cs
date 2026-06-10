@@ -2,6 +2,7 @@
 using System.Dynamic;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
@@ -1297,7 +1298,7 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             // Only allow updating own profile or admin
-            if (userCtx.UserIdGuid != id && !userCtx.Roles.Contains("admin"))
+            if (userCtx.UserIdGuid != id && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();

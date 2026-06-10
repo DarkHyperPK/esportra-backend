@@ -522,7 +522,7 @@ public static class MatchEndpoints
                     new { matchId, action = "swap" }, ct);
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/reset ───────────────────────────────
         app.MapPost("/api/matches/{matchId}/reset", async (
@@ -640,7 +640,7 @@ public static class MatchEndpoints
             }
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/go-live ─────────────────────────────
         app.MapPost("/api/matches/{matchId}/go-live", async (

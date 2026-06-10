@@ -674,7 +674,7 @@ public static class TournamentEndpoints
                 tx.Rollback();
                 throw;
             }
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/tournaments/{id} ──────────────────────────────────────────
         app.MapPut("/api/tournaments/{id}", async (
@@ -684,15 +684,18 @@ public static class TournamentEndpoints
             IDbConnectionFactory          db,
             GameCatalogService            gameCatalog,
             TournamentWinnerService       winnerService,
+            TournamentAuthorizationService tournamentAuth,
             HybridCache                   cache,
             CancellationToken             ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
 
-            // Only organizer or admin can update
             var existingTournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT organizer_id, game, game_mode, team_size, format, status,
@@ -702,8 +705,6 @@ public static class TournamentEndpoints
                 """,
                 new { id });
             if (existingTournament is null) return Results.NotFound();
-            if ((Guid)existingTournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
-                return Results.Forbid();
 
             // ── Mock tournament guard: block only transitions into live/published states ──
             var existingStatus = (string?)existingTournament.status;
@@ -980,26 +981,28 @@ public static class TournamentEndpoints
 
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return updated is null ? Results.NotFound() : Results.Ok(updated);
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/tournaments/{id} — permanent delete (organizer only, must be soft-deleted first)
         app.MapDelete("/api/tournaments/{id}", async (
             Guid                 id,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             HybridCache          cache,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageStaffAsync(userCtx, id, ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT organizer_id, deleted_at FROM tournaments WHERE id = @id", new { id });
             if (row is null) return Results.NotFound();
-            if ((Guid)row.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
-                return Results.Forbid();
             if (row.deleted_at is null)
                 return Results.BadRequest(new { error = "Tournament must be moved to trash before it can be permanently deleted." });
 
@@ -1018,7 +1021,7 @@ public static class TournamentEndpoints
 
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return Results.Ok(new { deleted = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/me/history ─────────────────────────────────
         // Returns tournaments the current user has participated in.
@@ -1725,7 +1728,7 @@ public static class TournamentEndpoints
                 new { id });
 
             return Results.Ok(new { removedCount = removed });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
         app.MapPost("/api/tournaments/{id}/ban-participant", async (
@@ -1778,7 +1781,7 @@ public static class TournamentEndpoints
                 new { pid = participantId });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/participants/{pid} — single participant ───
         app.MapGet("/api/tournaments/{id}/participants/{pid}", async (
@@ -2192,26 +2195,16 @@ public static class TournamentEndpoints
             Guid                 tournamentId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, tournamentId, ct: ct))
+                return Results.Forbid();
 
-            // Only organizer or existing org staff can view staff list
-            var hasAccess = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId
-                    UNION ALL
-                    SELECT 1 FROM organization_staff os
-                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                    WHERE sta.tournament_id = @tid AND os.user_id = @userId AND os.status = 'active'
-                )
-                """,
-                new { tid = tournamentId, userId = userCtx.UserIdGuid });
-            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
@@ -2241,18 +2234,16 @@ public static class TournamentEndpoints
             [FromBody] InviteTournamentStaffRequest req,
             HttpContext                             ctx,
             IDbConnectionFactory                   db,
+            TournamentAuthorizationService          tournamentAuth,
             CancellationToken                      ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageStaffAsync(userCtx, tournamentId, ct))
+                return Results.Forbid();
 
-            // Only organizer can invite staff
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
-                new { tid = tournamentId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             // Look up user by email
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -2315,7 +2306,7 @@ public static class TournamentEndpoints
                 new { orgStaffId, tournamentId, assignedBy = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/tournaments/staff/{staffId} — update role/permissions ───
         app.MapPut("/api/tournaments/staff/{staffId}", async (
@@ -2341,7 +2332,7 @@ public static class TournamentEndpoints
                 )
                 """,
                 new { staffId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            if (!isOrganizer && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             await conn.ExecuteAsync(
                 """
@@ -2352,7 +2343,7 @@ public static class TournamentEndpoints
                 new { staffId, role = req.Role, permissions = req.Permissions ?? Array.Empty<string>() });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/tournaments/staff/{staffId} — remove ────────────────
         app.MapDelete("/api/tournaments/staff/{staffId}", async (
@@ -2376,7 +2367,7 @@ public static class TournamentEndpoints
                 )
                 """,
                 new { staffId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            if (!isOrganizer && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             // Remove tournament assignments then the org staff record
             await conn.ExecuteAsync(
@@ -2387,7 +2378,7 @@ public static class TournamentEndpoints
                 new { staffId });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/staff/my-invites ────────────────────────────
         app.MapGet("/api/tournaments/staff/my-invites", async (
@@ -3228,7 +3219,7 @@ public static class TournamentEndpoints
                 ORDER BY tb.banned_at DESC
                 """, new { id });
             return Results.Ok(bans);
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/tournaments/{id}/bans/{banId} ─────────────────────────
         app.MapDelete("/api/tournaments/{id}/bans/{banId}", async (
@@ -3272,7 +3263,7 @@ public static class TournamentEndpoints
             }
 
             return Results.Ok(new { success = true, participantRestored = ban.participant_id is not null });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/participants/me ─────────────────────────
         app.MapGet("/api/tournaments/{id}/participants/me", async (
@@ -3341,7 +3332,7 @@ public static class TournamentEndpoints
                 "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@id, @mapId) ON CONFLICT DO NOTHING",
                 new { id, mapId = req.MapId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/tournaments/{id}/map-pool/{mapId} ─────────────────────
         app.MapDelete("/api/tournaments/{id}/map-pool/{mapId}", async (
@@ -3366,7 +3357,7 @@ public static class TournamentEndpoints
                 "DELETE FROM tournament_map_pools WHERE tournament_id = @id AND map_id = @mapId",
                 new { id, mapId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/match-reports ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-reports", async (
@@ -3740,7 +3731,7 @@ public static class TournamentEndpoints
                     "SELECT organizer_id, status, is_public, max_teams, team_size, game, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
                     new { id }, tx);
                 if (tournament is null) return Results.NotFound();
-                if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                     return Results.Forbid();
 
                 var tStatus  = ((string)tournament.status).ToLowerInvariant();
@@ -3827,7 +3818,7 @@ public static class TournamentEndpoints
                     MockOperationError("We couldn't generate mock teams right now. Please try again, and report this if it keeps happening.", ctx.TraceIdentifier),
                     statusCode: StatusCodes.Status500InternalServerError);
             }
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/tournaments/{id}/mock ─────────────────────────────────
         // Clears all mock participants and bracket data derived from them.
@@ -3852,7 +3843,7 @@ public static class TournamentEndpoints
                     "SELECT organizer_id FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
                     new { id }, tx);
                 if (organizerId is null) return Results.NotFound();
-                if (organizerId != userCtx.UserIdGuid && !userCtx.Roles.Contains("admin"))
+                if (organizerId != userCtx.UserIdGuid && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                     return Results.Forbid();
 
                 var safety = await CheckMockSimulationSafetyAsync(conn, tx, id);
@@ -3873,7 +3864,7 @@ public static class TournamentEndpoints
                     MockOperationError("We couldn't clear mock teams right now. Please try again, and report this if it keeps happening.", ctx.TraceIdentifier),
                     statusCode: StatusCodes.Status500InternalServerError);
             }
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
     }
 
     private static object MockOperationError(string? message, string traceId) => new

@@ -210,12 +210,10 @@ public static class StaffAuthHelper
     }
 
     /// <summary>
-    /// Quick check: is the user a platform admin (any admin role)?
-    /// Use as a final fallback after the SQL check returns false.
+    /// Platform admin: super_admin or any admin_user_roles entry (AdminRoles on UserContext).
     /// </summary>
     public static bool IsPlatformAdmin(UserContext userCtx)
-        => userCtx.Roles.Contains("admin", StringComparer.OrdinalIgnoreCase)
-           || userCtx.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase);
+        => userCtx.IsSuperAdmin || userCtx.AdminRoles.Length > 0;
 
     // ── Permission constants (mirror frontend StaffPermission type) ──────────
     public const string PermBracketEdit       = "bracket:edit";

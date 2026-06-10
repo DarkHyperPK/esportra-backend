@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
@@ -62,7 +63,7 @@ public static class ProfileEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             // Users can only update their own profile; admins can update any
-            if (userCtx.UserIdGuid != id && !userCtx.Roles.Contains("admin"))
+            if (userCtx.UserIdGuid != id && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             // Filter to allowed fields only (allow tag fields even if null/empty for clearing)
