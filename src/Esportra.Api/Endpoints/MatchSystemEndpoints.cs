@@ -706,25 +706,36 @@ public static class MatchSystemEndpoints
 
                 // 3. Insert match-level dispute (used by useMatchDispute hook)
                 var teamId = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null;
+                var evidenceUrls = (req.EvidenceUrls ?? []).ToArray();
+                var primaryEvidenceUrl = evidenceUrls.Length > 0 ? evidenceUrls[0] : null;
+
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO match_disputes
                         (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
                     VALUES
-                        (@matchId, @teamId, @userId, @reason, '{}', 'pending')
+                        (@matchId, @teamId, @userId, @reason, @evidenceUrls, 'pending')
                     """,
-                    new { matchId = id, teamId, userId = userCtx.UserIdGuid, reason = req.Reason }, tx);
+                    new
+                    {
+                        matchId = id,
+                        teamId,
+                        userId = userCtx.UserIdGuid,
+                        reason = req.Reason,
+                        evidenceUrls,
+                    },
+                    tx);
 
                 // 4. Insert tournament-level dispute (organizer disputes tab)
                 var dispute = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO tournament_disputes
                         (tournament_id, match_id, raised_by_user_id, team_id,
-                         title, description, dispute_reason, status, reference_number)
+                         title, description, dispute_reason, status, reference_number, evidence_url)
                     VALUES
                         (@tournamentId, @matchId, @userId, @teamId,
                          'Match Result Disputed', @reason, 'result_dispute', 'open',
-                         'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
+                         'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'), @evidenceUrl)
                     RETURNING id, tournament_id, match_id, raised_by_user_id, team_id,
                              title, description, dispute_reason, status, reference_number, created_at
                     """,
@@ -733,6 +744,7 @@ public static class MatchSystemEndpoints
                         tournamentId, matchId = id,
                         userId = userCtx.UserIdGuid, teamId,
                         reason = req.Reason,
+                        evidenceUrl = primaryEvidenceUrl,
                     }, tx);
 
                 // 5. Notify reporter that their result is being disputed

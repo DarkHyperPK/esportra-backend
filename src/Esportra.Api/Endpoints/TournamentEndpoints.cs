@@ -2570,7 +2570,21 @@ public static class TournamentEndpoints
                            LEFT JOIN profiles pr ON pr.id = tm.user_id
                            WHERE tm.team_id IN (bm.team1_id, bm.team2_id)
                              AND tm.is_active = true
-                       ) ELSE '[]'::jsonb END AS riot_accounts
+                       ) ELSE '[]'::jsonb END AS riot_accounts,
+                       -- Disputing party counter-evidence (match_disputes)
+                       (SELECT row_to_json(sub)::jsonb FROM (
+                           SELECT md.id, md.reason, md.evidence_urls, md.disputed_by_team_id,
+                                  md.disputed_by_user_id, md.created_at, md.status,
+                                  COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
+                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
+                                       WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
+                                       ELSE td_team.name END AS disputed_by_team_name
+                           FROM match_disputes md
+                           LEFT JOIN profiles pr_md ON pr_md.id = md.disputed_by_user_id
+                           WHERE md.match_id = td.match_id
+                           ORDER BY md.created_at DESC
+                           LIMIT 1
+                       ) sub) AS match_dispute
                 FROM tournament_disputes td
                 JOIN tournaments t ON t.id = td.tournament_id
                 LEFT JOIN profiles p ON p.id = td.raised_by_user_id
@@ -2592,6 +2606,101 @@ public static class TournamentEndpoints
 
             DapperJsonbHelper.FixJsonb(rows);
             return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/organizer/disputes/unread-count ─────────────────────────
+        app.MapGet("/api/organizer/disputes/unread-count", async (
+            Guid?                tournamentId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (tournamentId is null) return Results.BadRequest(new { error = "tournament_id is required." });
+
+            using var conn = db.CreateConnection();
+            var count = await conn.ExecuteScalarAsync<int>(
+                """
+                SELECT COUNT(*)::int
+                FROM tournament_disputes td
+                JOIN tournaments t ON t.id = td.tournament_id
+                WHERE td.tournament_id = @tournamentId
+                  AND td.status IN ('open', 'in_review')
+                  AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
+                  AND td.raised_by_user_id != @userId
+                  AND (t.organizer_id = @userId
+                       OR EXISTS (
+                           SELECT 1 FROM organization_staff os
+                           JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                           WHERE sta.tournament_id = td.tournament_id
+                             AND os.user_id = @userId AND os.status = 'active'
+                       ))
+                  AND (
+                      NOT EXISTS (
+                          SELECT 1 FROM dispute_read_receipts drr
+                          WHERE drr.dispute_id = td.id AND drr.user_id = @userId
+                      )
+                      OR td.updated_at > (
+                          SELECT drr.last_read_at FROM dispute_read_receipts drr
+                          WHERE drr.dispute_id = td.id AND drr.user_id = @userId
+                      )
+                      OR EXISTS (
+                          SELECT 1 FROM dispute_comments dc
+                          WHERE dc.dispute_id = td.id
+                            AND dc.is_internal = FALSE
+                            AND dc.user_id != @userId
+                            AND dc.created_at > COALESCE((
+                                SELECT drr.last_read_at FROM dispute_read_receipts drr
+                                WHERE drr.dispute_id = td.id AND drr.user_id = @userId
+                            ), '1970-01-01'::timestamptz)
+                      )
+                  )
+                """,
+                new { tournamentId, userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { unread_count = count });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/organizer/disputes/{disputeId}/read ────────────────────
+        app.MapPost("/api/organizer/disputes/{disputeId}/read", async (
+            Guid                 disputeId,
+            HttpContext          ctx,
+            IDbConnectionFactory db,
+            CancellationToken    ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var canAccess = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_disputes td
+                    JOIN tournaments t ON t.id = td.tournament_id
+                    WHERE td.id = @disputeId
+                      AND (t.organizer_id = @userId OR EXISTS (
+                          SELECT 1 FROM organization_staff os
+                          JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                          WHERE sta.tournament_id = td.tournament_id
+                            AND os.user_id = @userId AND os.status = 'active'
+                      ))
+                )
+                """,
+                new { disputeId, userId = userCtx.UserIdGuid });
+            if (!canAccess) return Results.Forbid();
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO dispute_read_receipts (dispute_id, user_id, last_read_at)
+                VALUES (@disputeId, @userId, NOW())
+                ON CONFLICT (dispute_id, user_id)
+                DO UPDATE SET last_read_at = NOW()
+                """,
+                new { disputeId, userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizer/disputes/{disputeId} ──────────────────────────
@@ -2965,7 +3074,7 @@ public static class TournamentEndpoints
         }); // Public
 
         // ── GET /api/disputes/mine ───────────────────────────────────────────
-        // Player-facing: get current user's own filed disputes
+        // Player-facing: disputes filed by user OR on matches they participated in
         app.MapGet("/api/disputes/mine", async (
             HttpContext          ctx,
             IDbConnectionFactory db,
@@ -2981,13 +3090,87 @@ public static class TournamentEndpoints
                        td.team_id, td.title, td.description, td.evidence_url,
                        td.status, td.resolution_notes, td.dispute_reason,
                        td.created_at, td.updated_at,
-                       t.name AS tournament_name, t.slug AS tournament_slug
+                       t.name AS tournament_name, t.slug AS tournament_slug,
+                       CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
+                           'match_number', bm.match_number,
+                           'round_index', bm.round_index,
+                           'best_of', bm.best_of,
+                           'bracket_type', bm.bracket_type,
+                           'scheduled_time', bm.scheduled_time,
+                           'team1_score', bm.team1_score,
+                           'team2_score', bm.team2_score,
+                           'team1_name', t1.name,
+                           'team2_name', t2.name,
+                           'team1_id', bm.team1_id,
+                           'team2_id', bm.team2_id
+                       ) ELSE NULL END AS match,
+                       (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                           'id', mrr.id,
+                           'game_number', mrr.game_number,
+                           'reported_by_team_id', mrr.reported_by_team_id,
+                           'riot_match_id', mrr.riot_match_id,
+                           'map_name', mrr.map_name,
+                           'team1_score', mrr.team1_score,
+                           'team2_score', mrr.team2_score,
+                           'match_data', mrr.match_data,
+                           'screenshot_urls', mrr.screenshot_urls,
+                           'status', mrr.status,
+                           'created_at', mrr.created_at
+                       ) ORDER BY mrr.game_number, mrr.created_at), '[]'::jsonb)
+                       FROM match_result_reports mrr
+                       WHERE mrr.match_id = td.match_id) AS reports,
+                       CASE WHEN bm.id IS NOT NULL THEN (
+                           SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                               'team_id', tm.team_id,
+                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN t1.name ELSE t2.name END,
+                               'user_id', tm.user_id,
+                               'username', COALESCE(pr.full_name, pr.username),
+                               'game_name', ra.game_name,
+                               'tag_line', ra.tag_line,
+                               'puuid', ra.puuid
+                           )), '[]'::jsonb)
+                           FROM team_members tm
+                           INNER JOIN riot_accounts ra ON ra.user_id = tm.user_id
+                           LEFT JOIN profiles pr ON pr.id = tm.user_id
+                           WHERE tm.team_id IN (bm.team1_id, bm.team2_id)
+                             AND tm.is_active = true
+                       ) ELSE '[]'::jsonb END AS riot_accounts,
+                       (SELECT row_to_json(sub)::jsonb FROM (
+                           SELECT md.id, md.reason, md.evidence_urls, md.disputed_by_team_id,
+                                  md.disputed_by_user_id, md.created_at, md.status,
+                                  COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
+                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
+                                       WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
+                                       ELSE td_team.name END AS disputed_by_team_name
+                           FROM match_disputes md
+                           LEFT JOIN profiles pr_md ON pr_md.id = md.disputed_by_user_id
+                           WHERE md.match_id = td.match_id
+                           ORDER BY md.created_at DESC
+                           LIMIT 1
+                       ) sub) AS match_dispute
                 FROM public.tournament_disputes td
                 LEFT JOIN public.tournaments t ON t.id = td.tournament_id
+                LEFT JOIN teams td_team ON td_team.id = td.team_id
+                LEFT JOIN brkt_matches bm ON bm.id = td.match_id
+                LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN teams t2 ON t2.id = bm.team2_id
                 WHERE td.raised_by_user_id = @userId
+                   OR EXISTS (
+                       SELECT 1 FROM brkt_matches bm2
+                       JOIN team_members tm ON tm.team_id IN (bm2.team1_id, bm2.team2_id)
+                       WHERE bm2.id = td.match_id
+                         AND tm.user_id = @userId
+                         AND tm.is_active = true
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM match_result_reports mrr2
+                       WHERE mrr2.match_id = td.match_id
+                         AND mrr2.reported_by = @userId
+                   )
                 ORDER BY td.created_at DESC
                 """, new { userId = userCtx.UserIdGuid });
 
+            DapperJsonbHelper.FixJsonb(disputes);
             return Results.Ok(disputes);
         }).RequireAuthorization("Authenticated");
 
