@@ -1228,6 +1228,7 @@ public static class MatchSystemEndpoints
             IDbConnectionFactory                db,
             SelfPlayMatchRoomService           roomService,
             GameCatalogService                 gameCatalog,
+            IHubContext<MatchHub>              matchHub,
             ILogger<Program>                    logger,
             CancellationToken                   ct) =>
         {
@@ -1255,6 +1256,11 @@ public static class MatchSystemEndpoints
                     """,
                     new { matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
 
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(matchId.ToString()))
+                    .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                        new { matchId, proposalId = (string)proposal.id, status = "pending" }, ct);
+
                 return Results.Ok(proposal);
             }
             catch (Exception ex)
@@ -1272,6 +1278,7 @@ public static class MatchSystemEndpoints
             IDbConnectionFactory db,
             SelfPlayMatchRoomService roomService,
             GameCatalogService   gameCatalog,
+            IHubContext<MatchHub> matchHub,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1311,6 +1318,12 @@ public static class MatchSystemEndpoints
                 new { proposalId, matchId });
 
             if (rows == 0) return Results.BadRequest(new { error = "Proposal not found or already handled." });
+
+            await matchHub.Clients
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
+                .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                    new { matchId, proposalId, status = "accepted" }, ct);
+
             return Results.Ok(new { success = true, matchId, proposalId });
         }).RequireAuthorization("Authenticated");
 
@@ -1320,6 +1333,7 @@ public static class MatchSystemEndpoints
             Guid                 proposalId,
             HttpContext           ctx,
             IDbConnectionFactory db,
+            IHubContext<MatchHub> matchHub,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1331,13 +1345,21 @@ public static class MatchSystemEndpoints
                 conn, userCtx.UserIdGuid, matchId);
             if (captainCompetitorId is null) return Results.Forbid();
 
-            await conn.ExecuteAsync(
+            var rejected = await conn.ExecuteAsync(
                 """
                 UPDATE match_time_proposals
                 SET status = 'rejected', responded_at = NOW()
                 WHERE id = @proposalId AND match_id = @matchId AND status = 'pending'
                 """,
                 new { proposalId, matchId });
+
+            if (rejected > 0)
+            {
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(matchId.ToString()))
+                    .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                        new { matchId, proposalId, status = "rejected" }, ct);
+            }
 
             return Results.Ok(new { success = true, matchId, proposalId });
         }).RequireAuthorization("Authenticated");
@@ -1351,6 +1373,7 @@ public static class MatchSystemEndpoints
             IDbConnectionFactory                  db,
             SelfPlayMatchRoomService             roomService,
             GameCatalogService                   gameCatalog,
+            IHubContext<MatchHub>                matchHub,
             CancellationToken                     ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1380,6 +1403,11 @@ public static class MatchSystemEndpoints
                 RETURNING id::text, match_id::text, proposed_by::text, proposed_time, status, created_at, responded_at
                 """,
                 new { proposalId, matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
+
+            await matchHub.Clients
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
+                .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                    new { matchId, proposalId = (string)newProposal.id, status = "pending" }, ct);
 
             return Results.Ok(newProposal);
         }).RequireAuthorization("Authenticated");

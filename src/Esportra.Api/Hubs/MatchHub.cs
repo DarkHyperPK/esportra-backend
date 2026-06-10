@@ -49,6 +49,9 @@ public static class MatchHubEvents
     /// <summary>Match check-in status changed.</summary>
     public const string CheckInUpdated = "CheckInUpdated";
 
+    /// <summary>Match time proposal created, accepted, rejected, or countered.</summary>
+    public const string TimeProposalUpdated = "TimeProposalUpdated";
+
     /// <summary>Match status changed (scheduled → in_progress → completed).</summary>
     public const string StatusChanged = "StatusChanged";
 }
