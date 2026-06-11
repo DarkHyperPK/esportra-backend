@@ -1028,12 +1028,6 @@ public static class MatchEndpoints
                             }
                         }
                     }
-
-                    // Broadcast bracket update
-                    await bracketHub.Clients
-                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
-                        .SendAsync(BracketHubEvents.MatchUpdated,
-                            new { versionId, matchId }, ct);
                 }
             }
             catch { /* Non-critical */ }
@@ -1079,6 +1073,32 @@ public static class MatchEndpoints
                     .Group(MatchHub.MatchGroup(matchId.ToString()))
                     .SendAsync(MatchHubEvents.DisputeResolved,
                         new { match_id = matchId, status = "resolved", source = "manual_score" }, ct);
+            }
+
+            // Always notify match room subscribers — manual score completes the match
+            await matchHub.Clients
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
+                .SendAsync(MatchHubEvents.StatusChanged,
+                    new
+                    {
+                        matchId,
+                        status = "completed",
+                        winnerId,
+                        loserId,
+                        team1Score = req.Team1Score,
+                        team2Score = req.Team2Score,
+                        source = isOrganizerOrStaff ? "manual_score" : "captain_score",
+                    }, ct);
+
+            // Guaranteed bracket broadcast (stage-completion try block may swallow errors)
+            var broadcastVersionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
+            if (broadcastVersionId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(broadcastVersionId.Value.ToString()))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId = broadcastVersionId, matchId }, ct);
             }
 
             return Results.Ok(new { success = true, winnerId, loserId, stageId, stageComplete });

@@ -2854,6 +2854,7 @@ public static class TournamentEndpoints
         // ── POST /api/organizer/disputes/{disputeId}/resolve ─────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/resolve", async (
             Guid                                disputeId,
+            ResolveDisputeRequest2              req,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
             IHubContext<NotificationHub>        notifHub,
@@ -2865,12 +2866,18 @@ public static class TournamentEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var req = await System.Text.Json.JsonSerializer.DeserializeAsync<ResolveDisputeRequest2>(
-                ctx.Request.Body, s_snakeCase, ct);
-            if (req is null) return Results.BadRequest("Invalid body");
+            if (req is null) return Results.BadRequest(new { error = "Invalid body" });
 
-            if (req.Status is not ("resolved" or "rejected"))
+            var status = req.Status?.Trim().ToLowerInvariant();
+            if (status is not ("resolved" or "rejected"))
                 return Results.BadRequest(new { error = "Status must be 'resolved' or 'rejected'." });
+
+            var notes = (req.ResolutionNotes ?? req.ResolutionNotesSnake)?.Trim();
+            if (string.IsNullOrWhiteSpace(notes) || notes.Length < 10)
+                return Results.BadRequest(new { error = "Resolution notes must be at least 10 characters." });
+
+            var reportIdCandidate = req.ReportId ?? req.ReportIdSnake;
+            var reportIdRaw = string.IsNullOrWhiteSpace(reportIdCandidate) ? null : reportIdCandidate.Trim();
 
             var logger = loggerFactory.CreateLogger("DisputeResolve");
             try
@@ -2908,14 +2915,14 @@ public static class TournamentEndpoints
                     assigned_to_user_id = @userId, updated_at = NOW()
                 WHERE id = @disputeId
                 """,
-                new { disputeId, status = req.Status, notes = req.ResolutionNotes, userId = userCtx.UserIdGuid });
+                new { disputeId, status, notes, userId = userCtx.UserIdGuid });
 
             var enforcedReport = false;
 
             // If resolving with an accepted report: enforce scores on the match
-            if (req.Status == "resolved" && req.ReportId is not null)
+            if (status == "resolved" && reportIdRaw is not null)
             {
-                if (!Guid.TryParse(req.ReportId, out var reportId))
+                if (!Guid.TryParse(reportIdRaw, out var reportId))
                     return Results.BadRequest(new { error = "Invalid report id." });
 
                 var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -2988,7 +2995,7 @@ public static class TournamentEndpoints
                         resolved_by = @userId
                     WHERE match_id = @matchId AND status = 'pending'
                     """,
-                    new { matchId, notes = req.ResolutionNotes, userId = userCtx.UserIdGuid });
+                    new { matchId, notes, userId = userCtx.UserIdGuid });
 
                 var versionId = (Guid?)report.version_id;
                 if (versionId is not null)
@@ -3036,7 +3043,7 @@ public static class TournamentEndpoints
                 var matchId = disputeMatchId.Value;
                 var actorId = userCtx.UserIdGuid;
 
-                if (req.Status == "resolved")
+                if (status == "resolved")
                 {
                     await conn.ExecuteAsync(
                         """
@@ -3047,7 +3054,7 @@ public static class TournamentEndpoints
                             resolved_by = @userId
                         WHERE match_id = @matchId AND status = 'pending'
                         """,
-                        new { matchId, notes = req.ResolutionNotes, userId = actorId });
+                        new { matchId, notes, userId = actorId });
 
                     await conn.ExecuteAsync(
                         """
@@ -3068,7 +3075,7 @@ public static class TournamentEndpoints
                             resolved_by = @userId
                         WHERE match_id = @matchId AND status = 'pending'
                         """,
-                        new { matchId, notes = req.ResolutionNotes, userId = actorId });
+                        new { matchId, notes, userId = actorId });
 
                     await conn.ExecuteAsync(
                         """
@@ -3085,7 +3092,7 @@ public static class TournamentEndpoints
                 await matchHub.Clients
                     .Group(MatchHub.MatchGroup(disputeMatchId.Value.ToString()))
                     .SendAsync(MatchHubEvents.DisputeResolved,
-                        new { match_id = disputeMatchId.Value, dispute_id = disputeId, status = req.Status }, ct);
+                        new { match_id = disputeMatchId.Value, dispute_id = disputeId, status }, ct);
             }
 
             // Notify the dispute filer (best-effort — don't fail the request)
@@ -3099,11 +3106,11 @@ public static class TournamentEndpoints
             {
                 Guid filerId = (Guid)dispute.raised_by_user_id;
                 string title = ((string?)dispute.title) ?? "Your dispute";
-                var notifType  = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
-                var notifTitle = req.Status == "resolved"
+                var notifType  = status == "resolved" ? "dispute_resolved" : "dispute_rejected";
+                var notifTitle = status == "resolved"
                     ? "✅ Dispute Resolved"
                     : "❌ Dispute Rejected";
-                var notifMsg   = req.Status == "resolved"
+                var notifMsg   = status == "resolved"
                     ? $"Your dispute \"{title}\" has been resolved by the organizer. Check the outcome in your disputes page."
                     : $"Your dispute \"{title}\" was reviewed and rejected by the organizer.";
 
@@ -4481,7 +4488,16 @@ public sealed record PaymentRejectionRequest(string? Reason = null);
 
 public sealed record AddDisputeCommentRequest(string Comment, bool IsInternal = false, string? AttachmentUrl = null);
 public sealed record UpdateDisputeRequest(string? Status = null, string? UpdatedAt = null, string? AssignedToUserId = null, string? ResolutionNotes = null);
-public sealed record ResolveDisputeRequest2(string Status, string? ResolutionNotes = null, string? ReportId = null);
+public sealed class ResolveDisputeRequest2
+{
+    public string? Status { get; init; }
+    public string? ResolutionNotes { get; init; }
+    [JsonPropertyName("resolution_notes")]
+    public string? ResolutionNotesSnake { get; init; }
+    public string? ReportId { get; init; }
+    [JsonPropertyName("report_id")]
+    public string? ReportIdSnake { get; init; }
+}
 public sealed record BanParticipantRequest(string ParticipantId, string? UserId = null, string? BanReason = null);
 public sealed record AddMapToPoolRequest(Guid MapId);
 public sealed record CreateAnnouncementRequest(string Title, string Content);
