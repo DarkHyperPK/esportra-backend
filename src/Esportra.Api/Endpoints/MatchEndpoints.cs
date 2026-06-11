@@ -223,6 +223,7 @@ public static class MatchEndpoints
                     string? scannerSide = null, scannerAgent = null;
                     int kills = 0, deaths = 0, assists = 0;
                     var playerList = new List<object>();
+                    var roundAggregates = ValorantMatchStatsHelper.BuildRoundAggregates(doc.RootElement);
 
                     foreach (var p in doc.RootElement.GetProperty("players").EnumerateArray())
                     {
@@ -236,12 +237,35 @@ public static class MatchEndpoints
                         var pD = stats.GetProperty("deaths").GetInt32();
                         var pA = stats.GetProperty("assists").GetInt32();
                         var pScore = stats.GetProperty("score").GetInt32();
+                        var roundsPlayed = stats.TryGetProperty("roundsPlayed", out var roundsPlayedEl)
+                            && roundsPlayedEl.TryGetInt32(out var parsedRoundsPlayed)
+                            ? parsedRoundsPlayed
+                            : 0;
+
+                        int? adr = null;
+                        double? hsPct = null;
+                        int? firstBloods = null;
+                        if (roundAggregates.TryGetValue(pPuuid, out var roundStats))
+                        {
+                            adr = ValorantMatchStatsHelper.ComputeAdr(roundStats.TotalDamage, roundsPlayed);
+                            hsPct = ValorantMatchStatsHelper.ComputeHeadshotPercent(
+                                roundStats.Headshots,
+                                roundStats.Bodyshots,
+                                roundStats.Legshots);
+                            firstBloods = roundStats.FirstBloods;
+                        }
 
                         playerList.Add(new
                         {
                             puuid = pPuuid, gameName = pName, tagLine = pTag,
                             teamId = pTeam, characterId = charId,
                             kills = pK, deaths = pD, assists = pA, score = pScore,
+                            roundsPlayed = roundsPlayed > 0 ? roundsPlayed : (int?)null,
+                            acs = ValorantMatchStatsHelper.ComputeAcs(pScore, roundsPlayed),
+                            adr,
+                            hsPct,
+                            kdRatio = ValorantMatchStatsHelper.ComputeKdRatio(pK, pD),
+                            firstBloods,
                             isTeam1 = team1Puuids.Contains(pPuuid),
                             isTeam2 = team2Puuids.Contains(pPuuid),
                         });
