@@ -57,60 +57,9 @@ public static class BattleRoyaleConfigResolver
         object? stageConfig,
         object? catalogBrConfig)
     {
+        // Scoring is tournament-wide only — stage config.br.scoring overrides are ignored.
         var fallbackPresetKey = BrCatalogBrConfigHelper.ReadDefaultPreset(catalogBrConfig);
         var fallback = ResolvePresetScoring(fallbackPresetKey);
-
-        if (!TryParseJsonElement(stageConfig, out var stageRoot)
-            || !TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
-            || brSection.ValueKind != JsonValueKind.Object)
-        {
-            return ResolveTournamentScoring(tournamentSettings, fallbackPresetKey, fallback, catalogBrConfig);
-        }
-
-        if (TryGetPropertyIgnoreCase(brSection, "scoring", out var stageScoring)
-            && stageScoring.ValueKind == JsonValueKind.Object)
-        {
-            if (TryGetPropertyIgnoreCase(stageScoring, "custom", out var customScoring)
-                && customScoring.ValueKind == JsonValueKind.Object)
-            {
-                var customPlacements = TryReadPlacementArray(customScoring);
-                if (customPlacements.Length > 0
-                    && TryGetPropertyIgnoreCase(customScoring, "killPoints", out var customKillPointsEl)
-                    && customKillPointsEl.TryGetInt32(out var customKillPoints)
-                    && customKillPoints >= 0)
-                {
-                    int? customKillCap = null;
-                    if (TryGetPropertyIgnoreCase(customScoring, "killCap", out var customKillCapEl)
-                        && customKillCapEl.ValueKind != JsonValueKind.Null
-                        && customKillCapEl.TryGetInt32(out var parsedCustomKillCap)
-                        && parsedCustomKillCap > 0)
-                    {
-                        customKillCap = parsedCustomKillCap;
-                    }
-
-                    return new BrScoringSettings(customPlacements, customKillPoints, customKillCap);
-                }
-            }
-
-            string? presetKey = null;
-            if (TryGetPropertyIgnoreCase(stageScoring, "presetKey", out var presetEl)
-                && presetEl.ValueKind == JsonValueKind.String)
-            {
-                presetKey = presetEl.GetString();
-            }
-
-            var resolved = ResolvePresetScoring(presetKey ?? fallbackPresetKey);
-            if (TryGetPropertyIgnoreCase(stageScoring, "killCap", out var stageKillCapEl)
-                && stageKillCapEl.ValueKind != JsonValueKind.Null
-                && stageKillCapEl.TryGetInt32(out var stageKillCap)
-                && stageKillCap > 0)
-            {
-                resolved = resolved with { KillCap = stageKillCap };
-            }
-
-            return resolved;
-        }
-
         return ResolveTournamentScoring(tournamentSettings, fallbackPresetKey, fallback, catalogBrConfig);
     }
 

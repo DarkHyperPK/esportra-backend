@@ -87,6 +87,7 @@ public sealed partial class GameCatalogService(
             var backfilled = await BackfillTournamentGameModesAsync(conn, tx, versionId.Value);
 
             tx.Commit();
+            await BackfillActiveCatalogBannerUrlsAsync(ct);
             logger.LogInformation(
                 "Game catalog {CatalogVersion} imported and activated ({Hash}); backfilled {TournamentCount} tournament game modes.",
                 catalogVersion,
@@ -111,7 +112,8 @@ public sealed partial class GameCatalogService(
             """
             SELECT slug, name, category, game_type AS gameType, default_mode_key AS defaultModeKey,
                    features::text AS featuresJson, br_config::text AS brConfigJson,
-                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl, sort_order AS sortOrder
+                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl,
+                   banner_url AS bannerUrl, sort_order AS sortOrder
             FROM public.game_catalog_games
             WHERE version_id = @versionId
             ORDER BY sort_order ASC, name ASC
@@ -440,17 +442,21 @@ public sealed partial class GameCatalogService(
         var logoUrl = OptionalString(game, "logo");
         var iconUrl = OptionalString(game, "icon");
         var coverUrl = OptionalString(game, "cover");
+        var bannerUrl = ResolveBannerUrlForCatalogInsert(
+            slug,
+            name,
+            OptionalString(game, "banner") ?? OptionalString(game, "bannerUrl"));
         var sortOrder = OptionalInt(game, "sortOrder") ?? sortIndex;
 
         await conn.ExecuteAsync(
             """
             INSERT INTO public.game_catalog_games
                 (version_id, slug, name, category, game_type, default_mode_key,
-                 features, br_config, raw, logo_url, icon_url, cover_url, sort_order)
+                 features, br_config, raw, logo_url, icon_url, cover_url, banner_url, sort_order)
             VALUES
                 (@versionId, @slug, @name, @category, @type, @defaultMode,
                  @featuresJson::jsonb, @brConfigJson::jsonb, @raw::jsonb,
-                 @logoUrl, @iconUrl, @coverUrl, @sortOrder)
+                 @logoUrl, @iconUrl, @coverUrl, @bannerUrl, @sortOrder)
             """,
             new
             {
@@ -466,6 +472,7 @@ public sealed partial class GameCatalogService(
                 logoUrl,
                 iconUrl,
                 coverUrl,
+                bannerUrl,
                 sortOrder,
             }, tx);
 
@@ -663,6 +670,7 @@ public sealed partial class GameCatalogService(
             game.LogoUrl,
             game.IconUrl,
             game.CoverUrl,
+            game.BannerUrl,
             game.SortOrder,
             aliases,
             modes,
@@ -677,7 +685,8 @@ public sealed partial class GameCatalogService(
             )
             SELECT g.slug, g.name, g.category, g.game_type AS gameType, g.default_mode_key AS defaultModeKey,
                    g.features::text AS featuresJson, g.br_config::text AS brConfigJson,
-                   g.logo_url AS logoUrl, g.icon_url AS iconUrl, g.cover_url AS coverUrl, g.sort_order AS sortOrder
+                   g.logo_url AS logoUrl, g.icon_url AS iconUrl, g.cover_url AS coverUrl,
+                   g.banner_url AS bannerUrl, g.sort_order AS sortOrder
             FROM public.game_catalog_game_aliases a
             JOIN active_version av ON av.id = a.version_id
             JOIN public.game_catalog_games g ON g.version_id = a.version_id AND g.slug = a.game_slug
@@ -929,6 +938,7 @@ public sealed partial class GameCatalogService(
         public string? LogoUrl { get; set; }
         public string? IconUrl { get; set; }
         public string? CoverUrl { get; set; }
+        public string? BannerUrl { get; set; }
         public int SortOrder { get; set; }
     }
     public sealed class ModeRow
@@ -1001,6 +1011,7 @@ public sealed record GameCatalogGameResponse(
     string? Logo,
     string? Icon,
     string? Cover,
+    string? Banner,
     int SortOrder,
     IReadOnlyList<string> Aliases,
     IReadOnlyList<GameCatalogService.ModeRow> Modes,

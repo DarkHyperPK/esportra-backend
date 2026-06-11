@@ -114,6 +114,12 @@ public sealed class SmtpEmailService(
                 EmailTemplates.LicenseRejected(
                     Get("username"), Get("licenseType"), Get("dashboardUrl")),
 
+            EmailType.TournamentInvite =>
+                EmailTemplates.TournamentInvite(
+                    Get("captainName"), Get("tournamentName"),
+                    Get("code"), Get("tournamentUrl"), Get("expiryDate"),
+                    Get("gameHeaderUrl")),
+
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
     }

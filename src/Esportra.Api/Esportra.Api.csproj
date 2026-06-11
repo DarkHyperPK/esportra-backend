@@ -28,7 +28,12 @@
 
   <ItemGroup>
     <Content Update="GameCatalog\esportsGames.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="GameCatalog\game-banner-seed.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\R6Maps\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Esportra.Api.Tests" />
   </ItemGroup>
 
 </Project>

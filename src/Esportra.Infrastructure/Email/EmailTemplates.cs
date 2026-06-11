@@ -27,7 +27,23 @@ public static class EmailTemplates
 
     // ── Base wrapper ──────────────────────────────────────────────────────────
 
-    private static string Wrap(string preheader, string subject, string body) => $"""
+    private static string DefaultHeaderRow() => $"""
+                <tr>
+                  <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
+                    <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
+                  </td>
+                </tr>
+        """;
+
+    private static string GameHeaderRow(string headerImageUrl) => $"""
+                <tr>
+                  <td style="padding:0;line-height:0;background:#050505;">
+                    <img src="{E(headerImageUrl)}" alt="" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;" />
+                  </td>
+                </tr>
+        """;
+
+    private static string Wrap(string preheader, string subject, string body, string? headerImageUrl = null) => $"""
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -41,11 +57,7 @@ public static class EmailTemplates
             <tr><td align="center" style="padding:32px 16px;">
               <table width="600" cellpadding="0" cellspacing="0" style="background:#111111;border-radius:12px;border:1px solid #1f2937;overflow:hidden;">
                 <!-- Header -->
-                <tr>
-                  <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-                    <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
-                  </td>
-                </tr>
+                {(string.IsNullOrWhiteSpace(headerImageUrl) ? DefaultHeaderRow() : GameHeaderRow(headerImageUrl))}
                 <!-- Body -->
                 <tr><td style="padding:32px;">{body}</td></tr>
                 <!-- Footer -->
@@ -209,7 +221,8 @@ public static class EmailTemplates
     );
 
     public static (string Subject, string Html) TournamentInvite(
-        string captainName, string tournamentName, string code, string tournamentUrl, string expiryDate) =>
+        string captainName, string tournamentName, string code, string tournamentUrl, string expiryDate,
+        string gameHeaderUrl = "") =>
     (
         $"You're invited to {E(tournamentName)}",
         Wrap($"Invitation code for {E(tournamentName)}", "Tournament Invitation", $"""
@@ -222,7 +235,7 @@ public static class EmailTemplates
             </div>
             {(string.IsNullOrWhiteSpace(expiryDate) ? "" : P($"This invitation expires on <strong style='color:#f9fafb;'>{E(expiryDate)}</strong>."))}
             {Btn(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : tournamentUrl, "Join Tournament")}
-        """)
+        """, string.IsNullOrWhiteSpace(gameHeaderUrl) ? null : gameHeaderUrl)
     );
 
     public static (string Subject, string Html) PartnerInvite(

@@ -31,6 +31,7 @@ public sealed record UpsertDraftGameRequest(
     string? LogoUrl,
     string? IconUrl,
     string? CoverUrl,
+    string? BannerUrl,
     int SortOrder,
     IReadOnlyList<DraftCatalogModeRequest> Modes,
     IReadOnlyList<DraftCatalogStructureRequest> TournamentStructures,

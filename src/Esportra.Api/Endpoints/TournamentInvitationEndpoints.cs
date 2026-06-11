@@ -3,6 +3,7 @@ using System.Net.Mail;
 using System.Security.Cryptography;
 using Dapper;
 using Esportra.Api.Helpers;
+using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -11,6 +12,7 @@ using Esportra.Core.Tournaments;
 using Esportra.Api.Services;
 using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Hybrid;
 using System.Text.Json;
 
@@ -190,6 +192,8 @@ public static class TournamentInvitationEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IEmailService email,
+            GameCatalogService catalog,
+            IHubContext<NotificationHub> notifHub,
             AuditService audit,
             IConfiguration config,
             CancellationToken ct) =>
@@ -205,7 +209,7 @@ public static class TournamentInvitationEndpoints
 
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, name, slug, invite_expiry_days
+                SELECT id, name, slug, game, invite_expiry_days
                 FROM public.tournaments
                 WHERE id = @id AND deleted_at IS NULL
                 FOR UPDATE
@@ -252,15 +256,26 @@ public static class TournamentInvitationEndpoints
                 """,
                 new { id, sendIds, expiryDays }, tx)).AsList();
 
+            var tournamentName = (string)tournament.name;
+            var tournamentGame = (string?)tournament.game;
+            var tournamentLink = $"/tournaments/{((string?)tournament.slug ?? id.ToString())}";
+
             await conn.ExecuteAsync(
                 """
                 INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
                 SELECT p.id,
                        'tournament_invite'::notification_type,
-                       'Tournament Invitation',
-                       'You have been invited to join ' || @tournamentName || '. Check your email for the invite code.',
+                       'You''re invited to ' || @tournamentName,
+                       'Your invite code is ' || ti.code || '. Redeem it to claim your reserved slot.',
                        @link,
-                       jsonb_build_object('tournament_id', @tournamentId::text, 'invite_id', ti.id::text),
+                       jsonb_build_object(
+                           'tournament_id', @tournamentId::text,
+                           'invite_id', ti.id::text,
+                           'code', ti.code,
+                           'tournament_name', @tournamentName,
+                           'game', @game,
+                           'expires_at', ti.expires_at
+                       ),
                        FALSE
                 FROM public.tournament_invitations ti
                 JOIN public.profiles p ON LOWER(p.email) = LOWER(ti.email)
@@ -269,13 +284,44 @@ public static class TournamentInvitationEndpoints
                 new
                 {
                     tournamentId = id,
-                    tournamentName = (string)tournament.name,
-                    link = $"/tournaments/{((string?)tournament.slug ?? id.ToString())}",
+                    tournamentName,
+                    game = tournamentGame ?? "",
+                    link = tournamentLink,
                     sendIds
                 },
                 tx);
 
             tx.Commit();
+
+            var gameHeaderUrl = await catalog.ResolveEmailBannerUrlAsync(tournamentGame ?? "", ct) ?? "";
+
+            var pushedNotifications = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT n.id, n.user_id, n.title, n.message, n.link, n.data
+                FROM public.notifications n
+                WHERE n.type = 'tournament_invite'
+                  AND (n.data->>'invite_id')::uuid = ANY(@sendIds)
+                """,
+                new { sendIds })).AsList();
+
+            foreach (var notification in pushedNotifications)
+            {
+                var userId = ((Guid)notification.user_id).ToString();
+                await notifHub.Clients
+                    .Group(NotificationHub.UserGroup(userId))
+                    .SendAsync(
+                        NotificationHubEvents.NewNotification,
+                        new
+                        {
+                            id = ((Guid)notification.id).ToString(),
+                            type = "tournament_invite",
+                            title = (string)notification.title,
+                            message = (string)notification.message,
+                            link = (string?)notification.link,
+                            data = notification.data,
+                        },
+                        ct);
+            }
 
             var sentCount = 0;
             foreach (var invite in updated)
@@ -290,10 +336,11 @@ public static class TournamentInvitationEndpoints
                     await email.SendAsync((string)invite.email, EmailType.TournamentInvite, new
                     {
                         captainName = "Captain",
-                        tournamentName = (string)tournament.name,
+                        tournamentName,
                         code = (string)invite.code,
                         tournamentUrl = redeemUrl,
-                        expiryDate = ((DateTime)invite.expires_at).ToString("MMM dd, yyyy")
+                        expiryDate = ((DateTime)invite.expires_at).ToString("MMM dd, yyyy"),
+                        gameHeaderUrl,
                     }, ct);
                     sentCount++;
                 }
@@ -784,6 +831,7 @@ public static class TournamentInvitationEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IEmailService email,
+            GameCatalogService catalog,
             AuditService audit,
             IConfiguration config,
             CancellationToken ct) =>
@@ -800,7 +848,7 @@ public static class TournamentInvitationEndpoints
 
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, name, slug, invite_expiry_days
+                SELECT id, name, slug, game, invite_expiry_days
                 FROM public.tournaments
                 WHERE id = @id AND deleted_at IS NULL
                 FOR UPDATE
@@ -828,6 +876,9 @@ public static class TournamentInvitationEndpoints
 
             tx.Commit();
 
+            var resendGame = (string?)tournament.game ?? "";
+            var gameHeaderUrl = await catalog.ResolveEmailBannerUrlAsync(resendGame, ct) ?? "";
+
             // Re-send emails
             var sentCount = 0;
             foreach (var invite in updated)
@@ -845,7 +896,8 @@ public static class TournamentInvitationEndpoints
                         tournamentName = (string)tournament.name,
                         code = (string)invite.code,
                         tournamentUrl = redeemUrl,
-                        expiryDate = ((DateTime)invite.expires_at).ToString("MMM dd, yyyy")
+                        expiryDate = ((DateTime)invite.expires_at).ToString("MMM dd, yyyy"),
+                        gameHeaderUrl,
                     }, ct);
                     sentCount++;
                 }

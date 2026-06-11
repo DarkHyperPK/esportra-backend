@@ -601,20 +601,8 @@ public static class TournamentEndpoints
                 var isBattleRoyaleTournament = string.Equals(catalog.TournamentStructure, "battle_royale", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(req.TournamentType, "battle_royale", StringComparison.OrdinalIgnoreCase);
 
+                // BR tournaments start with no stages — organizers configure via stage setup wizard
                 var stagesToInsert = req.Stages;
-                if (isBattleRoyaleTournament && stagesToInsert is not { Count: > 0 })
-                {
-                    stagesToInsert =
-                    [
-                        new StageRequest(
-                            Name: "Main Event",
-                            Format: "battle_royale",
-                            StageOrder: 1,
-                            BestOf: 1,
-                            Capacity: req.MaxTeams,
-                            AdvancementCount: null)
-                    ];
-                }
 
                 // Stages
                 if (stagesToInsert is { Count: > 0 })

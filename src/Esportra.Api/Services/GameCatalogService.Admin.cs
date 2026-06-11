@@ -80,15 +80,18 @@ public sealed partial class GameCatalogService
             var brConfigJson = request.BrConfig is null ? null : JsonSerializer.Serialize(request.BrConfig, JsonOptions);
             var raw = JsonSerializer.Serialize(request, JsonOptions);
 
+            var bannerUrl = GameCatalogBannerSeed.NormalizeAbsoluteHttpsUrl(request.BannerUrl)
+                ?? GameCatalogBannerSeed.TryResolve(slug, request.Name);
+
             await conn.ExecuteAsync(
                 """
                 INSERT INTO public.game_catalog_games
                     (version_id, slug, name, category, game_type, default_mode_key,
-                     features, br_config, raw, logo_url, icon_url, cover_url, sort_order)
+                     features, br_config, raw, logo_url, icon_url, cover_url, banner_url, sort_order)
                 VALUES
                     (@versionId, @slug, @name, @category, @gameType, @defaultModeKey,
                      @featuresJson::jsonb, @brConfigJson::jsonb, @raw::jsonb,
-                     @logoUrl, @iconUrl, @coverUrl, @sortOrder)
+                     @logoUrl, @iconUrl, @coverUrl, @bannerUrl, @sortOrder)
                 """,
                 new
                 {
@@ -104,6 +107,7 @@ public sealed partial class GameCatalogService
                     logoUrl = request.LogoUrl,
                     iconUrl = request.IconUrl,
                     coverUrl = request.CoverUrl,
+                    bannerUrl,
                     sortOrder = request.SortOrder,
                 }, tx);
 
@@ -203,7 +207,8 @@ public sealed partial class GameCatalogService
             """
             SELECT slug, name, category, game_type AS gameType, default_mode_key AS defaultModeKey,
                    features::text AS featuresJson, br_config::text AS brConfigJson,
-                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl, sort_order AS sortOrder
+                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl,
+                   banner_url AS bannerUrl, sort_order AS sortOrder
             FROM public.game_catalog_games
             WHERE version_id = @versionId AND slug = @slug
             """,
@@ -444,9 +449,9 @@ public sealed partial class GameCatalogService
             """
             INSERT INTO public.game_catalog_games
                 (version_id, slug, name, category, game_type, default_mode_key,
-                 features, br_config, raw, logo_url, icon_url, cover_url, sort_order)
+                 features, br_config, raw, logo_url, icon_url, cover_url, banner_url, sort_order)
             SELECT @targetId, slug, name, category, game_type, default_mode_key,
-                   features, br_config, raw, logo_url, icon_url, cover_url, sort_order
+                   features, br_config, raw, logo_url, icon_url, cover_url, banner_url, sort_order
             FROM public.game_catalog_games
             WHERE version_id = @sourceId
             """,
@@ -504,7 +509,8 @@ public sealed partial class GameCatalogService
             """
             SELECT slug, name, category, game_type AS gameType, default_mode_key AS defaultModeKey,
                    features::text AS featuresJson, br_config::text AS brConfigJson,
-                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl, sort_order AS sortOrder
+                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl,
+                   banner_url AS bannerUrl, sort_order AS sortOrder
             FROM public.game_catalog_games
             WHERE version_id = @versionId
             ORDER BY sort_order ASC, name ASC
@@ -534,7 +540,8 @@ public sealed partial class GameCatalogService
             """
             SELECT slug, name, category, game_type AS gameType, default_mode_key AS defaultModeKey,
                    features::text AS featuresJson, br_config::text AS brConfigJson,
-                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl, sort_order AS sortOrder
+                   logo_url AS logoUrl, icon_url AS iconUrl, cover_url AS coverUrl,
+                   banner_url AS bannerUrl, sort_order AS sortOrder
             FROM public.game_catalog_games
             WHERE version_id = @versionId
             """,

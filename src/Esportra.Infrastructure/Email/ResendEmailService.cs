@@ -123,7 +123,8 @@ public sealed class ResendEmailService(
             EmailType.TournamentInvite =>
                 EmailTemplates.TournamentInvite(
                     Get("captainName"), Get("tournamentName"),
-                    Get("code"), Get("tournamentUrl"), Get("expiryDate")),
+                    Get("code"), Get("tournamentUrl"), Get("expiryDate"),
+                    Get("gameHeaderUrl")),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
