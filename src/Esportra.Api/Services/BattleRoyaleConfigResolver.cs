@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Esportra.Core.Br;
 
 namespace Esportra.Api.Services;
 
@@ -23,6 +24,30 @@ public static class BattleRoyaleConfigResolver
         FixedStage,
         PerRound,
         Rotation,
+    }
+
+    public enum BrStageFormat
+    {
+        SingleLobby,
+        StaticGroups,
+        GroupRotation,
+        MultiLobbyCut,
+    }
+
+    public enum BrLeaderboardScope
+    {
+        StageGlobal,
+        PerSeedGroup,
+        PerLobby,
+    }
+
+    public enum BrAdvancementMode
+    {
+        TopNPerGroup,
+        TopNPerLobby,
+        TopNOverall,
+        Threshold,
+        None,
     }
 
     public sealed record BrMapConfig(BrMapMode Mode, IReadOnlyList<string> Pool, string? FixedMap);
@@ -171,6 +196,109 @@ public static class BattleRoyaleConfigResolver
         return 6;
     }
 
+    public static BrStageFormat ResolveFormat(object? stageConfig)
+    {
+        if (TryParseJsonElement(stageConfig, out var stageRoot)
+            && TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
+            && brSection.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(brSection, "format", out var formatEl)
+            && formatEl.ValueKind == JsonValueKind.String)
+        {
+            return formatEl.GetString()?.Trim().ToLowerInvariant() switch
+            {
+                "single_lobby" => BrStageFormat.SingleLobby,
+                "group_rotation" => BrStageFormat.GroupRotation,
+                "multi_lobby_cut" => BrStageFormat.MultiLobbyCut,
+                _ => BrStageFormat.StaticGroups
+            };
+        }
+
+        return BrStageFormat.StaticGroups;
+    }
+
+    public static BrLeaderboardScope ResolveLeaderboardScope(object? stageConfig)
+    {
+        if (TryParseJsonElement(stageConfig, out var stageRoot)
+            && TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
+            && brSection.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(brSection, "leaderboardScope", out var scopeEl)
+            && scopeEl.ValueKind == JsonValueKind.String)
+        {
+            return scopeEl.GetString()?.Trim().ToLowerInvariant() switch
+            {
+                "per_seed_group" => BrLeaderboardScope.PerSeedGroup,
+                "per_lobby" => BrLeaderboardScope.PerLobby,
+                _ => BrLeaderboardScope.StageGlobal
+            };
+        }
+
+        return BrLeaderboardScope.StageGlobal;
+    }
+
+    public static BrAdvancementMode ResolveAdvancement(object? stageConfig)
+    {
+        if (TryParseJsonElement(stageConfig, out var stageRoot)
+            && TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
+            && brSection.ValueKind == JsonValueKind.Object)
+        {
+            if (TryGetPropertyIgnoreCase(brSection, "advancement", out var advancementObj)
+                && advancementObj.ValueKind == JsonValueKind.Object
+                && TryGetPropertyIgnoreCase(advancementObj, "mode", out var modeEl)
+                && modeEl.ValueKind == JsonValueKind.String)
+            {
+                return ParseAdvancementMode(modeEl.GetString());
+            }
+
+            if (TryGetPropertyIgnoreCase(brSection, "advancementMode", out var legacyEl)
+                && legacyEl.ValueKind == JsonValueKind.String)
+            {
+                return ParseAdvancementMode(legacyEl.GetString());
+            }
+        }
+
+        return BrAdvancementMode.TopNPerGroup;
+    }
+
+    public static int? ResolveAdvancementCount(object? stageConfig, int? stageAdvancementCount)
+    {
+        if (TryParseJsonElement(stageConfig, out var stageRoot)
+            && TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
+            && brSection.ValueKind == JsonValueKind.Object
+            && TryGetPropertyIgnoreCase(brSection, "advancement", out var advancementObj)
+            && advancementObj.ValueKind == JsonValueKind.Object)
+        {
+            var mode = ResolveAdvancement(stageConfig);
+            return mode switch
+            {
+                BrAdvancementMode.TopNPerLobby when TryReadPositiveInt(advancementObj, "perLobby", out var perLobby) => perLobby,
+                BrAdvancementMode.TopNOverall when TryReadPositiveInt(advancementObj, "overall", out var overall) => overall,
+                BrAdvancementMode.Threshold when TryReadPositiveInt(advancementObj, "threshold", out var threshold) => threshold,
+                BrAdvancementMode.TopNPerGroup when TryReadPositiveInt(advancementObj, "perGroup", out var perGroup) => perGroup,
+                _ => stageAdvancementCount,
+            };
+        }
+
+        return stageAdvancementCount;
+    }
+
+    private static BrAdvancementMode ParseAdvancementMode(string? raw) =>
+        raw?.Trim().ToLowerInvariant() switch
+        {
+            "top_n_per_lobby" => BrAdvancementMode.TopNPerLobby,
+            "top_n_overall" => BrAdvancementMode.TopNOverall,
+            "threshold" => BrAdvancementMode.Threshold,
+            "none" => BrAdvancementMode.None,
+            _ => BrAdvancementMode.TopNPerGroup,
+        };
+
+    private static bool TryReadPositiveInt(JsonElement parent, string property, out int value)
+    {
+        value = 0;
+        return TryGetPropertyIgnoreCase(parent, property, out var el)
+               && el.TryGetInt32(out value)
+               && value > 0;
+    }
+
     public static (int PlacementPoints, int KillPoints, int TotalPoints) CalculatePoints(
         int placement,
         int kills,
@@ -231,56 +359,17 @@ public static class BattleRoyaleConfigResolver
         BrLeaderboardAggregate b,
         BrTiebreaker tiebreaker)
     {
-        var pointsComparison = b.TotalPoints.CompareTo(a.TotalPoints);
-        if (pointsComparison != 0)
-            return pointsComparison;
-
-        return tiebreaker switch
+        var coreTiebreaker = tiebreaker switch
         {
-            BrTiebreaker.MostWins => CompareMostWins(a, b),
-            BrTiebreaker.MostKills => CompareMostKills(a, b),
-            BrTiebreaker.HeadToHead => CompareHeadToHead(a, b),
-            _ => CompareMostWins(a, b),
+            BrTiebreaker.MostKills => Core.Br.BrTiebreaker.MostKills,
+            BrTiebreaker.HeadToHead => Core.Br.BrTiebreaker.HeadToHead,
+            _ => Core.Br.BrTiebreaker.MostWins,
         };
-    }
 
-    private static int CompareMostWins(BrLeaderboardAggregate a, BrLeaderboardAggregate b)
-    {
-        var winsComparison = b.Wins.CompareTo(a.Wins);
-        if (winsComparison != 0)
-            return winsComparison;
-
-        var killsComparison = b.TotalKills.CompareTo(a.TotalKills);
-        if (killsComparison != 0)
-            return killsComparison;
-
-        return a.AvgPlacement.CompareTo(b.AvgPlacement);
-    }
-
-    private static int CompareMostKills(BrLeaderboardAggregate a, BrLeaderboardAggregate b)
-    {
-        var killsComparison = b.TotalKills.CompareTo(a.TotalKills);
-        if (killsComparison != 0)
-            return killsComparison;
-
-        var winsComparison = b.Wins.CompareTo(a.Wins);
-        if (winsComparison != 0)
-            return winsComparison;
-
-        return a.AvgPlacement.CompareTo(b.AvgPlacement);
-    }
-
-    private static int CompareHeadToHead(BrLeaderboardAggregate a, BrLeaderboardAggregate b)
-    {
-        var placementComparison = a.AvgPlacement.CompareTo(b.AvgPlacement);
-        if (placementComparison != 0)
-            return placementComparison;
-
-        var winsComparison = b.Wins.CompareTo(a.Wins);
-        if (winsComparison != 0)
-            return winsComparison;
-
-        return b.TotalKills.CompareTo(a.TotalKills);
+        return BrLeaderboardRanking.Compare(
+            new Core.Br.BrLeaderboardAggregate(a.TotalPoints, a.Wins, a.TotalKills, a.AvgPlacement),
+            new Core.Br.BrLeaderboardAggregate(b.TotalPoints, b.Wins, b.TotalKills, b.AvgPlacement),
+            coreTiebreaker);
     }
 
     private static BrScoringSettings ResolveTournamentScoring(

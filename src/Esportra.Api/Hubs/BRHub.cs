@@ -5,8 +5,8 @@ using Microsoft.AspNetCore.SignalR;
 namespace Esportra.Api.Hubs;
 
 /// <summary>
-/// Real-time Battle Royale round/evidence/leaderboard updates.
-/// Groups: br:stage:{stageId}, br:group:{groupId}, br:round:{roundId}
+/// Real-time Battle Royale lobby/evidence/leaderboard updates.
+/// Groups: br:stage:{stageId}, br:group:{groupId}, br:lobby:{lobbyId}
 /// </summary>
 public sealed class BRHub : Hub
 {
@@ -49,24 +49,24 @@ public sealed class BRHub : Hub
     public Task LeaveGroup(string groupId) =>
         Groups.RemoveFromGroupAsync(Context.ConnectionId, GroupGroup(groupId));
 
-    public async Task JoinRound(string roundId)
+    public async Task JoinLobby(string lobbyId)
     {
-        if (!TryParseGuid(roundId, out var roundGuid))
-            throw new HubException("Invalid round id.");
+        if (!TryParseGuid(lobbyId, out var lobbyGuid))
+            throw new HubException("Invalid lobby id.");
 
-        if (!await CanViewRoundAsync(roundGuid))
+        if (!await CanViewLobbyAsync(lobbyGuid))
             throw new HubException("Not authorized for this BR stream.");
 
-        await Groups.AddToGroupAsync(Context.ConnectionId, RoundGroup(roundId));
-        _logger.LogDebug("Client {Conn} joined {Group}", Context.ConnectionId, RoundGroup(roundId));
+        await Groups.AddToGroupAsync(Context.ConnectionId, LobbyGroup(lobbyId));
+        _logger.LogDebug("Client {Conn} joined {Group}", Context.ConnectionId, LobbyGroup(lobbyId));
     }
 
-    public Task LeaveRound(string roundId) =>
-        Groups.RemoveFromGroupAsync(Context.ConnectionId, RoundGroup(roundId));
+    public Task LeaveLobby(string lobbyId) =>
+        Groups.RemoveFromGroupAsync(Context.ConnectionId, LobbyGroup(lobbyId));
 
     public static string StageGroup(string stageId) => $"br:stage:{stageId}";
     public static string GroupGroup(string groupId) => $"br:group:{groupId}";
-    public static string RoundGroup(string roundId) => $"br:round:{roundId}";
+    public static string LobbyGroup(string lobbyId) => $"br:lobby:{lobbyId}";
 
     private static bool TryParseGuid(string value, out Guid id) =>
         Guid.TryParse(value, out id);
@@ -104,30 +104,32 @@ public sealed class BRHub : Hub
             new { groupId });
     }
 
-    private async Task<bool> CanViewRoundAsync(Guid roundId)
+    private async Task<bool> CanViewLobbyAsync(Guid lobbyId)
     {
         using var conn = _db.CreateConnection();
         return await conn.ExecuteScalarAsync<bool>(
             """
             SELECT EXISTS(
                 SELECT 1
-                FROM br_rounds r
-                JOIN br_groups g ON g.id = r.group_id
+                FROM br_lobbies l
+                JOIN br_lobby_groups lg ON lg.lobby_id = l.id
+                JOIN br_groups g ON g.id = lg.group_id
                 JOIN tournament_stages s ON s.id = g.stage_id
                 JOIN tournaments t ON t.id = s.tournament_id
-                WHERE r.id = @roundId
+                WHERE l.id = @lobbyId
                   AND t.deleted_at IS NULL
             )
             """,
-            new { roundId });
+            new { lobbyId });
     }
 }
 
 public static class BRHubEvents
 {
-    public const string RoundCreated = "RoundCreated";
-    public const string RoundUpdated = "RoundUpdated";
-    public const string RoundReset = "RoundReset";
+    public const string LobbyCreated = "LobbyCreated";
+    public const string LobbyUpdated = "LobbyUpdated";
+    public const string LobbyCompleted = "LobbyCompleted";
+    public const string LobbyReset = "LobbyReset";
     public const string EvidenceSubmitted = "EvidenceSubmitted";
     public const string EvidenceReviewed = "EvidenceReviewed";
     public const string ResultsUpdated = "ResultsUpdated";

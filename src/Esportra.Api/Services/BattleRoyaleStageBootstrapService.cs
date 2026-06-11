@@ -25,6 +25,7 @@ public sealed class BattleRoyaleStageBootstrapService
                 ts.stage_order AS "StageOrder",
                 ts.capacity AS "Capacity",
                 ts.advancement_count AS "AdvancementCount",
+                ts.config::text AS "Config",
                 t.max_teams AS "TournamentMaxTeams"
             FROM public.tournament_stages ts
             JOIN public.tournaments t ON t.id = ts.tournament_id
@@ -88,8 +89,9 @@ public sealed class BattleRoyaleStageBootstrapService
             return new BattleRoyaleStageBootstrapResult(stage.Id, existingGroupCount, false);
         }
 
+        var format = BattleRoyaleConfigResolver.ResolveFormat(stage.Config);
         var lobbySize = ResolveLobbySize(stage, incomingUnits);
-        var targetGroupCount = ResolveGroupCount(stage, incomingUnits, lobbySize);
+        var targetGroupCount = ResolveGroupCount(stage, incomingUnits, lobbySize, format);
 
         for (var i = 0; i < targetGroupCount; i++)
         {
@@ -133,17 +135,31 @@ public sealed class BattleRoyaleStageBootstrapService
         return Math.Max(1, stage.TournamentMaxTeams ?? 1);
     }
 
-    private static int ResolveGroupCount(BattleRoyaleStageRow stage, int incomingUnits, int lobbySize)
+    private static int ResolveGroupCount(
+        BattleRoyaleStageRow stage,
+        int incomingUnits,
+        int lobbySize,
+        BattleRoyaleConfigResolver.BrStageFormat format)
     {
-        if (stage.AdvancementCount is null or <= 0)
-        {
+        if (format == BattleRoyaleConfigResolver.BrStageFormat.SingleLobby)
             return 1;
-        }
 
         if (incomingUnits <= 0 || lobbySize <= 0)
-        {
             return 1;
+
+        if (format == BattleRoyaleConfigResolver.BrStageFormat.GroupRotation)
+        {
+            var evenGroups = Math.Max(2, (int)Math.Ceiling(incomingUnits / (double)lobbySize));
+            if (evenGroups % 2 != 0)
+                evenGroups += 1;
+            return evenGroups;
         }
+
+        if (stage.AdvancementCount is null or <= 0 && format == BattleRoyaleConfigResolver.BrStageFormat.StaticGroups)
+            return Math.Max(1, (int)Math.Ceiling(incomingUnits / (double)lobbySize));
+
+        if (stage.AdvancementCount is null or <= 0)
+            return 1;
 
         return Math.Max(1, (int)Math.Ceiling(incomingUnits / (double)lobbySize));
     }
@@ -167,6 +183,7 @@ public sealed class BattleRoyaleStageBootstrapService
         int StageOrder,
         int? Capacity,
         int? AdvancementCount,
+        string? Config,
         int? TournamentMaxTeams);
 }
 

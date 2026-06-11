@@ -2027,7 +2027,7 @@ public static class TournamentEndpoints
 
         // ── BR Game Data ─────────────────────────────────────────────────────
         // Deprecated: legacy JSON BR game state. New player and organizer flows use
-        // relational br_rounds/br_round_evidence endpoints in BRGroupEndpoints.
+        // relational br_lobbies/br_lobby_evidence endpoints in BRGroupEndpoints.
         // Keep temporarily for rollback and older clients.
 
         // GET /api/tournaments/{id}/br-games — read BR game data (any authenticated user)
