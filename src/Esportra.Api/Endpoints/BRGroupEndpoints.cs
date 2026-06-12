@@ -740,9 +740,11 @@ public static class BRGroupEndpoints
                 SELECT r.id, r.wave_number, r.lobby_code, r.status,
                        r.scheduled_at, r.started_at, r.completed_at, r.created_at,
                        r.queue_timer_minutes, r.queue_started_at{mapSelect},
-                       (SELECT COUNT(*) FROM br_lobby_results rr WHERE rr.lobby_id = r.id) AS result_count,
-                       (SELECT COUNT(*) FROM br_lobby_evidence re WHERE re.lobby_id = r.id) AS evidence_count,
-                       (SELECT COUNT(*) FROM br_lobby_evidence re WHERE re.lobby_id = r.id AND re.reviewed = FALSE) AS pending_evidence_count
+                       (SELECT COUNT(*) FROM br_lobby_results rr JOIN br_games g ON g.id = rr.game_id WHERE g.lobby_id = r.id) AS result_count,
+                       (SELECT COUNT(*) FROM br_lobby_evidence re JOIN br_games g ON g.id = re.game_id WHERE g.lobby_id = r.id) AS evidence_count,
+                       (SELECT COUNT(*) FROM br_lobby_evidence re JOIN br_games g ON g.id = re.game_id WHERE g.lobby_id = r.id AND re.reviewed = FALSE) AS pending_evidence_count,
+                       (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id) AS game_count,
+                       (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id AND g.status = 'completed') AS games_completed
                 FROM br_lobbies r
                 WHERE EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = @groupId)
                 ORDER BY r.wave_number
@@ -1619,12 +1621,31 @@ public static class BRGroupEndpoints
                     tx);
 
                 await conn.ExecuteAsync(
-                    "DELETE FROM br_lobby_results WHERE lobby_id = @lobbyId",
+                    """
+                    DELETE FROM br_lobby_results
+                    WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
+                    """,
                     new { lobbyId },
                     tx);
 
                 await conn.ExecuteAsync(
-                    "DELETE FROM br_lobby_evidence WHERE lobby_id = @lobbyId",
+                    """
+                    DELETE FROM br_lobby_evidence
+                    WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
+                    """,
+                    new { lobbyId },
+                    tx);
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE br_games
+                    SET status = 'pending',
+                        map = NULL,
+                        scheduled_at = NULL,
+                        started_at = NULL,
+                        completed_at = NULL
+                    WHERE lobby_id = @lobbyId
+                    """,
                     new { lobbyId },
                     tx);
 
@@ -1729,6 +1750,7 @@ public static class BRGroupEndpoints
         // the active round in their assigned group.
         app.MapGet("/api/br/lobbies/{lobbyId}/evidence", async (
             Guid                lobbyId,
+            [FromQuery] int?    gameNumber,
             HttpContext          ctx,
             IDbConnectionFactory db) =>
         {
@@ -1779,6 +1801,11 @@ public static class BRGroupEndpoints
                     return Results.Forbid();
             }
 
+            var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                conn, lobbyId, gameNumber: gameNumber);
+            if (targetGameId is null)
+                return Results.NotFound(new { error = "No game found for this lobby." });
+
             var evidence = await conn.QueryAsync<dynamic>(
                 """
                 SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
@@ -1796,7 +1823,7 @@ public static class BRGroupEndpoints
                 LEFT JOIN teams t ON t.id = re.team_id
                 LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
                 LEFT JOIN profiles p ON p.id = tp.user_id
-                WHERE re.lobby_id = @lobbyId
+                WHERE re.game_id = @targetGameId
                   AND (
                     @isStaff = TRUE
                     OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
@@ -1804,7 +1831,7 @@ public static class BRGroupEndpoints
                   )
                 ORDER BY re.submitted_at DESC
                 """,
-                new { lobbyId, isStaff, viewerTeamId, viewerParticipantId });
+                new { targetGameId, isStaff, viewerTeamId, viewerParticipantId });
 
             var payload = evidence.Select(row => new
             {
@@ -1862,6 +1889,14 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
+            int? gameNumber = null;
+            if (body.TryGetProperty("gameNumber", out var gameNumberProp) && gameNumberProp.ValueKind == JsonValueKind.Number)
+            {
+                if (!gameNumberProp.TryGetInt32(out var gn) || gn < 1)
+                    return Results.BadRequest(new { error = "gameNumber must be >= 1." });
+                gameNumber = gn;
+            }
+
             var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT g.stage_id,
@@ -1887,7 +1922,18 @@ public static class BRGroupEndpoints
             var roundStatus = (string)roundInfo.status;
 
             if (roundStatus != "active")
-                return Results.Conflict(new { error = "Evidence can only be submitted while the round is live." });
+                return Results.Conflict(new { error = "Evidence can only be submitted while the lobby is live." });
+
+            var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                conn, lobbyId, gameNumber: gameNumber);
+            if (targetGameId is null)
+                return Results.NotFound(new { error = "No active game found for this lobby." });
+
+            var gameStatus = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT status FROM br_games WHERE id = @targetGameId",
+                new { targetGameId });
+            if (gameStatus != "active")
+                return Results.Conflict(new { error = "Evidence can only be submitted while the game is live." });
 
             var entityAccess = await ResolveRoundEntityAccessAsync(
                 conn,
@@ -1901,17 +1947,16 @@ public static class BRGroupEndpoints
             if (teamId is null && participantId is null)
                 return Results.Forbid();
 
-            // Check if evidence has already been submitted — once submitted, it is locked.
             var alreadyExists = participantId is not null
                 ? await conn.ExecuteScalarAsync<bool>(
-                    "SELECT EXISTS (SELECT 1 FROM br_lobby_evidence WHERE lobby_id = @lobbyId AND participant_id = @participantId)",
-                    new { lobbyId, participantId })
+                    "SELECT EXISTS (SELECT 1 FROM br_lobby_evidence WHERE game_id = @targetGameId AND participant_id = @participantId)",
+                    new { targetGameId, participantId })
                 : await conn.ExecuteScalarAsync<bool>(
-                    "SELECT EXISTS (SELECT 1 FROM br_lobby_evidence WHERE lobby_id = @lobbyId AND team_id = @teamId)",
-                    new { lobbyId, teamId });
+                    "SELECT EXISTS (SELECT 1 FROM br_lobby_evidence WHERE game_id = @targetGameId AND team_id = @teamId)",
+                    new { targetGameId, teamId });
 
             if (alreadyExists)
-                return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
+                return Results.Conflict(new { error = "Evidence has already been submitted for this game. Submissions cannot be changed." });
 
             try
             {
@@ -1920,17 +1965,18 @@ public static class BRGroupEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO br_lobby_evidence (
-                            lobby_id, team_id, participant_id, image_url, submitted_by, submitted_at,
+                            lobby_id, game_id, team_id, participant_id, image_url, submitted_by, submitted_at,
                             placement, kills, reviewed, reviewed_at, reviewed_by
                         )
                         VALUES (
-                            @lobbyId, NULL, @participantId, @imageUrl, @submittedBy, NOW(),
+                            @lobbyId, @targetGameId, NULL, @participantId, @imageUrl, @submittedBy, NOW(),
                             @placement, @kills, FALSE, NULL, NULL
                         )
                         """,
                         new
                         {
                             lobbyId,
+                            targetGameId,
                             participantId,
                             imageUrl,
                             submittedBy = userCtx.UserIdGuid,
@@ -1943,17 +1989,18 @@ public static class BRGroupEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO br_lobby_evidence (
-                            lobby_id, team_id, participant_id, image_url, submitted_by, submitted_at,
+                            lobby_id, game_id, team_id, participant_id, image_url, submitted_by, submitted_at,
                             placement, kills, reviewed, reviewed_at, reviewed_by
                         )
                         VALUES (
-                            @lobbyId, @teamId, NULL, @imageUrl, @submittedBy, NOW(),
+                            @lobbyId, @targetGameId, @teamId, NULL, @imageUrl, @submittedBy, NOW(),
                             @placement, @kills, FALSE, NULL, NULL
                         )
                         """,
                         new
                         {
                             lobbyId,
+                            targetGameId,
                             teamId,
                             imageUrl,
                             submittedBy = userCtx.UserIdGuid,
@@ -1963,7 +2010,9 @@ public static class BRGroupEndpoints
                 }
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation
-                                               && (ex.ConstraintName == "uq_br_lobby_evidence_team"
+                                               && (ex.ConstraintName == "uq_br_lobby_evidence_game_team"
+                                                   || ex.ConstraintName == "uq_br_lobby_evidence_game_participant"
+                                                   || ex.ConstraintName == "uq_br_lobby_evidence_team"
                                                    || ex.ConstraintName == "uq_br_lobby_evidence_participant"))
             {
                 return Results.Conflict(new { error = "Evidence has already been submitted for this round. Submissions cannot be changed." });
@@ -2031,6 +2080,7 @@ public static class BRGroupEndpoints
         app.MapPatch("/api/br/lobbies/{lobbyId}/evidence/{entityId}", async (
             Guid                lobbyId,
             Guid                entityId,
+            [FromQuery] int?    gameNumber,
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
@@ -2073,6 +2123,11 @@ public static class BRGroupEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
+            var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                conn, lobbyId, gameNumber: gameNumber);
+            if (targetGameId is null)
+                return Results.NotFound(new { error = "No game found for this lobby." });
+
             var updated = await conn.ExecuteAsync(
                 isSolo
                     ? """
@@ -2080,7 +2135,7 @@ public static class BRGroupEndpoints
                       SET reviewed = @reviewed,
                           reviewed_at = CASE WHEN @reviewed THEN NOW() ELSE NULL END,
                           reviewed_by = CASE WHEN @reviewed THEN @reviewedBy ELSE NULL END
-                      WHERE lobby_id = @lobbyId
+                      WHERE game_id = @targetGameId
                         AND participant_id = @entityId
                       """
                     : """
@@ -2088,12 +2143,12 @@ public static class BRGroupEndpoints
                       SET reviewed = @reviewed,
                           reviewed_at = CASE WHEN @reviewed THEN NOW() ELSE NULL END,
                           reviewed_by = CASE WHEN @reviewed THEN @reviewedBy ELSE NULL END
-                      WHERE lobby_id = @lobbyId
+                      WHERE game_id = @targetGameId
                         AND team_id = @entityId
                       """,
                 new
                 {
-                    lobbyId,
+                    targetGameId,
                     entityId,
                     reviewed,
                     reviewedBy = userCtx.UserIdGuid
@@ -3236,22 +3291,28 @@ public static class BRGroupEndpoints
             if (groups.Count == 0)
                 return Results.BadRequest(new { error = "No groups exist in this stage." });
 
-            // Check all groups have at least one completed round
+            var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(stage.settings, stage.config) ?? 6;
+
             var incompleteGroups = await conn.QueryAsync<dynamic>(
                 """
                 SELECT g.name FROM br_groups g
                 WHERE g.stage_id = @stageId
-                AND NOT EXISTS (
-                    SELECT 1 FROM br_lobbies r
-                    WHERE r.status = 'completed' AND EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = g.id)
-                )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM br_lobbies l
+                      JOIN br_lobby_groups lg ON lg.lobby_id = l.id
+                      JOIN br_games bg ON bg.lobby_id = l.id
+                      WHERE lg.group_id = g.id
+                      GROUP BY l.id
+                      HAVING COUNT(*) FILTER (WHERE bg.status = 'completed') >= @gamesPerLobby
+                  )
                 """,
-                new { stageId });
+                new { stageId, gamesPerLobby });
             var incompleteList = incompleteGroups.ToList();
             if (incompleteList.Count > 0)
             {
                 var names = string.Join(", ", incompleteList.Select(g => (string)g.name));
-                return Results.BadRequest(new { error = $"Groups with no completed rounds: {names}" });
+                return Results.BadRequest(new { error = $"Groups missing {gamesPerLobby} completed games per lobby: {names}" });
             }
 
             // Build qualified teams — unified query with COALESCE for solo/team
@@ -4133,7 +4194,12 @@ public static class BRGroupEndpoints
         IDbTransaction? tx = null)
     {
         var count = await conn.ExecuteScalarAsync<long>(
-            "SELECT COUNT(*) FROM br_lobby_evidence WHERE lobby_id = @lobbyId AND reviewed = FALSE",
+            """
+            SELECT COUNT(*)
+            FROM br_lobby_evidence re
+            JOIN br_games g ON g.id = re.game_id
+            WHERE g.lobby_id = @lobbyId AND re.reviewed = FALSE
+            """,
             new { lobbyId },
             tx);
         return Convert.ToInt32(count);

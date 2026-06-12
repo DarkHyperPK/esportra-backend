@@ -8,6 +8,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Npgsql;
 
 namespace Esportra.Api.Endpoints;
 
@@ -41,6 +42,63 @@ public static class BrGameEndpoints
 
             return Results.Ok(games);
         });
+
+        app.MapPost("/api/lobbies/{lobbyId}/games", async (
+            Guid lobbyId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService catalog,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var context = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT l.stage_id, t.settings, ts.config AS stage_config, t.game
+                FROM br_lobbies l
+                JOIN tournament_stages ts ON ts.id = l.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE l.id = @lobbyId
+                """,
+                new { lobbyId });
+
+            if (context is null)
+                return Results.NotFound();
+
+            var stageId = (Guid)context.stage_id;
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+                context.settings, context.stage_config) ?? 6;
+            var catalogBrConfig = string.IsNullOrWhiteSpace(context.game as string)
+                ? null
+                : (await catalog.GetGameAsync(((string)context.game).Trim(), ct))?.BrConfig;
+
+            var gameIds = await BrGameMaterializer.EnsureGamesForLobbyAsync(
+                conn,
+                lobbyId,
+                gamesPerLobby,
+                context.settings,
+                context.stage_config,
+                catalogBrConfig);
+
+            var games = await conn.QueryAsync<dynamic>(
+                """
+                SELECT g.id, g.lobby_id, g.game_number, g.map, g.status,
+                       g.scheduled_at, g.started_at, g.completed_at, g.created_at
+                FROM br_games g
+                WHERE g.lobby_id = @lobbyId
+                ORDER BY g.game_number
+                """,
+                new { lobbyId });
+
+            return Results.Ok(new { created = gameIds.Count, games });
+        }).RequireAuthorization("Authenticated");
 
         app.MapGet("/api/br/games/{gameId}", async (
             Guid gameId,
@@ -280,6 +338,287 @@ public static class BrGameEndpoints
 
             return Results.Ok(results);
         }).RequireAuthorization("Authenticated");
+
+        app.MapGet("/api/br/games/{gameId}/evidence", async (
+            Guid gameId,
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var gameInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.lobby_id, l.stage_id, ts.tournament_id, t.team_size
+                FROM br_games g
+                JOIN br_lobbies l ON l.id = g.lobby_id
+                JOIN tournament_stages ts ON ts.id = l.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE g.id = @gameId
+                """,
+                new { gameId });
+
+            if (gameInfo is null)
+                return Results.NotFound();
+
+            var lobbyId = (Guid)gameInfo.lobby_id;
+            var stageId = (Guid)gameInfo.stage_id;
+            var tournamentId = (Guid)gameInfo.tournament_id;
+            var isSolo = Convert.ToInt32(gameInfo.team_size ?? 1) == 1;
+
+            var isStaff = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            isStaff = isStaff || StaffAuthHelper.IsPlatformAdmin(userCtx);
+
+            Guid? viewerTeamId = null;
+            Guid? viewerParticipantId = null;
+            if (!isStaff)
+            {
+                var access = await ResolveGameEntityAccessAsync(
+                    conn, lobbyId, tournamentId, userCtx.UserIdGuid, isSolo);
+                viewerTeamId = access.TeamId;
+                viewerParticipantId = access.ParticipantId;
+                if (viewerTeamId is null && viewerParticipantId is null)
+                    return Results.Forbid();
+            }
+
+            var evidence = await conn.QueryAsync<dynamic>(
+                """
+                SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
+                       CASE
+                           WHEN re.team_id IS NOT NULL THEN t.name
+                           ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
+                       END AS entity_name,
+                       CASE WHEN re.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
+                       re.image_url, re.submitted_at, re.placement, re.kills, re.reviewed
+                FROM br_lobby_evidence re
+                LEFT JOIN teams t ON t.id = re.team_id
+                LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE re.game_id = @gameId
+                  AND (
+                    @isStaff = TRUE
+                    OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
+                    OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
+                  )
+                ORDER BY re.submitted_at DESC
+                """,
+                new { gameId, isStaff, viewerTeamId, viewerParticipantId });
+
+            return Results.Ok(evidence.Select(row => new
+            {
+                teamId = ((Guid)row.entity_id).ToString(),
+                teamName = (string?)row.entity_name ?? "Unknown",
+                logoUrl = (string?)row.logo_url,
+                imageUrl = (string)row.image_url,
+                submittedAt = ((DateTimeOffset)row.submitted_at).ToString("o"),
+                placement = row.placement is not null ? Convert.ToInt32(row.placement) : (int?)null,
+                kills = row.kills is not null ? Convert.ToInt32(row.kills) : (int?)null,
+                reviewed = (bool)row.reviewed,
+            }));
+        }).RequireAuthorization("Authenticated");
+
+        app.MapPut("/api/br/games/{gameId}/evidence", async (
+            Guid gameId,
+            [FromBody] JsonElement body,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IConfiguration config) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(supabaseUrl))
+                return Results.BadRequest(new { error = "Supabase storage is not configured." });
+
+            if (!TryNormalizeEvidenceImageUrl(body, supabaseUrl, out var imageUrl, out var imageUrlError))
+                return Results.BadRequest(new { error = imageUrlError });
+
+            int? placement = null;
+            if (body.TryGetProperty("placement", out var placementProp) && placementProp.ValueKind != JsonValueKind.Null)
+            {
+                if (!placementProp.TryGetInt32(out var placementValue) || placementValue < 1)
+                    return Results.BadRequest(new { error = "placement must be >= 1." });
+                placement = placementValue;
+            }
+
+            int? kills = null;
+            if (body.TryGetProperty("kills", out var killsProp) && killsProp.ValueKind != JsonValueKind.Null)
+            {
+                if (!killsProp.TryGetInt32(out var killsValue) || killsValue < 0)
+                    return Results.BadRequest(new { error = "kills must be >= 0." });
+                kills = killsValue;
+            }
+
+            using var conn = db.CreateConnection();
+            var gameInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.lobby_id, g.status AS game_status, l.status AS lobby_status,
+                       ts.tournament_id, t.team_size
+                FROM br_games g
+                JOIN br_lobbies l ON l.id = g.lobby_id
+                JOIN tournament_stages ts ON ts.id = l.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE g.id = @gameId
+                """,
+                new { gameId });
+
+            if (gameInfo is null)
+                return Results.NotFound();
+
+            if ((string)gameInfo.lobby_status != "active")
+                return Results.Conflict(new { error = "Evidence can only be submitted while the lobby is live." });
+            if ((string)gameInfo.game_status != "active")
+                return Results.Conflict(new { error = "Evidence can only be submitted while the game is live." });
+
+            var lobbyId = (Guid)gameInfo.lobby_id;
+            var tournamentId = (Guid)gameInfo.tournament_id;
+            var isSolo = Convert.ToInt32(gameInfo.team_size ?? 1) == 1;
+
+            var access = await ResolveGameEntityAccessAsync(
+                conn, lobbyId, tournamentId, userCtx.UserIdGuid, isSolo);
+            if (access.TeamId is null && access.ParticipantId is null)
+                return Results.Forbid();
+
+            var alreadyExists = access.ParticipantId is not null
+                ? await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS (SELECT 1 FROM br_lobby_evidence WHERE game_id = @gameId AND participant_id = @participantId)",
+                    new { gameId, participantId = access.ParticipantId })
+                : await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS (SELECT 1 FROM br_lobby_evidence WHERE game_id = @gameId AND team_id = @teamId)",
+                    new { gameId, teamId = access.TeamId });
+
+            if (alreadyExists)
+                return Results.Conflict(new { error = "Evidence has already been submitted for this game." });
+
+            try
+            {
+                if (access.ParticipantId is not null)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_lobby_evidence (
+                            lobby_id, game_id, team_id, participant_id, image_url, submitted_by, submitted_at,
+                            placement, kills, reviewed
+                        )
+                        VALUES (@lobbyId, @gameId, NULL, @participantId, @imageUrl, @submittedBy, NOW(), @placement, @kills, FALSE)
+                        """,
+                        new
+                        {
+                            lobbyId,
+                            gameId,
+                            participantId = access.ParticipantId,
+                            imageUrl,
+                            submittedBy = userCtx.UserIdGuid,
+                            placement,
+                            kills,
+                        });
+                }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO br_lobby_evidence (
+                            lobby_id, game_id, team_id, participant_id, image_url, submitted_by, submitted_at,
+                            placement, kills, reviewed
+                        )
+                        VALUES (@lobbyId, @gameId, @teamId, NULL, @imageUrl, @submittedBy, NOW(), @placement, @kills, FALSE)
+                        """,
+                        new
+                        {
+                            lobbyId,
+                            gameId,
+                            teamId = access.TeamId,
+                            imageUrl,
+                            submittedBy = userCtx.UserIdGuid,
+                            placement,
+                            kills,
+                        });
+                }
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+            {
+                return Results.Conflict(new { error = "Evidence has already been submitted for this game." });
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+    }
+
+    private sealed record GameEntityAccess(Guid? TeamId, Guid? ParticipantId);
+
+    private static async Task<GameEntityAccess> ResolveGameEntityAccessAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        Guid tournamentId,
+        Guid userId,
+        bool isSolo)
+    {
+        if (isSolo)
+        {
+            var participantId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT tp.id
+                FROM tournament_participants tp
+                JOIN br_group_members gm ON gm.participant_id = tp.id
+                JOIN br_lobby_groups lg ON lg.group_id = gm.group_id
+                WHERE lg.lobby_id = @lobbyId
+                  AND tp.tournament_id = @tournamentId
+                  AND tp.user_id = @userId
+                LIMIT 1
+                """,
+                new { lobbyId, tournamentId, userId });
+            return new GameEntityAccess(null, participantId);
+        }
+
+        var teamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT tm.team_id
+            FROM team_members tm
+            JOIN tournament_teams tt ON tt.team_id = tm.team_id
+            JOIN br_group_members gm ON gm.team_id = tt.team_id
+            JOIN br_lobby_groups lg ON lg.group_id = gm.group_id
+            WHERE lg.lobby_id = @lobbyId
+              AND tt.tournament_id = @tournamentId
+              AND tm.user_id = @userId
+            LIMIT 1
+            """,
+            new { lobbyId, tournamentId, userId });
+        return new GameEntityAccess(teamId, null);
+    }
+
+    private static bool TryNormalizeEvidenceImageUrl(
+        JsonElement body,
+        string supabaseUrl,
+        out string imageUrl,
+        out string? error)
+    {
+        imageUrl = string.Empty;
+        error = null;
+
+        if (!body.TryGetProperty("imageUrl", out var urlProp) || urlProp.ValueKind != JsonValueKind.String)
+        {
+            error = "imageUrl is required.";
+            return false;
+        }
+
+        var raw = urlProp.GetString()?.Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            error = "imageUrl cannot be empty.";
+            return false;
+        }
+
+        if (!raw.StartsWith(supabaseUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "imageUrl must be hosted on the configured Supabase storage.";
+            return false;
+        }
+
+        imageUrl = raw;
+        return true;
     }
 
     private static async Task<bool> CanViewBrStageAsync(IDbConnection conn, Guid stageId) =>

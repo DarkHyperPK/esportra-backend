@@ -129,8 +129,7 @@ public sealed class BattleRoyaleStageBootstrapService
         int groupCount,
         BattleRoyaleConfigResolver.BrStageFormat format)
     {
-        if (format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation
-            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+        if (format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation)
         {
             return;
         }
@@ -168,7 +167,8 @@ public sealed class BattleRoyaleStageBootstrapService
                 new { lobbyId, groupId = groupIds[0].Id },
                 tx);
         }
-        else if (format == BattleRoyaleConfigResolver.BrStageFormat.StaticGroups)
+        else if (format is BattleRoyaleConfigResolver.BrStageFormat.StaticGroups
+            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
         {
             foreach (var group in groupIds)
             {
