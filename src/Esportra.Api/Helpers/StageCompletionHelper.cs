@@ -65,10 +65,18 @@ public static class StageCompletionHelper
                 Reason: "Teams have already been advanced to the next stage.");
         }
 
-        var stageConfig = await conn.QuerySingleOrDefaultAsync<string>(
-            "SELECT config::text FROM tournament_stages WHERE id = @stageId",
+        var stageMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            """
+            SELECT ts.config::text AS stage_config, t.settings
+            FROM tournament_stages ts
+            JOIN tournaments t ON t.id = ts.tournament_id
+            WHERE ts.id = @stageId
+            """,
             new { stageId });
+        var stageConfig = stageMeta?.stage_config as string;
         var format = BattleRoyaleConfigResolver.ResolveFormat(stageConfig);
+        var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+            stageMeta?.settings, stageConfig) ?? 6;
 
         var groups = (await conn.QueryAsync<Guid>(
             "SELECT id FROM br_groups WHERE stage_id = @stageId ORDER BY group_order",
@@ -89,22 +97,34 @@ public static class StageCompletionHelper
             "SELECT COUNT(*)::int FROM br_lobbies WHERE stage_id = @stageId",
             new { stageId });
 
-        var completedLobbies = await conn.ExecuteScalarAsync<int>(
+        var totalGames = await conn.ExecuteScalarAsync<int>(
             """
             SELECT COUNT(*)::int
-            FROM br_lobbies
-            WHERE stage_id = @stageId
-              AND status = 'completed'
+            FROM br_games g
+            JOIN br_lobbies l ON l.id = g.lobby_id
+            WHERE l.stage_id = @stageId
             """,
             new { stageId });
 
-        var hasActiveRound = await conn.ExecuteScalarAsync<bool>(
+        var completedGames = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)::int
+            FROM br_games g
+            JOIN br_lobbies l ON l.id = g.lobby_id
+            WHERE l.stage_id = @stageId
+              AND g.status = 'completed'
+            """,
+            new { stageId });
+
+        var expectedGames = totalLobbies * gamesPerLobby;
+        var hasActiveGame = await conn.ExecuteScalarAsync<bool>(
             """
             SELECT EXISTS (
                 SELECT 1
-                FROM br_lobbies l
+                FROM br_games g
+                JOIN br_lobbies l ON l.id = g.lobby_id
                 WHERE l.stage_id = @stageId
-                  AND l.status = 'active'
+                  AND g.status = 'active'
             )
             """,
             new { stageId });
@@ -125,33 +145,35 @@ public static class StageCompletionHelper
                     GroupsWithCompletedRounds: 0);
             }
 
-            var pendingLobbies = await conn.ExecuteScalarAsync<int>(
-                """
-                SELECT COUNT(*)::int
-                FROM br_lobbies
-                WHERE stage_id = @stageId
-                  AND status IS DISTINCT FROM 'completed'
-                  AND status IS DISTINCT FROM 'cancelled'
-                """,
-                new { stageId });
-
-            if (pendingLobbies > 0)
+            if (totalGames < expectedGames)
             {
-                var progressLabel = hasActiveRound || completedLobbies > 0 ? "in_progress" : "setup";
+                return new StageCompletionSnapshot(
+                    IsComplete: false,
+                    AlreadyAdvanced: false,
+                    ProgressLabel: "setup",
+                    Reason: $"Games not fully scheduled ({totalGames}/{expectedGames} games materialized).",
+                    GroupsTotal: groups.Count,
+                    GroupsWithCompletedRounds: 0);
+            }
+
+            var pendingGames = expectedGames - completedGames;
+            if (pendingGames > 0)
+            {
+                var progressLabel = hasActiveGame || completedGames > 0 ? "in_progress" : "setup";
                 return new StageCompletionSnapshot(
                     IsComplete: false,
                     AlreadyAdvanced: false,
                     ProgressLabel: progressLabel,
-                    Reason: $"{pendingLobbies} of {totalLobbies} scheduled lobbies are not completed yet.",
+                    Reason: $"{pendingGames} of {expectedGames} scheduled games are not completed yet.",
                     GroupsTotal: groups.Count,
-                    GroupsWithCompletedRounds: completedLobbies);
+                    GroupsWithCompletedRounds: completedGames);
             }
 
             return new StageCompletionSnapshot(
                 IsComplete: true,
                 AlreadyAdvanced: false,
                 ProgressLabel: "ready_to_advance",
-                Reason: "All scheduled lobbies are completed.",
+                Reason: "All scheduled games are completed.",
                 GroupsTotal: groups.Count,
                 GroupsWithCompletedRounds: groups.Count);
         }
@@ -164,26 +186,28 @@ public static class StageCompletionHelper
                   SELECT 1
                   FROM br_lobbies l
                   JOIN br_lobby_groups lg ON lg.lobby_id = l.id
+                  JOIN br_games bg ON bg.lobby_id = l.id
                   WHERE lg.group_id = g.id
-                    AND l.status = 'completed'
+                  GROUP BY l.id
+                  HAVING COUNT(*) FILTER (WHERE bg.status = 'completed') >= @gamesPerLobby
               )
             ORDER BY g.group_order
             """,
-            new { stageId })).ToList();
+            new { stageId, gamesPerLobby })).ToList();
 
         var groupsWithCompleted = groups.Count - incompleteGroups.Count;
 
         if (incompleteGroups.Count > 0)
         {
-            var progressLabel = totalLobbies > 0 || hasActiveRound ? "in_progress" : "setup";
+            var progressLabel = totalGames > 0 || hasActiveGame ? "in_progress" : "setup";
             var names = string.Join(", ", incompleteGroups);
             return new StageCompletionSnapshot(
                 IsComplete: false,
                 AlreadyAdvanced: false,
                 ProgressLabel: progressLabel,
                 Reason: incompleteGroups.Count == groups.Count
-                    ? "No groups have a completed lobby yet."
-                    : $"Groups with no completed lobbies: {names}.",
+                    ? $"No groups have completed all {gamesPerLobby} games yet."
+                    : $"Groups missing completed games: {names}.",
                 GroupsTotal: groups.Count,
                 GroupsWithCompletedRounds: groupsWithCompleted);
         }
@@ -192,7 +216,7 @@ public static class StageCompletionHelper
             IsComplete: true,
             AlreadyAdvanced: false,
             ProgressLabel: "ready_to_advance",
-            Reason: "All groups have at least one completed lobby.",
+            Reason: $"All groups completed {gamesPerLobby} games per lobby.",
             GroupsTotal: groups.Count,
             GroupsWithCompletedRounds: groups.Count);
     }

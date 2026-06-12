@@ -111,6 +111,8 @@ public sealed class BattleRoyaleStageBootstrapService
                 tx);
         }
 
+        await EnsureInitialLobbiesAsync(conn, tx, stage, targetGroupCount, format);
+
         _logger.LogInformation(
             "Bootstrapped {GroupCount} BR group(s) for stage {StageId} ({StageName})",
             targetGroupCount,
@@ -118,6 +120,90 @@ public sealed class BattleRoyaleStageBootstrapService
             stage.Name);
 
         return new BattleRoyaleStageBootstrapResult(stage.Id, targetGroupCount, true);
+    }
+
+    private static async Task EnsureInitialLobbiesAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        BattleRoyaleStageRow stage,
+        int groupCount,
+        BattleRoyaleConfigResolver.BrStageFormat format)
+    {
+        if (format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation
+            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+        {
+            return;
+        }
+
+        var existingLobbies = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*)::int FROM br_lobbies WHERE stage_id = @stageId",
+            new { stageId = stage.Id },
+            tx);
+        if (existingLobbies > 0)
+            return;
+
+        var groupIds = (await conn.QueryAsync<(Guid Id, int Order)>(
+            """
+            SELECT id, group_order
+            FROM br_groups
+            WHERE stage_id = @stageId
+            ORDER BY group_order
+            """,
+            new { stageId = stage.Id },
+            tx)).ToList();
+
+        if (format == BattleRoyaleConfigResolver.BrStageFormat.SingleLobby && groupIds.Count > 0)
+        {
+            var lobbyId = await conn.QuerySingleAsync<Guid>(
+                """
+                INSERT INTO br_lobbies (stage_id, wave_number, lobby_index)
+                VALUES (@stageId, 1, 0)
+                RETURNING id
+                """,
+                new { stageId = stage.Id },
+                tx);
+
+            await conn.ExecuteAsync(
+                "INSERT INTO br_lobby_groups (lobby_id, group_id) VALUES (@lobbyId, @groupId) ON CONFLICT DO NOTHING",
+                new { lobbyId, groupId = groupIds[0].Id },
+                tx);
+        }
+        else if (format == BattleRoyaleConfigResolver.BrStageFormat.StaticGroups)
+        {
+            foreach (var group in groupIds)
+            {
+                var lobbyId = await conn.QuerySingleAsync<Guid>(
+                    """
+                    INSERT INTO br_lobbies (stage_id, wave_number, lobby_index)
+                    VALUES (@stageId, 1, @lobbyIndex)
+                    RETURNING id
+                    """,
+                    new { stageId = stage.Id, lobbyIndex = group.Order - 1 },
+                    tx);
+
+                await conn.ExecuteAsync(
+                    "INSERT INTO br_lobby_groups (lobby_id, group_id) VALUES (@lobbyId, @groupId) ON CONFLICT DO NOTHING",
+                    new { lobbyId, groupId = group.Id },
+                    tx);
+            }
+        }
+
+        var tournamentSettings = await conn.QuerySingleOrDefaultAsync<object>(
+            """
+            SELECT t.settings
+            FROM tournament_stages ts
+            JOIN tournaments t ON t.id = ts.tournament_id
+            WHERE ts.id = @stageId
+            """,
+            new { stageId = stage.Id },
+            tx);
+
+        await BrGameMaterializer.MaterializeStageGamesAsync(
+            conn,
+            stage.Id,
+            tournamentSettings: tournamentSettings,
+            stageConfig: stage.Config,
+            tx: tx);
     }
 
     private static int ResolveLobbySize(BattleRoyaleStageRow stage, int incomingUnits)

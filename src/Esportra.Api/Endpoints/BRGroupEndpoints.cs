@@ -960,6 +960,17 @@ public static class BRGroupEndpoints
                     new { lobbyId, groupId },
                     tx);
 
+                var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+                    stageContext?.settings, stageContext?.stage_config) ?? 6;
+                await BrGameMaterializer.EnsureGamesForLobbyAsync(
+                    conn,
+                    lobbyId,
+                    gamesPerLobby,
+                    stageContext?.settings,
+                    stageContext?.stage_config,
+                    catalogBrConfig,
+                    tx);
+
                 tx.Commit();
 
                 var waveNumber = Convert.ToInt32(round.wave_number);
@@ -1660,6 +1671,8 @@ public static class BRGroupEndpoints
         // Get results for a round.
         app.MapGet("/api/br/lobbies/{lobbyId}/results", async (
             Guid              lobbyId,
+            [FromQuery] Guid? gameId,
+            [FromQuery] int?  gameNumber,
             HttpContext        ctx,
             IDbConnectionFactory db) =>
         {
@@ -1667,6 +1680,11 @@ public static class BRGroupEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                conn, lobbyId, gameId, gameNumber);
+            if (targetGameId is null)
+                return Results.NotFound(new { error = "No games found for this lobby." });
+
             var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
 
             // Use LEFT JOINs with COALESCE for unified team/solo display
@@ -1686,7 +1704,7 @@ public static class BRGroupEndpoints
                       LEFT JOIN teams t ON t.id = rr.team_id
                       LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
                       LEFT JOIN profiles p ON p.id = tp.user_id
-                      WHERE rr.lobby_id = @lobbyId
+                      WHERE rr.game_id = @targetGameId
                       ORDER BY rr.placement
                       """
                     : """
@@ -1698,10 +1716,10 @@ public static class BRGroupEndpoints
                              t.logo_url AS logo_url
                       FROM br_lobby_results rr
                       LEFT JOIN teams t ON t.id = rr.team_id
-                      WHERE rr.lobby_id = @lobbyId
+                      WHERE rr.game_id = @targetGameId
                       ORDER BY rr.placement
                       """,
-                new { lobbyId });
+                new { targetGameId });
 
             return Results.Ok(results);
         }).RequireAuthorization("Authenticated");
@@ -2280,6 +2298,10 @@ public static class BRGroupEndpoints
             if (!requiredPlacements.SetEquals(parsedResults.Select(result => result.Placement)))
                 return Results.BadRequest(new { error = $"Placements must be a complete set from 1 to {rosterEntities.Count}." });
 
+            int? requestGameNumber = null;
+            if (body.TryGetProperty("gameNumber", out var gameNumberEl) && gameNumberEl.TryGetInt32(out var parsedGameNumber))
+                requestGameNumber = parsedGameNumber;
+
             using var tx = conn.BeginTransaction();
             try
             {
@@ -2288,9 +2310,26 @@ public static class BRGroupEndpoints
                     new { lobbyId },
                     tx);
 
+                var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                    conn, lobbyId, gameNumber: requestGameNumber, tx: tx);
+                if (targetGameId is null)
+                {
+                    var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(rawSettings, stageConfig) ?? 6;
+                    await BrGameMaterializer.EnsureGamesForLobbyAsync(
+                        conn, lobbyId, gamesPerLobby, rawSettings, stageConfig, catalogBrConfig, tx);
+                    targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                        conn, lobbyId, gameNumber: requestGameNumber ?? 1, tx: tx);
+                }
+
+                if (targetGameId is null)
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = "This lobby has no games configured yet." });
+                }
+
                 await conn.ExecuteAsync(
-                    "DELETE FROM br_lobby_results WHERE lobby_id = @lobbyId",
-                    new { lobbyId },
+                    "DELETE FROM br_lobby_results WHERE game_id = @targetGameId",
+                    new { targetGameId },
                     tx);
 
                 var materializedResults = parsedResults
@@ -2300,6 +2339,7 @@ public static class BRGroupEndpoints
                         var rosterEntity = rosterByEntityId[result.EntityId];
                         return new
                         {
+                            gameId = targetGameId,
                             lobbyId,
                             teamId = rosterEntity.TeamId,
                             participantId = rosterEntity.ParticipantId,
@@ -2315,6 +2355,7 @@ public static class BRGroupEndpoints
                     .Where(result => result.teamId is not null)
                     .Select(result => new
                     {
+                        gameId = result.gameId,
                         result.lobbyId,
                         result.teamId,
                         result.placement,
@@ -2328,6 +2369,7 @@ public static class BRGroupEndpoints
                     .Where(result => result.teamId is null && result.participantId is not null)
                     .Select(result => new
                     {
+                        gameId = result.gameId,
                         result.lobbyId,
                         result.participantId,
                         result.placement,
@@ -2381,6 +2423,7 @@ public static class BRGroupEndpoints
                     participantFallbackTeamResults = participantBackedResults
                         .Select(result => (object)new
                         {
+                            gameId = result.gameId,
                             result.lobbyId,
                             teamId = participantTeamMap[result.participantId!.Value]!.Value,
                             result.placement,
@@ -2400,8 +2443,8 @@ public static class BRGroupEndpoints
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO br_lobby_results (lobby_id, team_id, placement, kills, placement_points, kill_points)
-                        VALUES (@lobbyId, @teamId, @placement, @kills, @placementPoints, @killPoints)
+                        INSERT INTO br_lobby_results (game_id, lobby_id, team_id, placement, kills, placement_points, kill_points)
+                        VALUES (@gameId, @lobbyId, @teamId, @placement, @kills, @placementPoints, @killPoints)
                         """,
                         allTeamBackedResults,
                         tx);
@@ -2414,8 +2457,8 @@ public static class BRGroupEndpoints
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO br_lobby_results (lobby_id, participant_id, placement, kills, placement_points, kill_points)
-                        VALUES (@lobbyId, @participantId, @placement, @kills, @placementPoints, @killPoints)
+                        INSERT INTO br_lobby_results (game_id, lobby_id, participant_id, placement, kills, placement_points, kill_points)
+                        VALUES (@gameId, @lobbyId, @participantId, @placement, @kills, @placementPoints, @killPoints)
                         """,
                         participantBackedResults,
                         tx);
@@ -2542,7 +2585,7 @@ public static class BRGroupEndpoints
                               ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
                           END AS team_name,
                           CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                          COUNT(DISTINCT rr.lobby_id) AS games_played,
+                          COUNT(DISTINCT rr.game_id) AS games_played,
                           SUM(rr.placement_points) AS total_placement_points,
                           SUM(rr.kill_points) AS total_kill_points,
                           SUM(rr.total_points) AS total_points,
@@ -2551,12 +2594,13 @@ public static class BRGroupEndpoints
                           MIN(rr.placement) AS best_placement,
                           AVG(rr.placement::numeric) AS avg_placement
                       FROM br_lobby_results rr
-                      JOIN br_lobbies r ON r.id = rr.lobby_id
+                      JOIN br_games g ON g.id = rr.game_id
+                      JOIN br_lobbies r ON r.id = g.lobby_id
                       LEFT JOIN teams t ON t.id = rr.team_id
                       LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
                       LEFT JOIN profiles p ON p.id = tp.user_id
                       WHERE EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = @groupId)
-                        AND r.status = 'completed'
+                        AND g.status = 'completed'
                       GROUP BY COALESCE(rr.team_id, rr.participant_id),
                                CASE
                                    WHEN rr.team_id IS NOT NULL THEN t.name
@@ -2569,7 +2613,7 @@ public static class BRGroupEndpoints
                           rr.team_id AS team_id,
                           t.name AS team_name,
                           t.logo_url AS logo_url,
-                          COUNT(DISTINCT rr.lobby_id) AS games_played,
+                          COUNT(DISTINCT rr.game_id) AS games_played,
                           SUM(rr.placement_points) AS total_placement_points,
                           SUM(rr.kill_points) AS total_kill_points,
                           SUM(rr.total_points) AS total_points,
@@ -2578,10 +2622,11 @@ public static class BRGroupEndpoints
                           MIN(rr.placement) AS best_placement,
                           AVG(rr.placement::numeric) AS avg_placement
                       FROM br_lobby_results rr
-                      JOIN br_lobbies r ON r.id = rr.lobby_id
+                      JOIN br_games g ON g.id = rr.game_id
+                      JOIN br_lobbies r ON r.id = g.lobby_id
                       LEFT JOIN teams t ON t.id = rr.team_id
                       WHERE EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = @groupId)
-                        AND r.status = 'completed'
+                        AND g.status = 'completed'
                       GROUP BY rr.team_id, t.name, t.logo_url
                       """,
                 new { groupId })).ToList();
@@ -2676,12 +2721,30 @@ public static class BRGroupEndpoints
             }
 
             Guid groupId = groupRow.group_id;
+            var stageId = (Guid)groupRow.stage_id;
+
+            var stageMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ts.config::text AS stage_config, t.settings
+                FROM tournament_stages ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE ts.id = @stageId
+                """,
+                new { stageId });
+            var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+                stageMeta?.settings, stageMeta?.stage_config) ?? 6;
 
             // ── Fetch lobbies linked to the player's seed group ────────────────
             var rounds = (await conn.QueryAsync<dynamic>(
                 """
-                SELECT l.id, l.wave_number, l.lobby_code, l.status, l.scheduled_at, l.started_at, l.completed_at,
-                       l.queue_timer_minutes, l.queue_started_at
+                SELECT l.id, l.wave_number, l.lobby_index, l.lobby_code, l.status, l.scheduled_at, l.started_at, l.completed_at,
+                       l.queue_timer_minutes, l.queue_started_at,
+                       (
+                           SELECT string_agg(g2.name, ' + ' ORDER BY g2.group_order)
+                           FROM br_lobby_groups lg2
+                           JOIN br_groups g2 ON g2.id = lg2.group_id
+                           WHERE lg2.lobby_id = l.id
+                       ) AS matchup_label
                 FROM br_lobbies l
                 JOIN br_lobby_groups lg ON lg.lobby_id = l.id
                 WHERE lg.group_id = @groupId
@@ -2689,8 +2752,23 @@ public static class BRGroupEndpoints
                 """,
                 new { groupId })).ToList();
 
+            var lobbyIds = rounds.Select(r => (Guid)r.id).ToList();
+            var games = lobbyIds.Count == 0
+                ? new List<dynamic>()
+                : (await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT g.id, g.lobby_id, g.game_number, g.map, g.status,
+                           g.scheduled_at, g.started_at, g.completed_at
+                    FROM br_games g
+                    WHERE g.lobby_id = ANY(@lobbyIds)
+                    ORDER BY g.lobby_id, g.game_number
+                    """,
+                    new { lobbyIds })).ToList();
+
             int totalRounds     = rounds.Count;
             int completedRounds = rounds.Count(r => (string)r.status == "completed");
+            int totalGames      = games.Count;
+            int completedGames  = games.Count(g => (string)g.status == "completed");
 
             static DateTimeOffset? ReadRoundTimestamp(dynamic round, string key)
             {
@@ -2719,49 +2797,120 @@ public static class BRGroupEndpoints
                     conn, userCtx.UserIdGuid, stageIdForCheck, StaffAuthHelper.PermBracketEdit);
             }
 
-            // ── Build active round payload ───────────────────────────────────
-            var activeRoundRow = rounds
-                .Where(r => (string)r.status == "active")
-                .OrderByDescending(r => ReadRoundTimestamp(r, "queue_started_at") ?? DateTimeOffset.MinValue)
-                .ThenByDescending(r => HasRoundLobbyCode(r))
-                .ThenByDescending(r => ReadRoundTimestamp(r, "started_at") ?? DateTimeOffset.MinValue)
-                .ThenByDescending(r => Convert.ToInt32(r.wave_number))
+            var activeGameRow = games
+                .Where(g => (string)g.status == "active")
+                .OrderBy(g => Convert.ToInt32(g.game_number))
                 .FirstOrDefault();
+
+            var activeLobbyId = activeGameRow is not null
+                ? (Guid)activeGameRow.lobby_id
+                : rounds
+                    .Where(r => (string)r.status == "active")
+                    .Select(r => (Guid)r.id)
+                    .FirstOrDefault();
+
+            // ── Build active round payload ───────────────────────────────────
+            var activeRoundRow = activeLobbyId != Guid.Empty
+                ? rounds.FirstOrDefault(r => (Guid)r.id == activeLobbyId)
+                : rounds
+                    .Where(r => (string)r.status == "active")
+                    .OrderByDescending(r => ReadRoundTimestamp(r, "queue_started_at") ?? DateTimeOffset.MinValue)
+                    .ThenByDescending(r => HasRoundLobbyCode(r))
+                    .ThenByDescending(r => ReadRoundTimestamp(r, "started_at") ?? DateTimeOffset.MinValue)
+                    .ThenByDescending(r => Convert.ToInt32(r.wave_number))
+                    .FirstOrDefault();
+
             object? activeRoundPayload = null;
+            object? activeGamePayload = null;
             if (activeRoundRow is not null)
             {
-                // Lobby code is returned only if the round is active OR user is staff
+                var activeLobbyGuid = (Guid)activeRoundRow.id;
                 var lobbyCode = isStaff || (string)activeRoundRow.status == "active"
                     ? (string?)activeRoundRow.lobby_code
                     : null;
 
                 activeRoundPayload = new
                 {
-                    id           = ((Guid)activeRoundRow.id).ToString(),
-                    waveNumber  = Convert.ToInt32(activeRoundRow.wave_number),
+                    id = activeLobbyGuid.ToString(),
+                    lobbyId = activeLobbyGuid.ToString(),
+                    waveNumber = Convert.ToInt32(activeRoundRow.wave_number),
+                    matchupLabel = (string?)activeRoundRow.matchup_label,
                     lobbyCode,
-                    status       = (string)activeRoundRow.status,
+                    status = (string)activeRoundRow.status,
                     queueTimerMinutes = activeRoundRow.queue_timer_minutes is not null
                         ? Convert.ToInt32(activeRoundRow.queue_timer_minutes)
                         : (int?)null,
                     queueStartedAt = activeRoundRow.queue_started_at is not null
                         ? ((DateTimeOffset)activeRoundRow.queue_started_at).ToString("o")
                         : (string?)null,
-                    scheduledAt  = activeRoundRow.scheduled_at is not null
+                    scheduledAt = activeRoundRow.scheduled_at is not null
                         ? ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o")
                         : (string?)null,
                 };
+
+                var currentGame = activeGameRow
+                    ?? games.FirstOrDefault(g => (Guid)g.lobby_id == activeLobbyGuid && (string)g.status != "completed");
+                if (currentGame is not null)
+                {
+                    activeGamePayload = new
+                    {
+                        id = ((Guid)currentGame.id).ToString(),
+                        lobbyId = activeLobbyGuid.ToString(),
+                        gameNumber = Convert.ToInt32(currentGame.game_number),
+                        map = (string?)currentGame.map,
+                        status = (string)currentGame.status,
+                        scheduledAt = currentGame.scheduled_at is not null
+                            ? ((DateTimeOffset)currentGame.scheduled_at).ToString("o")
+                            : (string?)null,
+                    };
+                }
             }
+
+            var lobbySchedules = rounds.Select(r =>
+            {
+                var lobbyGuid = (Guid)r.id;
+                var lobbyGames = games
+                    .Where(g => (Guid)g.lobby_id == lobbyGuid)
+                    .OrderBy(g => Convert.ToInt32(g.game_number))
+                    .Select(g => new
+                    {
+                        id = ((Guid)g.id).ToString(),
+                        gameNumber = Convert.ToInt32(g.game_number),
+                        map = (string?)g.map,
+                        status = (string)g.status,
+                        scheduledAt = g.scheduled_at is not null
+                            ? ((DateTimeOffset)g.scheduled_at).ToString("o")
+                            : (string?)null,
+                    })
+                    .ToList();
+
+                return new
+                {
+                    lobbyId = lobbyGuid.ToString(),
+                    waveNumber = Convert.ToInt32(r.wave_number),
+                    matchupLabel = (string?)r.matchup_label,
+                    status = (string)r.status,
+                    scheduledAt = r.scheduled_at is not null
+                        ? ((DateTimeOffset)r.scheduled_at).ToString("o")
+                        : (string?)null,
+                    games = lobbyGames,
+                };
+            }).ToList();
 
             return Results.Ok(new
             {
-                stageId         = ((Guid)groupRow.stage_id).ToString(),
-                stageName       = (string)groupRow.stage_name,
-                groupId         = ((Guid)groupRow.group_id).ToString(),
-                groupName       = (string)groupRow.group_name,
+                stageId = stageId.ToString(),
+                stageName = (string)groupRow.stage_name,
+                groupId = ((Guid)groupRow.group_id).ToString(),
+                groupName = (string)groupRow.group_name,
+                gamesPerLobby,
                 totalRounds,
                 completedRounds,
-                activeRound     = activeRoundPayload,
+                totalGames,
+                completedGames,
+                activeRound = activeRoundPayload,
+                activeGame = activeGamePayload,
+                lobbies = lobbySchedules,
             });
         }).RequireAuthorization("Authenticated");
 
@@ -2833,7 +2982,9 @@ public static class BRGroupEndpoints
             Guid stageId,
             [FromBody] JsonElement body,
             HttpContext ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            GameCatalogService catalog,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2926,6 +3077,25 @@ public static class BRGroupEndpoints
                         }
                     }
 
+                    var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT t.settings, ts.config AS stage_config, t.game
+                        FROM tournament_stages ts
+                        JOIN tournaments t ON t.id = ts.tournament_id
+                        WHERE ts.id = @stageId
+                        """,
+                        new { stageId },
+                        tx);
+                    var catalogBrConfig = await LoadCatalogBrConfigAsync(
+                        catalog, stageContext?.game as string, ct);
+                    await BrGameMaterializer.MaterializeStageGamesAsync(
+                        conn,
+                        stageId,
+                        tournamentSettings: stageContext?.settings,
+                        stageConfig: stageContext?.stage_config,
+                        catalogBrConfig: catalogBrConfig,
+                        tx: tx);
+
                     tx.Commit();
                 }
                 catch
@@ -2971,12 +3141,13 @@ public static class BRGroupEndpoints
                     COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
                     AVG(rr.placement::numeric) AS avg_placement
                 FROM br_lobby_results rr
-                JOIN br_lobbies l ON l.id = rr.lobby_id
+                JOIN br_games g ON g.id = rr.game_id
+                JOIN br_lobbies l ON l.id = g.lobby_id
                 LEFT JOIN teams t ON t.id = rr.team_id
                 LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
                 LEFT JOIN profiles p ON p.id = tp.user_id
                 WHERE l.stage_id = @stageId
-                  AND l.status = 'completed'
+                  AND g.status = 'completed'
                 GROUP BY COALESCE(rr.team_id, rr.participant_id),
                         CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player') END,
                         CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
@@ -3102,14 +3273,15 @@ public static class BRGroupEndpoints
                     COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
                     AVG(rr.placement::numeric) AS avg_placement
                 FROM br_lobby_results rr
-                JOIN br_lobbies r ON r.id = rr.lobby_id
+                JOIN br_games bg ON bg.id = rr.game_id
+                JOIN br_lobbies r ON r.id = bg.lobby_id
                 JOIN br_lobby_groups lg ON lg.lobby_id = r.id
                 JOIN br_groups g ON g.id = lg.group_id
                 LEFT JOIN teams t ON t.id = rr.team_id
                 LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
                 LEFT JOIN profiles p ON p.id = tp.user_id
                 WHERE g.stage_id = @stageId
-                  AND r.status = 'completed'
+                  AND bg.status = 'completed'
                 GROUP BY COALESCE(rr.team_id, rr.participant_id),
                          rr.team_id, rr.participant_id,
                          CASE
@@ -3165,7 +3337,7 @@ public static class BRGroupEndpoints
                 var lobbyRows = (await conn.QueryAsync<dynamic>(
                     """
                     SELECT
-                        rr.lobby_id,
+                        g.lobby_id,
                         COALESCE(rr.team_id, rr.participant_id) AS entity_id,
                         rr.team_id,
                         rr.participant_id,
@@ -3179,13 +3351,14 @@ public static class BRGroupEndpoints
                         COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
                         AVG(rr.placement::numeric) AS avg_placement
                     FROM br_lobby_results rr
-                    JOIN br_lobbies l ON l.id = rr.lobby_id
+                    JOIN br_games g ON g.id = rr.game_id
+                    JOIN br_lobbies l ON l.id = g.lobby_id
                     LEFT JOIN teams t ON t.id = rr.team_id
                     LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
                     LEFT JOIN profiles p ON p.id = tp.user_id
                     WHERE l.stage_id = @stageId
-                      AND l.status = 'completed'
-                    GROUP BY rr.lobby_id,
+                      AND g.status = 'completed'
+                    GROUP BY g.lobby_id,
                              COALESCE(rr.team_id, rr.participant_id),
                              rr.team_id, rr.participant_id,
                              CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player') END,
@@ -3394,6 +3567,8 @@ public static class BRGroupEndpoints
                 throw;
             }
         }).RequireAuthorization("Authenticated");
+
+        app.MapBrGameEndpoints();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

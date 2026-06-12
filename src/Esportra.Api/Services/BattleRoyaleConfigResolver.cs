@@ -50,6 +50,14 @@ public static class BattleRoyaleConfigResolver
         None,
     }
 
+    public enum BrLobbyFormation
+    {
+        Single,
+        PerSeedGroup,
+        WavePairings,
+        ParallelCut,
+    }
+
     public sealed record BrMapConfig(BrMapMode Mode, IReadOnlyList<string> Pool, string? FixedMap);
 
     public sealed record ResolvedStageBrConfig(
@@ -163,16 +171,29 @@ public static class BattleRoyaleConfigResolver
         return new BrMapConfig(mode, pool, fixedMap);
     }
 
+    /// <summary>Games played inside each physical lobby (Cash Cup model).</summary>
+    public static int? ResolveGamesPerLobby(object? tournamentSettings, object? stageConfig) =>
+        ResolveGameCount(tournamentSettings, stageConfig);
+
     public static int? ResolveGameCount(object? tournamentSettings, object? stageConfig)
     {
         if (TryParseJsonElement(stageConfig, out var stageRoot)
             && TryGetPropertyIgnoreCase(stageRoot, "br", out var brSection)
-            && brSection.ValueKind == JsonValueKind.Object
-            && TryGetPropertyIgnoreCase(brSection, "gameCount", out var gameCountEl)
-            && gameCountEl.TryGetInt32(out var stageGameCount)
-            && stageGameCount > 0)
+            && brSection.ValueKind == JsonValueKind.Object)
         {
-            return stageGameCount;
+            if (TryGetPropertyIgnoreCase(brSection, "gamesPerLobby", out var gamesPerLobbyEl)
+                && gamesPerLobbyEl.TryGetInt32(out var gamesPerLobby)
+                && gamesPerLobby > 0)
+            {
+                return gamesPerLobby;
+            }
+
+            if (TryGetPropertyIgnoreCase(brSection, "gameCount", out var gameCountEl)
+                && gameCountEl.TryGetInt32(out var stageGameCount)
+                && stageGameCount > 0)
+            {
+                return stageGameCount;
+            }
         }
 
         if (TryParseJsonElement(tournamentSettings, out var settingsRoot))
@@ -195,6 +216,19 @@ public static class BattleRoyaleConfigResolver
 
         return 6;
     }
+
+    public static BrLobbyFormation ResolveLobbyFormation(object? stageConfig) =>
+        ResolveLobbyFormation(ResolveFormat(stageConfig));
+
+    public static BrLobbyFormation ResolveLobbyFormation(BrStageFormat format) =>
+        format switch
+        {
+            BrStageFormat.SingleLobby => BrLobbyFormation.Single,
+            BrStageFormat.StaticGroups => BrLobbyFormation.PerSeedGroup,
+            BrStageFormat.GroupRotation => BrLobbyFormation.WavePairings,
+            BrStageFormat.MultiLobbyCut => BrLobbyFormation.ParallelCut,
+            _ => BrLobbyFormation.PerSeedGroup,
+        };
 
     public static BrStageFormat ResolveFormat(object? stageConfig)
     {
@@ -232,8 +266,17 @@ public static class BattleRoyaleConfigResolver
             };
         }
 
-        return BrLeaderboardScope.StageGlobal;
+        return ResolveLeaderboardScopeForFormat(ResolveFormat(stageConfig));
     }
+
+    public static BrLeaderboardScope ResolveLeaderboardScopeForFormat(BrStageFormat format) =>
+        format switch
+        {
+            BrStageFormat.SingleLobby => BrLeaderboardScope.StageGlobal,
+            BrStageFormat.GroupRotation => BrLeaderboardScope.StageGlobal,
+            BrStageFormat.MultiLobbyCut => BrLeaderboardScope.PerLobby,
+            _ => BrLeaderboardScope.PerSeedGroup,
+        };
 
     public static BrAdvancementMode ResolveAdvancement(object? stageConfig)
     {

@@ -64,9 +64,25 @@ public sealed class BRHub : Hub
     public Task LeaveLobby(string lobbyId) =>
         Groups.RemoveFromGroupAsync(Context.ConnectionId, LobbyGroup(lobbyId));
 
+    public async Task JoinGame(string gameId)
+    {
+        if (!TryParseGuid(gameId, out var gameGuid))
+            throw new HubException("Invalid game id.");
+
+        if (!await CanViewGameAsync(gameGuid))
+            throw new HubException("Not authorized for this BR stream.");
+
+        await Groups.AddToGroupAsync(Context.ConnectionId, GameGroup(gameId));
+        _logger.LogDebug("Client {Conn} joined {Group}", Context.ConnectionId, GameGroup(gameId));
+    }
+
+    public Task LeaveGame(string gameId) =>
+        Groups.RemoveFromGroupAsync(Context.ConnectionId, GameGroup(gameId));
+
     public static string StageGroup(string stageId) => $"br:stage:{stageId}";
     public static string GroupGroup(string groupId) => $"br:group:{groupId}";
     public static string LobbyGroup(string lobbyId) => $"br:lobby:{lobbyId}";
+    public static string GameGroup(string gameId) => $"br:game:{gameId}";
 
     private static bool TryParseGuid(string value, out Guid id) =>
         Guid.TryParse(value, out id);
@@ -122,6 +138,24 @@ public sealed class BRHub : Hub
             """,
             new { lobbyId });
     }
+
+    private async Task<bool> CanViewGameAsync(Guid gameId)
+    {
+        using var conn = _db.CreateConnection();
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM br_games g
+                JOIN br_lobbies l ON l.id = g.lobby_id
+                JOIN tournament_stages s ON s.id = l.stage_id
+                JOIN tournaments t ON t.id = s.tournament_id
+                WHERE g.id = @gameId
+                  AND t.deleted_at IS NULL
+            )
+            """,
+            new { gameId });
+    }
 }
 
 public static class BRHubEvents
@@ -134,4 +168,7 @@ public static class BRHubEvents
     public const string EvidenceReviewed = "EvidenceReviewed";
     public const string ResultsUpdated = "ResultsUpdated";
     public const string LeaderboardUpdated = "LeaderboardUpdated";
+    public const string GameCreated = "GameCreated";
+    public const string GameUpdated = "GameUpdated";
+    public const string GameCompleted = "GameCompleted";
 }
