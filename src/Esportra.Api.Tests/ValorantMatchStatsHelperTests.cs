@@ -157,11 +157,30 @@ public class ValorantMatchStatsHelperTests
         var timeline = ValorantMatchStatsHelper.BuildRoundTimeline(doc.RootElement);
 
         Assert.Equal(2, timeline.Count);
-        Assert.Equal(3, timeline[0].Round);
+        Assert.Equal(4, timeline[0].Round);
         Assert.Equal("Detonate", timeline[0].ResultCode);
         Assert.Equal("A", timeline[0].PlantSite);
         Assert.Equal(2, timeline[1].Round);
         Assert.Equal("Defuse", timeline[1].ResultCode);
+    }
+
+    [Fact]
+    public void BuildRoundTimeline_ConvertsZeroBasedRoundNum()
+    {
+        const string json = """
+        {
+          "roundResults": [
+            { "roundNum": 0, "winningTeam": "Blue", "roundResultCode": "Elimination", "playerStats": [] },
+            { "roundNum": 1, "winningTeam": "Red", "roundResultCode": "Elimination", "playerStats": [] }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var timeline = ValorantMatchStatsHelper.BuildRoundTimeline(doc.RootElement);
+
+        Assert.Equal(1, timeline[0].Round);
+        Assert.Equal(2, timeline[1].Round);
     }
 
     [Fact]
