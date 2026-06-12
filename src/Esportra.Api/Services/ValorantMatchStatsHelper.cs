@@ -11,6 +11,14 @@ internal static class ValorantMatchStatsHelper
         int Legshots,
         int FirstBloods);
 
+    internal sealed record RoundTimelineEntry(int Round, string WinningTeam, string? ResultCode);
+
+    internal sealed record EconomyTimelineEntry(int Round, int BlueSpent, int RedSpent);
+
+    internal sealed record DerivedMatchDetails(
+        IReadOnlyList<RoundTimelineEntry> RoundTimeline,
+        IReadOnlyList<EconomyTimelineEntry> EconomyTimeline);
+
     internal static Dictionary<string, RoundAggregates> BuildRoundAggregates(JsonElement root)
     {
         var aggregates = new Dictionary<string, RoundAggregates>(StringComparer.Ordinal);
@@ -138,5 +146,124 @@ internal static class ValorantMatchStatsHelper
         return totalShots > 0
             ? Math.Round(headshots * 100d / totalShots, 1)
             : null;
+    }
+
+    internal static DerivedMatchDetails BuildDerivedMatchDetails(JsonElement root)
+    {
+        return new DerivedMatchDetails(
+            BuildRoundTimeline(root),
+            BuildEconomyTimeline(root));
+    }
+
+    internal static List<RoundTimelineEntry> BuildRoundTimeline(JsonElement root)
+    {
+        var timeline = new List<RoundTimelineEntry>();
+
+        if (!root.TryGetProperty("roundResults", out var roundResults)
+            || roundResults.ValueKind != JsonValueKind.Array)
+        {
+            return timeline;
+        }
+
+        var roundNumber = 0;
+        foreach (var round in roundResults.EnumerateArray())
+        {
+            roundNumber++;
+            var winningTeam = round.TryGetProperty("winningTeam", out var winningTeamEl)
+                ? winningTeamEl.GetString() ?? string.Empty
+                : string.Empty;
+            var resultCode = round.TryGetProperty("roundResultCode", out var resultCodeEl)
+                ? resultCodeEl.GetString()
+                : null;
+
+            timeline.Add(new RoundTimelineEntry(roundNumber, winningTeam, resultCode));
+        }
+
+        return timeline;
+    }
+
+    internal static List<EconomyTimelineEntry> BuildEconomyTimeline(JsonElement root)
+    {
+        var timeline = new List<EconomyTimelineEntry>();
+        var teamByPuuid = BuildTeamByPuuid(root);
+
+        if (!root.TryGetProperty("roundResults", out var roundResults)
+            || roundResults.ValueKind != JsonValueKind.Array)
+        {
+            return timeline;
+        }
+
+        var roundNumber = 0;
+        foreach (var round in roundResults.EnumerateArray())
+        {
+            roundNumber++;
+            var blueSpent = 0;
+            var redSpent = 0;
+
+            if (round.TryGetProperty("playerStats", out var playerStats)
+                && playerStats.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var roundPlayer in playerStats.EnumerateArray())
+                {
+                    var puuid = roundPlayer.TryGetProperty("puuid", out var puuidEl)
+                        ? puuidEl.GetString()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(puuid)
+                        || !teamByPuuid.TryGetValue(puuid, out var teamId))
+                    {
+                        continue;
+                    }
+
+                    var spent = 0;
+                    if (roundPlayer.TryGetProperty("economy", out var economyEl)
+                        && economyEl.TryGetProperty("spent", out var spentEl)
+                        && spentEl.TryGetInt32(out var parsedSpent))
+                    {
+                        spent = parsedSpent;
+                    }
+
+                    if (string.Equals(teamId, "Blue", StringComparison.OrdinalIgnoreCase))
+                    {
+                        blueSpent += spent;
+                    }
+                    else if (string.Equals(teamId, "Red", StringComparison.OrdinalIgnoreCase))
+                    {
+                        redSpent += spent;
+                    }
+                }
+            }
+
+            timeline.Add(new EconomyTimelineEntry(roundNumber, blueSpent, redSpent));
+        }
+
+        return timeline;
+    }
+
+    private static Dictionary<string, string> BuildTeamByPuuid(JsonElement root)
+    {
+        var teamByPuuid = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (!root.TryGetProperty("players", out var players)
+            || players.ValueKind != JsonValueKind.Array)
+        {
+            return teamByPuuid;
+        }
+
+        foreach (var player in players.EnumerateArray())
+        {
+            var puuid = player.TryGetProperty("puuid", out var puuidEl)
+                ? puuidEl.GetString()
+                : null;
+            var teamId = player.TryGetProperty("teamId", out var teamEl)
+                ? teamEl.GetString()
+                : null;
+
+            if (!string.IsNullOrWhiteSpace(puuid) && !string.IsNullOrWhiteSpace(teamId))
+            {
+                teamByPuuid[puuid] = teamId;
+            }
+        }
+
+        return teamByPuuid;
     }
 }

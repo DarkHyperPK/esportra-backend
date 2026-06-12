@@ -285,6 +285,8 @@ public static class MatchEndpoints
                     var enemyRounds = isBlue ? redRounds : blueRounds;
                     var didWin = isBlue ? blueWon : redWon;
 
+                    var derivedDetails = ValorantMatchStatsHelper.BuildDerivedMatchDetails(doc.RootElement);
+
                     candidates.Add(new
                     {
                         id = riotMatchId,
@@ -304,6 +306,18 @@ public static class MatchEndpoints
                         blueTeam = new { roundsWon = blueRounds, won = blueWon },
                         redTeam = new { roundsWon = redRounds, won = redWon },
                         players = playerList,
+                        roundTimeline = derivedDetails.RoundTimeline.Select(round => new
+                        {
+                            round = round.Round,
+                            winningTeam = round.WinningTeam,
+                            resultCode = round.ResultCode,
+                        }),
+                        economyTimeline = derivedDetails.EconomyTimeline.Select(entry => new
+                        {
+                            round = entry.Round,
+                            blueSpent = entry.BlueSpent,
+                            redSpent = entry.RedSpent,
+                        }),
                     });
                 }
                 catch (Exception ex)
@@ -320,6 +334,154 @@ public static class MatchEndpoints
                 log.LogError(ex, "Scan failed for match {MatchId}", req.MatchId);
                 return Results.Json(new { error = "We couldn't scan the match. Please try again." }, statusCode: 500);
             }
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/matches/{matchId}/games/{gameNumber}/riot-details ───────
+        // Re-fetch and parse full Riot match payload for stored game rows.
+        app.MapGet("/api/matches/{matchId:guid}/games/{gameNumber:int}/riot-details", async (
+            Guid                           matchId,
+            int                            gameNumber,
+            HttpContext                    ctx,
+            IDbConnectionFactory           db,
+            Esportra.Infrastructure.Integrations.RiotApiClient riotApi,
+            HybridCache                    cache,
+            ILoggerFactory                 loggerFactory,
+            CancellationToken              ct) =>
+        {
+            var log = loggerFactory.CreateLogger("MatchEndpoints.RiotDetails");
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!Guid.TryParse(userCtx.UserId, out var userGuid))
+                return Results.BadRequest(new { error = "Invalid user ID" });
+
+            using var conn = db.CreateConnection();
+
+            var gameRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.riot_match_id, g.match_details::text AS match_details
+                FROM brkt_match_games g
+                WHERE g.match_id = @matchId AND g.game_number = @gameNumber
+                """,
+                new { matchId, gameNumber });
+
+            if (gameRow is null)
+                return Results.NotFound(new { error = "Game not found" });
+
+            var riotMatchId = (string?)gameRow.riot_match_id;
+            if (string.IsNullOrWhiteSpace(riotMatchId))
+                return Results.NotFound(new { error = "No Riot match ID stored for this game" });
+
+            var membership = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT bm.team1_id, bm.team2_id
+                FROM brkt_matches bm
+                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId AND tm.user_id = @userId
+                LIMIT 1
+                """,
+                new { matchId, userId = userGuid });
+
+            if (membership is null)
+                return Results.Forbid();
+
+            var shardAccount = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT ra.puuid, ra.region
+                FROM riot_accounts ra
+                JOIN team_members tm ON tm.user_id = ra.user_id
+                WHERE tm.team_id IN (@team1Id, @team2Id) AND ra.puuid IS NOT NULL
+                LIMIT 1
+                """,
+                new { team1Id = (Guid)membership.team1_id, team2Id = (Guid)membership.team2_id });
+
+            if (shardAccount is null)
+                return Results.BadRequest(new { error = "No linked Riot account found for this match" });
+
+            var shardPuuid = (string)shardAccount.puuid;
+            var shard = await cache.GetOrCreateAsync(
+                $"riot:shard:{shardPuuid}",
+                async (_) =>
+                {
+                    var (s, b) = await riotApi.ProxyAsync(
+                        "americas", $"/riot/account/v1/active-shards/by-game/val/by-puuid/{shardPuuid}", ct);
+                    if (s == 200)
+                    {
+                        using var doc = JsonDocument.Parse(b);
+                        var val = doc.RootElement.GetProperty("activeShard").GetString()?.ToLowerInvariant();
+                        if (!string.IsNullOrEmpty(val)) return val;
+                    }
+
+                    var r = ((string?)shardAccount.region)?.ToLowerInvariant() ?? "eu";
+                    return r switch
+                    {
+                        "na" or "br" or "latam" or "kr" or "ap" or "eu" => r,
+                        "americas" => "na", "europe" => "eu", "asia" => "ap",
+                        _ => "eu"
+                    };
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(30) },
+                cancellationToken: ct) ?? "eu";
+
+            var (detStatus, detBody) = await riotApi.ProxyAsync(
+                shard, $"/val/match/v1/matches/{riotMatchId}", ct);
+            if (detStatus != 200)
+            {
+                log.LogWarning("Riot match fetch failed for {RiotMatchId} status {Status}", riotMatchId, detStatus);
+                return Results.BadRequest(new { error = "Could not fetch match details from Riot" });
+            }
+
+            using var riotDoc = JsonDocument.Parse(detBody);
+            var allAccounts = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT ra.puuid, tm.team_id
+                FROM riot_accounts ra
+                JOIN team_members tm ON tm.user_id = ra.user_id
+                WHERE tm.team_id IN (@team1Id, @team2Id) AND ra.puuid IS NOT NULL
+                """,
+                new { team1Id = (Guid)membership.team1_id, team2Id = (Guid)membership.team2_id })).AsList();
+
+            var team1Puuids = allAccounts
+                .Where(a => (Guid)a.team_id == (Guid)membership.team1_id)
+                .Select(a => (string)a.puuid).ToHashSet();
+            var team2Puuids = allAccounts
+                .Where(a => (Guid)a.team_id == (Guid)membership.team2_id)
+                .Select(a => (string)a.puuid).ToHashSet();
+
+            var parsed = RiotMatchDetailsParser.Parse(riotDoc.RootElement, team1Puuids, team2Puuids);
+            if (parsed is null)
+                return Results.BadRequest(new { error = "Failed to parse Riot match payload" });
+
+            var payload = new
+            {
+                players = parsed.Players,
+                blueTeam = parsed.BlueTeam,
+                redTeam = parsed.RedTeam,
+                gameLengthMillis = parsed.GameLengthMillis,
+                startTime = parsed.StartTime,
+                roundTimeline = parsed.Derived.RoundTimeline.Select(round => new
+                {
+                    round = round.Round,
+                    winningTeam = round.WinningTeam,
+                    resultCode = round.ResultCode,
+                }),
+                economyTimeline = parsed.Derived.EconomyTimeline.Select(entry => new
+                {
+                    round = entry.Round,
+                    blueSpent = entry.BlueSpent,
+                    redSpent = entry.RedSpent,
+                }),
+            };
+
+            var payloadJson = JsonSerializer.Serialize(payload);
+            await conn.ExecuteAsync(
+                """
+                UPDATE brkt_match_games
+                SET match_details = COALESCE(match_details, '{}'::jsonb) || @payload::jsonb
+                WHERE match_id = @matchId AND game_number = @gameNumber
+                """,
+                new { matchId, gameNumber, payload = payloadJson });
+
+            return Results.Content(payloadJson, "application/json");
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/process ───────────────────────────────

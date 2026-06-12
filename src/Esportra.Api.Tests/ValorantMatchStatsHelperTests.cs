@@ -82,6 +82,56 @@ public class ValorantMatchStatsHelperTests
     }
 
     [Fact]
+    public void BuildRoundTimeline_ReturnsWinningTeamPerRound()
+    {
+        const string json = """
+        {
+          "roundResults": [
+            { "winningTeam": "Blue", "roundResultCode": "Elimination", "playerStats": [] },
+            { "winningTeam": "Red", "roundResultCode": "Defuse", "playerStats": [] }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var timeline = ValorantMatchStatsHelper.BuildRoundTimeline(doc.RootElement);
+
+        Assert.Equal(2, timeline.Count);
+        Assert.Equal(1, timeline[0].Round);
+        Assert.Equal("Blue", timeline[0].WinningTeam);
+        Assert.Equal("Elimination", timeline[0].ResultCode);
+        Assert.Equal("Red", timeline[1].WinningTeam);
+    }
+
+    [Fact]
+    public void BuildEconomyTimeline_AggregatesSpentByTeam()
+    {
+        const string json = """
+        {
+          "players": [
+            { "puuid": "blue-player", "teamId": "Blue" },
+            { "puuid": "red-player", "teamId": "Red" }
+          ],
+          "roundResults": [
+            {
+              "playerStats": [
+                { "puuid": "blue-player", "economy": { "spent": 2900 } },
+                { "puuid": "red-player", "economy": { "spent": 800 } }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var timeline = ValorantMatchStatsHelper.BuildEconomyTimeline(doc.RootElement);
+
+        Assert.Single(timeline);
+        Assert.Equal(2900, timeline[0].BlueSpent);
+        Assert.Equal(800, timeline[0].RedSpent);
+    }
+
+    [Fact]
     public void ComputeHeadshotPercent_ReturnsNullWhenNoShots()
     {
         Assert.Null(ValorantMatchStatsHelper.ComputeHeadshotPercent(0, 0, 0));
