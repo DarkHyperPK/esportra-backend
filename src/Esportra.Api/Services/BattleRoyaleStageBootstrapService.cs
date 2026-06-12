@@ -26,7 +26,8 @@ public sealed class BattleRoyaleStageBootstrapService
                 ts.capacity AS "Capacity",
                 ts.advancement_count AS "AdvancementCount",
                 ts.config::text AS "Config",
-                t.max_teams AS "TournamentMaxTeams"
+                t.max_teams AS "TournamentMaxTeams",
+                t.team_size AS "TeamSize"
             FROM public.tournament_stages ts
             JOIN public.tournaments t ON t.id = ts.tournament_id
             WHERE ts.tournament_id = @tournamentId
@@ -111,8 +112,6 @@ public sealed class BattleRoyaleStageBootstrapService
                 tx);
         }
 
-        await EnsureInitialLobbiesAsync(conn, tx, stage, targetGroupCount, format);
-
         _logger.LogInformation(
             "Bootstrapped {GroupCount} BR group(s) for stage {StageId} ({StageName})",
             targetGroupCount,
@@ -120,6 +119,296 @@ public sealed class BattleRoyaleStageBootstrapService
             stage.Name);
 
         return new BattleRoyaleStageBootstrapResult(stage.Id, targetGroupCount, true);
+    }
+
+    public async Task<BattleRoyaleStageLobbiesResult> EnsureStageLobbiesAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        Guid stageId,
+        int playersPerLobby = 100)
+    {
+        var stage = await LoadStageRowAsync(conn, tx, stageId);
+        if (stage is null)
+        {
+            return new BattleRoyaleStageLobbiesResult(stageId, false, "Battle royale stage not found.");
+        }
+
+        var format = BattleRoyaleConfigResolver.ResolveFormat(stage.Config);
+        if (format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation)
+        {
+            return new BattleRoyaleStageLobbiesResult(
+                stageId,
+                false,
+                "Round-robin stages use the Schedule tab to create matches.");
+        }
+
+        var groupCount = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*)::int FROM public.br_groups WHERE stage_id = @stageId",
+            new { stageId },
+            tx);
+
+        if (groupCount == 0)
+        {
+            return new BattleRoyaleStageLobbiesResult(
+                stageId,
+                false,
+                "Initialize groups before creating matches.");
+        }
+
+        var assignedCount = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)::int
+            FROM public.br_group_teams gt
+            JOIN public.br_groups g ON g.id = gt.group_id
+            WHERE g.stage_id = @stageId
+            """,
+            new { stageId },
+            tx);
+
+        if (assignedCount == 0)
+        {
+            return new BattleRoyaleStageLobbiesResult(
+                stageId,
+                false,
+                "Seed participants before creating matches.");
+        }
+
+        var seedingError = await ValidateSeedingCompleteAsync(conn, tx, stage, assignedCount);
+        if (seedingError is not null)
+        {
+            return new BattleRoyaleStageLobbiesResult(stageId, false, seedingError);
+        }
+
+        if (format == BattleRoyaleConfigResolver.BrStageFormat.SingleLobby)
+        {
+            var lobbySize = await conn.ExecuteScalarAsync<int>(
+                """
+                SELECT COALESCE(MAX(lobby_size), 0)
+                FROM public.br_groups
+                WHERE stage_id = @stageId
+                """,
+                new { stageId },
+                tx);
+
+            var teamSize = Math.Max(1, stage.TeamSize ?? 1);
+            var playerCount = assignedCount * teamSize;
+
+            if (lobbySize > 0 && assignedCount > lobbySize)
+            {
+                return new BattleRoyaleStageLobbiesResult(
+                    stageId,
+                    false,
+                    $"{assignedCount} participants exceed the lobby size of {lobbySize}. Use Group qualifiers to split the field.");
+            }
+
+            if (playerCount > playersPerLobby)
+            {
+                return new BattleRoyaleStageLobbiesResult(
+                    stageId,
+                    false,
+                    $"{playerCount} players exceed the {playersPerLobby}-player lobby cap. Use Group qualifiers to split the field.");
+            }
+        }
+        else if (format is BattleRoyaleConfigResolver.BrStageFormat.StaticGroups
+            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+        {
+            var overcrowdedGroups = (await conn.QueryAsync<(string Name, int Assigned, int LobbySize)>(
+                """
+                SELECT g.name, COUNT(gt.id)::int AS assigned, g.lobby_size
+                FROM public.br_groups g
+                LEFT JOIN public.br_group_teams gt ON gt.group_id = g.id
+                WHERE g.stage_id = @stageId
+                GROUP BY g.id, g.name, g.lobby_size
+                HAVING COUNT(gt.id) > g.lobby_size
+                """,
+                new { stageId },
+                tx)).ToList();
+
+            if (overcrowdedGroups.Count > 0)
+            {
+                var first = overcrowdedGroups[0];
+                return new BattleRoyaleStageLobbiesResult(
+                    stageId,
+                    false,
+                    $"{first.Name} has {first.Assigned} participants but lobby size is {first.LobbySize}. Re-seed or add more groups.");
+            }
+        }
+
+        var existingLobbies = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*)::int FROM br_lobbies WHERE stage_id = @stageId",
+            new { stageId },
+            tx);
+
+        if (existingLobbies > 0)
+        {
+            return new BattleRoyaleStageLobbiesResult(stageId, false, null);
+        }
+
+        await EnsureInitialLobbiesAsync(conn, tx, stage, groupCount, format);
+
+        _logger.LogInformation(
+            "Generated BR lobbies for stage {StageId} ({StageName})",
+            stage.Id,
+            stage.Name);
+
+        return new BattleRoyaleStageLobbiesResult(stageId, true, null);
+    }
+
+    private static async Task<BattleRoyaleStageRow?> LoadStageRowAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        Guid stageId)
+    {
+        return await conn.QuerySingleOrDefaultAsync<BattleRoyaleStageRow>(
+            """
+            SELECT
+                ts.id AS "Id",
+                ts.name AS "Name",
+                ts.stage_order AS "StageOrder",
+                ts.capacity AS "Capacity",
+                ts.advancement_count AS "AdvancementCount",
+                ts.config::text AS "Config",
+                t.max_teams AS "TournamentMaxTeams",
+                t.team_size AS "TeamSize"
+            FROM public.tournament_stages ts
+            JOIN public.tournaments t ON t.id = ts.tournament_id
+            WHERE ts.id = @stageId
+              AND ts.format = 'battle_royale'
+            """,
+            new { stageId },
+            tx);
+    }
+
+    private static async Task<string?> ValidateSeedingCompleteAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        BattleRoyaleStageRow stage,
+        int assignedCount)
+    {
+        var tournamentId = await conn.ExecuteScalarAsync<Guid?>(
+            "SELECT tournament_id FROM public.tournament_stages WHERE id = @stageId",
+            new { stageId = stage.Id },
+            tx);
+
+        if (tournamentId is null)
+            return "Battle royale stage not found.";
+
+        var teamSize = Math.Max(1, stage.TeamSize ?? 1);
+        var isSolo = teamSize == 1;
+
+        var emptyGroups = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)::int
+            FROM public.br_groups g
+            WHERE g.stage_id = @stageId
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.br_group_teams gt WHERE gt.group_id = g.id
+              )
+            """,
+            new { stageId = stage.Id },
+            tx);
+
+        if (emptyGroups > 0)
+        {
+            return "All groups must have participants before creating matches.";
+        }
+
+        var eligibleCount = await CountSeedEligibleUnitsAsync(conn, tx, tournamentId.Value, isSolo);
+        var expectedIncoming = await ComputeIncomingUnitsForStageAsync(conn, tx, stage, eligibleCount);
+
+        if (expectedIncoming > 0 && assignedCount < expectedIncoming)
+        {
+            return $"Seed all participants before creating matches ({assignedCount}/{expectedIncoming} assigned).";
+        }
+
+        if (expectedIncoming <= 0 && eligibleCount > 0 && assignedCount < eligibleCount && stage.StageOrder == 1)
+        {
+            return $"Seed all participants before creating matches ({assignedCount}/{eligibleCount} assigned).";
+        }
+
+        return null;
+    }
+
+    private static async Task<int> CountSeedEligibleUnitsAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        Guid tournamentId,
+        bool isSolo)
+    {
+        if (isSolo)
+        {
+            return await conn.ExecuteScalarAsync<int>(
+                """
+                SELECT COUNT(*)::int
+                FROM public.tournament_participants
+                WHERE tournament_id = @tournamentId
+                  AND status::text = ANY(@statuses)
+                """,
+                new { tournamentId, statuses = new[] { "approved", "checked_in" } },
+                tx);
+        }
+
+        return await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(DISTINCT team_id)::int
+            FROM public.tournament_participants
+            WHERE tournament_id = @tournamentId
+              AND team_id IS NOT NULL
+              AND status::text = ANY(@statuses)
+            """,
+            new { tournamentId, statuses = new[] { "approved", "checked_in" } },
+            tx);
+    }
+
+    private static async Task<int> ComputeIncomingUnitsForStageAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        BattleRoyaleStageRow stage,
+        int eligibleCount)
+    {
+        var stages = (await conn.QueryAsync<BattleRoyaleStageRow>(
+            """
+            SELECT
+                ts.id AS "Id",
+                ts.name AS "Name",
+                ts.stage_order AS "StageOrder",
+                ts.capacity AS "Capacity",
+                ts.advancement_count AS "AdvancementCount",
+                ts.config::text AS "Config",
+                t.max_teams AS "TournamentMaxTeams",
+                t.team_size AS "TeamSize"
+            FROM public.tournament_stages ts
+            JOIN public.tournaments t ON t.id = ts.tournament_id
+            WHERE ts.tournament_id = (
+                SELECT tournament_id FROM public.tournament_stages WHERE id = @stageId
+            )
+              AND ts.format = 'battle_royale'
+            ORDER BY ts.stage_order
+            """,
+            new { stageId = stage.Id },
+            tx)).ToList();
+
+        var incomingUnits = stages.FirstOrDefault()?.TournamentMaxTeams ?? 0;
+        if (incomingUnits <= 0 && eligibleCount > 0)
+            incomingUnits = eligibleCount;
+
+        foreach (var current in stages)
+        {
+            if (current.Id == stage.Id)
+                return incomingUnits;
+
+            var groupCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*)::int FROM public.br_groups WHERE stage_id = @stageId",
+                new { stageId = current.Id },
+                tx);
+
+            var groupCountForFlow = groupCount > 0 ? groupCount : 1;
+            incomingUnits = current.AdvancementCount is > 0
+                ? current.AdvancementCount.Value * groupCountForFlow
+                : Math.Max(0, incomingUnits);
+        }
+
+        return incomingUnits;
     }
 
     private static async Task EnsureInitialLobbiesAsync(
@@ -270,7 +559,10 @@ public sealed class BattleRoyaleStageBootstrapService
         int? Capacity,
         int? AdvancementCount,
         string? Config,
-        int? TournamentMaxTeams);
+        int? TournamentMaxTeams,
+        int? TeamSize);
 }
 
 public sealed record BattleRoyaleStageBootstrapResult(Guid StageId, int GroupCount, bool Created);
+
+public sealed record BattleRoyaleStageLobbiesResult(Guid StageId, bool Created, string? Error);

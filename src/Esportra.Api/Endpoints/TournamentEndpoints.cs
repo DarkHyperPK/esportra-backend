@@ -471,7 +471,6 @@ public static class TournamentEndpoints
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             GameCatalogService                gameCatalog,
-            BattleRoyaleStageBootstrapService brBootstrap,
             HybridCache                       cache,
             CancellationToken                 ct) =>
         {
@@ -598,9 +597,6 @@ public static class TournamentEndpoints
                     return Results.BadRequest(new { error = registrationDeadlineError });
                 }
 
-                var isBattleRoyaleTournament = string.Equals(catalog.TournamentStructure, "battle_royale", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(req.TournamentType, "battle_royale", StringComparison.OrdinalIgnoreCase);
-
                 // BR tournaments start with no stages — organizers configure via stage setup wizard
                 var stagesToInsert = req.Stages;
 
@@ -629,12 +625,7 @@ public static class TournamentEndpoints
                         tx);
                 }
 
-                if (isBattleRoyaleTournament)
-                {
-                    await brBootstrap.EnsureTournamentGroupsAsync(conn, tx, tournamentId);
-                }
-
-                // Map pool
+                // Groups are initialized explicitly from the Stages tab (POST /br/bootstrap).
                 if (req.MapPoolIds is { Count: > 0 })
                 {
                     await conn.ExecuteAsync(

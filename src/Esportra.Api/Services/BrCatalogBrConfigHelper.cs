@@ -92,6 +92,21 @@ public static class BrCatalogBrConfigHelper
         return null;
     }
 
+    public static int ReadPlayersPerLobby(object? catalogBrConfig, int fallback = 100)
+    {
+        if (!TryParseJsonElement(catalogBrConfig, out var root))
+            return fallback;
+
+        if (TryGetPropertyIgnoreCase(root, "playersPerLobby", out var playersEl)
+            && playersEl.TryGetInt32(out var players)
+            && players > 0)
+        {
+            return players;
+        }
+
+        return fallback;
+    }
+
     private static JsonArray BuildMapItems(JsonObject mapsNode)
     {
         var items = new JsonArray();

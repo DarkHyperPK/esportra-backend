@@ -564,6 +564,68 @@ public static class BRGroupEndpoints
             }
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/stages/{stageId}/br/lobbies/generate ──────────────────
+        // Create lobbies and materialize games after groups are seeded.
+        app.MapPost("/api/stages/{stageId}/br/lobbies/generate", async (
+            Guid                              stageId,
+            HttpContext                       ctx,
+            IDbConnectionFactory             db,
+            GameCatalogService               catalog,
+            BattleRoyaleStageBootstrapService brBootstrap,
+            CancellationToken                ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermTeamsManage);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT t.game
+                FROM tournament_stages ts
+                JOIN tournaments t ON t.id = ts.tournament_id
+                WHERE ts.id = @stageId
+                  AND ts.format = 'battle_royale'
+                """,
+                new { stageId });
+
+            if (stageContext is null)
+                return Results.NotFound(new { error = "Battle royale stage not found." });
+
+            var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext.game as string, ct);
+            var playersPerLobby = BrCatalogBrConfigHelper.ReadPlayersPerLobby(catalogBrConfig);
+
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                if (!await LockStageAsync(conn, tx, stageId))
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Battle royale stage not found." });
+                }
+
+                var result = await brBootstrap.EnsureStageLobbiesAsync(conn, tx, stageId, playersPerLobby);
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = result.Error });
+                }
+
+                tx.Commit();
+                return Results.Ok(new { generated = result.Created, stage_id = result.StageId });
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+        }).RequireAuthorization("Authenticated");
+
         // ── PUT /api/stages/{stageId}/br/groups/{groupId}/teams ─────────────
         // Manual team assignment — replace all teams in this group.
         app.MapPut("/api/stages/{stageId}/br/groups/{groupId}/teams", async (

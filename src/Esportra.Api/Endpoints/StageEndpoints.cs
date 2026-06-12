@@ -24,7 +24,6 @@ public static class StageEndpoints
             HttpContext                        ctx,
             IDbConnectionFactory              db,
             TournamentWinnerService           winnerService,
-            BattleRoyaleStageBootstrapService brBootstrap,
             TournamentAuthorizationService      tournamentAuth,
             CancellationToken                 ct) =>
         {
@@ -132,8 +131,6 @@ public static class StageEndpoints
                         }, tx);
                 }
             }
-
-            await brBootstrap.EnsureTournamentGroupsAsync(conn, tx, tournamentId);
 
             var updated = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order LIMIT 50",
