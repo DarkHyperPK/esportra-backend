@@ -10,6 +10,7 @@ internal static class RiotMatchDetailsParser
         object RedTeam,
         long GameLengthMillis,
         long StartTime,
+        object? MatchInfo,
         ValorantMatchStatsHelper.DerivedMatchDetails Derived);
 
     internal static ParsedRiotMatch? Parse(
@@ -56,54 +57,11 @@ internal static class RiotMatchDetailsParser
 
         foreach (var p in players.EnumerateArray())
         {
-            var pPuuid = p.GetProperty("puuid").GetString() ?? "";
-            var pTeam = p.GetProperty("teamId").GetString() ?? "";
-            var pName = p.TryGetProperty("gameName", out var gn) ? gn.GetString() ?? "" : "";
-            var pTag = p.TryGetProperty("tagLine", out var tl) ? tl.GetString() ?? "" : "";
-            var charId = p.GetProperty("characterId").GetString() ?? "";
-            var stats = p.GetProperty("stats");
-            var pK = stats.GetProperty("kills").GetInt32();
-            var pD = stats.GetProperty("deaths").GetInt32();
-            var pA = stats.GetProperty("assists").GetInt32();
-            var pScore = stats.GetProperty("score").GetInt32();
-            var roundsPlayed = stats.TryGetProperty("roundsPlayed", out var roundsPlayedEl)
-                && roundsPlayedEl.TryGetInt32(out var parsedRoundsPlayed)
-                ? parsedRoundsPlayed
-                : 0;
-
-            int? adr = null;
-            double? hsPct = null;
-            int? firstBloods = null;
-            if (roundAggregates.TryGetValue(pPuuid, out var roundStats))
-            {
-                adr = ValorantMatchStatsHelper.ComputeAdr(roundStats.TotalDamage, roundsPlayed);
-                hsPct = ValorantMatchStatsHelper.ComputeHeadshotPercent(
-                    roundStats.Headshots,
-                    roundStats.Bodyshots,
-                    roundStats.Legshots);
-                firstBloods = roundStats.FirstBloods;
-            }
-
-            playerList.Add(new
-            {
-                puuid = pPuuid,
-                gameName = pName,
-                tagLine = pTag,
-                teamId = pTeam,
-                characterId = charId,
-                kills = pK,
-                deaths = pD,
-                assists = pA,
-                score = pScore,
-                roundsPlayed = roundsPlayed > 0 ? roundsPlayed : (int?)null,
-                acs = ValorantMatchStatsHelper.ComputeAcs(pScore, roundsPlayed),
-                adr,
-                hsPct,
-                kdRatio = ValorantMatchStatsHelper.ComputeKdRatio(pK, pD),
-                firstBloods,
-                isTeam1 = team1Puuids.Contains(pPuuid),
-                isTeam2 = team2Puuids.Contains(pPuuid),
-            });
+            playerList.Add(ValorantMatchStatsHelper.BuildPlayerPayload(
+                p,
+                roundAggregates,
+                team1Puuids,
+                team2Puuids));
         }
 
         return new ParsedRiotMatch(
@@ -112,6 +70,7 @@ internal static class RiotMatchDetailsParser
             new { roundsWon = redRounds, won = redWon },
             gameLengthMillis,
             gameStartMillis,
+            ValorantMatchStatsHelper.BuildMatchInfoPayload(root),
             ValorantMatchStatsHelper.BuildDerivedMatchDetails(root));
     }
 }

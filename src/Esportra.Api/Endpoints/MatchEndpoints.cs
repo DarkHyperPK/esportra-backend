@@ -228,53 +228,20 @@ public static class MatchEndpoints
                     foreach (var p in doc.RootElement.GetProperty("players").EnumerateArray())
                     {
                         var pPuuid = p.GetProperty("puuid").GetString() ?? "";
-                        var pTeam = p.GetProperty("teamId").GetString() ?? "";
-                        var pName = p.TryGetProperty("gameName", out var gn) ? gn.GetString() ?? "" : "";
-                        var pTag = p.TryGetProperty("tagLine", out var tl) ? tl.GetString() ?? "" : "";
-                        var charId = p.GetProperty("characterId").GetString() ?? "";
-                        var stats = p.GetProperty("stats");
-                        var pK = stats.GetProperty("kills").GetInt32();
-                        var pD = stats.GetProperty("deaths").GetInt32();
-                        var pA = stats.GetProperty("assists").GetInt32();
-                        var pScore = stats.GetProperty("score").GetInt32();
-                        var roundsPlayed = stats.TryGetProperty("roundsPlayed", out var roundsPlayedEl)
-                            && roundsPlayedEl.TryGetInt32(out var parsedRoundsPlayed)
-                            ? parsedRoundsPlayed
-                            : 0;
-
-                        int? adr = null;
-                        double? hsPct = null;
-                        int? firstBloods = null;
-                        if (roundAggregates.TryGetValue(pPuuid, out var roundStats))
-                        {
-                            adr = ValorantMatchStatsHelper.ComputeAdr(roundStats.TotalDamage, roundsPlayed);
-                            hsPct = ValorantMatchStatsHelper.ComputeHeadshotPercent(
-                                roundStats.Headshots,
-                                roundStats.Bodyshots,
-                                roundStats.Legshots);
-                            firstBloods = roundStats.FirstBloods;
-                        }
-
-                        playerList.Add(new
-                        {
-                            puuid = pPuuid, gameName = pName, tagLine = pTag,
-                            teamId = pTeam, characterId = charId,
-                            kills = pK, deaths = pD, assists = pA, score = pScore,
-                            roundsPlayed = roundsPlayed > 0 ? roundsPlayed : (int?)null,
-                            acs = ValorantMatchStatsHelper.ComputeAcs(pScore, roundsPlayed),
-                            adr,
-                            hsPct,
-                            kdRatio = ValorantMatchStatsHelper.ComputeKdRatio(pK, pD),
-                            firstBloods,
-                            isTeam1 = team1Puuids.Contains(pPuuid),
-                            isTeam2 = team2Puuids.Contains(pPuuid),
-                        });
+                        playerList.Add(ValorantMatchStatsHelper.BuildPlayerPayload(
+                            p,
+                            roundAggregates,
+                            team1Puuids,
+                            team2Puuids));
 
                         if (pPuuid == scannerPuuid)
                         {
-                            scannerSide = pTeam;
-                            scannerAgent = charId;
-                            kills = pK; deaths = pD; assists = pA;
+                            scannerSide = p.GetProperty("teamId").GetString() ?? "";
+                            scannerAgent = p.GetProperty("characterId").GetString() ?? "";
+                            var stats = p.GetProperty("stats");
+                            kills = stats.GetProperty("kills").GetInt32();
+                            deaths = stats.GetProperty("deaths").GetInt32();
+                            assists = stats.GetProperty("assists").GetInt32();
                         }
                     }
 
@@ -286,6 +253,7 @@ public static class MatchEndpoints
                     var didWin = isBlue ? blueWon : redWon;
 
                     var derivedDetails = ValorantMatchStatsHelper.BuildDerivedMatchDetails(doc.RootElement);
+                    var serializedDerived = ValorantMatchStatsHelper.SerializeDerivedDetails(derivedDetails);
 
                     candidates.Add(new
                     {
@@ -306,18 +274,10 @@ public static class MatchEndpoints
                         blueTeam = new { roundsWon = blueRounds, won = blueWon },
                         redTeam = new { roundsWon = redRounds, won = redWon },
                         players = playerList,
-                        roundTimeline = derivedDetails.RoundTimeline.Select(round => new
-                        {
-                            round = round.Round,
-                            winningTeam = round.WinningTeam,
-                            resultCode = round.ResultCode,
-                        }),
-                        economyTimeline = derivedDetails.EconomyTimeline.Select(entry => new
-                        {
-                            round = entry.Round,
-                            blueSpent = entry.BlueSpent,
-                            redSpent = entry.RedSpent,
-                        }),
+                        matchInfo = ValorantMatchStatsHelper.BuildMatchInfoPayload(doc.RootElement),
+                        roundTimeline = serializedDerived.RoundTimeline,
+                        economyTimeline = serializedDerived.EconomyTimeline,
+                        weaponSummaries = serializedDerived.WeaponSummaries,
                     });
                 }
                 catch (Exception ex)
@@ -451,6 +411,7 @@ public static class MatchEndpoints
             if (parsed is null)
                 return Results.BadRequest(new { error = "Failed to parse Riot match payload" });
 
+            var serializedDerived = ValorantMatchStatsHelper.SerializeDerivedDetails(parsed.Derived);
             var payload = new
             {
                 players = parsed.Players,
@@ -458,18 +419,10 @@ public static class MatchEndpoints
                 redTeam = parsed.RedTeam,
                 gameLengthMillis = parsed.GameLengthMillis,
                 startTime = parsed.StartTime,
-                roundTimeline = parsed.Derived.RoundTimeline.Select(round => new
-                {
-                    round = round.Round,
-                    winningTeam = round.WinningTeam,
-                    resultCode = round.ResultCode,
-                }),
-                economyTimeline = parsed.Derived.EconomyTimeline.Select(entry => new
-                {
-                    round = entry.Round,
-                    blueSpent = entry.BlueSpent,
-                    redSpent = entry.RedSpent,
-                }),
+                matchInfo = parsed.MatchInfo,
+                roundTimeline = serializedDerived.RoundTimeline,
+                economyTimeline = serializedDerived.EconomyTimeline,
+                weaponSummaries = serializedDerived.WeaponSummaries,
             };
 
             var payloadJson = JsonSerializer.Serialize(payload);

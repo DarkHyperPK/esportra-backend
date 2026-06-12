@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
@@ -236,6 +238,52 @@ public static class IntegrationEndpoints
         {
             var (status, body) = await riot.ProxyAsync(req.Region, req.Endpoint, ct);
             return Results.Content(body, "application/json", statusCode: status);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/integrations/riot/enriched-match ────────────────────────
+        // Fetches a Valorant match from Riot and attaches parsed analytics fields.
+        app.MapPost("/api/integrations/riot/enriched-match", async (
+            [FromBody] RiotEnrichedMatchRequest req,
+            RiotApiClient               riot,
+            CancellationToken           ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.MatchId))
+            {
+                return Results.BadRequest(new { error = "matchId is required" });
+            }
+
+            var (status, body) = await riot.ProxyAsync(
+                req.Region,
+                $"/val/match/v1/matches/{req.MatchId}",
+                ct);
+
+            if (status != 200)
+            {
+                return Results.Content(body, "application/json", statusCode: status);
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var emptyTeams = new HashSet<string>(StringComparer.Ordinal);
+            var parsed = RiotMatchDetailsParser.Parse(doc.RootElement, emptyTeams, emptyTeams);
+            if (parsed is null)
+            {
+                return Results.BadRequest(new { error = "Failed to parse Riot match payload" });
+            }
+
+            var serializedDerived = ValorantMatchStatsHelper.SerializeDerivedDetails(parsed.Derived);
+            var root = JsonNode.Parse(body)?.AsObject();
+            if (root is null)
+            {
+                return Results.BadRequest(new { error = "Invalid Riot match payload" });
+            }
+
+            root["enrichedPlayers"] = JsonSerializer.SerializeToNode(parsed.Players);
+            root["matchInfoParsed"] = JsonSerializer.SerializeToNode(parsed.MatchInfo);
+            root["roundTimeline"] = JsonSerializer.SerializeToNode(serializedDerived.RoundTimeline);
+            root["economyTimeline"] = JsonSerializer.SerializeToNode(serializedDerived.EconomyTimeline);
+            root["weaponSummaries"] = JsonSerializer.SerializeToNode(serializedDerived.WeaponSummaries);
+
+            return Results.Json(root);
         }).RequireAuthorization("Authenticated");
     }
 }

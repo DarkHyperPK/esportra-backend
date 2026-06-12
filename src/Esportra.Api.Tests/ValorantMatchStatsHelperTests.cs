@@ -132,6 +132,125 @@ public class ValorantMatchStatsHelperTests
     }
 
     [Fact]
+    public void BuildRoundTimeline_UsesRoundNumAndResultFallback()
+    {
+        const string json = """
+        {
+          "roundResults": [
+            {
+              "roundNum": 3,
+              "winningTeam": "Blue",
+              "roundResult": "Detonate",
+              "plantSite": "A",
+              "playerStats": []
+            },
+            {
+              "winningTeam": "Red",
+              "roundResultCode": "Defuse",
+              "playerStats": []
+            }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var timeline = ValorantMatchStatsHelper.BuildRoundTimeline(doc.RootElement);
+
+        Assert.Equal(2, timeline.Count);
+        Assert.Equal(3, timeline[0].Round);
+        Assert.Equal("Detonate", timeline[0].ResultCode);
+        Assert.Equal("A", timeline[0].PlantSite);
+        Assert.Equal(2, timeline[1].Round);
+        Assert.Equal("Defuse", timeline[1].ResultCode);
+    }
+
+    [Fact]
+    public void BuildRoundAggregates_UsesKillDtoKillerForFirstBlood()
+    {
+        const string json = """
+        {
+          "roundResults": [
+            {
+              "playerStats": [
+                {
+                  "puuid": "player-a",
+                  "kills": [
+                    { "killer": "player-b", "timeSinceRoundStartMillis": 4000 }
+                  ]
+                },
+                {
+                  "puuid": "player-b",
+                  "kills": [
+                    { "killer": "player-b", "timeSinceRoundStartMillis": 4000 }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var aggregates = ValorantMatchStatsHelper.BuildRoundAggregates(doc.RootElement);
+
+        Assert.True(aggregates.TryGetValue("player-b", out var playerB));
+        Assert.Equal(1, playerB.FirstBloods);
+        Assert.True(aggregates.TryGetValue("player-a", out var playerA));
+        Assert.Equal(0, playerA.FirstBloods);
+    }
+
+    [Fact]
+    public void BuildWeaponSummaries_CountsWeaponsFromEconomy()
+    {
+        const string json = """
+        {
+          "roundResults": [
+            {
+              "playerStats": [
+                { "economy": { "weapon": "Vandal" } },
+                { "economy": { "weapon": "Vandal" } },
+                { "economy": { "weapon": "Operator" } }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var summaries = ValorantMatchStatsHelper.BuildWeaponSummaries(doc.RootElement);
+
+        Assert.Equal(2, summaries.Count);
+        Assert.Equal("Vandal", summaries[0].Weapon);
+        Assert.Equal(2, summaries[0].RoundCount);
+    }
+
+    [Fact]
+    public void BuildEconomyTimeline_IncludesLoadoutValues()
+    {
+        const string json = """
+        {
+          "players": [
+            { "puuid": "blue-player", "teamId": "Blue" }
+          ],
+          "roundResults": [
+            {
+              "playerStats": [
+                { "puuid": "blue-player", "economy": { "spent": 2900, "loadoutValue": 4700 } }
+              ]
+            }
+          ]
+        }
+        """;
+
+        using var doc = JsonDocument.Parse(json);
+        var timeline = ValorantMatchStatsHelper.BuildEconomyTimeline(doc.RootElement);
+
+        Assert.Single(timeline);
+        Assert.Equal(2900, timeline[0].BlueSpent);
+        Assert.Equal(4700, timeline[0].BlueLoadout);
+    }
+
+    [Fact]
     public void ComputeHeadshotPercent_ReturnsNullWhenNoShots()
     {
         Assert.Null(ValorantMatchStatsHelper.ComputeHeadshotPercent(0, 0, 0));
