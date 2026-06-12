@@ -72,32 +72,22 @@ public static class BrGameRouteHelper
             return;
 
         var completed = Convert.ToInt32(stats.completed);
-        var active = Convert.ToInt32(stats.active);
 
-        string status;
-        DateTimeOffset? completedAt = null;
-        if (completed == total)
-        {
-            status = "completed";
-            completedAt = DateTimeOffset.UtcNow;
-        }
-        else if (active > 0 || completed > 0)
-        {
-            status = "active";
-        }
-        else
-        {
-            status = "pending";
-        }
+        // Only auto-complete the lobby when every game is done.
+        // Lobby activation is explicit (organizer starts lobby with a code) — never inferred from game state.
+        if (completed != total)
+            return;
 
+        var completedAt = DateTimeOffset.UtcNow;
         await conn.ExecuteAsync(
             """
             UPDATE br_lobbies
-            SET status = @status,
-                completed_at = CASE WHEN @status = 'completed' THEN COALESCE(completed_at, @completedAt) ELSE completed_at END
+            SET status = 'completed',
+                completed_at = COALESCE(completed_at, @completedAt)
             WHERE id = @lobbyId
+              AND status <> 'completed'
             """,
-            new { lobbyId, status, completedAt },
+            new { lobbyId, completedAt },
             tx);
     }
 }

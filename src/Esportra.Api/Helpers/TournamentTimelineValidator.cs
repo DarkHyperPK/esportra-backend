@@ -1,4 +1,5 @@
 using System.Data;
+using Dapper;
 
 namespace Esportra.Api.Helpers;
 
@@ -66,5 +67,59 @@ public static class TournamentTimelineValidator
             return null;
 
         return "The tournament must be marked as ongoing before starting a live round.";
+    }
+
+    private static readonly HashSet<string> PromotableToOngoing = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "open", "check_in", "published",
+    };
+
+    private static readonly HashSet<string> BlockedForLiveRounds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "draft", "completed", "cancelled", "closed",
+    };
+
+    /// <summary>
+    /// Promotes open/check_in/published tournaments to ongoing on first live lobby start.
+    /// Returns an error for terminal/invalid states.
+    /// </summary>
+    public static async Task<string?> EnsureTournamentLiveAsync(
+        IDbConnection conn,
+        Guid stageId,
+        IDbTransaction? tx = null)
+    {
+        var (_, _, status) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+        var normalized = (status ?? string.Empty).Trim();
+
+        if (string.IsNullOrEmpty(normalized))
+            return "Tournament not found.";
+
+        if (BlockedForLiveRounds.Contains(normalized))
+        {
+            return normalized.Equals("draft", StringComparison.OrdinalIgnoreCase)
+                ? "Publish the tournament before starting a live lobby."
+                : $"Cannot start a live lobby while the tournament status is '{normalized}'.";
+        }
+
+        if (string.Equals(normalized, "ongoing", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (PromotableToOngoing.Contains(normalized))
+        {
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournaments t
+                SET status = 'ongoing',
+                    updated_at = NOW()
+                FROM tournament_stages ts
+                WHERE ts.tournament_id = t.id
+                  AND ts.id = @stageId
+                """,
+                new { stageId },
+                tx);
+            return null;
+        }
+
+        return ValidateTournamentIsOngoing(normalized);
     }
 }

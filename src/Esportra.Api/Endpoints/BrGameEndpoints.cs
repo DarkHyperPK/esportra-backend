@@ -144,7 +144,7 @@ public static class BrGameEndpoints
             var context = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT g.id, g.lobby_id, g.game_number, g.status AS game_status,
-                       l.stage_id, l.status AS lobby_status,
+                       l.stage_id, l.status AS lobby_status, l.lobby_code,
                        t.settings, ts.config AS stage_config, t.game
                 FROM br_games g
                 JOIN br_lobbies l ON l.id = g.lobby_id
@@ -223,9 +223,63 @@ public static class BrGameEndpoints
                     return Results.BadRequest(new { error = mapError });
             }
 
+            if (statusValue == "active")
+            {
+                var lobbyStatus = (string)context.lobby_status;
+                if (!string.Equals(lobbyStatus, "active", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.BadRequest(new { error = "Start the lobby with a code before starting games." });
+                }
+
+                var lobbyCode = context.lobby_code as string;
+                if (string.IsNullOrWhiteSpace(lobbyCode))
+                {
+                    return Results.BadRequest(new { error = "Lobby code is required before starting a game." });
+                }
+            }
+
             using var tx = conn.BeginTransaction();
             try
             {
+                if (statusValue == "active")
+                {
+                    var otherActiveGame = await conn.ExecuteScalarAsync<bool>(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM br_games
+                            WHERE lobby_id = @lobbyId
+                              AND status = 'active'
+                              AND id <> @gameId
+                        )
+                        """,
+                        new { lobbyId, gameId },
+                        tx);
+
+                    if (otherActiveGame)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Another game in this lobby is already live. Complete it before starting the next game." });
+                    }
+
+                    var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                    var liveError = await TournamentTimelineValidator.EnsureTournamentLiveAsync(conn, stageId, tx);
+                    if (liveError is not null)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = liveError });
+                    }
+
+                    var liveWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
+                        DateTimeOffset.UtcNow,
+                        tournamentStart,
+                        tournamentEnd,
+                        "Starting a game");
+                    if (liveWindowError is not null)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = liveWindowError });
+                    }
+                }
                 var updated = await conn.QuerySingleAsync<dynamic>(
                     """
                     UPDATE br_games

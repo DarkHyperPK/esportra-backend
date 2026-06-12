@@ -2599,13 +2599,15 @@ public static class TournamentEndpoints
         // pending_count: open disputes awaiting organizer action (tab badge)
         // unread_count: pending with unread activity (comments / updates since last read)
         app.MapGet("/api/organizer/disputes/unread-count", async (
-            Guid?                tournamentId,
+            [FromQuery(Name = "tournament_id")] Guid? tournamentIdFromSnake,
+            [FromQuery(Name = "tournamentId")] Guid? tournamentIdFromCamel,
             HttpContext          ctx,
             IDbConnectionFactory db,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            var tournamentId = tournamentIdFromSnake ?? tournamentIdFromCamel;
             if (tournamentId is null) return Results.BadRequest(new { error = "tournament_id is required." });
 
             using var conn = db.CreateConnection();

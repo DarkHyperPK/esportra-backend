@@ -799,17 +799,23 @@ public static class BRGroupEndpoints
 
             var rounds = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT r.id, r.wave_number, r.lobby_code, r.status,
+                SELECT r.id, r.wave_number, r.lobby_index, r.lobby_code, r.status,
                        r.scheduled_at, r.started_at, r.completed_at, r.created_at,
                        r.queue_timer_minutes, r.queue_started_at{mapSelect},
                        (SELECT COUNT(*) FROM br_lobby_results rr JOIN br_games g ON g.id = rr.game_id WHERE g.lobby_id = r.id) AS result_count,
                        (SELECT COUNT(*) FROM br_lobby_evidence re JOIN br_games g ON g.id = re.game_id WHERE g.lobby_id = r.id) AS evidence_count,
                        (SELECT COUNT(*) FROM br_lobby_evidence re JOIN br_games g ON g.id = re.game_id WHERE g.lobby_id = r.id AND re.reviewed = FALSE) AS pending_evidence_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id) AS game_count,
-                       (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id AND g.status = 'completed') AS games_completed
+                       (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id AND g.status = 'completed') AS games_completed,
+                       COALESCE((
+                           SELECT array_agg(lg2.group_id ORDER BY g2.group_order)
+                           FROM br_lobby_groups lg2
+                           JOIN br_groups g2 ON g2.id = lg2.group_id
+                           WHERE lg2.lobby_id = r.id
+                       ), ARRAY[]::uuid[]) AS group_ids
                 FROM br_lobbies r
                 WHERE EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = @groupId)
-                ORDER BY r.wave_number
+                ORDER BY r.wave_number, r.lobby_index
                 """,
                 new { groupId });
 
@@ -842,6 +848,8 @@ public static class BRGroupEndpoints
                 {
                     id           = d["id"],
                     wave_number = d["wave_number"],
+                    lobby_index  = d["lobby_index"],
+                    group_ids    = d["group_ids"],
                     // Only participants see the code, and only for the live round
                     lobby_code   = (isParticipant && isActive) ? d["lobby_code"] : (object?)null,
                     status       = d["status"],
@@ -939,16 +947,6 @@ public static class BRGroupEndpoints
                     return Results.NotFound(new { error = "Group not found in this stage." });
                 }
 
-                var nextRoundNumber = await conn.ExecuteScalarAsync<int>(
-                    """
-                    SELECT COALESCE(MAX(l.wave_number), 0) + 1
-                    FROM br_lobbies l
-                    JOIN br_lobby_groups lg ON lg.lobby_id = l.id
-                    WHERE lg.group_id = @groupId
-                    """,
-                    new { groupId },
-                    tx);
-
                 var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
                     SELECT t.game, t.settings, ts.config AS stage_config
@@ -957,6 +955,41 @@ public static class BRGroupEndpoints
                     WHERE ts.id = @stageId
                     """,
                     new { stageId },
+                    tx);
+
+                var stageFormat = BattleRoyaleConfigResolver.ResolveFormat(stageContext?.stage_config);
+                if (stageFormat is BattleRoyaleConfigResolver.BrStageFormat.StaticGroups
+                    or BattleRoyaleConfigResolver.BrStageFormat.SingleLobby
+                    or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+                {
+                    var existingGroupLobbies = await conn.ExecuteScalarAsync<int>(
+                        """
+                        SELECT COUNT(*)::int
+                        FROM br_lobbies l
+                        JOIN br_lobby_groups lg ON lg.lobby_id = l.id
+                        WHERE lg.group_id = @groupId
+                        """,
+                        new { groupId },
+                        tx);
+
+                    if (existingGroupLobbies > 0)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new
+                        {
+                            error = "This group already has a lobby. Each group plays in one lobby with multiple scored games — use the existing lobby.",
+                        });
+                    }
+                }
+
+                var nextRoundNumber = await conn.ExecuteScalarAsync<int>(
+                    """
+                    SELECT COALESCE(MAX(l.wave_number), 0) + 1
+                    FROM br_lobbies l
+                    JOIN br_lobby_groups lg ON lg.lobby_id = l.id
+                    WHERE lg.group_id = @groupId
+                    """,
+                    new { groupId },
                     tx);
 
                 var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_lobbies", "map", tx);
@@ -1069,8 +1102,11 @@ public static class BRGroupEndpoints
             if (!await CanViewStagePublicDataAsync(conn, ctx, stageId))
                 return Results.NotFound();
 
+            var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_lobbies", "map");
+            var mapSelect = roundsHasMapColumn ? ", l.map" : ", NULL::text AS map";
+
             var lobbies = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT l.id,
                        l.wave_number,
                        l.lobby_index,
@@ -1081,8 +1117,10 @@ public static class BRGroupEndpoints
                        l.completed_at,
                        l.created_at,
                        l.queue_timer_minutes,
-                       l.queue_started_at,
-                       COALESCE(array_agg(lg.group_id) FILTER (WHERE lg.group_id IS NOT NULL), '{}') AS group_ids
+                       l.queue_started_at{mapSelect},
+                       (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = l.id) AS game_count,
+                       (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = l.id AND g.status = 'completed') AS games_completed,
+                       COALESCE(array_agg(lg.group_id) FILTER (WHERE lg.group_id IS NOT NULL), ARRAY[]::uuid[]) AS group_ids
                 FROM br_lobbies l
                 LEFT JOIN br_lobby_groups lg ON lg.lobby_id = l.id
                 WHERE l.stage_id = @stageId
@@ -1356,8 +1394,8 @@ public static class BRGroupEndpoints
                             }
                         }
 
-                        var (tournamentStart, tournamentEnd, tournamentStatus) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
-                        var ongoingError = TournamentTimelineValidator.ValidateTournamentIsOngoing(tournamentStatus);
+                        var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                        var ongoingError = await TournamentTimelineValidator.EnsureTournamentLiveAsync(conn, stageId, tx);
                         if (ongoingError is not null)
                         {
                             tx.Rollback();
@@ -1500,7 +1538,12 @@ public static class BRGroupEndpoints
                     broadcastGroupId,
                     lobbyId,
                     waveNumber,
-                    broadcastNewStatus);
+                    broadcastNewStatus,
+                    (string?)updated.lobby_code,
+                    updated.queue_timer_minutes is not null ? Convert.ToInt32(updated.queue_timer_minutes) : (int?)null,
+                    updated.queue_started_at is not null
+                        ? ((DateTimeOffset)updated.queue_started_at).ToString("o")
+                        : null);
                 await BroadcastBrAsync(
                     brHub,
                     BRHubEvents.LobbyUpdated,
@@ -4203,13 +4246,19 @@ public static class BRGroupEndpoints
         Guid groupId,
         Guid lobbyId,
         int waveNumber,
-        string? status = null) => new
+        string? status = null,
+        string? lobbyCode = null,
+        int? queueTimerMinutes = null,
+        string? queueStartedAt = null) => new
     {
         stageId = stageId.ToString(),
         groupId = groupId.ToString(),
         lobbyId = lobbyId.ToString(),
         waveNumber,
-        status
+        status,
+        lobbyCode,
+        queueTimerMinutes,
+        queueStartedAt,
     };
 
     private static object BuildLeaderboardEvent(Guid stageId, Guid groupId) => new
