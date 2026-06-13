@@ -173,8 +173,6 @@ internal static class ValorantMatchStatsHelper
             firstBloods = roundStats.FirstBloods;
         }
 
-        var agentDisplay = ValorantContentCatalog.ResolveAgent(charId);
-
         return new
         {
             puuid = pPuuid,
@@ -182,8 +180,6 @@ internal static class ValorantMatchStatsHelper
             tagLine = pTag,
             teamId = pTeam,
             characterId = charId,
-            displayAgentName = agentDisplay.Name,
-            displayAgentIcon = agentDisplay.IconUrl,
             kills = pK,
             deaths = pD,
             assists = pA,
@@ -207,16 +203,10 @@ internal static class ValorantMatchStatsHelper
             return null;
         }
 
-        var mapId = info.TryGetProperty("mapId", out var mapIdEl) ? mapIdEl.GetString() : null;
-        var queueId = info.TryGetProperty("queueId", out var queueEl) ? queueEl.GetString() : null;
-        var gameMode = info.TryGetProperty("gameMode", out var modeEl) ? modeEl.GetString() : null;
-        var isRanked = info.TryGetProperty("isRanked", out var rankedEl) && rankedEl.ValueKind == JsonValueKind.True;
-
         return new
         {
             matchId = info.TryGetProperty("matchId", out var matchIdEl) ? matchIdEl.GetString() : null,
-            mapId,
-            displayMapName = ValorantContentCatalog.ResolveMapName(mapId),
+            mapId = info.TryGetProperty("mapId", out var mapIdEl) ? mapIdEl.GetString() : null,
             gameVersion = info.TryGetProperty("gameVersion", out var versionEl) ? versionEl.GetString() : null,
             gameLengthMillis = info.TryGetProperty("gameLengthMillis", out var lengthEl) && lengthEl.TryGetInt64(out var length)
                 ? length
@@ -225,10 +215,9 @@ internal static class ValorantMatchStatsHelper
             gameStartMillis = info.TryGetProperty("gameStartMillis", out var startEl) && startEl.TryGetInt64(out var start)
                 ? start
                 : 0L,
-            queueId,
-            gameMode,
-            displayGameMode = ValorantContentCatalog.ResolveGameMode(gameMode, queueId, isRanked),
-            isRanked,
+            queueId = info.TryGetProperty("queueId", out var queueEl) ? queueEl.GetString() : null,
+            gameMode = info.TryGetProperty("gameMode", out var modeEl) ? modeEl.GetString() : null,
+            isRanked = info.TryGetProperty("isRanked", out var rankedEl) && rankedEl.ValueKind == JsonValueKind.True,
             isCompleted = info.TryGetProperty("isCompleted", out var completedEl) && completedEl.ValueKind == JsonValueKind.True,
         };
     }
@@ -269,11 +258,9 @@ internal static class ValorantMatchStatsHelper
         derived.RoundTimeline.Select(round => (object)new
         {
             round = round.Round,
-            displayRound = round.Round,
             winningTeam = round.WinningTeam,
             resultCode = round.ResultCode,
             result = round.Result,
-            displayResult = ValorantContentCatalog.ResolveRoundResultLabel(round.ResultCode ?? round.Result),
             plantSite = round.PlantSite,
         }).ToList(),
         derived.EconomyTimeline.Select(entry => (object)new
@@ -284,16 +271,10 @@ internal static class ValorantMatchStatsHelper
             blueLoadout = entry.BlueLoadout,
             redLoadout = entry.RedLoadout,
         }).ToList(),
-        derived.WeaponSummaries.Select(entry =>
+        derived.WeaponSummaries.Select(entry => (object)new
         {
-            var weaponDisplay = ValorantContentCatalog.ResolveWeapon(entry.Weapon);
-            return (object)new
-            {
-                weapon = entry.Weapon,
-                displayName = weaponDisplay.Name,
-                displayIcon = weaponDisplay.IconUrl,
-                roundCount = entry.RoundCount,
-            };
+            weapon = entry.Weapon,
+            roundCount = entry.RoundCount,
         }).ToList());
 
     internal static List<RoundTimelineEntry> BuildRoundTimeline(JsonElement root)
@@ -310,7 +291,11 @@ internal static class ValorantMatchStatsHelper
         foreach (var round in roundResults.EnumerateArray())
         {
             fallbackRound++;
-            var roundNumber = ValorantContentCatalog.ResolveDisplayRound(round, fallbackRound);
+            var roundNumber = round.TryGetProperty("roundNum", out var roundNumEl)
+                && roundNumEl.TryGetInt32(out var roundNum)
+                && roundNum > 0
+                ? roundNum
+                : fallbackRound;
 
             var winningTeam = round.TryGetProperty("winningTeam", out var winningTeamEl)
                 ? winningTeamEl.GetString() ?? string.Empty
@@ -344,7 +329,11 @@ internal static class ValorantMatchStatsHelper
         foreach (var round in roundResults.EnumerateArray())
         {
             fallbackRound++;
-            var roundNumber = ValorantContentCatalog.ResolveDisplayRound(round, fallbackRound);
+            var roundNumber = round.TryGetProperty("roundNum", out var roundNumEl)
+                && roundNumEl.TryGetInt32(out var roundNum)
+                && roundNum > 0
+                ? roundNum
+                : fallbackRound;
 
             var blueSpent = 0;
             var redSpent = 0;
