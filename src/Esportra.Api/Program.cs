@@ -4,6 +4,7 @@ using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
 using Esportra.Api.Services;
 using Esportra.Api.HealthChecks;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
@@ -477,11 +478,10 @@ app.Use(async (ctx, next) =>
         logger?.LogError(ex, "Unhandled exception on {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
         if (!ctx.Response.HasStarted)
         {
-            ctx.Response.StatusCode = 500;
-            await ctx.Response.WriteAsJsonAsync(new
-            {
-                error = "Something went wrong. Please try again or contact support if the issue persists.",
-            });
+            var env = ctx.RequestServices.GetRequiredService<IHostEnvironment>();
+            var payload = ApiErrorResponses.FromException(ex, ctx.Request.Path, !env.IsProduction());
+            ctx.Response.StatusCode = payload.StatusCode;
+            await ctx.Response.WriteAsJsonAsync(ApiErrorResponses.ToJson(payload, !env.IsProduction()));
         }
     }
 });

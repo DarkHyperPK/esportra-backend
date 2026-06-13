@@ -57,10 +57,12 @@ public static class TournamentInvitationEndpoints
                 """
                 SELECT ti.id, ti.tournament_id, ti.email, ti.code, ti.status,
                        ti.expires_at, ti.sent_at, ti.redeemed_at, ti.created_at,
-                       ti.redeemed_team_id AS team_id,
-                       teams.name AS team_name
+                       COALESCE(ti.redeemed_team_id, ti.redeemed_participant_id) AS team_id,
+                       COALESCE(teams.name, solo_participant.team_name) AS team_name
                 FROM public.tournament_invitations ti
                 LEFT JOIN public.teams ON teams.id = ti.redeemed_team_id
+                LEFT JOIN public.tournament_participants solo_participant
+                    ON solo_participant.id = ti.redeemed_participant_id
                 WHERE ti.tournament_id = @id
                 ORDER BY ti.created_at DESC
                 """,
@@ -635,7 +637,8 @@ public static class TournamentInvitationEndpoints
                 }
 
                 dynamic participant;
-                Guid redeemedTeamId;
+                Guid? redeemedTeamId = null;
+                Guid? redeemedParticipantId = null;
                 Guid? rosterId = null;
 
                 if (isSoloTournament)
@@ -687,7 +690,7 @@ public static class TournamentInvitationEndpoints
                             email = userCtx.Email,
                         }, tx);
 
-                    redeemedTeamId = (Guid)participant.id;
+                    redeemedParticipantId = (Guid)participant.id;
                 }
                 else
                 {
@@ -782,11 +785,18 @@ public static class TournamentInvitationEndpoints
                     SET status = 'redeemed',
                         redeemed_by = @userId,
                         redeemed_team_id = @teamId,
+                        redeemed_participant_id = @participantId,
                         redeemed_at = NOW(),
                         updated_at = NOW()
                     WHERE id = @inviteId
                     """,
-                    new { userId = userCtx.UserIdGuid, teamId = redeemedTeamId, inviteId = (Guid)invite.id }, tx);
+                    new
+                    {
+                        userId = userCtx.UserIdGuid,
+                        teamId = redeemedTeamId,
+                        participantId = redeemedParticipantId,
+                        inviteId = (Guid)invite.id,
+                    }, tx);
 
                 tx.Commit();
 
@@ -803,7 +813,7 @@ public static class TournamentInvitationEndpoints
                     TargetType.Tournament,
                     tournamentId,
                     (string)tournament.name,
-                    new { invite_id = (Guid)invite.id, team_id = redeemedTeamId, roster_id = rosterId, user_id = userCtx.UserIdGuid },
+                    new { invite_id = (Guid)invite.id, team_id = redeemedTeamId, participant_id = redeemedParticipantId, roster_id = rosterId, user_id = userCtx.UserIdGuid },
                     AuditSeverity.Medium,
                     ct);
 

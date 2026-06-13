@@ -262,12 +262,10 @@ public static class VetoEndpoints
             catch (Exception ex)
             {
                 vetoLogger.LogError(ex, "Veto pick failed for match {MatchId}", matchId);
-                return Results.Json(new
-                {
-                    error = "Something went wrong. Please try again or contact support if the issue persists.",
-                    detail = ex.Message,
-                    inner = ex.InnerException?.Message,
-                }, statusCode: 500);
+                var payload = ApiErrorResponses.FromException(ex, ctx.Request.Path, !app.Environment.IsProduction());
+                return Results.Json(
+                    ApiErrorResponses.ToJson(payload, !app.Environment.IsProduction()),
+                    statusCode: payload.StatusCode);
             }
         }).RequireAuthorization("Authenticated");
 
