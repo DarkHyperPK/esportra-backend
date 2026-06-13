@@ -329,6 +329,7 @@ public static class BrGameEndpoints
                     gameId = gameId.ToString(),
                     gameNumber = Convert.ToInt32(updated.game_number),
                     status = (string)updated.status,
+                    map = (string?)updated.map,
                 };
 
                 await BrBroadcastHelper.BroadcastAsync(

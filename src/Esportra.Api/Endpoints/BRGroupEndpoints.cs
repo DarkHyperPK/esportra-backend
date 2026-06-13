@@ -1161,8 +1161,14 @@ public static class BRGroupEndpoints
             {
                 var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT g.stage_id,
-                           g.id AS group_id,
+                    SELECT r.stage_id,
+                           (
+                               SELECT lg.group_id
+                               FROM br_lobby_groups lg
+                               WHERE lg.lobby_id = r.id
+                               ORDER BY lg.group_id
+                               LIMIT 1
+                           ) AS group_id,
                            r.status,
                            r.wave_number,
                            r.map,
@@ -1170,10 +1176,8 @@ public static class BRGroupEndpoints
                            r.queue_timer_minutes,
                            r.queue_started_at
                     FROM br_lobbies r
-                    JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                    JOIN br_groups g ON g.id = lg.group_id
                     WHERE r.id = @lobbyId
-                    FOR UPDATE OF r, g
+                    FOR UPDATE OF r
                     """,
                     new { lobbyId },
                     tx);
@@ -1184,7 +1188,11 @@ public static class BRGroupEndpoints
                 }
 
                 var stageId = (Guid)currentRound.stage_id;
-                var groupId = (Guid)currentRound.group_id;
+                if (currentRound.group_id is not Guid groupId)
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = "This lobby is not linked to a seed group." });
+                }
                 var currentStatus = (string)currentRound.status;
                 var currentRoundNumber = Convert.ToInt32(currentRound.wave_number);
                 var currentMap = currentRound.map as string;
@@ -1415,12 +1423,13 @@ public static class BRGroupEndpoints
 
                         var existingActiveRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
                             """
-                            SELECT id, wave_number
-                            FROM br_lobbies
-                            WHERE group_id = @groupId
-                              AND status = 'active'
-                              AND id <> @lobbyId
-                            ORDER BY COALESCE(queue_started_at, started_at, created_at) DESC NULLS LAST, wave_number DESC
+                            SELECT l.id, l.wave_number
+                            FROM br_lobbies l
+                            JOIN br_lobby_groups lg ON lg.lobby_id = l.id
+                            WHERE lg.group_id = @groupId
+                              AND l.status = 'active'
+                              AND l.id <> @lobbyId
+                            ORDER BY COALESCE(l.queue_started_at, l.started_at, l.created_at) DESC NULLS LAST, l.wave_number DESC
                             LIMIT 1
                             """,
                             new { groupId, lobbyId },
@@ -1688,23 +1697,13 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT g.stage_id,
-                       g.id AS group_id,
-                       r.wave_number
-                FROM br_lobbies r
-                JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                JOIN br_groups g ON g.id = lg.group_id
-                WHERE r.id = @lobbyId
-                """,
-                new { lobbyId });
+            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
-            var stageId = (Guid)roundInfo.stage_id;
-            var groupId = (Guid)roundInfo.group_id;
-            var waveNumber = Convert.ToInt32(roundInfo.wave_number);
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId ?? Guid.Empty;
+            var waveNumber = roundInfo.WaveNumber;
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
@@ -1717,10 +1716,8 @@ public static class BRGroupEndpoints
                     """
                     SELECT 1
                     FROM br_lobbies r
-                    JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                    JOIN br_groups g ON g.id = lg.group_id
                     WHERE r.id = @lobbyId
-                    FOR UPDATE OF r, g
+                    FOR UPDATE OF r
                     """,
                     new { lobbyId },
                     tx);
@@ -1864,25 +1861,13 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT g.stage_id,
-                       ts.tournament_id,
-                       t.team_size
-                FROM br_lobbies r
-                JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                JOIN br_groups g ON g.id = lg.group_id
-                JOIN tournament_stages ts ON ts.id = g.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE r.id = @lobbyId
-                """,
-                new { lobbyId });
+            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
-            var stageId = (Guid)roundInfo.stage_id;
-            var tournamentId = (Guid)roundInfo.tournament_id;
-            var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+            var stageId = roundInfo.StageId;
+            var tournamentId = roundInfo.TournamentId;
+            var isSolo = roundInfo.TeamSize == 1;
 
             var isStaff = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
@@ -2002,29 +1987,15 @@ public static class BRGroupEndpoints
                 gameNumber = gn;
             }
 
-            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT g.stage_id,
-                       g.id AS group_id,
-                       ts.tournament_id,
-                       t.team_size,
-                       r.status
-                FROM br_lobbies r
-                JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                JOIN br_groups g ON g.id = lg.group_id
-                JOIN tournament_stages ts ON ts.id = g.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE r.id = @lobbyId
-                """,
-                new { lobbyId });
+            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
-            var stageId = (Guid)roundInfo.stage_id;
-            var groupId = (Guid)roundInfo.group_id;
-            var tournamentId = (Guid)roundInfo.tournament_id;
-            var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
-            var roundStatus = (string)roundInfo.status;
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId ?? Guid.Empty;
+            var tournamentId = roundInfo.TournamentId;
+            var isSolo = roundInfo.TeamSize == 1;
+            var roundStatus = roundInfo.Status;
 
             if (roundStatus != "active")
                 return Results.Conflict(new { error = "Evidence can only be submitted while the lobby is live." });
@@ -2203,25 +2174,13 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT g.stage_id,
-                       g.id AS group_id,
-                       t.team_size
-                FROM br_lobbies r
-                JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                JOIN br_groups g ON g.id = lg.group_id
-                JOIN tournament_stages ts ON ts.id = g.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE r.id = @lobbyId
-                """,
-                new { lobbyId });
+            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
-            var stageId = (Guid)roundInfo.stage_id;
-            var groupId = (Guid)roundInfo.group_id;
-            var isSolo = Convert.ToInt32(roundInfo.team_size ?? 1) == 1;
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId ?? Guid.Empty;
+            var isSolo = roundInfo.TeamSize == 1;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
@@ -2293,47 +2252,21 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT g.stage_id,
-                       g.id AS group_id,
-                       r.status,
-                       t.team_size,
-                       t.game,
-                       t.settings,
-                       ts.config AS stage_config
-                FROM br_lobbies r
-                JOIN br_lobby_groups lg ON lg.lobby_id = r.id
-                JOIN br_groups g ON g.id = lg.group_id
-                JOIN tournament_stages ts ON ts.id = g.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE r.id = @lobbyId
-                """,
-                new { lobbyId });
+            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId, includeStageConfig: true);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
-            var roundInfoValues = (IDictionary<string, object>)roundInfo;
-            if (!TryReadGuidValue(roundInfoValues, "stage_id", out var stageIdValue) || stageIdValue is null
-                || !TryReadGuidValue(roundInfoValues, "group_id", out var groupIdValue) || groupIdValue is null)
+            if (roundInfo.GroupId is null)
             {
                 return Results.Conflict(new { error = "This BR round has inconsistent metadata. Refresh and try again." });
             }
 
-            var stageId = stageIdValue.Value;
-            var groupId = groupIdValue.Value;
-            var roundStatus = roundInfoValues.TryGetValue("status", out var roundStatusValue) && roundStatusValue is not DBNull
-                ? roundStatusValue?.ToString() ?? string.Empty
-                : string.Empty;
-            var gameName = roundInfoValues.TryGetValue("game", out var gameValue) && gameValue is not DBNull
-                ? gameValue?.ToString()
-                : null;
-            var rawSettings = roundInfoValues.TryGetValue("settings", out var settingsValue) && settingsValue is not DBNull
-                ? settingsValue
-                : null;
-            var stageConfig = roundInfoValues.TryGetValue("stage_config", out var stageConfigValue) && stageConfigValue is not DBNull
-                ? stageConfigValue
-                : null;
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId.Value;
+            var roundStatus = roundInfo.Status;
+            var gameName = roundInfo.Game;
+            var rawSettings = roundInfo.Settings;
+            var stageConfig = roundInfo.StageConfig;
 
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermScoresUpdate);
@@ -2989,6 +2922,10 @@ public static class BRGroupEndpoints
                     ? (string?)activeRoundRow.lobby_code
                     : null;
 
+                var currentGame = activeGameRow
+                    ?? games.FirstOrDefault(g => (Guid)g.lobby_id == activeLobbyGuid && (string)g.status != "completed");
+                var activeRoundMap = currentGame is not null ? (string?)currentGame.map : null;
+
                 activeRoundPayload = new
                 {
                     id = activeLobbyGuid.ToString(),
@@ -3006,10 +2943,9 @@ public static class BRGroupEndpoints
                     scheduledAt = activeRoundRow.scheduled_at is not null
                         ? ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o")
                         : (string?)null,
+                    map = activeRoundMap,
                 };
 
-                var currentGame = activeGameRow
-                    ?? games.FirstOrDefault(g => (Guid)g.lobby_id == activeLobbyGuid && (string)g.status != "completed");
                 if (currentGame is not null)
                 {
                     activeGamePayload = new
@@ -4298,6 +4234,69 @@ public static class BRGroupEndpoints
                 $"[BRGroupEndpoints] Failed to broadcast {eventName} for stage {stageId}, group {groupId}, round {lobbyId}: {ex.Message}");
         }
     }
+
+    private sealed record BrLobbyContextRow(
+        Guid StageId,
+        Guid? GroupId,
+        int WaveNumber,
+        string Status,
+        Guid TournamentId,
+        int TeamSize,
+        string? Game = null,
+        object? Settings = null,
+        object? StageConfig = null);
+
+    /// <summary>
+    /// One row per lobby — avoids QuerySingle failures when a lobby spans multiple seed groups.
+    /// </summary>
+    private static Task<BrLobbyContextRow?> QueryLobbyContextAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        bool includeStageConfig = false,
+        IDbTransaction? tx = null) =>
+        conn.QuerySingleOrDefaultAsync<BrLobbyContextRow>(
+            includeStageConfig
+                ? """
+                  SELECT r.stage_id AS StageId,
+                         (
+                             SELECT lg.group_id
+                             FROM br_lobby_groups lg
+                             WHERE lg.lobby_id = r.id
+                             ORDER BY lg.group_id
+                             LIMIT 1
+                         ) AS GroupId,
+                         r.wave_number AS WaveNumber,
+                         r.status AS Status,
+                         ts.tournament_id AS TournamentId,
+                         COALESCE(t.team_size, 1) AS TeamSize,
+                         t.game AS Game,
+                         t.settings AS Settings,
+                         ts.config AS StageConfig
+                  FROM br_lobbies r
+                  JOIN tournament_stages ts ON ts.id = r.stage_id
+                  JOIN tournaments t ON t.id = ts.tournament_id
+                  WHERE r.id = @lobbyId
+                  """
+                : """
+                  SELECT r.stage_id AS StageId,
+                         (
+                             SELECT lg.group_id
+                             FROM br_lobby_groups lg
+                             WHERE lg.lobby_id = r.id
+                             ORDER BY lg.group_id
+                             LIMIT 1
+                         ) AS GroupId,
+                         r.wave_number AS WaveNumber,
+                         r.status AS Status,
+                         ts.tournament_id AS TournamentId,
+                         COALESCE(t.team_size, 1) AS TeamSize
+                  FROM br_lobbies r
+                  JOIN tournament_stages ts ON ts.id = r.stage_id
+                  JOIN tournaments t ON t.id = ts.tournament_id
+                  WHERE r.id = @lobbyId
+                  """,
+            new { lobbyId },
+            tx);
 
     private static async Task<int> CountPendingEvidenceAsync(
         IDbConnection conn,
