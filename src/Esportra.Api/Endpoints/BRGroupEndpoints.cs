@@ -1689,6 +1689,7 @@ public static class BRGroupEndpoints
             Guid                lobbyId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   catalog,
             IHubContext<BRHub>   brHub,
             CancellationToken    ct) =>
         {
@@ -1702,14 +1703,20 @@ public static class BRGroupEndpoints
                 return Results.NotFound(new { error = "Round not found." });
 
             var stageId = roundInfo.StageId;
-            var groupId = roundInfo.GroupId ?? Guid.Empty;
             var waveNumber = roundInfo.WaveNumber;
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
+            var groupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, roundInfo.GroupId);
+            if (groupIds.Count == 0)
+            {
+                return Results.Conflict(new { error = "This lobby is not linked to a seed group." });
+            }
+
             using var tx = conn.BeginTransaction();
+            dynamic? round;
             try
             {
                 await conn.ExecuteAsync(
@@ -1722,36 +1729,9 @@ public static class BRGroupEndpoints
                     new { lobbyId },
                     tx);
 
-                await conn.ExecuteAsync(
-                    """
-                    DELETE FROM br_lobby_results
-                    WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
-                    """,
-                    new { lobbyId },
-                    tx);
+                await ClearLobbyScoredStateAsync(conn, lobbyId, tx);
 
-                await conn.ExecuteAsync(
-                    """
-                    DELETE FROM br_lobby_evidence
-                    WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
-                    """,
-                    new { lobbyId },
-                    tx);
-
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE br_games
-                    SET status = 'pending',
-                        map = NULL,
-                        scheduled_at = NULL,
-                        started_at = NULL,
-                        completed_at = NULL
-                    WHERE lobby_id = @lobbyId
-                    """,
-                    new { lobbyId },
-                    tx);
-
-                var round = await conn.QuerySingleAsync<dynamic>(
+                round = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
                     UPDATE br_lobbies
                     SET status = 'pending',
@@ -1768,26 +1748,67 @@ public static class BRGroupEndpoints
                     new { lobbyId },
                     tx);
 
+                if (round is null)
+                {
+                    tx.Rollback();
+                    return Results.NotFound(new { error = "Round not found." });
+                }
+
+                if (await TableExistsAsync(conn, "br_games", tx))
+                {
+                    var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT t.game, t.settings, ts.config AS stage_config
+                        FROM tournament_stages ts
+                        JOIN tournaments t ON t.id = ts.tournament_id
+                        WHERE ts.id = @stageId
+                        """,
+                        new { stageId },
+                        tx);
+
+                    var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
+                    var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+                        stageContext?.settings,
+                        stageContext?.stage_config)
+                        ?? await BrGameMaterializer.ResolveGamesPerLobbyAsync(conn, stageId, tx);
+
+                    await BrGameMaterializer.EnsureGamesForLobbyAsync(
+                        conn,
+                        lobbyId,
+                        gamesPerLobby,
+                        stageContext?.settings,
+                        stageContext?.stage_config,
+                        catalogBrConfig,
+                        tx);
+                }
+
                 tx.Commit();
-
-                var resetPayload = BuildRoundEvent(stageId, groupId, lobbyId, waveNumber, "pending");
-                await BroadcastBrAsync(brHub, BRHubEvents.LobbyReset, stageId, groupId, lobbyId, resetPayload, ct);
-                await BroadcastBrAsync(
-                    brHub,
-                    BRHubEvents.LeaderboardUpdated,
-                    stageId,
-                    groupId,
-                    lobbyId,
-                    BuildLeaderboardEvent(stageId, groupId),
-                    ct);
-
-                return Results.Ok(round);
             }
             catch
             {
                 tx.Rollback();
                 throw;
             }
+
+            var resetPayload = BuildRoundEvent(stageId, groupIds[0], lobbyId, waveNumber, "pending");
+            await BroadcastBrToLobbyGroupsAsync(
+                brHub,
+                BRHubEvents.LobbyReset,
+                stageId,
+                lobbyId,
+                groupIds,
+                resetPayload,
+                ct);
+            await BroadcastBrToLobbyGroupsAsync(
+                brHub,
+                BRHubEvents.LeaderboardUpdated,
+                stageId,
+                lobbyId,
+                groupIds,
+                BuildLeaderboardEvent(stageId, groupIds[0]),
+                ct);
+
+            return Results.Ok(MapLobbyRowToApiResponse(round!));
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/br/lobbies/{lobbyId}/results ────────────────────────────
@@ -3928,6 +3949,176 @@ public static class BRGroupEndpoints
             tx);
     }
 
+    private static Task<bool> TableExistsAsync(
+        IDbConnection conn,
+        string tableName,
+        IDbTransaction? tx = null) =>
+        conn.QuerySingleAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name = @tableName
+            )
+            """,
+            new { tableName },
+            tx);
+
+    private static async Task ClearLobbyScoredStateAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        IDbTransaction tx)
+    {
+        var hasGamesTable = await TableExistsAsync(conn, "br_games", tx);
+        var resultsHasGameId = await ColumnExistsAsync(conn, "br_lobby_results", "game_id", tx);
+        var evidenceHasGameId = await ColumnExistsAsync(conn, "br_lobby_evidence", "game_id", tx);
+        var resultsHasLobbyId = await ColumnExistsAsync(conn, "br_lobby_results", "lobby_id", tx);
+        var evidenceHasLobbyId = await ColumnExistsAsync(conn, "br_lobby_evidence", "lobby_id", tx);
+
+        if (hasGamesTable && resultsHasGameId)
+        {
+            await conn.ExecuteAsync(
+                """
+                DELETE FROM br_lobby_results
+                WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
+                """,
+                new { lobbyId },
+                tx);
+        }
+        else if (resultsHasLobbyId)
+        {
+            await conn.ExecuteAsync(
+                "DELETE FROM br_lobby_results WHERE lobby_id = @lobbyId",
+                new { lobbyId },
+                tx);
+        }
+
+        if (hasGamesTable && evidenceHasGameId)
+        {
+            await conn.ExecuteAsync(
+                """
+                DELETE FROM br_lobby_evidence
+                WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
+                """,
+                new { lobbyId },
+                tx);
+        }
+        else if (evidenceHasLobbyId)
+        {
+            await conn.ExecuteAsync(
+                "DELETE FROM br_lobby_evidence WHERE lobby_id = @lobbyId",
+                new { lobbyId },
+                tx);
+        }
+
+        if (!hasGamesTable)
+            return;
+
+        var gamesHasMap = await ColumnExistsAsync(conn, "br_games", "map", tx);
+        if (gamesHasMap)
+        {
+            await conn.ExecuteAsync(
+                """
+                UPDATE br_games
+                SET status = 'pending',
+                    map = NULL,
+                    scheduled_at = NULL,
+                    started_at = NULL,
+                    completed_at = NULL
+                WHERE lobby_id = @lobbyId
+                """,
+                new { lobbyId },
+                tx);
+        }
+        else
+        {
+            await conn.ExecuteAsync(
+                """
+                UPDATE br_games
+                SET status = 'pending',
+                    scheduled_at = NULL,
+                    started_at = NULL,
+                    completed_at = NULL
+                WHERE lobby_id = @lobbyId
+                """,
+                new { lobbyId },
+                tx);
+        }
+    }
+
+    private static async Task<IReadOnlyList<Guid>> GetLobbyGroupIdsAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        Guid? fallbackGroupId = null,
+        IDbTransaction? tx = null)
+    {
+        var groupIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT DISTINCT group_id
+            FROM br_lobby_groups
+            WHERE lobby_id = @lobbyId
+            ORDER BY group_id
+            """,
+            new { lobbyId },
+            tx)).ToList();
+
+        if (groupIds.Count > 0)
+            return groupIds;
+
+        return fallbackGroupId is Guid gid && gid != Guid.Empty
+            ? new[] { gid }
+            : Array.Empty<Guid>();
+    }
+
+    private static async Task BroadcastBrToLobbyGroupsAsync(
+        IHubContext<BRHub> hub,
+        string eventName,
+        Guid stageId,
+        Guid lobbyId,
+        IReadOnlyList<Guid> groupIds,
+        object payload,
+        CancellationToken ct = default)
+    {
+        foreach (var groupId in groupIds)
+        {
+            await BroadcastBrAsync(hub, eventName, stageId, groupId, lobbyId, payload, ct);
+        }
+    }
+
+    private static object MapLobbyRowToApiResponse(dynamic row)
+    {
+        var values = (IDictionary<string, object>)row;
+        object? Read(string key) =>
+            values.TryGetValue(key, out var value) && value is not DBNull ? value : null;
+
+        return new
+        {
+            id = Read("id"),
+            wave_number = Read("wave_number") is not null ? Convert.ToInt32(Read("wave_number")) : 0,
+            lobby_code = Read("lobby_code") as string,
+            status = Read("status") as string ?? "pending",
+            scheduled_at = Read("scheduled_at") is DateTimeOffset scheduledAt
+                ? scheduledAt.ToString("o")
+                : Read("scheduled_at") as string,
+            started_at = Read("started_at") is DateTimeOffset startedAt
+                ? startedAt.ToString("o")
+                : Read("started_at") as string,
+            completed_at = Read("completed_at") is DateTimeOffset completedAt
+                ? completedAt.ToString("o")
+                : Read("completed_at") as string,
+            created_at = Read("created_at") is DateTimeOffset createdAt
+                ? createdAt.ToString("o")
+                : Read("created_at") as string,
+            queue_timer_minutes = Read("queue_timer_minutes") is not null
+                ? Convert.ToInt32(Read("queue_timer_minutes"))
+                : (int?)null,
+            queue_started_at = Read("queue_started_at") is DateTimeOffset queueStartedAt
+                ? queueStartedAt.ToString("o")
+                : Read("queue_started_at") as string,
+        };
+    }
+
     private static async Task<bool> ColumnAllowsNullAsync(
         IDbConnection conn,
         string tableName,
@@ -4303,16 +4494,35 @@ public static class BRGroupEndpoints
         Guid lobbyId,
         IDbTransaction? tx = null)
     {
-        var count = await conn.ExecuteScalarAsync<long>(
-            """
-            SELECT COUNT(*)
-            FROM br_lobby_evidence re
-            JOIN br_games g ON g.id = re.game_id
-            WHERE g.lobby_id = @lobbyId AND re.reviewed = FALSE
-            """,
-            new { lobbyId },
-            tx);
-        return Convert.ToInt32(count);
+        if (await TableExistsAsync(conn, "br_games", tx)
+            && await ColumnExistsAsync(conn, "br_lobby_evidence", "game_id", tx))
+        {
+            var count = await conn.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(*)
+                FROM br_lobby_evidence re
+                JOIN br_games g ON g.id = re.game_id
+                WHERE g.lobby_id = @lobbyId AND re.reviewed = FALSE
+                """,
+                new { lobbyId },
+                tx);
+            return Convert.ToInt32(count);
+        }
+
+        if (await ColumnExistsAsync(conn, "br_lobby_evidence", "lobby_id", tx))
+        {
+            var count = await conn.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(*)
+                FROM br_lobby_evidence re
+                WHERE re.lobby_id = @lobbyId AND re.reviewed = FALSE
+                """,
+                new { lobbyId },
+                tx);
+            return Convert.ToInt32(count);
+        }
+
+        return 0;
     }
 
     private static async Task<int> GetPendingEvidenceCountAsync(
