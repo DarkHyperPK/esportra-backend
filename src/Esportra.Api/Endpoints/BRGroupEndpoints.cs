@@ -17,9 +17,6 @@ namespace Esportra.Api.Endpoints;
 public static class BRGroupEndpoints
 {
     private sealed record BrEntityAccess(Guid? TeamId, Guid? ParticipantId);
-    private static readonly string[] SeedEligibleRegistrationStatuses = ["approved", "checked_in"];
-    private const string SeedEligibleParticipantMessage = "No eligible participants found. Participants must be approved or checked in.";
-    private const string SeedEligibleTeamMessage = "No eligible teams found. Teams must be approved or checked in.";
     private const string StageRoundsLockedMessage = "This stage already has rounds. Reset or recreate the stage before reseeding participants.";
 
     public static void MapBRGroupEndpoints(this WebApplication app)
@@ -404,6 +401,8 @@ public static class BRGroupEndpoints
 
             Guid tournamentId = tournamentInfo.tournament_id;
             bool isSolo = Convert.ToInt32(tournamentInfo.team_size ?? 1) == 1;
+            var checkInRequired = await BRSeedEligibility.IsCheckInRequiredAsync(conn, tournamentId);
+            var seedEligibleStatuses = BRSeedEligibility.ResolveStatuses(checkInRequired);
 
             // Get existing groups for this stage
             var groups = (await conn.QueryAsync<dynamic>(
@@ -455,10 +454,10 @@ public static class BRGroupEndpoints
                         WHERE tournament_id = @tournamentId
                           AND status::text = ANY(@seedEligibleStatuses)
                         """,
-                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses })).ToArray();
+                        new { tournamentId, seedEligibleStatuses })).ToArray();
 
                     if (participantIds.Length == 0)
-                        return Results.BadRequest(new { error = SeedEligibleParticipantMessage });
+                        return Results.BadRequest(new { error = BRSeedEligibility.ParticipantSeedMessage(checkInRequired) });
 
                     var orderedParticipants = method == "random"
                         ? ShuffleTeams(participantIds)
@@ -491,10 +490,10 @@ public static class BRGroupEndpoints
                           AND status::text = ANY(@seedEligibleStatuses)
                           AND team_id IS NOT NULL
                         """,
-                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses })).ToArray();
+                        new { tournamentId, seedEligibleStatuses })).ToArray();
 
                     if (teamIds.Length == 0)
-                        return Results.BadRequest(new { error = SeedEligibleTeamMessage });
+                        return Results.BadRequest(new { error = BRSeedEligibility.TeamSeedMessage(checkInRequired) });
 
                     var orderedTeams = method == "random"
                         ? ShuffleTeams(teamIds)
@@ -680,6 +679,11 @@ public static class BRGroupEndpoints
 
             Guid tournamentId = tournamentInfo.tournament_id;
             bool isSolo = Convert.ToInt32(tournamentInfo.team_size ?? 1) == 1;
+            var checkInRequired = await BRSeedEligibility.IsCheckInRequiredAsync(conn, tournamentId);
+            var seedEligibleStatuses = BRSeedEligibility.ResolveStatuses(checkInRequired);
+            var ineligibleSeedHint = checkInRequired
+                ? "They must be checked in."
+                : "They must be registered, approved or checked in.";
 
             if (teamIds.Count > 0)
             {
@@ -693,11 +697,11 @@ public static class BRGroupEndpoints
                           AND status::text = ANY(@seedEligibleStatuses)
                           AND id = ANY(@idsArr)
                         """,
-                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses, idsArr = teamIds.ToArray() })).ToHashSet();
+                        new { tournamentId, seedEligibleStatuses, idsArr = teamIds.ToArray() })).ToHashSet();
 
                     var invalid = teamIds.Where(t => !validParticipantIds.Contains(t)).ToList();
                     if (invalid.Count > 0)
-                        return Results.BadRequest(new { error = $"Participants are not eligible for seeding. They must be registered, approved or checked in: {string.Join(", ", invalid)}" });
+                        return Results.BadRequest(new { error = $"Participants are not eligible for seeding. {ineligibleSeedHint} Invalid: {string.Join(", ", invalid)}" });
                 }
                 else
                 {
@@ -709,11 +713,11 @@ public static class BRGroupEndpoints
                           AND status::text = ANY(@seedEligibleStatuses)
                           AND team_id = ANY(@teamIdArr)
                         """,
-                        new { tournamentId, seedEligibleStatuses = SeedEligibleRegistrationStatuses, teamIdArr = teamIds.ToArray() })).ToHashSet();
+                        new { tournamentId, seedEligibleStatuses, teamIdArr = teamIds.ToArray() })).ToHashSet();
 
                     var invalid = teamIds.Where(t => !validTeamIds.Contains(t)).ToList();
                     if (invalid.Count > 0)
-                        return Results.BadRequest(new { error = $"Teams are not eligible for seeding. They must be registered, approved or checked in: {string.Join(", ", invalid)}" });
+                        return Results.BadRequest(new { error = $"Teams are not eligible for seeding. {ineligibleSeedHint} Invalid: {string.Join(", ", invalid)}" });
                 }
             }
 

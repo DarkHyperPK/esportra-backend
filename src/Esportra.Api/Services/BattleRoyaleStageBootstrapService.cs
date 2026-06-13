@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Esportra.Api.Helpers;
 
 namespace Esportra.Api.Services;
 
@@ -39,7 +40,10 @@ public sealed class BattleRoyaleStageBootstrapService
             tx)).ToList();
 
         var results = new List<BattleRoyaleStageBootstrapResult>(stages.Count);
-        var incomingUnits = stages.FirstOrDefault()?.TournamentMaxTeams ?? 0;
+        var teamSize = Math.Max(1, stages.FirstOrDefault()?.TeamSize ?? 1);
+        var checkInRequired = await BRSeedEligibility.IsCheckInRequiredAsync(conn, tournamentId, tx);
+        var eligibleCount = await CountSeedEligibleUnitsAsync(conn, tx, tournamentId, teamSize == 1, checkInRequired);
+        var incomingUnits = ResolveIncomingUnits(stages.FirstOrDefault()?.TournamentMaxTeams, eligibleCount);
 
         foreach (var stage in stages)
         {
@@ -313,7 +317,12 @@ public sealed class BattleRoyaleStageBootstrapService
             return "All groups must have participants before creating matches.";
         }
 
-        var eligibleCount = await CountSeedEligibleUnitsAsync(conn, tx, tournamentId.Value, isSolo);
+        var eligibleCount = await CountSeedEligibleUnitsAsync(
+            conn,
+            tx,
+            tournamentId.Value,
+            isSolo,
+            await BRSeedEligibility.IsCheckInRequiredAsync(conn, tournamentId.Value, tx));
         var expectedIncoming = await ComputeIncomingUnitsForStageAsync(conn, tx, stage, eligibleCount);
 
         if (expectedIncoming > 0 && assignedCount < expectedIncoming)
@@ -333,8 +342,11 @@ public sealed class BattleRoyaleStageBootstrapService
         IDbConnection conn,
         IDbTransaction? tx,
         Guid tournamentId,
-        bool isSolo)
+        bool isSolo,
+        bool checkInRequired)
     {
+        var statuses = BRSeedEligibility.ResolveStatuses(checkInRequired);
+
         if (isSolo)
         {
             return await conn.ExecuteScalarAsync<int>(
@@ -344,7 +356,7 @@ public sealed class BattleRoyaleStageBootstrapService
                 WHERE tournament_id = @tournamentId
                   AND status::text = ANY(@statuses)
                 """,
-                new { tournamentId, statuses = new[] { "approved", "checked_in" } },
+                new { tournamentId, statuses },
                 tx);
         }
 
@@ -356,7 +368,7 @@ public sealed class BattleRoyaleStageBootstrapService
               AND team_id IS NOT NULL
               AND status::text = ANY(@statuses)
             """,
-            new { tournamentId, statuses = new[] { "approved", "checked_in" } },
+            new { tournamentId, statuses },
             tx);
     }
 
@@ -388,7 +400,7 @@ public sealed class BattleRoyaleStageBootstrapService
             new { stageId = stage.Id },
             tx)).ToList();
 
-        var incomingUnits = stages.FirstOrDefault()?.TournamentMaxTeams ?? 0;
+        var incomingUnits = ResolveIncomingUnits(stages.FirstOrDefault()?.TournamentMaxTeams, eligibleCount);
         if (incomingUnits <= 0 && eligibleCount > 0)
             incomingUnits = eligibleCount;
 
@@ -537,6 +549,15 @@ public sealed class BattleRoyaleStageBootstrapService
             return 1;
 
         return Math.Max(1, (int)Math.Ceiling(incomingUnits / (double)lobbySize));
+    }
+
+    private static int ResolveIncomingUnits(int? tournamentMaxTeams, int eligibleCount)
+    {
+        var cap = tournamentMaxTeams ?? 0;
+        if (eligibleCount > 0)
+            return cap > 0 ? Math.Min(cap, eligibleCount) : eligibleCount;
+
+        return Math.Max(0, cap);
     }
 
     private static string GenerateGroupName(int index)
