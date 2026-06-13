@@ -1539,8 +1539,12 @@ public static class BRGroupEndpoints
                 throw;
             }
 
-            if (updated is not null && broadcastStageId != default && broadcastGroupId != default)
+            if (updated is not null && broadcastStageId != default)
             {
+                var lobbyGroupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, broadcastGroupId);
+                if (lobbyGroupIds.Count == 0 && broadcastGroupId != default)
+                    lobbyGroupIds = new[] { broadcastGroupId };
+
                 var waveNumber = Convert.ToInt32(updated.wave_number);
                 var roundPayload = BuildRoundEvent(
                     broadcastStageId,
@@ -1553,37 +1557,41 @@ public static class BRGroupEndpoints
                     updated.queue_started_at is not null
                         ? ((DateTimeOffset)updated.queue_started_at).ToString("o")
                         : null);
-                await BroadcastBrAsync(
-                    brHub,
-                    BRHubEvents.LobbyUpdated,
-                    broadcastStageId,
-                    broadcastGroupId,
-                    lobbyId,
-                    roundPayload,
-                    ct);
+
+                if (lobbyGroupIds.Count > 0)
+                {
+                    await BroadcastBrToLobbyGroupsAsync(
+                        brHub,
+                        BRHubEvents.LobbyUpdated,
+                        broadcastStageId,
+                        lobbyId,
+                        lobbyGroupIds,
+                        roundPayload,
+                        ct);
+                }
 
                 var statusChanged = !string.Equals(broadcastOldStatus, broadcastNewStatus, StringComparison.Ordinal);
-                if (statusChanged && (broadcastNewStatus == "completed"
+                if (statusChanged && lobbyGroupIds.Count > 0 && (broadcastNewStatus == "completed"
                     || (broadcastOldStatus == "completed" && broadcastNewStatus == "active")))
                 {
                     if (broadcastNewStatus == "completed")
                     {
-                        await BroadcastBrAsync(
+                        await BroadcastBrToLobbyGroupsAsync(
                             brHub,
                             BRHubEvents.LobbyCompleted,
                             broadcastStageId,
-                            broadcastGroupId,
                             lobbyId,
+                            lobbyGroupIds,
                             roundPayload,
                             ct);
                     }
 
-                    await BroadcastBrAsync(
+                    await BroadcastBrToLobbyGroupsAsync(
                         brHub,
                         BRHubEvents.LeaderboardUpdated,
                         broadcastStageId,
-                        broadcastGroupId,
                         lobbyId,
+                        lobbyGroupIds,
                         BuildLeaderboardEvent(broadcastStageId, broadcastGroupId),
                         ct);
                 }
