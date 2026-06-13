@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text.Json;
 using Dapper;
 
 namespace Esportra.Api.Helpers;
@@ -23,6 +24,83 @@ public static class TournamentTimelineValidator
         return registrationDeadline > startDate
             ? "Registration deadline must be on or before the tournament start date."
             : null;
+    }
+
+    /// <summary>
+    /// Registration is open through the deadline instant (UTC). Midnight UTC deadlines
+    /// are treated as inclusive through 23:59:59.999 on that calendar day (UTC).
+    /// </summary>
+    public static bool IsRegistrationDeadlineOpen(DateTimeOffset? registrationDeadline, DateTimeOffset? now = null)
+    {
+        if (registrationDeadline is null)
+            return true;
+
+        var current = now ?? DateTimeOffset.UtcNow;
+        var end = registrationDeadline.Value;
+
+        if (end is { Hour: 0, Minute: 0, Second: 0 })
+        {
+            end = new DateTimeOffset(end.Year, end.Month, end.Day, 23, 59, 59, 999, end.Offset);
+        }
+
+        return current <= end;
+    }
+
+    public static bool IsRegistrationStatusOpen(string? status)
+    {
+        return string.Equals(status, "open", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "published", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static DateTimeOffset? ParseRegistrationOpensAt(object? settings)
+    {
+        if (settings is null)
+            return null;
+
+        try
+        {
+            var json = settings switch
+            {
+                string s => s,
+                _ => JsonSerializer.Serialize(settings),
+            };
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("registrationOpensAt", out var prop))
+                return null;
+
+            if (prop.ValueKind != JsonValueKind.String)
+                return null;
+
+            return DateTimeOffset.TryParse(prop.GetString(), out var parsed) ? parsed : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static string? ValidateRegistrationWindow(
+        string? status,
+        DateTimeOffset? registrationDeadline,
+        DateTimeOffset? startDate,
+        DateTimeOffset? registrationOpens = null,
+        DateTimeOffset? now = null)
+    {
+        if (!IsRegistrationStatusOpen(status))
+            return "Tournament is not accepting registrations.";
+
+        var current = now ?? DateTimeOffset.UtcNow;
+        if (registrationOpens is not null && current < registrationOpens.Value)
+            return "Registration has not opened yet.";
+
+        if (!IsRegistrationDeadlineOpen(registrationDeadline, now))
+            return "Registration deadline has passed.";
+
+        if (startDate is not null && current >= startDate.Value)
+            return "Tournament has already started.";
+
+        return null;
     }
 
     public static string FormatWindow(DateTimeOffset? startDate, DateTimeOffset? endDate)

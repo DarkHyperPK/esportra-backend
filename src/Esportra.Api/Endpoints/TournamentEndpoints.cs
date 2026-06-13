@@ -1124,6 +1124,7 @@ public static class TournamentEndpoints
                 """
                 SELECT status, max_teams, entry_fee, payment_instructions, game,
                        reserved_invite_slots, settings,
+                       registration_deadline, start_date,
                        COALESCE(settings->>'registrationType', 'open') AS registration_type
                 FROM tournaments
                 WHERE id = @id
@@ -1131,8 +1132,14 @@ public static class TournamentEndpoints
                 """,
                 new { id }, txn);
             if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
-            if ((string)tourn.status is not "open" and not "published")
-            {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament is not accepting registrations." }); }
+
+            var registrationWindowError = TournamentTimelineValidator.ValidateRegistrationWindow(
+                (string?)tourn.status,
+                (DateTimeOffset?)tourn.registration_deadline,
+                (DateTimeOffset?)tourn.start_date,
+                TournamentTimelineValidator.ParseRegistrationOpensAt(tourn.settings));
+            if (registrationWindowError is not null)
+            {   txn.Rollback(); return Results.BadRequest(new { error = registrationWindowError }); }
 
             if (string.Equals((string?)tourn.registration_type, "invite_only", StringComparison.OrdinalIgnoreCase))
             {   txn.Rollback(); return Results.BadRequest(new { error = "This tournament is invite-only." }); }

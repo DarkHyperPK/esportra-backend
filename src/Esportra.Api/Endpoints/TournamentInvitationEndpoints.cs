@@ -439,7 +439,8 @@ public static class TournamentInvitationEndpoints
                 """
                 SELECT ti.id, ti.tournament_id, ti.email, ti.status, ti.expires_at,
                        t.name AS tournament_name, t.slug AS tournament_slug, t.game,
-                       t.game_mode, t.team_size, t.status AS tournament_status
+                       t.game_mode, t.team_size, t.status AS tournament_status,
+                       t.registration_deadline, t.start_date, t.settings
                 FROM public.tournament_invitations ti
                 JOIN public.tournaments t ON t.id = ti.tournament_id
                 WHERE ti.code = @code
@@ -477,15 +478,20 @@ public static class TournamentInvitationEndpoints
             var expiresAt = (DateTime?)invite.expires_at;
             var isExpired = expiresAt is null || expiresAt <= DateTime.UtcNow;
             var tournamentStatus = ((string)invite.tournament_status).ToLowerInvariant();
-            var tournamentOpen = tournamentStatus is "open" or "published";
+            var registrationOpens = TournamentTimelineValidator.ParseRegistrationOpensAt(invite.settings);
+            var registrationWindowError = TournamentTimelineValidator.ValidateRegistrationWindow(
+                tournamentStatus,
+                (DateTimeOffset?)invite.registration_deadline,
+                (DateTimeOffset?)invite.start_date,
+                registrationOpens);
 
             string? message = null;
-            var canRedeem = status == "sent" && !isExpired && tournamentOpen;
+            var canRedeem = status == "sent" && !isExpired && registrationWindowError is null;
             if (status == "redeemed") message = "This invitation has already been used.";
             else if (status == "revoked") message = "This invitation was revoked by the organizer.";
             else if (status == "draft") message = "This invitation has not been sent yet.";
             else if (isExpired) message = "This invitation has expired. Ask the organizer to resend it.";
-            else if (!tournamentOpen) message = "Tournament is not accepting registrations.";
+            else if (registrationWindowError is not null) message = registrationWindowError;
 
             return Results.Ok(new
             {
@@ -562,17 +568,24 @@ public static class TournamentInvitationEndpoints
 
                 var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT id, name, slug, status, max_teams, game, team_size, game_mode
+                    SELECT id, name, slug, status, max_teams, game, team_size, game_mode,
+                           registration_deadline, start_date, settings
                     FROM public.tournaments
                     WHERE id = @tournamentId AND deleted_at IS NULL
                     FOR UPDATE
                     """,
                     new { tournamentId }, tx);
                 if (tournament is null) { tx.Rollback(); return Results.NotFound(new { error = "Tournament was not found." }); }
-                if ((string)tournament.status is not "open" and not "published")
+
+                var registrationWindowError = TournamentTimelineValidator.ValidateRegistrationWindow(
+                    (string?)tournament.status,
+                    (DateTimeOffset?)tournament.registration_deadline,
+                    (DateTimeOffset?)tournament.start_date,
+                    TournamentTimelineValidator.ParseRegistrationOpensAt(tournament.settings));
+                if (registrationWindowError is not null)
                 {
                     tx.Rollback();
-                    return Results.BadRequest(new { error = "Tournament is not accepting registrations." });
+                    return Results.BadRequest(new { error = registrationWindowError });
                 }
 
                 var teamSize = (int?)tournament.team_size ?? 1;
