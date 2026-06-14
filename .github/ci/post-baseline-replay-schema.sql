@@ -418,8 +418,12 @@ CREATE TABLE IF NOT EXISTS public.organization_staff (
 CREATE TABLE IF NOT EXISTS public.staff_tournament_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_staff_id UUID REFERENCES public.organization_staff(id) ON DELETE CASCADE,
-  tournament_id UUID
+  tournament_id UUID,
+  permissions TEXT[]
 );
+
+ALTER TABLE public.staff_tournament_assignments
+  ADD COLUMN IF NOT EXISTS permissions TEXT[];
 
 -- ── Game maps seeds (20260326150000+) ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.game_maps (

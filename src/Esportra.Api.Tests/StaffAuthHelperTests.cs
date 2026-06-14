@@ -41,6 +41,55 @@ public class StaffAuthHelperTests
         Assert.Contains("organization_staff os", helperSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ResolveEffectivePermissions_InheritsOrgWhenAssignmentNull()
+    {
+        var org = new[] { StaffAuthHelper.PermScoresUpdate, StaffAuthHelper.PermDisputesAssist };
+        var effective = StaffAuthHelper.ResolveEffectivePermissions(org, null);
+        Assert.Equal(org, effective);
+    }
+
+    [Fact]
+    public void ResolveEffectivePermissions_UsesAssignmentOverrideWhenSet()
+    {
+        var org = new[] { StaffAuthHelper.PermScoresUpdate };
+        var assignment = new[] { StaffAuthHelper.PermBracketEdit, StaffAuthHelper.PermDisputesAssist };
+        var effective = StaffAuthHelper.ResolveEffectivePermissions(org, assignment);
+        Assert.Equal(assignment, effective);
+    }
+
+    [Fact]
+    public void ResolveEffectivePermissions_DeduplicatesAndIgnoresBlank()
+    {
+        var effective = StaffAuthHelper.ResolveEffectivePermissions(
+            new[] { StaffAuthHelper.PermScoresUpdate, StaffAuthHelper.PermScoresUpdate, "  " },
+            null);
+        Assert.Single(effective);
+        Assert.Equal(StaffAuthHelper.PermScoresUpdate, effective[0]);
+    }
+
+    [Fact]
+    public void TryNormalizeStaffPermissions_RejectsUnknown()
+    {
+        var ok = StaffAuthHelper.TryNormalizeStaffPermissions(
+            new[] { StaffAuthHelper.PermBracketEdit, "invalid:perm" },
+            out _,
+            out var error);
+        Assert.False(ok);
+        Assert.Contains("invalid:perm", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryNormalizeStaffPermissions_AcceptsKnownCatalog()
+    {
+        var ok = StaffAuthHelper.TryNormalizeStaffPermissions(
+            new[] { StaffAuthHelper.PermTeamsManage, StaffAuthHelper.PermTeamsManage },
+            out var normalized,
+            out _);
+        Assert.True(ok);
+        Assert.Single(normalized);
+    }
+
     private static string FindStaffAuthHelperCs()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

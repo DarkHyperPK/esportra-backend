@@ -102,6 +102,7 @@ public static class OrganizationEndpoints
                                 'tournament_id',         sta.tournament_id,
                                 'assigned_by',           sta.assigned_by,
                                 'created_at',            sta.created_at,
+                                'permissions',           sta.permissions,
                                 'tournament',            to_jsonb(t)
                             ) ORDER BY sta.created_at
                         ) FILTER (WHERE sta.id IS NOT NULL),
@@ -147,6 +148,9 @@ public static class OrganizationEndpoints
             if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
+            if (!StaffAuthHelper.TryNormalizeStaffPermissions(req.Permissions, out var normalizedPerms, out var permError))
+                return Results.BadRequest(new { error = permError });
+
             // 1. Resolve user by email
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id, email FROM profiles WHERE email ILIKE @email",
@@ -172,7 +176,7 @@ public static class OrganizationEndpoints
                         status = 'pending', accepted_at = NULL, responded_at = NULL, updated_at = NOW()
                     WHERE id = @staffId
                     """,
-                    new { staffId = staffIdGuid, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserIdGuid });
+                    new { staffId = staffIdGuid, role = req.Role, permissions = normalizedPerms, assignedBy = userCtx.UserIdGuid });
             }
             else
             {
@@ -183,7 +187,7 @@ public static class OrganizationEndpoints
                     VALUES (@orgId, @profileId, @role, @permissions::text[], @assignedBy, 'pending')
                     RETURNING id
                     """,
-                    new { orgId, profileId = profileIdGuid, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserIdGuid });
+                    new { orgId, profileId = profileIdGuid, role = req.Role, permissions = normalizedPerms, assignedBy = userCtx.UserIdGuid });
                 staffIdGuid = (Guid)inserted.id;
             }
 
@@ -221,7 +225,7 @@ public static class OrganizationEndpoints
 
             // 5. Audit log
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.invite", "staff", staffIdGuid,
-                new { invitedEmail = req.UserEmail, req.Role, req.Permissions });
+                new { invitedEmail = req.UserEmail, req.Role, Permissions = normalizedPerms });
 
             // 6. Staff invite notification is handled in-app only (via SignalR NotificationHub above)
 
@@ -245,16 +249,19 @@ public static class OrganizationEndpoints
             if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
+            if (!StaffAuthHelper.TryNormalizeStaffPermissions(req.Permissions, out var normalized, out var permError))
+                return Results.BadRequest(new { error = permError });
+
             await conn.ExecuteAsync(
                 """
                 UPDATE organization_staff
                 SET role = @role, permissions = @permissions::text[], updated_at = NOW()
                 WHERE id = @staffId AND organization_id = @orgId
                 """,
-                new { staffId, orgId, role = req.Role, permissions = req.Permissions });
+                new { staffId, orgId, role = req.Role, permissions = normalized });
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.update_permissions", "staff", staffId,
-                new { req.Role, req.Permissions });
+                new { req.Role, Permissions = normalized });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -390,19 +397,83 @@ public static class OrganizationEndpoints
             if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
-            if (req.TournamentIds.Count > 0)
+            var assignmentItems = ResolveAssignTournamentItems(req);
+            if (assignmentItems.Count > 0)
             {
+                foreach (var item in assignmentItems)
+                {
+                    if (item.Permissions is { Count: > 0 }
+                        && !StaffAuthHelper.TryNormalizeStaffPermissions(item.Permissions, out _, out var permError))
+                    {
+                        return Results.BadRequest(new { error = permError });
+                    }
+                }
+
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO staff_tournament_assignments (organization_staff_id, tournament_id, assigned_by)
-                    VALUES (@staffId, @tournamentId, @assignedBy)
-                    ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
+                    INSERT INTO staff_tournament_assignments (organization_staff_id, tournament_id, assigned_by, permissions)
+                    VALUES (@staffId, @tournamentId, @assignedBy, @permissions)
+                    ON CONFLICT (organization_staff_id, tournament_id) DO UPDATE
+                    SET assigned_by = EXCLUDED.assigned_by,
+                        permissions = COALESCE(EXCLUDED.permissions, staff_tournament_assignments.permissions)
                     """,
-                    req.TournamentIds.Select(tid => new { staffId, tournamentId = Guid.Parse(tid), assignedBy = userCtx.UserIdGuid }));
+                    assignmentItems.Select(item => new
+                    {
+                        staffId,
+                        tournamentId = Guid.Parse(item.TournamentId),
+                        assignedBy = userCtx.UserIdGuid,
+                        permissions = item.Permissions is { Count: > 0 }
+                            ? StaffAuthHelper.NormalizeStaffPermissions(item.Permissions)
+                            : (string[]?)null,
+                    }));
             }
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.assign_tournament", "staff", staffId,
-                new { tournamentIds = req.TournamentIds });
+                new { tournamentIds = assignmentItems.Select(a => a.TournamentId).ToList() });
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/organizations/{orgId}/staff/assignments/{assignmentId} ───
+        app.MapPut("/api/organizations/{orgId}/staff/assignments/{assignmentId}", async (
+            Guid                                      orgId,
+            Guid                                      assignmentId,
+            [FromBody] UpdateAssignmentPermissionsRequest req,
+            HttpContext                               ctx,
+            IDbConnectionFactory                     db,
+            CancellationToken                        ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
+            string[]? normalized = null;
+            if (req.Permissions is not null)
+            {
+                if (!StaffAuthHelper.TryNormalizeStaffPermissions(req.Permissions, out normalized, out var permError))
+                    return Results.BadRequest(new { error = permError });
+            }
+
+            var updated = await conn.ExecuteAsync(
+                """
+                UPDATE staff_tournament_assignments sta
+                SET permissions = @permissions
+                WHERE sta.id = @assignmentId
+                  AND sta.organization_staff_id IN (
+                    SELECT id FROM organization_staff WHERE organization_id = @orgId
+                  )
+                """,
+                new { assignmentId, orgId, permissions = normalized });
+
+            if (updated == 0)
+                return Results.NotFound();
+
+            await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.update_assignment_permissions", "assignment", assignmentId,
+                new { Permissions = normalized });
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
@@ -446,7 +517,8 @@ public static class OrganizationEndpoints
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT sta.id, sta.tournament_id, sta.role AS assignment_role, sta.created_at,
-                       os.user_id, os.role, os.status
+                       sta.permissions,
+                       os.user_id, os.role, os.status, os.permissions AS org_permissions
                 FROM staff_tournament_assignments sta
                 LEFT JOIN organization_staff os ON os.id = sta.organization_staff_id
                 WHERE sta.tournament_id = @tournamentId
@@ -481,21 +553,29 @@ public static class OrganizationEndpoints
 
             // Admins get all permissions without a tournament assignment check
             if ((string)staff.role == "admin")
-                return Results.Ok(staff.permissions ?? Array.Empty<string>());
+                return Results.Ok(StaffAuthHelper.AllStaffPermissions);
 
             // Non-admins need an explicit tournament assignment
-            if (string.IsNullOrEmpty(tournamentId)) return Results.Ok(Array.Empty<string>());
+            if (string.IsNullOrEmpty(tournamentId))
+                return Results.Ok(Array.Empty<string>());
 
-            var assignment = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            var assignment = await conn.QuerySingleOrDefaultAsync<(Guid id, string[]? org_permissions, string[]? assignment_permissions)?>(
                 """
-                SELECT id FROM staff_tournament_assignments
-                WHERE organization_staff_id = @staffId AND tournament_id = @tournamentId
+                SELECT sta.id, os.permissions AS org_permissions, sta.permissions AS assignment_permissions
+                FROM staff_tournament_assignments sta
+                JOIN organization_staff os ON os.id = sta.organization_staff_id
+                WHERE sta.organization_staff_id = @staffId AND sta.tournament_id = @tournamentId
                 """,
                 new { staffId = (Guid)staff.id, tournamentId = Guid.Parse(tournamentId) });
 
-            return assignment is not null
-                ? Results.Ok(staff.permissions ?? Array.Empty<string>())
-                : Results.Ok(Array.Empty<string>());
+            if (assignment is null)
+                return Results.Ok(Array.Empty<string>());
+
+            var effective = StaffAuthHelper.ResolveEffectivePermissions(
+                assignment.Value.org_permissions,
+                assignment.Value.assignment_permissions);
+
+            return Results.Ok(effective);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/{orgId}/audit-logs ─────────────────────────
@@ -1587,6 +1667,16 @@ public static class OrganizationEndpoints
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private static List<AssignTournamentItem> ResolveAssignTournamentItems(AssignTournamentsRequest req)
+    {
+        if (req.Assignments is { Count: > 0 })
+            return req.Assignments;
+
+        return (req.TournamentIds ?? [])
+            .Select(tid => new AssignTournamentItem(tid, null))
+            .ToList();
+    }
+
     private static string FriendlyRole(string role) => role switch
     {
         "admin" => "an Administrator",
@@ -1627,7 +1717,13 @@ public sealed record UpdateStaffRequest(string Role, List<string> Permissions);
 
 public sealed record RespondInviteRequest(bool Accept);
 
-public sealed record AssignTournamentsRequest(List<string> TournamentIds);
+public sealed record AssignTournamentsRequest(
+    List<string>? TournamentIds = null,
+    List<AssignTournamentItem>? Assignments = null);
+
+public sealed record AssignTournamentItem(string TournamentId, List<string>? Permissions = null);
+
+public sealed record UpdateAssignmentPermissionsRequest(List<string>? Permissions);
 
 public sealed record BulkTournamentLifecycleRequest(
     Guid[] TournamentIds,

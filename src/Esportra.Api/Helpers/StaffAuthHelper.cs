@@ -53,11 +53,12 @@ public static class StaffAuthHelper
     public static async Task<StaffAccessResult> ResolveStaffAccessAsync(
         IDbConnection conn, Guid userId, Guid tournamentId, IDbTransaction? tx = null)
     {
-        var row = await conn.QuerySingleOrDefaultAsync<(string role, bool has_assignment, string[]? permissions)>(
+        var row = await conn.QuerySingleOrDefaultAsync<(string role, bool has_assignment, string[]? org_permissions, string[]? assignment_permissions)>(
             $"""
             SELECT os.role,
                    (sta.id IS NOT NULL) AS has_assignment,
-                   os.permissions
+                   os.permissions AS org_permissions,
+                   sta.permissions AS assignment_permissions
             FROM tournaments t
             JOIN organization_staff os
               ON os.user_id = @userId
@@ -79,11 +80,62 @@ public static class StaffAuthHelper
 
         if (row.has_assignment)
         {
-            var perms = row.permissions ?? [];
-            return new StaffAccessResult(true, row.role, perms.Distinct(StringComparer.Ordinal).ToArray());
+            var perms = ResolveEffectivePermissions(row.org_permissions, row.assignment_permissions);
+            return new StaffAccessResult(true, row.role, perms);
         }
 
         return new StaffAccessResult(false, null, []);
+    }
+
+    /// <summary>
+    /// NULL assignment permissions inherit org defaults; non-null assignment replaces for that tournament.
+    /// </summary>
+    public static string[] ResolveEffectivePermissions(string[]? orgPermissions, string[]? assignmentPermissions)
+    {
+        var source = assignmentPermissions ?? orgPermissions ?? [];
+        return source
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    /// <summary>Validates and normalizes a permission list against the known staff permission catalog.</summary>
+    public static string[] NormalizeStaffPermissions(IEnumerable<string>? permissions)
+    {
+        if (permissions is null)
+            return [];
+
+        var allowed = new HashSet<string>(AllStaffPermissions, StringComparer.Ordinal);
+        return permissions
+            .Where(p => !string.IsNullOrWhiteSpace(p) && allowed.Contains(p))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    /// <summary>Returns false when any permission is outside the known catalog.</summary>
+    public static bool TryNormalizeStaffPermissions(
+        IEnumerable<string>? permissions,
+        out string[] normalized,
+        out string? error)
+    {
+        normalized = [];
+        error = null;
+        if (permissions is null)
+            return true;
+
+        var list = permissions.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+        var allowed = new HashSet<string>(AllStaffPermissions, StringComparer.Ordinal);
+        foreach (var perm in list)
+        {
+            if (!allowed.Contains(perm))
+            {
+                error = $"Unknown staff permission: {perm}";
+                return false;
+            }
+        }
+
+        normalized = list.Distinct(StringComparer.Ordinal).ToArray();
+        return true;
     }
 
     /// <summary>SQL fragment: user has staff visibility on tournament t (admin or assigned).</summary>
