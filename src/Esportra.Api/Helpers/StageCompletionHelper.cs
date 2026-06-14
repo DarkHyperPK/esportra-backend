@@ -337,7 +337,7 @@ public static class StageCompletionHelper
         Guid stageId,
         IDbTransaction? tx = null)
     {
-        var row = await conn.QuerySingleOrDefaultAsync<(DateTimeOffset? start_date, DateTimeOffset? end_date, string status)>(
+        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
             """
             SELECT t.start_date, t.end_date, t.status::text AS status
             FROM tournament_stages ts
@@ -347,6 +347,12 @@ public static class StageCompletionHelper
             new { stageId },
             tx);
 
-        return (row.start_date, row.end_date, row.status);
+        if (row is null)
+            return (null, null, string.Empty);
+
+        return (
+            BrGameRepository.CoerceTimestamp(row.start_date),
+            BrGameRepository.CoerceTimestamp(row.end_date),
+            (string)row.status);
     }
 }

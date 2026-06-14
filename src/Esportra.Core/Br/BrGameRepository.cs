@@ -99,8 +99,19 @@ public static class BrGameRepository
             null or DBNull => null,
             DateTimeOffset dto => dto,
             DateTime dt => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc)),
+            string text when DateTimeOffset.TryParse(text, out var parsed) => parsed,
             _ => null,
         };
+
+    public static async Task<DateTimeOffset?> QuerySingleTimestampOrDefaultAsync(
+        IDbConnection conn,
+        string sql,
+        object? param = null,
+        IDbTransaction? tx = null)
+    {
+        var raw = await conn.QuerySingleOrDefaultAsync<object?>(sql, param, tx);
+        return CoerceTimestamp(raw);
+    }
 
     public static async Task<int> ResolveGamesPerLobbyAsync(
         IDbConnection conn,

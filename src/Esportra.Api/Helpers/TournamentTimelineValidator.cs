@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Dapper;
+using Esportra.Core.Br;
 
 namespace Esportra.Api.Helpers;
 
@@ -216,7 +217,8 @@ public static class TournamentTimelineValidator
         if (scheduledAt is null)
             return null;
 
-        var prior = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+        var prior = await BrGameRepository.QuerySingleTimestampOrDefaultAsync(
+            conn,
             """
             SELECT scheduled_at
             FROM br_games
@@ -234,7 +236,8 @@ public static class TournamentTimelineValidator
             return $"Game {gameNumber} must be scheduled after Game {gameNumber - 1}.";
         }
 
-        var next = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+        var next = await BrGameRepository.QuerySingleTimestampOrDefaultAsync(
+            conn,
             """
             SELECT scheduled_at
             FROM br_games
@@ -253,7 +256,8 @@ public static class TournamentTimelineValidator
             return $"Game {gameNumber} must be scheduled before the next game in this lobby.";
         }
 
-        var lobbySchedule = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+        var lobbySchedule = await BrGameRepository.QuerySingleTimestampOrDefaultAsync(
+            conn,
             """
             SELECT scheduled_at
             FROM br_lobbies
