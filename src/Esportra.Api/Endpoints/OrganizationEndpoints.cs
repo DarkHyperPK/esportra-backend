@@ -3,6 +3,7 @@ using System.Dynamic;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
 
@@ -1055,6 +1056,7 @@ public static class OrganizationEndpoints
             string               slug,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            IStaffAuthorizationService staffAuth,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
@@ -1087,19 +1089,15 @@ public static class OrganizationEndpoints
 
             // Resolve staff permissions for the calling user
             var userCtx = ctx.Items["UserContext"] as UserContext;
-            string[]? staffPermissions = null;
-            string? staffRole = null;
             if (userCtx is not null && row is IDictionary<string, object?> d)
             {
                 var tournamentId = d["id"] is Guid g ? g : Guid.Parse(d["id"]!.ToString()!);
-                var staffAccess = await StaffAuthHelper.ResolveStaffAccessAsync(
-                    conn, userCtx.UserIdGuid, tournamentId);
-                if (staffAccess.CanAccess)
+                var access = await staffAuth.ResolveTournamentAccessAsync(
+                    userCtx, tournamentId, ct);
+                if (!access.IsOrganizer && access.Role != "none")
                 {
-                    staffPermissions = staffAccess.Permissions;
-                    staffRole = staffAccess.Role;
-                    d["staffPermissions"] = staffPermissions;
-                    d["staffRole"] = staffRole;
+                    d["staffPermissions"] = access.Permissions;
+                    d["staffRole"] = access.Role;
                 }
             }
 

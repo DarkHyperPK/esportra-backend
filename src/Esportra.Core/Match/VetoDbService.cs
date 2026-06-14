@@ -77,18 +77,32 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         return isCaptain;
     }
 
-    /// <summary>Check if user is the tournament organizer.</summary>
+    /// <summary>Check if user is the tournament organizer or org staff admin.</summary>
     public async Task<bool> IsOrganizerAsync(Guid userId, Guid tournamentId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
+        // Keep in sync with StaffAuthHelper.StaffOrgTournamentLinkSql (Esportra.Api).
         return await conn.QuerySingleOrDefaultAsync<bool>(@"
             SELECT EXISTS(
-                SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId
+                SELECT 1 FROM tournaments t
+                WHERE t.id = @tournamentId AND t.organizer_id = @userId
             ) OR EXISTS(
                 SELECT 1 FROM organization_staff os
-                JOIN tournaments t ON t.organization_id = os.organization_id
-                WHERE t.id = @tournamentId AND os.user_id = @userId
-                  AND os.role IN ('owner','admin') AND os.status = 'active'
+                JOIN tournaments t ON t.id = @tournamentId
+                WHERE os.user_id = @userId
+                  AND os.status = 'active'
+                  AND (
+                      (t.organization_id IS NOT NULL AND os.organization_id = t.organization_id)
+                      OR (
+                          os.role = 'admin'
+                          AND EXISTS (
+                              SELECT 1 FROM organizations o
+                              WHERE o.id = os.organization_id
+                                AND o.owner_id = t.organizer_id
+                          )
+                      )
+                  )
+                  AND os.role IN ('owner','admin')
             )",
             new { tournamentId, userId });
     }

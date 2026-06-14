@@ -100,135 +100,93 @@ public static class StaffAuthHelper
         )
         """;
 
-    // ── By tournament_id ────────────────────────────────────────────────────
-    public static async Task<bool> CanActOnTournamentAsync(
-        IDbConnection conn, Guid userId, Guid tournamentId, string? requiredPermission = null, IDbTransaction? tx = null)
+    /// <summary>True when user is tournament organizer or linked organization owner.</summary>
+    public static async Task<bool> IsTournamentOrganizerOrOrgOwnerAsync(
+        IDbConnection conn, Guid userId, Guid tournamentId, IDbTransaction? tx = null)
     {
         return await conn.QuerySingleAsync<bool>(
             """
             SELECT EXISTS(
-                SELECT 1
-                FROM tournaments t
+                SELECT 1 FROM tournaments t
                 LEFT JOIN organizations o ON o.id = t.organization_id
-                LEFT JOIN organization_staff os
-                    ON os.user_id = @userId
-                   AND os.status = 'active'
-                   AND (os.organization_id = t.organization_id)
-                LEFT JOIN staff_tournament_assignments sta
-                    ON sta.organization_staff_id = os.id
-                   AND sta.tournament_id = t.id
                 WHERE t.id = @tournamentId
-                  AND (
-                      -- 1. Direct organizer or org owner
-                      t.organizer_id = @userId
-                      OR o.owner_id = @userId
-                      -- 2. Org staff admin (role bypass — no permission check needed)
-                      OR (os.role = 'admin')
-                      -- 3. Assigned staff with matching permission
-                      OR (sta.id IS NOT NULL AND (
-                          @perm IS NULL OR @perm = ANY(os.permissions)
-                      ))
-                  )
+                  AND (t.organizer_id = @userId OR o.owner_id = @userId)
             )
             """,
-            new { userId, tournamentId, perm = requiredPermission }, tx);
+            new { userId, tournamentId }, tx);
+    }
+
+    /// <summary>Org staff admin (not assigned-only moderator).</summary>
+    public static async Task<bool> CanManageStaffOnTournamentAsync(
+        IDbConnection conn, Guid userId, Guid tournamentId, IDbTransaction? tx = null)
+    {
+        if (await IsTournamentOrganizerOrOrgOwnerAsync(conn, userId, tournamentId, tx))
+            return true;
+
+        var access = await ResolveStaffAccessAsync(conn, userId, tournamentId, tx);
+        return access.CanAccess
+            && string.Equals(access.Role, "admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ── By tournament_id ────────────────────────────────────────────────────
+    public static async Task<bool> CanActOnTournamentAsync(
+        IDbConnection conn, Guid userId, Guid tournamentId, string? requiredPermission = null, IDbTransaction? tx = null)
+    {
+        if (await IsTournamentOrganizerOrOrgOwnerAsync(conn, userId, tournamentId, tx))
+            return true;
+
+        var access = await ResolveStaffAccessAsync(conn, userId, tournamentId, tx);
+        if (!access.CanAccess)
+            return false;
+
+        if (requiredPermission is null)
+            return true;
+
+        return access.Permissions.Contains(requiredPermission, StringComparer.Ordinal);
     }
 
     // ── By brkt_versions.id ─────────────────────────────────────────────────
     public static async Task<bool> CanActOnBracketVersionAsync(
         IDbConnection conn, Guid userId, Guid versionId, string? requiredPermission = null)
     {
-        return await conn.QuerySingleAsync<bool>(
-            """
-            SELECT EXISTS(
-                SELECT 1
-                FROM brkt_versions v
-                JOIN tournaments t ON t.id = v.tournament_id
-                LEFT JOIN organizations o ON o.id = t.organization_id
-                LEFT JOIN organization_staff os
-                    ON os.user_id = @userId
-                   AND os.status = 'active'
-                   AND os.organization_id = t.organization_id
-                LEFT JOIN staff_tournament_assignments sta
-                    ON sta.organization_staff_id = os.id
-                   AND sta.tournament_id = t.id
-                WHERE v.id = @versionId
-                  AND (
-                      t.organizer_id = @userId
-                      OR o.owner_id = @userId
-                      OR (os.role = 'admin')
-                      OR (sta.id IS NOT NULL AND (
-                          @perm IS NULL OR @perm = ANY(os.permissions)
-                      ))
-                  )
-            )
-            """,
-            new { userId, versionId, perm = requiredPermission });
+        var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT tournament_id FROM brkt_versions WHERE id = @versionId",
+            new { versionId });
+        if (tournamentId is null)
+            return false;
+
+        return await CanActOnTournamentAsync(conn, userId, tournamentId.Value, requiredPermission);
     }
 
     // ── By tournament_stages.id ─────────────────────────────────────────────
     public static async Task<bool> CanActOnStageAsync(
         IDbConnection conn, Guid userId, Guid stageId, string? requiredPermission = null)
     {
-        return await conn.QuerySingleAsync<bool>(
-            """
-            SELECT EXISTS(
-                SELECT 1
-                FROM tournament_stages ts
-                JOIN tournaments t ON t.id = ts.tournament_id
-                LEFT JOIN organizations o ON o.id = t.organization_id
-                LEFT JOIN organization_staff os
-                    ON os.user_id = @userId
-                   AND os.status = 'active'
-                   AND os.organization_id = t.organization_id
-                LEFT JOIN staff_tournament_assignments sta
-                    ON sta.organization_staff_id = os.id
-                   AND sta.tournament_id = t.id
-                WHERE ts.id = @stageId
-                  AND (
-                      t.organizer_id = @userId
-                      OR o.owner_id = @userId
-                      OR (os.role = 'admin')
-                      OR (sta.id IS NOT NULL AND (
-                          @perm IS NULL OR @perm = ANY(os.permissions)
-                      ))
-                  )
-            )
-            """,
-            new { userId, stageId, perm = requiredPermission });
+        var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
+            new { stageId });
+        if (tournamentId is null)
+            return false;
+
+        return await CanActOnTournamentAsync(conn, userId, tournamentId.Value, requiredPermission);
     }
 
     // ── By brkt_matches.id ──────────────────────────────────────────────────
     public static async Task<bool> CanActOnBracketMatchAsync(
         IDbConnection conn, Guid userId, Guid matchId, string? requiredPermission = null)
     {
-        return await conn.QuerySingleAsync<bool>(
+        var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
             """
-            SELECT EXISTS(
-                SELECT 1
-                FROM brkt_matches bm
-                JOIN brkt_versions v ON v.id = bm.version_id
-                JOIN tournaments t ON t.id = v.tournament_id
-                LEFT JOIN organizations o ON o.id = t.organization_id
-                LEFT JOIN organization_staff os
-                    ON os.user_id = @userId
-                   AND os.status = 'active'
-                   AND os.organization_id = t.organization_id
-                LEFT JOIN staff_tournament_assignments sta
-                    ON sta.organization_staff_id = os.id
-                   AND sta.tournament_id = t.id
-                WHERE bm.id = @matchId
-                  AND (
-                      t.organizer_id = @userId
-                      OR o.owner_id = @userId
-                      OR (os.role = 'admin')
-                      OR (sta.id IS NOT NULL AND (
-                          @perm IS NULL OR @perm = ANY(os.permissions)
-                      ))
-                  )
-            )
+            SELECT v.tournament_id
+            FROM brkt_matches bm
+            JOIN brkt_versions v ON v.id = bm.version_id
+            WHERE bm.id = @matchId
             """,
-            new { userId, matchId, perm = requiredPermission });
+            new { matchId });
+        if (tournamentId is null)
+            return false;
+
+        return await CanActOnTournamentAsync(conn, userId, tournamentId.Value, requiredPermission);
     }
 
     public static async Task<bool> CanAccessMatchRoomAsync(

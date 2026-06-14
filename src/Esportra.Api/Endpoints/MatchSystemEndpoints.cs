@@ -828,8 +828,7 @@ public static class MatchSystemEndpoints
             if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
                 return Results.Json(new { error = "You do not have access to this match chat." }, statusCode: 403);
 
-            var rows = await conn.QueryAsync<dynamic>(
-                """
+            const string matchMessagesSqlTemplate = """
                 SELECT mm.id, mm.match_id, mm.sender_id, mm.sender_name, mm.team_id,
                        mm.content, mm.message_type, mm.metadata, mm.created_at,
                        EXISTS (
@@ -841,7 +840,7 @@ public static class MatchSystemEndpoints
                            LEFT JOIN organization_staff os
                                   ON os.user_id = mm.sender_id
                                  AND os.status = 'active'
-                                 AND os.organization_id = t.organization_id
+                                 AND __STAFF_LINK__
                            LEFT JOIN staff_tournament_assignments sta
                                   ON sta.organization_staff_id = os.id
                                  AND sta.tournament_id = t.id
@@ -858,7 +857,13 @@ public static class MatchSystemEndpoints
                 WHERE mm.match_id = @id
                 ORDER BY created_at ASC
                 LIMIT 500
-                """,
+                """;
+
+            var matchMessagesSql = matchMessagesSqlTemplate.Replace(
+                "__STAFF_LINK__", StaffAuthHelper.StaffOrgTournamentLinkSql);
+
+            var rows = await conn.QueryAsync<dynamic>(
+                matchMessagesSql,
                 new { id });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
@@ -1090,6 +1095,7 @@ public static class MatchSystemEndpoints
             Guid                                stageId,
             HttpContext                          ctx,
             IDbConnectionFactory                db,
+            IHubContext<BracketHub>             bracketHub,
             CancellationToken                   ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1104,9 +1110,23 @@ public static class MatchSystemEndpoints
 
             // Store raw JSON body as-is to preserve frontend key casing (snake_case)
             var json = await new StreamReader(ctx.Request.Body).ReadToEndAsync(ct);
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET scheduling_config = @json::jsonb WHERE id = @stageId",
                 new { json, stageId });
+
+            if (tournamentId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.TournamentGroup(tournamentId.Value.ToString()))
+                    .SendAsync(
+                        BracketHubEvents.StageUpdated,
+                        new { stageId, tournamentId, field = "scheduling_config" },
+                        ct);
+            }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

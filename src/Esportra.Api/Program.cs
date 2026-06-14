@@ -330,6 +330,7 @@ builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
 builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
+builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────

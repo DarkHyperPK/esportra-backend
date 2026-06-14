@@ -334,6 +334,31 @@ public static class TournamentEndpoints
             return Results.Json(rows, s_snakeCase);
         }); // Public
 
+        // ── GET /api/tournaments/{slugOrId}/access ─────────────────────────────
+        // Lightweight staff/organizer access for route gates (not full dashboard).
+        app.MapGet("/api/tournaments/{slugOrId}/access", async (
+            string                    slugOrId,
+            HttpContext               ctx,
+            IStaffAuthorizationService staffAuth,
+            CancellationToken         ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var tournamentId = await staffAuth.ResolveTournamentIdBySlugAsync(slugOrId, ct);
+            if (tournamentId is null) return Results.NotFound();
+
+            var access = await staffAuth.ResolveTournamentAccessAsync(userCtx, tournamentId.Value, ct);
+            return Results.Ok(new
+            {
+                tournamentId = access.TournamentId,
+                role = access.Role,
+                permissions = access.Permissions,
+                isOrganizer = access.IsOrganizer,
+                isPlatformAdmin = access.IsPlatformAdmin,
+            });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/tournaments/{slugOrId} ────────────────────────────────────
         // Replaces useTournamentDashboard — consolidated tournament + participants + stages.
         app.MapGet("/api/tournaments/{slugOrId}", async (
@@ -341,6 +366,7 @@ public static class TournamentEndpoints
             HttpContext          ctx,
             IDbConnectionFactory db,
             GameCatalogService   gameCatalog,
+            IStaffAuthorizationService staffAuth,
             CancellationToken    ct) =>
         {
             using var conn = db.CreateConnection();
@@ -399,28 +425,17 @@ public static class TournamentEndpoints
             // Permission check for organizer/staff
             var userCtx = ctx.Items["UserContext"] as UserContext;
             bool isOrganizer = false;
-            if (userCtx is not null)
-            {
-                isOrganizer = userCtx.UserIdGuid == organizerId;
-                // Also check if user owns the organization
-                if (!isOrganizer && tournament.organization_id is not null)
-                {
-                    isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
-                        "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
-                        new { orgId = (Guid)tournament.organization_id, userId = userCtx.UserIdGuid });
-                }
-            }
-
             string[]? staffPermissions = null;
             string? staffRole = null;
-            if (userCtx is not null && !isOrganizer)
+            if (userCtx is not null)
             {
-                var staffAccess = await StaffAuthHelper.ResolveStaffAccessAsync(
-                    conn, userCtx.UserIdGuid, tournamentId);
-                if (staffAccess.CanAccess)
+                var access = await staffAuth.ResolveTournamentAccessAsync(
+                    userCtx, tournamentId, ct);
+                isOrganizer = access.IsOrganizer || access.IsPlatformAdmin;
+                if (!isOrganizer && access.Role != "none")
                 {
-                    staffPermissions = staffAccess.Permissions;
-                    staffRole = staffAccess.Role;
+                    staffPermissions = access.Permissions;
+                    staffRole = access.Role;
                 }
             }
 
@@ -2300,6 +2315,7 @@ public static class TournamentEndpoints
             [FromBody] UpdateTournamentStaffRequest  req,
             HttpContext                              ctx,
             IDbConnectionFactory                    db,
+            TournamentAuthorizationService          tournamentAuth,
             CancellationToken                       ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -2307,18 +2323,19 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is organizer of a tournament this org staff is assigned to
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
-                SELECT EXISTS(
-                    SELECT 1 FROM organization_staff os
-                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                    JOIN tournaments t ON t.id = sta.tournament_id
-                    WHERE os.id = @staffId AND t.organizer_id = @userId
-                )
+                SELECT sta.tournament_id
+                FROM organization_staff os
+                JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                WHERE os.id = @staffId
+                LIMIT 1
                 """,
-                new { staffId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+                new { staffId });
+            if (tournamentId is null) return Results.NotFound();
+
+            if (!await tournamentAuth.CanManageStaffAsync(userCtx, tournamentId.Value, ct))
+                return Results.Forbid();
 
             await conn.ExecuteAsync(
                 """
@@ -2336,6 +2353,7 @@ public static class TournamentEndpoints
             Guid                 staffId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -2343,17 +2361,19 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            var isOrganizer = await conn.QuerySingleOrDefaultAsync<bool>(
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
-                SELECT EXISTS(
-                    SELECT 1 FROM organization_staff os
-                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                    JOIN tournaments t ON t.id = sta.tournament_id
-                    WHERE os.id = @staffId AND t.organizer_id = @userId
-                )
+                SELECT sta.tournament_id
+                FROM organization_staff os
+                JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
+                WHERE os.id = @staffId
+                LIMIT 1
                 """,
-                new { staffId, userId = userCtx.UserIdGuid });
-            if (!isOrganizer && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+                new { staffId });
+            if (tournamentId is null) return Results.NotFound();
+
+            if (!await tournamentAuth.CanManageStaffAsync(userCtx, tournamentId.Value, ct))
+                return Results.Forbid();
 
             // Remove tournament assignments then the org staff record
             await conn.ExecuteAsync(
@@ -2367,6 +2387,7 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/staff/my-invites ────────────────────────────
+        // OBSOLETE: Use GET /api/organizations/staff/invites instead.
         app.MapGet("/api/tournaments/staff/my-invites", async (
             HttpContext          ctx,
             IDbConnectionFactory db,
@@ -2398,10 +2419,13 @@ public static class TournamentEndpoints
                 ORDER BY os.created_at DESC
                 """,
                 new { userId = userCtx.UserIdGuid });
+            ctx.Response.Headers.Append("Deprecation", "true");
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/staff/my-assignments ────────────────────────
+        // Navigation/listing only — not for authorization. Prefer
+        // GET /api/organizations/staff/assignments or GET /api/tournaments/{id}/access.
         app.MapGet("/api/tournaments/staff/my-assignments", async (
             HttpContext          ctx,
             IDbConnectionFactory db,
@@ -2518,8 +2542,7 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            var rows = await conn.QueryAsync<dynamic>(
-                """
+            const string disputeListSqlTemplate = """
                 SELECT td.id, td.reference_number, td.title, td.description, td.status, td.dispute_reason,
                        td.resolution_notes, td.evidence_url, td.created_at, td.updated_at,
                        td.tournament_id, td.match_id, td.raised_by_user_id, td.team_id,
@@ -2602,18 +2625,16 @@ public static class TournamentEndpoints
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
                 WHERE (t.organizer_id = @userId
-                   OR EXISTS (
-                       SELECT 1 FROM organization_staff os
-                       LEFT JOIN staff_tournament_assignments sta
-                         ON sta.organization_staff_id = os.id
-                        AND sta.tournament_id = td.tournament_id
-                       WHERE os.user_id = @userId AND os.status = 'active'
-                         AND os.organization_id = t.organization_id
-                         AND (os.role = 'admin' OR sta.id IS NOT NULL)
-                   ))
+                   OR __STAFF_ACCESS__)
                   AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
                 ORDER BY td.created_at DESC
-                """,
+                """;
+
+            var disputeListSql = disputeListSqlTemplate.Replace(
+                "__STAFF_ACCESS__", StaffAuthHelper.StaffTournamentAccessExistsSql);
+
+            var rows = await conn.QueryAsync<dynamic>(
+                disputeListSql,
                 new { userId = userCtx.UserIdGuid });
 
             DapperJsonbHelper.FixJsonb(rows);
@@ -2710,25 +2731,21 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            var canAccess = await conn.ExecuteScalarAsync<bool>(
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournament_disputes td
-                    JOIN tournaments t ON t.id = td.tournament_id
-                    WHERE td.id = @disputeId
-                      AND (t.organizer_id = @userId OR EXISTS (
-                          SELECT 1 FROM organization_staff os
-                          LEFT JOIN staff_tournament_assignments sta
-                            ON sta.organization_staff_id = os.id
-                           AND sta.tournament_id = td.tournament_id
-                          WHERE os.user_id = @userId AND os.status = 'active'
-                            AND os.organization_id = t.organization_id
-                            AND (os.role = 'admin' OR sta.id IS NOT NULL)
-                      ))
-                )
+                SELECT td.tournament_id
+                FROM tournament_disputes td
+                WHERE td.id = @disputeId
                 """,
-                new { disputeId, userId = userCtx.UserIdGuid });
-            if (!canAccess) return Results.Forbid();
+                new { disputeId });
+            if (tournamentId is null) return Results.NotFound();
+
+            var isOrganizer = await StaffAuthHelper.IsTournamentOrganizerOrOrgOwnerAsync(
+                conn, userCtx.UserIdGuid, tournamentId.Value);
+            var canAssist = await StaffAuthHelper.CanActOnTournamentAsync(
+                conn, userCtx.UserIdGuid, tournamentId.Value, StaffAuthHelper.PermDisputesAssist);
+            if (!isOrganizer && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
 
             await conn.ExecuteAsync(
                 """
@@ -3374,22 +3391,10 @@ public static class TournamentEndpoints
             if (filerId != userCtx.UserIdGuid)
             {
                 Guid tournamentId = (Guid)dispute.tournament_id;
-                var isOrgOrStaff = await conn.QuerySingleOrDefaultAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM tournaments t
-                        WHERE t.id = @tid AND (t.organizer_id = @uid OR EXISTS (
-                            SELECT 1 FROM organization_staff os
-                            LEFT JOIN staff_tournament_assignments sta
-                              ON sta.organization_staff_id = os.id
-                             AND sta.tournament_id = t.id
-                            WHERE os.user_id = @uid AND os.status = 'active'
-                              AND os.organization_id = t.organization_id
-                              AND (os.role = 'admin' OR sta.id IS NOT NULL)
-                        ))
-                    )
-                    """, new { tid = tournamentId, uid = userCtx.UserIdGuid });
-                if (!isOrgOrStaff) return Results.Forbid();
+                var canView = await StaffAuthHelper.CanActOnTournamentAsync(
+                    conn, userCtx.UserIdGuid, tournamentId, StaffAuthHelper.PermDisputesAssist);
+                if (!canView && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                    return Results.Forbid();
             }
 
             return Results.Ok(dispute);

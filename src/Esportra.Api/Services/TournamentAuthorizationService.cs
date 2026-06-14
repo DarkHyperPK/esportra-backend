@@ -10,10 +10,12 @@ namespace Esportra.Api.Services;
 /// Central tournament resource authorization. Backend endpoints should use this
 /// instead of copy-pasted owner/admin SQL or misleading policy names.
 /// </summary>
-public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
+public sealed class TournamentAuthorizationService(
+    IDbConnectionFactory db,
+    IStaffAuthorizationService staffAuth)
 {
     public static bool IsPlatformAdmin(UserContext userCtx)
-        => StaffAuthHelper.IsPlatformAdmin(userCtx);
+        => StaffAuthorizationService.IsPlatformAdmin(userCtx);
 
     public async Task<bool> CanManageTournamentAsync(
         UserContext userCtx,
@@ -24,9 +26,8 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
         if (IsPlatformAdmin(userCtx))
             return true;
 
-        using var conn = db.CreateConnection();
-        return await StaffAuthHelper.CanActOnTournamentAsync(
-            conn, userCtx.UserIdGuid, tournamentId, requiredPermission);
+        return await staffAuth.CanActAsync(
+            userCtx.UserIdGuid, tournamentId, requiredPermission, ct);
     }
 
     public async Task<bool> CanManageStaffAsync(
@@ -37,26 +38,7 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
         if (IsPlatformAdmin(userCtx))
             return true;
 
-        using var conn = db.CreateConnection();
-        return await conn.QuerySingleAsync<bool>(
-            """
-            SELECT EXISTS(
-                SELECT 1
-                FROM tournaments t
-                LEFT JOIN organizations o ON o.id = t.organization_id
-                LEFT JOIN organization_staff os
-                    ON os.user_id = @userId
-                   AND os.status = 'active'
-                   AND os.organization_id = t.organization_id
-                WHERE t.id = @tournamentId
-                  AND (
-                      t.organizer_id = @userId
-                      OR o.owner_id = @userId
-                      OR os.role = 'admin'
-                  )
-            )
-            """,
-            new { userId = userCtx.UserIdGuid, tournamentId });
+        return await staffAuth.CanManageStaffAsync(userCtx.UserIdGuid, tournamentId, ct);
     }
 
     public async Task<bool> CanEditBracketByStageAsync(
@@ -67,9 +49,8 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
         if (IsPlatformAdmin(userCtx))
             return true;
 
-        using var conn = db.CreateConnection();
-        return await StaffAuthHelper.CanActOnStageAsync(
-            conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+        return await staffAuth.CanActOnStageAsync(
+            userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit, ct);
     }
 
     public async Task<bool> CanEditBracketByVersionAsync(
@@ -80,9 +61,8 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
         if (IsPlatformAdmin(userCtx))
             return true;
 
-        using var conn = db.CreateConnection();
-        return await StaffAuthHelper.CanActOnBracketVersionAsync(
-            conn, userCtx.UserIdGuid, versionId, StaffAuthHelper.PermBracketEdit);
+        return await staffAuth.CanActOnBracketVersionAsync(
+            userCtx.UserIdGuid, versionId, StaffAuthHelper.PermBracketEdit, ct);
     }
 
     public async Task<bool> CanEditBracketByMatchAsync(
@@ -93,9 +73,8 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
         if (IsPlatformAdmin(userCtx))
             return true;
 
-        using var conn = db.CreateConnection();
-        return await StaffAuthHelper.CanActOnBracketMatchAsync(
-            conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
+        return await staffAuth.CanActOnBracketMatchAsync(
+            userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit, ct);
     }
 
     public async Task<bool> CanSubmitEvidenceAsync(
@@ -129,10 +108,5 @@ public sealed class TournamentAuthorizationService(IDbConnectionFactory db)
         => await CanManageTournamentAsync(userCtx, tournamentId, requiredPermission);
 
     public async Task<Guid?> ResolveTournamentIdBySlugAsync(string slug, CancellationToken ct = default)
-    {
-        using var conn = db.CreateConnection();
-        return await conn.QuerySingleOrDefaultAsync<Guid?>(
-            "SELECT id FROM tournaments WHERE slug = @slug LIMIT 1",
-            new { slug });
-    }
+        => await staffAuth.ResolveTournamentIdBySlugAsync(slug, ct);
 }
