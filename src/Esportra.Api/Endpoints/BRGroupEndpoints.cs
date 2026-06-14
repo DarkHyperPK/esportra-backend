@@ -1512,7 +1512,7 @@ public static partial class BRGroupEndpoints
                             tx.Rollback();
                             return Results.Conflict(new
                             {
-                                error = "All submitted evidence must be reviewed before the round can be completed."
+                                error = "All submitted evidence must be approved before the round can be completed."
                             });
                         }
                     }
@@ -2243,7 +2243,7 @@ public static partial class BRGroupEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/br/lobbies/{lobbyId}/evidence/{entityId} ───────────────
-        // Organizer/staff review state for a submission.
+        // Approve reported stats into results, or reopen a submission.
         app.MapPatch("/api/br/lobbies/{lobbyId}/evidence/{entityId}", async (
             Guid                lobbyId,
             Guid                entityId,
@@ -2251,21 +2251,29 @@ public static partial class BRGroupEndpoints
             [FromBody] JsonElement body,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   catalog,
             IHubContext<BRHub>   brHub,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            if (!body.TryGetProperty("reviewed", out var reviewedProp) ||
-                (reviewedProp.ValueKind != JsonValueKind.True && reviewedProp.ValueKind != JsonValueKind.False))
-                return Results.BadRequest(new { error = "reviewed must be a boolean." });
+            var wantsApprove = body.TryGetProperty("approve", out var approveProp)
+                && approveProp.ValueKind == JsonValueKind.True;
+            var wantsReopen = body.TryGetProperty("reviewed", out var reviewedProp)
+                && reviewedProp.ValueKind == JsonValueKind.False;
 
-            var reviewed = reviewedProp.GetBoolean();
+            if (!wantsApprove && !wantsReopen)
+            {
+                return Results.BadRequest(new
+                {
+                    error = "Request body must include approve: true or reviewed: false.",
+                });
+            }
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId, includeStageConfig: wantsApprove);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
@@ -2273,55 +2281,174 @@ public static partial class BRGroupEndpoints
             var groupId = roundInfo.GroupId ?? Guid.Empty;
             var isSolo = roundInfo.TeamSize == 1;
 
+            if (wantsApprove)
+            {
+                var allowedScores = await StaffAuthHelper.CanActOnStageAsync(
+                    conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermScoresUpdate);
+                if (!allowedScores && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                    return Results.Forbid();
+
+                if (roundInfo.Status == "completed")
+                    return Results.Conflict(new { error = "Completed rounds are locked. Re-open the round before approving evidence." });
+
+                var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+                    conn, lobbyId, gameNumber: gameNumber);
+                if (targetGameId is null)
+                    return Results.NotFound(new { error = "No game found for this lobby." });
+
+                var rosterSize = await conn.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM br_group_teams WHERE group_id = @groupId",
+                    new { groupId });
+
+                if (rosterSize <= 0)
+                    return Results.BadRequest(new { error = "This group has no assigned teams or participants." });
+
+                var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, roundInfo.Game, ct);
+                var scoring = BrConfigService.ResolveScoring(roundInfo.Settings, roundInfo.StageConfig, catalogBrConfig);
+
+                using var tx = conn.BeginTransaction();
+                try
+                {
+                    var outcome = await BrEvidenceApprovalService.ApproveAndApplyResultAsync(
+                        conn,
+                        lobbyId,
+                        entityId,
+                        targetGameId.Value,
+                        groupId,
+                        scoring,
+                        rosterSize,
+                        userCtx.UserIdGuid,
+                        tx);
+
+                    switch (outcome.Status)
+                    {
+                        case BrEvidenceApprovalStatus.NotFound:
+                            tx.Rollback();
+                            return Results.NotFound(new { error = "Evidence submission not found." });
+                        case BrEvidenceApprovalStatus.MissingReportedStats:
+                            tx.Rollback();
+                            return Results.BadRequest(new
+                            {
+                                error = "This submission is missing placement or kills. Ask the player to resubmit evidence.",
+                            });
+                        case BrEvidenceApprovalStatus.InvalidStats:
+                            tx.Rollback();
+                            return Results.BadRequest(new
+                            {
+                                error = $"Reported placement must be between 1 and {rosterSize}, and kills must be >= 0.",
+                            });
+                        case BrEvidenceApprovalStatus.PlacementConflict:
+                            tx.Rollback();
+                            return Results.Conflict(new
+                            {
+                                error = $"Placement #{outcome.Placement} is already assigned to another player. Adjust results or reopen the conflicting submission.",
+                            });
+                        case BrEvidenceApprovalStatus.RosterMismatch:
+                            tx.Rollback();
+                            return Results.Conflict(new { error = "This submission does not match the current group roster." });
+                    }
+
+                    tx.Commit();
+                }
+                catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new
+                    {
+                        error = "Could not apply this result because it conflicts with an existing placement or player row.",
+                    });
+                }
+
+                var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
+                var lobbyGroupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, groupId);
+                var reviewPayload = new
+                {
+                    stageId = stageId.ToString(),
+                    groupId = groupId.ToString(),
+                    lobbyId = lobbyId.ToString(),
+                    entityId = entityId.ToString(),
+                    reviewed = true,
+                    approved = true,
+                    pendingCount,
+                    gameNumber,
+                };
+                await BroadcastBrToLobbyGroupsAsync(
+                    brHub,
+                    BRHubEvents.EvidenceReviewed,
+                    stageId,
+                    lobbyId,
+                    lobbyGroupIds,
+                    reviewPayload,
+                    ct);
+
+                var resultsPayload = new
+                {
+                    stageId = stageId.ToString(),
+                    groupId = groupId.ToString(),
+                    lobbyId = lobbyId.ToString(),
+                    saved = 1,
+                    gameNumber,
+                };
+                await BroadcastBrAsync(brHub, BRHubEvents.ResultsUpdated, stageId, groupId, lobbyId, resultsPayload, ct);
+                await BroadcastBrAsync(
+                    brHub,
+                    BRHubEvents.LeaderboardUpdated,
+                    stageId,
+                    groupId,
+                    lobbyId,
+                    BuildLeaderboardEvent(stageId, groupId),
+                    ct);
+
+                return Results.Ok(new { success = true, approved = true, reviewed = true });
+            }
+
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
+            var reopenGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
                 conn, lobbyId, gameNumber: gameNumber);
-            if (targetGameId is null)
+            if (reopenGameId is null)
                 return Results.NotFound(new { error = "No game found for this lobby." });
 
             var updated = await conn.ExecuteAsync(
                 isSolo
                     ? """
                       UPDATE br_lobby_evidence
-                      SET reviewed = @reviewed,
-                          reviewed_at = CASE WHEN @reviewed THEN NOW() ELSE NULL END,
-                          reviewed_by = CASE WHEN @reviewed THEN @reviewedBy ELSE NULL END
+                      SET reviewed = FALSE,
+                          reviewed_at = NULL,
+                          reviewed_by = NULL
                       WHERE game_id = @targetGameId
                         AND participant_id = @entityId
                       """
                     : """
                       UPDATE br_lobby_evidence
-                      SET reviewed = @reviewed,
-                          reviewed_at = CASE WHEN @reviewed THEN NOW() ELSE NULL END,
-                          reviewed_by = CASE WHEN @reviewed THEN @reviewedBy ELSE NULL END
+                      SET reviewed = FALSE,
+                          reviewed_at = NULL,
+                          reviewed_by = NULL
                       WHERE game_id = @targetGameId
                         AND team_id = @entityId
                       """,
                 new
                 {
-                    targetGameId,
+                    targetGameId = reopenGameId,
                     entityId,
-                    reviewed,
-                    reviewedBy = userCtx.UserIdGuid
                 });
 
             if (updated == 0)
                 return Results.NotFound(new { error = "Evidence submission not found." });
 
-            var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
-            var lobbyGroupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, groupId);
-            var reviewPayload = new
+            var pendingAfterReopen = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
+            var reopenLobbyGroupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, groupId);
+            var reopenPayload = new
             {
                 stageId = stageId.ToString(),
                 groupId = groupId.ToString(),
                 lobbyId = lobbyId.ToString(),
                 entityId = entityId.ToString(),
-                reviewed,
-                pendingCount,
+                reviewed = false,
+                pendingCount = pendingAfterReopen,
                 gameNumber,
             };
             await BroadcastBrToLobbyGroupsAsync(
@@ -2329,11 +2456,11 @@ public static partial class BRGroupEndpoints
                 BRHubEvents.EvidenceReviewed,
                 stageId,
                 lobbyId,
-                lobbyGroupIds,
-                reviewPayload,
+                reopenLobbyGroupIds,
+                reopenPayload,
                 ct);
 
-            return Results.Ok(new { success = true, reviewed });
+            return Results.Ok(new { success = true, reviewed = false });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/br/lobbies/{lobbyId}/readiness ──────────────────────────
