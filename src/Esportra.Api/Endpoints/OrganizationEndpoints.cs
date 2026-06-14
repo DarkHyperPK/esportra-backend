@@ -672,6 +672,12 @@ public static class OrganizationEndpoints
                     dict["actor"] = System.Text.Json.JsonSerializer.Deserialize<object>(actorJson);
                 else
                     dict["actor"] = null;
+
+                if (dict.TryGetValue("details", out var detailsVal) && detailsVal is not null)
+                {
+                    dict["details"] = ParseStaffAuditDetails(detailsVal);
+                }
+
                 return r;
             }).ToList();
 
@@ -1742,6 +1748,37 @@ public static class OrganizationEndpoints
                 targetId,
                 details = System.Text.Json.JsonSerializer.Serialize(details),
             });
+
+    private static object? ParseStaffAuditDetails(object detailsVal)
+    {
+        try
+        {
+            if (detailsVal is string detailsStr)
+            {
+                if (detailsStr.Length == 0)
+                    return new Dictionary<string, object?>();
+                return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(detailsStr)
+                    ?? System.Text.Json.JsonSerializer.Deserialize<object>(detailsStr);
+            }
+
+            if (detailsVal is JsonElement element)
+            {
+                var parsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(element.GetRawText());
+                if (parsed is not null)
+                    return parsed;
+                return System.Text.Json.JsonSerializer.Deserialize<object>(element.GetRawText());
+            }
+
+            if (detailsVal is IDictionary<string, object?> dict)
+                return dict;
+
+            return detailsVal;
+        }
+        catch
+        {
+            return detailsVal;
+        }
+    }
 }
 
 // ── Request records ────────────────────────────────────────────────────────────

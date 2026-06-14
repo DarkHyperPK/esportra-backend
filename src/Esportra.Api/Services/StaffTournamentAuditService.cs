@@ -209,21 +209,33 @@ public sealed class StaffTournamentAuditService(ILogger<StaffTournamentAuditServ
             return baseDetails;
         }
 
-        foreach (var prop in extra.GetType().GetProperties())
-        {
-            if (!prop.CanRead)
-                continue;
-            var name = JsonNamingPolicy.CamelCase.ConvertName(prop.Name);
-            baseDetails[name] = prop.GetValue(extra);
-        }
+        var json = JsonSerializer.Serialize(extra);
+        using var doc = JsonDocument.Parse(json);
+        foreach (var prop in doc.RootElement.EnumerateObject())
+            baseDetails[prop.Name] = JsonElementToObject(prop.Value);
 
         return baseDetails;
     }
+
+    private static object? JsonElementToObject(JsonElement element) =>
+        element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => element.GetRawText(),
+        };
 
     internal static string FormatMatchLabel(int matchNumber, int roundIndex) =>
         roundIndex >= 0
             ? $"Round {roundIndex + 1}, Match {matchNumber}"
             : $"Match {matchNumber}";
+
+    internal static Dictionary<string, object?> MergeDetailsForTest(
+        Dictionary<string, object?> baseDetails,
+        object? extra) => MergeDetails(baseDetails, extra);
 
     private static string FormatMatchup(string? team1Name, string? team2Name)
     {
