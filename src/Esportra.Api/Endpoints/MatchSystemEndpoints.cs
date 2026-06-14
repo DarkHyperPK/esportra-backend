@@ -945,6 +945,8 @@ public static class MatchSystemEndpoints
             HttpContext                  ctx,
             IDbConnectionFactory         db,
             SelfPlayMatchRoomService     roomService,
+            CheckinWalkoverProcessor     walkoverProcessor,
+            CheckinWalkoverNotifier walkoverNotifier,
             GameCatalogService           gameCatalog,
             CancellationToken            ct) =>
         {
@@ -970,6 +972,7 @@ public static class MatchSystemEndpoints
             var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
                 gameRow.Game, gameRow.GameMode, existingConnection: conn);
 
+            var nowUtc = DateTime.UtcNow;
             var context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
             if (context is null)
                 return Results.NotFound(new { error = "Match not found." });
@@ -984,7 +987,26 @@ public static class MatchSystemEndpoints
                 context,
                 callerCompetitorId,
                 canForceGoLive,
-                DateTime.UtcNow);
+                nowUtc);
+
+            // Award walkover immediately when the window has closed (idempotent).
+            if (room.CheckinWindowClosed && !room.BothCheckedIn)
+            {
+                var walkover = await walkoverProcessor.TryProcessDueWalkoverAsync(matchId, nowUtc, ct);
+                if (walkover.Processed)
+                {
+                    await walkoverNotifier.NotifyAsync(matchId, walkover, ct);
+                    context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+                    if (context is not null)
+                    {
+                        room = roomService.BuildRoomState(
+                            context,
+                            callerCompetitorId,
+                            canForceGoLive,
+                            nowUtc);
+                    }
+                }
+            }
 
             return Results.Ok(ToRoomStateResponse(room));
         }).RequireAuthorization("Authenticated");

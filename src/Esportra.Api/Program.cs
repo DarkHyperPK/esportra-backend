@@ -321,6 +321,8 @@ builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
 builder.Services.AddScoped<MatchScheduleNotificationService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.SelfPlayMatchRoomService>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.CheckinWalkoverProcessor>();
+builder.Services.AddScoped<Esportra.Api.Services.CheckinWalkoverNotifier>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<OperationsAuditService>();
 builder.Services.AddScoped<GhostModeTokenService>();
