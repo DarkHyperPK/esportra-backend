@@ -77,8 +77,10 @@ public sealed class BrScheduleNotificationService(
                 lobby_id = meta.LobbyId.ToString(),
                 game_number = meta.GameNumber,
                 wave_number = meta.WaveNumber,
+                lobby_code = meta.LobbyCode,
                 scheduled_at = scheduledAt?.ToString("o"),
                 tournament_slug = meta.TournamentSlug,
+                tournament_name = meta.TournamentName,
                 stage_name = meta.StageName,
                 group_label = meta.GroupLabel,
             }, ct);
@@ -147,8 +149,10 @@ public sealed class BrScheduleNotificationService(
             {
                 lobby_id = meta.LobbyId.ToString(),
                 wave_number = meta.WaveNumber,
+                lobby_code = meta.LobbyCode,
                 scheduled_at = scheduledAt?.ToString("o"),
                 tournament_slug = meta.TournamentSlug,
+                tournament_name = meta.TournamentName,
                 stage_name = meta.StageName,
                 group_label = meta.GroupLabel,
             }, ct);

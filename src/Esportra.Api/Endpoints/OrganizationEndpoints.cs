@@ -493,6 +493,20 @@ public static class OrganizationEndpoints
             if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
+            var assignment = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT sta.tournament_id, t.name AS tournament_name
+                FROM staff_tournament_assignments sta
+                LEFT JOIN tournaments t ON t.id = sta.tournament_id
+                WHERE sta.id = @assignmentId
+                  AND sta.organization_staff_id IN (
+                    SELECT id FROM organization_staff WHERE organization_id = @orgId
+                  )
+                """,
+                new { assignmentId, orgId });
+            if (assignment is null)
+                return Results.NotFound();
+
             await conn.ExecuteAsync(
                 """
                 DELETE FROM staff_tournament_assignments
@@ -503,7 +517,10 @@ public static class OrganizationEndpoints
                 """,
                 new { assignmentId, orgId });
 
-            await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId, new { });
+            var tournamentId = (Guid)assignment.tournament_id;
+            var tournamentName = assignment.tournament_name as string;
+            await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId,
+                new { tournamentId = tournamentId.ToString(), tournamentName });
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
@@ -582,6 +599,8 @@ public static class OrganizationEndpoints
         app.MapGet("/api/organizations/{orgId}/audit-logs", async (
             Guid                 orgId,
             string?              action,
+            Guid?                actorId,
+            Guid?                tournamentId,
             int                  limit  = 50,
             int                  offset = 0,
             HttpContext          ctx    = null!,
@@ -607,8 +626,27 @@ public static class OrganizationEndpoints
                 new { orgId, userId = userCtx.UserIdGuid });
             if (!hasAccess && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
+            const string auditWhereClause = """
+                WHERE sal.organization_id = @orgId
+                  AND (
+                    @action IS NULL
+                    OR (
+                      position('.' in @action) > 0 AND sal.action = @action
+                    )
+                    OR (
+                      position('.' in @action) = 0 AND sal.action ILIKE '%' || @action || '%'
+                    )
+                  )
+                  AND (@actorId IS NULL OR sal.actor_id = @actorId)
+                  AND (
+                    @tournamentId IS NULL
+                    OR sal.details @> jsonb_build_object('tournamentIds', jsonb_build_array(@tournamentId::text))
+                    OR sal.details->>'tournamentId' = @tournamentId::text
+                  )
+                """;
+
             var rows = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT sal.*,
                        json_build_object(
                            'full_name', p.full_name,
@@ -617,12 +655,11 @@ public static class OrganizationEndpoints
                        )::text AS actor_json
                 FROM staff_audit_log sal
                 LEFT JOIN profiles p ON p.id = sal.actor_id
-                WHERE sal.organization_id = @orgId
-                  AND (@action IS NULL OR sal.action ILIKE '%' || @action || '%')
+                {auditWhereClause}
                 ORDER BY sal.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { orgId, action, limit, offset });
+                new { orgId, action, actorId, tournamentId, limit, offset });
 
             // Parse actor_json string into object for proper JSON serialization
             var mapped = rows.Select(r =>
@@ -638,8 +675,12 @@ public static class OrganizationEndpoints
             }).ToList();
 
             var total = await conn.QuerySingleAsync<int>(
-                "SELECT COUNT(*) FROM staff_audit_log WHERE organization_id = @orgId",
-                new { orgId });
+                $"""
+                SELECT COUNT(*)
+                FROM staff_audit_log sal
+                {auditWhereClause}
+                """,
+                new { orgId, action, actorId, tournamentId });
 
             return Results.Ok(new { logs = mapped, total });
         }).RequireAuthorization("Authenticated");
