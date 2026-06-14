@@ -14,13 +14,17 @@ using Npgsql;
 
 namespace Esportra.Api.Endpoints;
 
-public static class BRGroupEndpoints
+public static partial class BRGroupEndpoints
 {
     private sealed record BrEntityAccess(Guid? TeamId, Guid? ParticipantId);
     private const string StageRoundsLockedMessage = "This stage already has rounds. Reset or recreate the stage before reseeding participants.";
 
+    static partial void MapBrConfigRoutes(WebApplication app);
+
     public static void MapBRGroupEndpoints(this WebApplication app)
     {
+        MapBrConfigRoutes(app);
+
         // ── GET /api/stages/{stageId}/br/groups ─────────────────────────────
         // List all groups for a BR stage with team counts. Public endpoint.
         app.MapGet("/api/stages/{stageId}/br/groups", async (
@@ -460,12 +464,12 @@ public static class BRGroupEndpoints
                         return Results.BadRequest(new { error = BRSeedEligibility.ParticipantSeedMessage(checkInRequired) });
 
                     var orderedParticipants = method == "random"
-                        ? ShuffleTeams(participantIds)
+                        ? BrSeedingService.ShuffleTeams(participantIds)
                         : participantIds;
 
                     var assignments = method == "snake"
-                        ? BuildSnakeAssignments(orderedParticipants, groupIds)
-                        : BuildRoundRobinAssignments(orderedParticipants, groupIds);
+                        ? BrSeedingService.BuildSnakeAssignments(orderedParticipants, groupIds)
+                        : BrSeedingService.BuildRoundRobinAssignments(orderedParticipants, groupIds);
 
                     // Insert with participant_id
                     await conn.ExecuteAsync(
@@ -496,12 +500,12 @@ public static class BRGroupEndpoints
                         return Results.BadRequest(new { error = BRSeedEligibility.TeamSeedMessage(checkInRequired) });
 
                     var orderedTeams = method == "random"
-                        ? ShuffleTeams(teamIds)
+                        ? BrSeedingService.ShuffleTeams(teamIds)
                         : teamIds;
 
                     var assignments = method == "snake"
-                        ? BuildSnakeAssignments(orderedTeams, groupIds)
-                        : BuildRoundRobinAssignments(orderedTeams, groupIds);
+                        ? BrSeedingService.BuildSnakeAssignments(orderedTeams, groupIds)
+                        : BrSeedingService.BuildRoundRobinAssignments(orderedTeams, groupIds);
 
                     await conn.ExecuteAsync(
                         """
@@ -798,7 +802,7 @@ public static class BRGroupEndpoints
             if (!groupExists)
                 return Results.NotFound(new { error = "Group not found in this stage." });
 
-            var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_lobbies", "map");
+            var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map");
             var mapSelect = roundsHasMapColumn ? ", r.map" : ", NULL::text AS map";
 
             var rounds = await conn.QueryAsync<dynamic>(
@@ -961,10 +965,10 @@ public static class BRGroupEndpoints
                     new { stageId },
                     tx);
 
-                var stageFormat = BattleRoyaleConfigResolver.ResolveFormat(stageContext?.stage_config);
-                if (stageFormat is BattleRoyaleConfigResolver.BrStageFormat.StaticGroups
-                    or BattleRoyaleConfigResolver.BrStageFormat.SingleLobby
-                    or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+                var stageFormat = BrConfigService.ResolveFormat(stageContext?.stage_config);
+                if (stageFormat is BrStageFormat.StaticGroups
+                    or BrStageFormat.SingleLobby
+                    or BrStageFormat.MultiLobbyCut)
                 {
                     var existingGroupLobbies = await conn.ExecuteScalarAsync<int>(
                         """
@@ -996,16 +1000,16 @@ public static class BRGroupEndpoints
                     new { groupId },
                     tx);
 
-                var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_lobbies", "map", tx);
+                var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map", tx);
                 var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
                 string? persistedMap = null;
                 if (roundsHasMapColumn && mapValue is not null)
                 {
-                    var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
+                    var mapConfig = BrConfigService.ResolveMapConfig(
                         stageContext?.settings,
                         stageContext?.stage_config,
                         catalogBrConfig);
-                    if (!BattleRoyaleConfigResolver.ValidateMapInPool(mapConfig, mapValue, out string? mapError))
+                    if (!BrConfigService.ValidateMapInPool(mapConfig, mapValue, out string? mapError))
                     {
                         tx.Rollback();
                         return Results.BadRequest(new { error = mapError });
@@ -1015,11 +1019,11 @@ public static class BRGroupEndpoints
                 }
                 else if (roundsHasMapColumn)
                 {
-                    var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
+                    var mapConfig = BrConfigService.ResolveMapConfig(
                         stageContext?.settings,
                         stageContext?.stage_config,
                         catalogBrConfig);
-                    persistedMap = BattleRoyaleConfigResolver.ResolveMapForRound(mapConfig, nextRoundNumber, null);
+                    persistedMap = BrConfigService.ResolveMapForRound(mapConfig, nextRoundNumber, null);
                 }
 
                 var mapInsertSql = roundsHasMapColumn ? ", map" : string.Empty;
@@ -1061,9 +1065,9 @@ public static class BRGroupEndpoints
                     new { lobbyId, groupId },
                     tx);
 
-                var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+                var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(
                     stageContext?.settings, stageContext?.stage_config) ?? 6;
-                await BrGameMaterializer.EnsureGamesForLobbyAsync(
+                await BrGameRepository.EnsureGamesForLobbyAsync(
                     conn,
                     lobbyId,
                     gamesPerLobby,
@@ -1106,7 +1110,7 @@ public static class BRGroupEndpoints
             if (!await CanViewStagePublicDataAsync(conn, ctx, stageId))
                 return Results.NotFound();
 
-            var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_lobbies", "map");
+            var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map");
             var mapSelect = roundsHasMapColumn ? ", l.map" : ", NULL::text AS map";
 
             var lobbies = await conn.QueryAsync<dynamic>(
@@ -1221,7 +1225,7 @@ public static class BRGroupEndpoints
                 var finalStatus = currentStatus;
                 int? finalQueueTimerMinutes = currentQueueTimerMinutes;
                 string? finalMap = currentMap;
-                var roundsHasMapColumn = await ColumnExistsAsync(conn, "br_lobbies", "map", tx);
+                var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map", tx);
 
                 if (roundsHasMapColumn && body.TryGetProperty("map", out var mapProp))
                 {
@@ -1247,14 +1251,14 @@ public static class BRGroupEndpoints
                             tx);
 
                         var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
-                        var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
+                        var mapConfig = BrConfigService.ResolveMapConfig(
                             stageContext?.settings,
                             stageContext?.stage_config,
                             catalogBrConfig);
 
                         if (finalMap is not null)
                         {
-                            if (!BattleRoyaleConfigResolver.ValidateMapInPool(mapConfig, finalMap, out string? mapError))
+                            if (!BrConfigService.ValidateMapInPool(mapConfig, finalMap, out string? mapError))
                             {
                                 tx.Rollback();
                                 return Results.BadRequest(new { error = mapError });
@@ -1379,17 +1383,17 @@ public static class BRGroupEndpoints
                                 tx);
 
                             var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
-                            var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
+                            var mapConfig = BrConfigService.ResolveMapConfig(
                                 stageContext?.settings,
                                 stageContext?.stage_config,
                                 catalogBrConfig);
 
-                            var effectiveMap = BattleRoyaleConfigResolver.ResolveMapForRound(
+                            var effectiveMap = BrConfigService.ResolveMapForRound(
                                 mapConfig,
                                 currentRoundNumber,
                                 finalMap);
 
-                            if (mapConfig.Mode == BattleRoyaleConfigResolver.BrMapMode.PerRound
+                            if (mapConfig.Mode == BrMapMode.PerRound
                                 && string.IsNullOrWhiteSpace(effectiveMap))
                             {
                                 tx.Rollback();
@@ -1398,7 +1402,7 @@ public static class BRGroupEndpoints
 
                             if (!string.IsNullOrWhiteSpace(effectiveMap))
                             {
-                                if (!BattleRoyaleConfigResolver.ValidateMapInPool(mapConfig, effectiveMap, out string? mapError))
+                                if (!BrConfigService.ValidateMapInPool(mapConfig, effectiveMap, out string? mapError))
                                 {
                                     tx.Rollback();
                                     return Results.BadRequest(new { error = mapError });
@@ -1460,7 +1464,7 @@ public static class BRGroupEndpoints
                             });
                         }
 
-                        var pendingEvidenceCount = await CountPendingEvidenceAsync(conn, lobbyId, tx);
+                        var pendingEvidenceCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId, tx);
                         if (pendingEvidenceCount > 0)
                         {
                             tx.Rollback();
@@ -1741,7 +1745,7 @@ public static class BRGroupEndpoints
                     new { lobbyId },
                     tx);
 
-                await ClearLobbyScoredStateAsync(conn, lobbyId, tx);
+                await BrLobbyService.ClearScoredStateAsync(conn, lobbyId, tx);
 
                 round = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
@@ -1766,32 +1770,35 @@ public static class BRGroupEndpoints
                     return Results.NotFound(new { error = "Round not found." });
                 }
 
-                if (await TableExistsAsync(conn, "br_games", tx))
+                if (await BrSchemaRepository.TableExistsAsync(conn, "br_games", tx))
                 {
-                    var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        """
-                        SELECT t.game, t.settings, ts.config AS stage_config
-                        FROM tournament_stages ts
-                        JOIN tournaments t ON t.id = ts.tournament_id
-                        WHERE ts.id = @stageId
-                        """,
-                        new { stageId },
-                        tx);
+                    try
+                    {
+                        var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            """
+                            SELECT t.game, t.settings, ts.config AS stage_config
+                            FROM tournament_stages ts
+                            JOIN tournaments t ON t.id = ts.tournament_id
+                            WHERE ts.id = @stageId
+                            """,
+                            new { stageId },
+                            tx);
 
-                    var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
-                    var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
-                        stageContext?.settings,
-                        stageContext?.stage_config)
-                        ?? await BrGameMaterializer.ResolveGamesPerLobbyAsync(conn, stageId, tx);
-
-                    await BrGameMaterializer.EnsureGamesForLobbyAsync(
-                        conn,
-                        lobbyId,
-                        gamesPerLobby,
-                        stageContext?.settings,
-                        stageContext?.stage_config,
-                        catalogBrConfig,
-                        tx);
+                        var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
+                        await BrLobbyService.EnsureGamesAfterResetAsync(
+                            conn,
+                            lobbyId,
+                            stageId,
+                            stageContext?.settings,
+                            stageContext?.stage_config,
+                            catalogBrConfig,
+                            tx);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"[BRGroupEndpoints] EnsureGamesForLobby failed during reset for lobby {lobbyId}: {ex.Message}");
+                    }
                 }
 
                 tx.Commit();
@@ -1841,7 +1848,7 @@ public static class BRGroupEndpoints
             if (targetGameId is null)
                 return Results.NotFound(new { error = "No games found for this lobby." });
 
-            var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
+            var roundResultsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
 
             // Use LEFT JOINs with COALESCE for unified team/solo display
             var results = await conn.QueryAsync<dynamic>(
@@ -1924,49 +1931,13 @@ public static class BRGroupEndpoints
                     return Results.Forbid();
             }
 
-            var targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
-                conn, lobbyId, gameNumber: gameNumber);
-            if (targetGameId is null)
-                return Results.NotFound(new { error = "No game found for this lobby." });
-
-            var evidence = await conn.QueryAsync<dynamic>(
-                """
-                SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
-                       CASE
-                           WHEN re.team_id IS NOT NULL THEN t.name
-                           ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
-                       END AS entity_name,
-                       CASE WHEN re.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                       re.image_url,
-                       re.submitted_at,
-                       re.placement,
-                       re.kills,
-                       re.reviewed
-                FROM br_lobby_evidence re
-                LEFT JOIN teams t ON t.id = re.team_id
-                LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
-                LEFT JOIN profiles p ON p.id = tp.user_id
-                WHERE re.game_id = @targetGameId
-                  AND (
-                    @isStaff = TRUE
-                    OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
-                    OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
-                  )
-                ORDER BY re.submitted_at DESC
-                """,
-                new { targetGameId, isStaff, viewerTeamId, viewerParticipantId });
-
-            var payload = evidence.Select(row => new
-            {
-                teamId = ((Guid)row.entity_id).ToString(),
-                teamName = (string?)row.entity_name ?? "Unknown",
-                logoUrl = (string?)row.logo_url,
-                imageUrl = (string)row.image_url,
-                submittedAt = ((DateTimeOffset)row.submitted_at).ToString("o"),
-                placement = row.placement is not null ? Convert.ToInt32(row.placement) : (int?)null,
-                kills = row.kills is not null ? Convert.ToInt32(row.kills) : (int?)null,
-                reviewed = (bool)row.reviewed,
-            });
+            var payload = await BrGameRouteHelper.ListLobbyEvidenceAsync(
+                conn,
+                lobbyId,
+                isStaff,
+                viewerTeamId,
+                viewerParticipantId,
+                gameNumber: gameNumber);
 
             return Results.Ok(payload);
         }).RequireAuthorization("Authenticated");
@@ -2164,7 +2135,7 @@ public static class BRGroupEndpoints
             var entityId = teamId ?? participantId!.Value;
             try
             {
-                var pendingCount = await GetPendingEvidenceCountAsync(conn, lobbyId);
+                var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
                 var evidencePayload = new
                 {
                     stageId = stageId.ToString(),
@@ -2254,7 +2225,7 @@ public static class BRGroupEndpoints
             if (updated == 0)
                 return Results.NotFound(new { error = "Evidence submission not found." });
 
-            var pendingCount = await GetPendingEvidenceCountAsync(conn, lobbyId);
+            var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
             var reviewPayload = new
             {
                 stageId = stageId.ToString(),
@@ -2314,8 +2285,8 @@ public static class BRGroupEndpoints
                 resultsElement.ValueKind != JsonValueKind.Array)
                 return Results.BadRequest(new { error = "results must be an array." });
 
-            var groupTeamsHasParticipantId = await ColumnExistsAsync(conn, "br_group_teams", "participant_id");
-            var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
+            var groupTeamsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_group_teams", "participant_id");
+            var roundResultsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
             var roundResultsTeamIdAllowsNull = await ColumnAllowsNullAsync(conn, "br_lobby_results", "team_id");
             var canPersistParticipantBackedResults = roundResultsHasParticipantId && roundResultsTeamIdAllowsNull;
 
@@ -2377,7 +2348,7 @@ public static class BRGroupEndpoints
                 entity => (entity.TeamId, entity.ParticipantId));
 
             var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, gameName, ct);
-            var scoring = BattleRoyaleConfigResolver.ResolveScoring(rawSettings, stageConfig, catalogBrConfig);
+            var scoring = BrConfigService.ResolveScoring(rawSettings, stageConfig, catalogBrConfig);
 
             var parsedResults = new List<(Guid EntityId, int Placement, int Kills)>();
             var seenEntityIds = new HashSet<Guid>();
@@ -2440,8 +2411,8 @@ public static class BRGroupEndpoints
                     conn, lobbyId, gameNumber: requestGameNumber, tx: tx);
                 if (targetGameId is null)
                 {
-                    var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(rawSettings, stageConfig) ?? 6;
-                    await BrGameMaterializer.EnsureGamesForLobbyAsync(
+                    var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(rawSettings, stageConfig) ?? 6;
+                    await BrGameRepository.EnsureGamesForLobbyAsync(
                         conn, lobbyId, gamesPerLobby, rawSettings, stageConfig, catalogBrConfig, tx);
                     targetGameId = await BrGameRouteHelper.ResolveTargetGameIdAsync(
                         conn, lobbyId, gameNumber: requestGameNumber ?? 1, tx: tx);
@@ -2461,7 +2432,7 @@ public static class BRGroupEndpoints
                 var materializedResults = parsedResults
                     .Select(result =>
                     {
-                        var points = BattleRoyaleConfigResolver.CalculatePoints(result.Placement, result.Kills, scoring);
+                        var points = BrConfigService.CalculatePoints(result.Placement, result.Kills, scoring);
                         var rosterEntity = rosterByEntityId[result.EntityId];
                         return new
                         {
@@ -2696,9 +2667,9 @@ public static class BRGroupEndpoints
                 WHERE ts.id = @stageId
                 """,
                 new { stageId });
-            var tiebreaker = BattleRoyaleConfigResolver.ResolveTiebreaker(stageMeta?.settings);
+            var tiebreaker = BrConfigService.ResolveTiebreaker(stageMeta?.settings);
 
-            var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
+            var roundResultsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
 
             // Unified leaderboard with COALESCE for team/solo
             var leaderboardRows = (await conn.QueryAsync<dynamic>(
@@ -2759,17 +2730,17 @@ public static class BRGroupEndpoints
 
             leaderboardRows.Sort((a, b) =>
             {
-                var aggregateA = new BattleRoyaleConfigResolver.BrLeaderboardAggregate(
+                var aggregateA = new BrLeaderboardAggregate(
                     Convert.ToInt64(a.total_points),
                     Convert.ToInt64(a.wins),
                     Convert.ToInt64(a.total_kills),
                     a.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(a.avg_placement));
-                var aggregateB = new BattleRoyaleConfigResolver.BrLeaderboardAggregate(
+                var aggregateB = new BrLeaderboardAggregate(
                     Convert.ToInt64(b.total_points),
                     Convert.ToInt64(b.wins),
                     Convert.ToInt64(b.total_kills),
                     b.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(b.avg_placement));
-                return BattleRoyaleConfigResolver.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
+                return BrConfigService.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
             });
 
             var leaderboard = leaderboardRows.Select(row => new
@@ -2803,37 +2774,15 @@ public static class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            // ── Find the user's group ────────────────────────────────────────
-            var groupRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT ts.id AS stage_id, ts.name AS stage_name, ts.stage_order,
-                       g.id AS group_id, g.name AS group_name
-                FROM tournament_stages ts
-                JOIN br_groups g ON g.stage_id = ts.id
-                WHERE ts.tournament_id = @tournamentId
-                  AND EXISTS (
-                      SELECT 1
-                      FROM br_group_teams bgt
-                      JOIN tournament_participants tp ON (
-                          (bgt.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
-                          OR (bgt.participant_id IS NOT NULL AND tp.id = bgt.participant_id)
-                      )
-                      LEFT JOIN team_members tm
-                        ON tm.team_id = bgt.team_id
-                       AND tm.user_id = @userId
-                       AND tm.is_active = TRUE
-                      WHERE bgt.group_id = g.id
-                        AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                        AND (tp.user_id = @userId OR tm.user_id IS NOT NULL)
-                  )
-                ORDER BY ts.stage_order ASC
-                LIMIT 1
-                """,
-                new { tournamentId, userId = userCtx.UserIdGuid });
+            var groupInfo = await BrPlayerContextService.FindPlayerGroupAsync(
+                conn, tournamentId, userCtx.UserIdGuid);
 
             // Not in a group — return minimal response
-            if (groupRow is null)
+            if (groupInfo is null)
             {
+                var assignmentHint = await BrPlayerContextService.ResolveAssignmentHintAsync(
+                    conn, tournamentId, userCtx.UserIdGuid);
+
                 return Results.Ok(new
                 {
                     stageId          = (string?)null,
@@ -2843,11 +2792,12 @@ public static class BRGroupEndpoints
                     totalRounds      = 0,
                     completedRounds  = 0,
                     activeRound      = (object?)null,
+                    assignmentHint,
                 });
             }
 
-            Guid groupId = groupRow.group_id;
-            var stageId = (Guid)groupRow.stage_id;
+            Guid groupId = groupInfo.GroupId;
+            var stageId = groupInfo.StageId;
 
             var stageMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -2857,7 +2807,7 @@ public static class BRGroupEndpoints
                 WHERE ts.id = @stageId
                 """,
                 new { stageId });
-            var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+            var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(
                 stageMeta?.settings, stageMeta?.stage_config) ?? 6;
 
             // ── Fetch lobbies linked to the player's seed group ────────────────
@@ -2918,7 +2868,7 @@ public static class BRGroupEndpoints
             bool isStaff = StaffAuthHelper.IsPlatformAdmin(userCtx);
             if (!isStaff)
             {
-                var stageIdForCheck = (Guid)groupRow.stage_id;
+                var stageIdForCheck = groupInfo.StageId;
                 isStaff = await StaffAuthHelper.CanActOnStageAsync(
                     conn, userCtx.UserIdGuid, stageIdForCheck, StaffAuthHelper.PermBracketEdit);
             }
@@ -3029,9 +2979,9 @@ public static class BRGroupEndpoints
             return Results.Ok(new
             {
                 stageId = stageId.ToString(),
-                stageName = (string)groupRow.stage_name,
-                groupId = ((Guid)groupRow.group_id).ToString(),
-                groupName = (string)groupRow.group_name,
+                stageName = groupInfo.StageName,
+                groupId = groupInfo.GroupId.ToString(),
+                groupName = groupInfo.GroupName,
                 gamesPerLobby,
                 totalRounds,
                 completedRounds,
@@ -3151,8 +3101,8 @@ public static class BRGroupEndpoints
                 new { stageId });
 
             // Optional lobby generation for group_rotation.
-            var format = BattleRoyaleConfigResolver.ResolveFormat(mergedConfigText);
-            if (format == BattleRoyaleConfigResolver.BrStageFormat.GroupRotation
+            var format = BrConfigService.ResolveFormat(mergedConfigText);
+            if (format == BrStageFormat.GroupRotation
                 && body.TryGetProperty("waves", out var wavesEl)
                 && wavesEl.ValueKind == JsonValueKind.Array)
             {
@@ -3217,7 +3167,7 @@ public static class BRGroupEndpoints
                         tx);
                     var catalogBrConfig = await LoadCatalogBrConfigAsync(
                         catalog, stageContext?.game as string, ct);
-                    await BrGameMaterializer.MaterializeStageGamesAsync(
+                    await BrGameRepository.MaterializeStageGamesAsync(
                         conn,
                         stageId,
                         tournamentSettings: stageContext?.settings,
@@ -3254,7 +3204,7 @@ public static class BRGroupEndpoints
                 WHERE ts.id = @stageId
                 """,
                 new { stageId });
-            var tiebreaker = BattleRoyaleConfigResolver.ResolveTiebreaker(stageMeta?.settings);
+            var tiebreaker = BrConfigService.ResolveTiebreaker(stageMeta?.settings);
 
             var leaderboardRows = (await conn.QueryAsync<dynamic>(
                 """
@@ -3285,17 +3235,17 @@ public static class BRGroupEndpoints
 
             leaderboardRows.Sort((a, b) =>
             {
-                var aggregateA = new BattleRoyaleConfigResolver.BrLeaderboardAggregate(
+                var aggregateA = new BrLeaderboardAggregate(
                     Convert.ToInt64(a.total_points),
                     Convert.ToInt64(a.wins),
                     Convert.ToInt64(a.total_kills),
                     a.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(a.avg_placement));
-                var aggregateB = new BattleRoyaleConfigResolver.BrLeaderboardAggregate(
+                var aggregateB = new BrLeaderboardAggregate(
                     Convert.ToInt64(b.total_points),
                     Convert.ToInt64(b.wins),
                     Convert.ToInt64(b.total_kills),
                     b.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(b.avg_placement));
-                return BattleRoyaleConfigResolver.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
+                return BrConfigService.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
             });
 
             return Results.Ok(leaderboardRows);
@@ -3337,8 +3287,8 @@ public static class BRGroupEndpoints
                 return Results.Conflict(new { error = "This stage has already been advanced." });
 
             bool isSolo = Convert.ToInt32(stage.team_size ?? 1) == 1;
-            var tiebreaker = BattleRoyaleConfigResolver.ResolveTiebreaker(stage.settings);
-            var advancementMode = BattleRoyaleConfigResolver.ResolveAdvancement(stage.config);
+            var tiebreaker = BrConfigService.ResolveTiebreaker(stage.settings);
+            var advancementMode = BrConfigService.ResolveAdvancement(stage.config);
 
             // Optional override from body: { teamsPerGroup: 4 }
             int teamsPerGroup = 0;
@@ -3349,7 +3299,7 @@ public static class BRGroupEndpoints
                 int? stageAdvancementCount = stage.advancement_count is null
                     ? null
                     : Convert.ToInt32(stage.advancement_count);
-                var resolvedCount = BattleRoyaleConfigResolver.ResolveAdvancementCount(
+                var resolvedCount = BrConfigService.ResolveAdvancementCount(
                     stage.config,
                     stageAdvancementCount);
                 teamsPerGroup = resolvedCount ?? 0;
@@ -3365,7 +3315,7 @@ public static class BRGroupEndpoints
             if (groups.Count == 0)
                 return Results.BadRequest(new { error = "No groups exist in this stage." });
 
-            var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(stage.settings, stage.config) ?? 6;
+            var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(stage.settings, stage.config) ?? 6;
 
             var incompleteGroups = await conn.QueryAsync<dynamic>(
                 """
@@ -3435,17 +3385,17 @@ public static class BRGroupEndpoints
                     var groupRows = group.ToList();
                     groupRows.Sort((a, b) =>
                     {
-                        var aggregateA = new BattleRoyaleConfigResolver.BrLeaderboardAggregate(
+                        var aggregateA = new BrLeaderboardAggregate(
                             Convert.ToInt64(a.total_points),
                             Convert.ToInt64(a.wins),
                             Convert.ToInt64(a.total_kills),
                             a.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(a.avg_placement));
-                        var aggregateB = new BattleRoyaleConfigResolver.BrLeaderboardAggregate(
+                        var aggregateB = new BrLeaderboardAggregate(
                             Convert.ToInt64(b.total_points),
                             Convert.ToInt64(b.wins),
                             Convert.ToInt64(b.total_kills),
                             b.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(b.avg_placement));
-                        return BattleRoyaleConfigResolver.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
+                        return BrConfigService.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
                     });
 
                     return groupRows
@@ -3457,7 +3407,7 @@ public static class BRGroupEndpoints
                 .Select(entry => entry.row)
                 .ToList();
 
-            if (advancementMode == BattleRoyaleConfigResolver.BrAdvancementMode.TopNOverall)
+            if (advancementMode == BrAdvancementMode.TopNOverall)
             {
                 qualifiedRows = aggregateRows
                     .OrderByDescending(r => (long)r.total_points)
@@ -3467,7 +3417,7 @@ public static class BRGroupEndpoints
                     .Take(teamsPerGroup)
                     .ToList();
             }
-            else if (advancementMode == BattleRoyaleConfigResolver.BrAdvancementMode.TopNPerLobby)
+            else if (advancementMode == BrAdvancementMode.TopNPerLobby)
             {
                 var lobbyRows = (await conn.QueryAsync<dynamic>(
                     """
@@ -3591,17 +3541,17 @@ public static class BRGroupEndpoints
                 }
 
                 // Seed next stage: multi-group when format requires it, else single merged lobby
-                var nextFormat = BattleRoyaleConfigResolver.ResolveFormat(nextStage.config);
+                var nextFormat = BrConfigService.ResolveFormat(nextStage.config);
                 var nextLobbySize = nextStage.capacity is int cap && cap > 0
                     ? cap
                     : Math.Max(1, qualifiedTeams.Count);
                 var targetGroupCount = nextFormat switch
                 {
-                    BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut =>
+                    BrStageFormat.MultiLobbyCut =>
                         Math.Max(1, (int)Math.Ceiling(qualifiedTeams.Count / (double)nextLobbySize)),
-                    BattleRoyaleConfigResolver.BrStageFormat.StaticGroups =>
+                    BrStageFormat.StaticGroups =>
                         Math.Max(1, (int)Math.Ceiling(qualifiedTeams.Count / (double)nextLobbySize)),
-                    BattleRoyaleConfigResolver.BrStageFormat.GroupRotation => 4,
+                    BrStageFormat.GroupRotation => 4,
                     _ => 1,
                 };
 
@@ -3638,7 +3588,7 @@ public static class BRGroupEndpoints
                     var qt = qualifiedTeams[i];
                     var groupIndex = targetGroupCount == 1
                         ? 0
-                        : SnakeGroupIndex(i, targetGroupCount);
+                        : BrSeedingService.SnakeGroupIndex(i, targetGroupCount);
                     var targetGroupId = createdGroupIds[groupIndex];
 
                     if (isSolo)
@@ -3714,26 +3664,21 @@ public static class BRGroupEndpoints
         Guid userId,
         IDbTransaction? tx = null)
     {
-        return await conn.QuerySingleAsync<bool>(
+        var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
             """
-            SELECT EXISTS(
-                SELECT 1
-                FROM br_group_teams bgt
-                JOIN tournament_participants tp ON (
-                    (bgt.team_id IS NOT NULL AND tp.team_id = bgt.team_id)
-                    OR (bgt.participant_id IS NOT NULL AND tp.id = bgt.participant_id)
-                )
-                LEFT JOIN team_members tm
-                  ON tm.team_id = bgt.team_id
-                 AND tm.user_id = @userId
-                 AND tm.is_active = TRUE
-                WHERE bgt.group_id = @groupId
-                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
-                  AND (tp.user_id = @userId OR tm.user_id IS NOT NULL)
-            )
+            SELECT ts.tournament_id
+            FROM br_groups g
+            JOIN tournament_stages ts ON ts.id = g.stage_id
+            WHERE g.id = @groupId
             """,
-            new { groupId, userId },
-            tx);
+            new { groupId },
+            tx) ?? Guid.Empty;
+
+        if (tournamentId == Guid.Empty)
+            return false;
+
+        return await BrPlayerContextService.IsUserAssignedToGroupAsync(
+            conn, tournamentId, groupId, userId, tx);
     }
 
     private static async Task<BrEntityAccess> ResolveRoundEntityAccessAsync(
@@ -3941,124 +3886,6 @@ public static class BRGroupEndpoints
         return false;
     }
 
-    private static async Task<bool> ColumnExistsAsync(
-        IDbConnection conn,
-        string tableName,
-        string columnName,
-        IDbTransaction? tx = null)
-    {
-        return await conn.QuerySingleAsync<bool>(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = @tableName
-                  AND column_name = @columnName
-            )
-            """,
-            new { tableName, columnName },
-            tx);
-    }
-
-    private static Task<bool> TableExistsAsync(
-        IDbConnection conn,
-        string tableName,
-        IDbTransaction? tx = null) =>
-        conn.QuerySingleAsync<bool>(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_name = @tableName
-            )
-            """,
-            new { tableName },
-            tx);
-
-    private static async Task ClearLobbyScoredStateAsync(
-        IDbConnection conn,
-        Guid lobbyId,
-        IDbTransaction tx)
-    {
-        var hasGamesTable = await TableExistsAsync(conn, "br_games", tx);
-        var resultsHasGameId = await ColumnExistsAsync(conn, "br_lobby_results", "game_id", tx);
-        var evidenceHasGameId = await ColumnExistsAsync(conn, "br_lobby_evidence", "game_id", tx);
-        var resultsHasLobbyId = await ColumnExistsAsync(conn, "br_lobby_results", "lobby_id", tx);
-        var evidenceHasLobbyId = await ColumnExistsAsync(conn, "br_lobby_evidence", "lobby_id", tx);
-
-        if (hasGamesTable && resultsHasGameId)
-        {
-            await conn.ExecuteAsync(
-                """
-                DELETE FROM br_lobby_results
-                WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
-                """,
-                new { lobbyId },
-                tx);
-        }
-        else if (resultsHasLobbyId)
-        {
-            await conn.ExecuteAsync(
-                "DELETE FROM br_lobby_results WHERE lobby_id = @lobbyId",
-                new { lobbyId },
-                tx);
-        }
-
-        if (hasGamesTable && evidenceHasGameId)
-        {
-            await conn.ExecuteAsync(
-                """
-                DELETE FROM br_lobby_evidence
-                WHERE game_id IN (SELECT id FROM br_games WHERE lobby_id = @lobbyId)
-                """,
-                new { lobbyId },
-                tx);
-        }
-        else if (evidenceHasLobbyId)
-        {
-            await conn.ExecuteAsync(
-                "DELETE FROM br_lobby_evidence WHERE lobby_id = @lobbyId",
-                new { lobbyId },
-                tx);
-        }
-
-        if (!hasGamesTable)
-            return;
-
-        var gamesHasMap = await ColumnExistsAsync(conn, "br_games", "map", tx);
-        if (gamesHasMap)
-        {
-            await conn.ExecuteAsync(
-                """
-                UPDATE br_games
-                SET status = 'pending',
-                    map = NULL,
-                    scheduled_at = NULL,
-                    started_at = NULL,
-                    completed_at = NULL
-                WHERE lobby_id = @lobbyId
-                """,
-                new { lobbyId },
-                tx);
-        }
-        else
-        {
-            await conn.ExecuteAsync(
-                """
-                UPDATE br_games
-                SET status = 'pending',
-                    scheduled_at = NULL,
-                    started_at = NULL,
-                    completed_at = NULL
-                WHERE lobby_id = @lobbyId
-                """,
-                new { lobbyId },
-                tx);
-        }
-    }
-
     private static async Task<IReadOnlyList<Guid>> GetLobbyGroupIdsAsync(
         IDbConnection conn,
         Guid lobbyId,
@@ -4211,16 +4038,6 @@ public static class BRGroupEndpoints
         return $"Group {name}";
     }
 
-    /// <summary>
-    /// Shuffle a copy of team IDs using Fisher-Yates via Random.Shared.
-    /// </summary>
-    private static Guid[] ShuffleTeams(Guid[] teams)
-    {
-        var shuffled = teams.ToArray();
-        Random.Shared.Shuffle(shuffled);
-        return shuffled;
-    }
-
     private static async Task<bool> CanViewStagePublicDataAsync(IDbConnection conn, HttpContext ctx, Guid stageId)
     {
         var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -4288,8 +4105,8 @@ public static class BRGroupEndpoints
         Guid groupId,
         Guid lobbyId)
     {
-        var groupTeamsHasParticipantId = await ColumnExistsAsync(conn, "br_group_teams", "participant_id", tx);
-        var roundResultsHasParticipantId = await ColumnExistsAsync(conn, "br_lobby_results", "participant_id", tx);
+        var groupTeamsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_group_teams", "participant_id", tx);
+        var roundResultsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id", tx);
 
         var rosterEntityExpression = groupTeamsHasParticipantId
             ? "COALESCE(team_id, participant_id)"
@@ -4334,50 +4151,6 @@ public static class BRGroupEndpoints
             """;
 
         return await conn.ExecuteScalarAsync<bool>(sql, new { groupId, lobbyId }, tx);
-    }
-
-    /// <summary>
-    /// Round-robin assignment: team 0 → group 0, team 1 → group 1, ..., wraps around.
-    /// </summary>
-    private static List<(Guid teamId, Guid groupId, int seedOrder)> BuildRoundRobinAssignments(
-        Guid[] teams, Guid[] groupIds)
-    {
-        var assignments = new List<(Guid, Guid, int)>();
-        var seedCounters = new int[groupIds.Length];
-
-        for (var i = 0; i < teams.Length; i++)
-        {
-            var groupIndex = i % groupIds.Length;
-            seedCounters[groupIndex]++;
-            assignments.Add((teams[i], groupIds[groupIndex], seedCounters[groupIndex]));
-        }
-
-        return assignments;
-    }
-
-    /// <summary>
-    /// Snake draft: 0,1,2 → 2,1,0 → 0,1,2 → ...
-    /// For 3 groups: team 0→G0, 1→G1, 2→G2, 3→G2, 4→G1, 5→G0, 6→G0, ...
-    /// </summary>
-    private static List<(Guid teamId, Guid groupId, int seedOrder)> BuildSnakeAssignments(
-        Guid[] teams, Guid[] groupIds)
-    {
-        var assignments = new List<(Guid, Guid, int)>();
-        var seedCounters = new int[groupIds.Length];
-        var groupCount = groupIds.Length;
-
-        for (var i = 0; i < teams.Length; i++)
-        {
-            // Determine direction: even passes go forward (0,1,2), odd passes go backward (2,1,0)
-            var pass = i / groupCount;
-            var posInPass = i % groupCount;
-            var groupIndex = pass % 2 == 0 ? posInPass : groupCount - 1 - posInPass;
-
-            seedCounters[groupIndex]++;
-            assignments.Add((teams[i], groupIds[groupIndex], seedCounters[groupIndex]));
-        }
-
-        return assignments;
     }
 
     private static object BuildRoundEvent(
@@ -4501,53 +4274,4 @@ public static class BRGroupEndpoints
             new { lobbyId },
             tx);
 
-    private static async Task<int> CountPendingEvidenceAsync(
-        IDbConnection conn,
-        Guid lobbyId,
-        IDbTransaction? tx = null)
-    {
-        if (await TableExistsAsync(conn, "br_games", tx)
-            && await ColumnExistsAsync(conn, "br_lobby_evidence", "game_id", tx))
-        {
-            var count = await conn.ExecuteScalarAsync<long>(
-                """
-                SELECT COUNT(*)
-                FROM br_lobby_evidence re
-                JOIN br_games g ON g.id = re.game_id
-                WHERE g.lobby_id = @lobbyId AND re.reviewed = FALSE
-                """,
-                new { lobbyId },
-                tx);
-            return Convert.ToInt32(count);
-        }
-
-        if (await ColumnExistsAsync(conn, "br_lobby_evidence", "lobby_id", tx))
-        {
-            var count = await conn.ExecuteScalarAsync<long>(
-                """
-                SELECT COUNT(*)
-                FROM br_lobby_evidence re
-                WHERE re.lobby_id = @lobbyId AND re.reviewed = FALSE
-                """,
-                new { lobbyId },
-                tx);
-            return Convert.ToInt32(count);
-        }
-
-        return 0;
-    }
-
-    private static async Task<int> GetPendingEvidenceCountAsync(
-        IDbConnection conn,
-        Guid lobbyId,
-        IDbTransaction? tx = null) =>
-        await CountPendingEvidenceAsync(conn, lobbyId, tx);
-
-    private static int SnakeGroupIndex(int pickIndex, int groupCount)
-    {
-        if (groupCount <= 1) return 0;
-        var round = pickIndex / groupCount;
-        var pos = pickIndex % groupCount;
-        return round % 2 == 0 ? pos : groupCount - 1 - pos;
-    }
 }

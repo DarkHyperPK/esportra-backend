@@ -1178,6 +1178,7 @@ public static class MatchSystemEndpoints
             [FromBody] UpdateMatchTimeRequest      req,
             HttpContext                             ctx,
             IDbConnectionFactory                   db,
+            IHubContext<BracketHub>                bracketHub,
             CancellationToken                      ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1190,11 +1191,23 @@ public static class MatchSystemEndpoints
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
+            var scheduledTime = string.IsNullOrEmpty(req.ScheduledTime)
+                ? (DateTime?)null
+                : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind);
+
             await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET scheduled_time = @scheduledTime WHERE id = @matchId",
-                new { matchId, scheduledTime = string.IsNullOrEmpty(req.ScheduledTime)
-                    ? (DateTime?)null
-                    : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind) });
+                new { matchId, scheduledTime });
+
+            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
+            if (versionId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId, matchId, scheduledTime }, ct);
+            }
 
             return Results.Ok(new { success = true, matchId });
         }).RequireAuthorization("Authenticated");

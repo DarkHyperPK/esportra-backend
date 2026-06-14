@@ -1,93 +1,65 @@
 using System.Data;
-using Dapper;
+using Esportra.Core.Br;
 
 namespace Esportra.Api.Services;
 
+/// <summary>
+/// Temporary forwarding shim — delegates to Esportra.Core.Br repositories (removed in Phase 2a).
+/// </summary>
 public static class BrGameRouteHelper
 {
-    public static async Task<Guid?> ResolveTargetGameIdAsync(
+    public static Task<Guid?> ResolveTargetGameIdAsync(
         IDbConnection conn,
         Guid lobbyId,
         Guid? gameId = null,
         int? gameNumber = null,
-        IDbTransaction? tx = null)
-    {
-        if (gameId is not null)
-            return gameId;
+        IDbTransaction? tx = null) =>
+        BrGameRepository.ResolveTargetGameIdAsync(conn, lobbyId, gameId, gameNumber, tx);
 
-        if (gameNumber is > 0)
-        {
-            return await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT id FROM br_games
-                WHERE lobby_id = @lobbyId AND game_number = @gameNumber
-                """,
-                new { lobbyId, gameNumber },
-                tx);
-        }
-
-        var active = await conn.QuerySingleOrDefaultAsync<Guid?>(
-            """
-            SELECT id FROM br_games
-            WHERE lobby_id = @lobbyId AND status = 'active'
-            ORDER BY game_number
-            LIMIT 1
-            """,
-            new { lobbyId },
-            tx);
-
-        if (active is not null)
-            return active;
-
-        return await conn.QuerySingleOrDefaultAsync<Guid?>(
-            """
-            SELECT id FROM br_games
-            WHERE lobby_id = @lobbyId
-            ORDER BY game_number
-            LIMIT 1
-            """,
-            new { lobbyId },
-            tx);
-    }
-
-    public static async Task SyncLobbyStatusFromGamesAsync(
+    public static async Task<IReadOnlyList<object>> ListLobbyEvidenceAsync(
         IDbConnection conn,
         Guid lobbyId,
+        bool isStaff,
+        Guid? viewerTeamId,
+        Guid? viewerParticipantId,
+        Guid? gameId = null,
+        int? gameNumber = null,
         IDbTransaction? tx = null)
     {
-        var stats = await conn.QuerySingleAsync<dynamic>(
-            """
-            SELECT
-                COUNT(*)::int AS total,
-                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
-                COUNT(*) FILTER (WHERE status = 'active')::int AS active
-            FROM br_games
-            WHERE lobby_id = @lobbyId
-            """,
-            new { lobbyId },
-            tx);
+        var entries = await BrEvidenceService.ListAsync(
+            conn, lobbyId, isStaff, viewerTeamId, viewerParticipantId, gameId, gameNumber, tx);
 
-        var total = Convert.ToInt32(stats.total);
-        if (total == 0)
-            return;
-
-        var completed = Convert.ToInt32(stats.completed);
-
-        // Only auto-complete the lobby when every game is done.
-        // Lobby activation is explicit (organizer starts lobby with a code) — never inferred from game state.
-        if (completed != total)
-            return;
-
-        var completedAt = DateTimeOffset.UtcNow;
-        await conn.ExecuteAsync(
-            """
-            UPDATE br_lobbies
-            SET status = 'completed',
-                completed_at = COALESCE(completed_at, @completedAt)
-            WHERE id = @lobbyId
-              AND status <> 'completed'
-            """,
-            new { lobbyId, completedAt },
-            tx);
+        return entries
+            .Select(entry => new
+            {
+                teamId = entry.TeamId,
+                teamName = entry.TeamName,
+                logoUrl = entry.LogoUrl,
+                imageUrl = entry.ImageUrl,
+                submittedAt = entry.SubmittedAt,
+                placement = entry.Placement,
+                kills = entry.Kills,
+                reviewed = entry.Reviewed,
+            })
+            .Cast<object>()
+            .ToList();
     }
+
+    public static Task SyncLobbyStatusFromGamesAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        IDbTransaction? tx = null) =>
+        BrGameRepository.SyncLobbyStatusFromGamesAsync(conn, lobbyId, tx);
+
+    public static object MapEvidenceRow(BrEvidenceEntry entry) => new
+    {
+        teamId = entry.TeamId,
+        teamName = entry.TeamName,
+        logoUrl = entry.LogoUrl,
+        imageUrl = entry.ImageUrl,
+        submittedAt = entry.SubmittedAt,
+        placement = entry.Placement,
+        kills = entry.Kills,
+        reviewed = entry.Reviewed,
+    };
 }

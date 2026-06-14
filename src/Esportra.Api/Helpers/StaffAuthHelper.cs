@@ -17,8 +17,74 @@ namespace Esportra.Api.Helpers;
 ///
 /// If none match, the caller should return Results.Forbid().
 /// </summary>
+public sealed record StaffAccessResult(bool CanAccess, string? Role, string[] Permissions);
+
 public static class StaffAuthHelper
 {
+    /// <summary>All scoped staff permissions (mirrors frontend StaffPermission type).</summary>
+    public static readonly string[] AllStaffPermissions =
+    [
+        PermBracketEdit,
+        PermScoresUpdate,
+        PermTeamsManage,
+        PermAnnouncementsSend,
+        PermDisputesAssist,
+    ];
+
+    /// <summary>
+    /// Resolves staff access for a user on a tournament (org admin bypass + assigned staff).
+    /// Use for read endpoints that expose staffPermissions / route UX gates.
+    /// </summary>
+    public static async Task<StaffAccessResult> ResolveStaffAccessAsync(
+        IDbConnection conn, Guid userId, Guid tournamentId, IDbTransaction? tx = null)
+    {
+        var row = await conn.QuerySingleOrDefaultAsync<(string role, bool has_assignment, string[]? permissions)>(
+            """
+            SELECT os.role,
+                   (sta.id IS NOT NULL) AS has_assignment,
+                   os.permissions
+            FROM tournaments t
+            JOIN organization_staff os
+              ON os.user_id = @userId
+             AND os.status = 'active'
+             AND os.organization_id = t.organization_id
+            LEFT JOIN staff_tournament_assignments sta
+              ON sta.organization_staff_id = os.id
+             AND sta.tournament_id = t.id
+            WHERE t.id = @tournamentId
+            LIMIT 1
+            """,
+            new { userId, tournamentId }, tx);
+
+        if (row.role is null)
+            return new StaffAccessResult(false, null, []);
+
+        if (string.Equals(row.role, "admin", StringComparison.OrdinalIgnoreCase))
+            return new StaffAccessResult(true, "admin", AllStaffPermissions);
+
+        if (row.has_assignment)
+        {
+            var perms = row.permissions ?? [];
+            return new StaffAccessResult(true, row.role, perms.Distinct(StringComparer.Ordinal).ToArray());
+        }
+
+        return new StaffAccessResult(false, null, []);
+    }
+
+    /// <summary>SQL fragment: user has staff visibility on tournament t (admin or assigned).</summary>
+    public const string StaffTournamentAccessExistsSql = """
+        EXISTS (
+            SELECT 1 FROM organization_staff os
+            LEFT JOIN staff_tournament_assignments sta
+              ON sta.organization_staff_id = os.id
+             AND sta.tournament_id = t.id
+            WHERE os.user_id = @userId
+              AND os.status = 'active'
+              AND os.organization_id = t.organization_id
+              AND (os.role = 'admin' OR sta.id IS NOT NULL)
+        )
+        """;
+
     // ── By tournament_id ────────────────────────────────────────────────────
     public static async Task<bool> CanActOnTournamentAsync(
         IDbConnection conn, Guid userId, Guid tournamentId, string? requiredPermission = null, IDbTransaction? tx = null)

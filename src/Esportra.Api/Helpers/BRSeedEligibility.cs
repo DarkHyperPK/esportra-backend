@@ -1,38 +1,23 @@
-using System.Data;
-using Dapper;
-
 namespace Esportra.Api.Helpers;
 
+/// <summary>API compatibility shim — logic lives in <see cref="Esportra.Core.Br.BrSeedEligibility"/>.</summary>
 public static class BRSeedEligibility
 {
-    public static readonly string[] DefaultStatuses = ["approved", "checked_in"];
-    public static readonly string[] CheckInRequiredStatuses = ["checked_in"];
+    public static readonly string[] DefaultStatuses = Esportra.Core.Br.BrSeedEligibility.DefaultStatuses;
+    public static readonly string[] CheckInRequiredStatuses = Esportra.Core.Br.BrSeedEligibility.CheckInRequiredStatuses;
 
-    public static async Task<bool> IsCheckInRequiredAsync(
-        IDbConnection conn,
+    public static Task<bool> IsCheckInRequiredAsync(
+        System.Data.IDbConnection conn,
         Guid tournamentId,
-        IDbTransaction? tx = null)
-    {
-        return await conn.ExecuteScalarAsync<bool>(
-            """
-            SELECT COALESCE(check_in_required, false)
-            FROM public.tournaments
-            WHERE id = @tournamentId
-            """,
-            new { tournamentId },
-            tx);
-    }
+        System.Data.IDbTransaction? tx = null) =>
+        Esportra.Core.Br.BrSeedEligibility.IsCheckInRequiredAsync(conn, tournamentId, tx);
 
     public static string[] ResolveStatuses(bool checkInRequired) =>
-        checkInRequired ? CheckInRequiredStatuses : DefaultStatuses;
+        Esportra.Core.Br.BrSeedEligibility.ResolveStatuses(checkInRequired);
 
     public static string ParticipantSeedMessage(bool checkInRequired) =>
-        checkInRequired
-            ? "No checked-in participants found. Participants must check in before seeding."
-            : "No eligible participants found. Participants must be approved or checked in.";
+        Esportra.Core.Br.BrSeedEligibility.ParticipantSeedMessage(checkInRequired);
 
     public static string TeamSeedMessage(bool checkInRequired) =>
-        checkInRequired
-            ? "No checked-in teams found. Teams must check in before seeding."
-            : "No eligible teams found. Teams must be approved or checked in.";
+        Esportra.Core.Br.BrSeedEligibility.TeamSeedMessage(checkInRequired);
 }

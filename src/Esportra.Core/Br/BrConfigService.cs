@@ -1,77 +1,12 @@
 using System.Text.Json;
-using Esportra.Core.Br;
 
-namespace Esportra.Api.Services;
+namespace Esportra.Core.Br;
 
 /// <summary>
-/// Resolves Battle Royale config from tournament settings and per-stage config.br overrides.
-/// Mirrors frontend <c>src/utils/brConfigResolve.ts</c>.
+/// Canonical BR config resolver — single source of truth (frontend reads via API).
 /// </summary>
-public static class BattleRoyaleConfigResolver
+public static class BrConfigService
 {
-    public sealed record BrScoringSettings(int[] Placements, int KillPoints, int? KillCap);
-
-    public enum BrTiebreaker
-    {
-        MostWins,
-        MostKills,
-        HeadToHead,
-    }
-
-    public enum BrMapMode
-    {
-        None,
-        FixedStage,
-        PerRound,
-        Rotation,
-    }
-
-    public enum BrStageFormat
-    {
-        SingleLobby,
-        StaticGroups,
-        GroupRotation,
-        MultiLobbyCut,
-    }
-
-    public enum BrLeaderboardScope
-    {
-        StageGlobal,
-        PerSeedGroup,
-        PerLobby,
-    }
-
-    public enum BrAdvancementMode
-    {
-        TopNPerGroup,
-        TopNPerLobby,
-        TopNOverall,
-        Threshold,
-        None,
-    }
-
-    public enum BrLobbyFormation
-    {
-        Single,
-        PerSeedGroup,
-        WavePairings,
-        ParallelCut,
-    }
-
-    public sealed record BrMapConfig(BrMapMode Mode, IReadOnlyList<string> Pool, string? FixedMap);
-
-    public sealed record ResolvedStageBrConfig(
-        BrScoringSettings Scoring,
-        BrTiebreaker Tiebreaker,
-        BrMapConfig Map,
-        int? GameCount);
-
-    public sealed record BrLeaderboardAggregate(
-        long TotalPoints,
-        long Wins,
-        long TotalKills,
-        double AvgPlacement);
-
     public static ResolvedStageBrConfig Resolve(
         object? tournamentSettings,
         object? stageConfig,
@@ -91,7 +26,7 @@ public static class BattleRoyaleConfigResolver
         object? catalogBrConfig)
     {
         // Scoring is tournament-wide only — stage config.br.scoring overrides are ignored.
-        var fallbackPresetKey = BrCatalogBrConfigHelper.ReadDefaultPreset(catalogBrConfig);
+        var fallbackPresetKey = BrCatalogConfigReader.ReadDefaultPreset(catalogBrConfig);
         var fallback = ResolvePresetScoring(fallbackPresetKey);
         return ResolveTournamentScoring(tournamentSettings, fallbackPresetKey, fallback, catalogBrConfig);
     }
@@ -121,13 +56,13 @@ public static class BattleRoyaleConfigResolver
         object? stageConfig,
         object? catalogBrConfig)
     {
-        var catalogPool = BrCatalogBrConfigHelper.ReadMapPool(catalogBrConfig);
-        var hasMaps = BrCatalogBrConfigHelper.ReadHasMaps(catalogBrConfig, catalogPool);
+        var catalogPool = BrCatalogConfigReader.ReadMapPool(catalogBrConfig);
+        var hasMaps = BrCatalogConfigReader.ReadHasMaps(catalogBrConfig, catalogPool);
 
         var defaultMode = BrMapMode.None;
         if (hasMaps)
         {
-            defaultMode = BrCatalogBrConfigHelper.ReadDefaultMapMode(catalogBrConfig) ?? BrMapMode.PerRound;
+            defaultMode = BrCatalogConfigReader.ReadDefaultMapMode(catalogBrConfig) ?? BrMapMode.PerRound;
             if (TryParseJsonElement(tournamentSettings, out var settingsRoot))
             {
                 var brSettings = ResolveBrSettingsRoot(settingsRoot);
@@ -402,18 +337,48 @@ public static class BattleRoyaleConfigResolver
         BrLeaderboardAggregate b,
         BrTiebreaker tiebreaker)
     {
-        var coreTiebreaker = tiebreaker switch
+        return BrLeaderboardRanking.Compare(a, b, tiebreaker);
+    }
+
+    public static ResolvedBrStageConfigDto ResolveForApi(
+        object? tournamentSettings,
+        object? stageConfig,
+        object? catalogBrConfig,
+        int? stageAdvancementCount = null)
+    {
+        var resolved = Resolve(tournamentSettings, stageConfig, catalogBrConfig);
+        var format = ResolveFormat(stageConfig);
+        var advancementMode = ResolveAdvancement(stageConfig);
+        var advancementCount = ResolveAdvancementCount(stageConfig, stageAdvancementCount);
+
+        return new ResolvedBrStageConfigDto(
+            resolved.GameCount ?? 6,
+            resolved.Map,
+            resolved.Scoring,
+            TiebreakerToApi(resolved.Tiebreaker),
+            FormatToApi(format),
+            new BrAdvancementConfig(advancementMode, advancementCount),
+            ResolveLobbyFormation(format),
+            ResolveLeaderboardScope(stageConfig),
+            BrCatalogConfigReader.ReadPlayersPerLobby(catalogBrConfig));
+    }
+
+    private static string TiebreakerToApi(BrTiebreaker tiebreaker) =>
+        tiebreaker switch
         {
-            BrTiebreaker.MostKills => Core.Br.BrTiebreaker.MostKills,
-            BrTiebreaker.HeadToHead => Core.Br.BrTiebreaker.HeadToHead,
-            _ => Core.Br.BrTiebreaker.MostWins,
+            BrTiebreaker.MostKills => "most_kills",
+            BrTiebreaker.HeadToHead => "head_to_head",
+            _ => "most_wins",
         };
 
-        return BrLeaderboardRanking.Compare(
-            new Core.Br.BrLeaderboardAggregate(a.TotalPoints, a.Wins, a.TotalKills, a.AvgPlacement),
-            new Core.Br.BrLeaderboardAggregate(b.TotalPoints, b.Wins, b.TotalKills, b.AvgPlacement),
-            coreTiebreaker);
-    }
+    private static string FormatToApi(BrStageFormat format) =>
+        format switch
+        {
+            BrStageFormat.SingleLobby => "single_lobby",
+            BrStageFormat.GroupRotation => "group_rotation",
+            BrStageFormat.MultiLobbyCut => "multi_lobby_cut",
+            _ => "static_groups",
+        };
 
     private static BrScoringSettings ResolveTournamentScoring(
         object? tournamentSettings,
@@ -486,19 +451,10 @@ public static class BattleRoyaleConfigResolver
     }
 
     private static BrMapMode? ParseMapMode(string? rawMode) =>
-        ParseMapModePublic(rawMode);
+        BrCatalogConfigReader.ParseMapMode(rawMode);
 
-    public static BrMapMode? ParseMapModePublic(string? rawMode)
-    {
-        return rawMode?.Trim().ToLowerInvariant() switch
-        {
-            "none" => BrMapMode.None,
-            "fixed_stage" => BrMapMode.FixedStage,
-            "per_round" => BrMapMode.PerRound,
-            "rotation" => BrMapMode.Rotation,
-            _ => null,
-        };
-    }
+    public static BrMapMode? ParseMapModePublic(string? rawMode) =>
+        BrCatalogConfigReader.ParseMapMode(rawMode);
 
     private static JsonElement ResolveBrSettingsRoot(JsonElement root)
     {
@@ -553,49 +509,9 @@ public static class BattleRoyaleConfigResolver
         return values;
     }
 
-    private static bool TryParseJsonElement(object? rawValue, out JsonElement element)
-    {
-        switch (rawValue)
-        {
-            case JsonElement jsonElement:
-                element = jsonElement.Clone();
-                return true;
-            case JsonDocument jsonDocument:
-                element = jsonDocument.RootElement.Clone();
-                return true;
-            case string jsonText when !string.IsNullOrWhiteSpace(jsonText):
-                try
-                {
-                    using var parsed = JsonDocument.Parse(jsonText);
-                    element = parsed.RootElement.Clone();
-                    return true;
-                }
-                catch
-                {
-                    element = default;
-                    return false;
-                }
-        }
+    private static bool TryParseJsonElement(object? rawValue, out JsonElement element) =>
+        BrCatalogConfigReader.TryParseJsonElement(rawValue, out element);
 
-        element = default;
-        return false;
-    }
-
-    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
-    {
-        value = default;
-        if (element.ValueKind != JsonValueKind.Object)
-            return false;
-
-        foreach (var property in element.EnumerateObject())
-        {
-            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-            {
-                value = property.Value;
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value) =>
+        BrCatalogConfigReader.TryGetPropertyIgnoreCase(element, propertyName, out value);
 }

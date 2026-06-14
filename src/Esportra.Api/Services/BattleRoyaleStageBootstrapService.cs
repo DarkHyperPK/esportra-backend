@@ -1,6 +1,7 @@
 using System.Data;
 using Dapper;
 using Esportra.Api.Helpers;
+using Esportra.Core.Br;
 
 namespace Esportra.Api.Services;
 
@@ -94,7 +95,7 @@ public sealed class BattleRoyaleStageBootstrapService
             return new BattleRoyaleStageBootstrapResult(stage.Id, existingGroupCount, false);
         }
 
-        var format = BattleRoyaleConfigResolver.ResolveFormat(stage.Config);
+        var format = BrConfigService.ResolveFormat(stage.Config);
         var lobbySize = ResolveLobbySize(stage, incomingUnits);
         var targetGroupCount = ResolveGroupCount(stage, incomingUnits, lobbySize, format);
 
@@ -137,8 +138,8 @@ public sealed class BattleRoyaleStageBootstrapService
             return new BattleRoyaleStageLobbiesResult(stageId, false, "Battle royale stage not found.");
         }
 
-        var format = BattleRoyaleConfigResolver.ResolveFormat(stage.Config);
-        if (format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation)
+        var format = BrConfigService.ResolveFormat(stage.Config);
+        if (format is BrStageFormat.GroupRotation)
         {
             return new BattleRoyaleStageLobbiesResult(
                 stageId,
@@ -183,7 +184,7 @@ public sealed class BattleRoyaleStageBootstrapService
             return new BattleRoyaleStageLobbiesResult(stageId, false, seedingError);
         }
 
-        if (format == BattleRoyaleConfigResolver.BrStageFormat.SingleLobby)
+        if (format == BrStageFormat.SingleLobby)
         {
             var lobbySize = await conn.ExecuteScalarAsync<int>(
                 """
@@ -213,8 +214,8 @@ public sealed class BattleRoyaleStageBootstrapService
                     $"{playerCount} players exceed the {playersPerLobby}-player lobby cap. Use Group qualifiers to split the field.");
             }
         }
-        else if (format is BattleRoyaleConfigResolver.BrStageFormat.StaticGroups
-            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+        else if (format is BrStageFormat.StaticGroups
+            or BrStageFormat.MultiLobbyCut)
         {
             var overcrowdedGroups = (await conn.QueryAsync<(string Name, int Assigned, int LobbySize)>(
                 """
@@ -428,9 +429,9 @@ public sealed class BattleRoyaleStageBootstrapService
         IDbTransaction? tx,
         BattleRoyaleStageRow stage,
         int groupCount,
-        BattleRoyaleConfigResolver.BrStageFormat format)
+        BrStageFormat format)
     {
-        if (format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation)
+        if (format is BrStageFormat.GroupRotation)
         {
             return;
         }
@@ -452,7 +453,7 @@ public sealed class BattleRoyaleStageBootstrapService
             new { stageId = stage.Id },
             tx)).ToList();
 
-        if (format == BattleRoyaleConfigResolver.BrStageFormat.SingleLobby && groupIds.Count > 0)
+        if (format == BrStageFormat.SingleLobby && groupIds.Count > 0)
         {
             var lobbyId = await conn.QuerySingleAsync<Guid>(
                 """
@@ -468,8 +469,8 @@ public sealed class BattleRoyaleStageBootstrapService
                 new { lobbyId, groupId = groupIds[0].Id },
                 tx);
         }
-        else if (format is BattleRoyaleConfigResolver.BrStageFormat.StaticGroups
-            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut)
+        else if (format is BrStageFormat.StaticGroups
+            or BrStageFormat.MultiLobbyCut)
         {
             foreach (var group in groupIds)
             {
@@ -499,7 +500,7 @@ public sealed class BattleRoyaleStageBootstrapService
             new { stageId = stage.Id },
             tx);
 
-        await BrGameMaterializer.MaterializeStageGamesAsync(
+        await BrGameRepository.MaterializeStageGamesAsync(
             conn,
             stage.Id,
             tournamentSettings: tournamentSettings,
@@ -526,15 +527,15 @@ public sealed class BattleRoyaleStageBootstrapService
         BattleRoyaleStageRow stage,
         int incomingUnits,
         int lobbySize,
-        BattleRoyaleConfigResolver.BrStageFormat format)
+        BrStageFormat format)
     {
-        if (format == BattleRoyaleConfigResolver.BrStageFormat.SingleLobby)
+        if (format == BrStageFormat.SingleLobby)
             return 1;
 
         if (incomingUnits <= 0 || lobbySize <= 0)
             return 1;
 
-        if (format == BattleRoyaleConfigResolver.BrStageFormat.GroupRotation)
+        if (format == BrStageFormat.GroupRotation)
         {
             var evenGroups = Math.Max(2, (int)Math.Ceiling(incomingUnits / (double)lobbySize));
             if (evenGroups % 2 != 0)
@@ -542,7 +543,7 @@ public sealed class BattleRoyaleStageBootstrapService
             return evenGroups;
         }
 
-        if (stage.AdvancementCount is null or <= 0 && format == BattleRoyaleConfigResolver.BrStageFormat.StaticGroups)
+        if (stage.AdvancementCount is null or <= 0 && format == BrStageFormat.StaticGroups)
             return Math.Max(1, (int)Math.Ceiling(incomingUnits / (double)lobbySize));
 
         if (stage.AdvancementCount is null or <= 0)

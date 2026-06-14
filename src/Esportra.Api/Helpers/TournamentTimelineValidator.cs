@@ -200,4 +200,73 @@ public static class TournamentTimelineValidator
 
         return ValidateTournamentIsOngoing(normalized);
     }
+
+    /// <summary>
+    /// Validates BR game schedule ordering within a lobby (sequential games + lobby floor).
+    /// Tournament window checks use <see cref="ValidateTimestampWithinWindow"/>.
+    /// </summary>
+    public static async Task<string?> ValidateBrGameScheduleOrderAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        Guid gameId,
+        int gameNumber,
+        DateTimeOffset? scheduledAt,
+        IDbTransaction tx)
+    {
+        if (scheduledAt is null)
+            return null;
+
+        var prior = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+            """
+            SELECT scheduled_at
+            FROM br_games
+            WHERE lobby_id = @lobbyId
+              AND game_number < @gameNumber
+              AND scheduled_at IS NOT NULL
+            ORDER BY game_number DESC
+            LIMIT 1
+            """,
+            new { lobbyId, gameNumber },
+            tx);
+
+        if (prior is not null && scheduledAt <= prior)
+        {
+            return $"Game {gameNumber} must be scheduled after Game {gameNumber - 1}.";
+        }
+
+        var next = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+            """
+            SELECT scheduled_at
+            FROM br_games
+            WHERE lobby_id = @lobbyId
+              AND game_number > @gameNumber
+              AND scheduled_at IS NOT NULL
+              AND id <> @gameId
+            ORDER BY game_number ASC
+            LIMIT 1
+            """,
+            new { lobbyId, gameNumber, gameId },
+            tx);
+
+        if (next is not null && scheduledAt >= next)
+        {
+            return $"Game {gameNumber} must be scheduled before the next game in this lobby.";
+        }
+
+        var lobbySchedule = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+            """
+            SELECT scheduled_at
+            FROM br_lobbies
+            WHERE id = @lobbyId
+            """,
+            new { lobbyId },
+            tx);
+
+        if (lobbySchedule is not null && scheduledAt < lobbySchedule)
+        {
+            return $"Game {gameNumber} cannot be scheduled before its lobby start time.";
+        }
+
+        return null;
+    }
 }

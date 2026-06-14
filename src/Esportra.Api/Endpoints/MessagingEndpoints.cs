@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;

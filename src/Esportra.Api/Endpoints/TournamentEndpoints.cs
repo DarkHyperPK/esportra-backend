@@ -412,17 +412,16 @@ public static class TournamentEndpoints
             }
 
             string[]? staffPermissions = null;
+            string? staffRole = null;
             if (userCtx is not null && !isOrganizer)
             {
-                staffPermissions = (await conn.QueryAsync<string>(
-                    """
-                    SELECT DISTINCT unnest(os.permissions)
-                    FROM organization_staff os
-                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                    WHERE sta.tournament_id = @tid
-                      AND os.user_id = @userId AND os.status = 'active'
-                    """,
-                    new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
+                var staffAccess = await StaffAuthHelper.ResolveStaffAccessAsync(
+                    conn, userCtx.UserIdGuid, tournamentId);
+                if (staffAccess.CanAccess)
+                {
+                    staffPermissions = staffAccess.Permissions;
+                    staffRole = staffAccess.Role;
+                }
             }
 
             // Organizers see all participants (for payment management); others see only active
@@ -460,6 +459,7 @@ public static class TournamentEndpoints
                 stages,
                 isOrganizer,
                 staffPermissions,
+                staffRole,
                 mockCount,
             });
         });
@@ -1779,7 +1779,7 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var flat = await conn.QueryAsync<dynamic>(
                 """
-                SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
+                SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id, tp.team_captain_id,
                        tp.participant_type::text AS participant_type,
                        tp.status::text AS status, tp.created_at, tp.checked_in_at, tp.is_mock,
                        COALESCE(t.name, tp.team_name) AS team_name, t.logo_url AS team_logo_url,
@@ -1920,7 +1920,7 @@ public static class TournamentEndpoints
             // Fetch participants with team member roster details
             var flat = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id,
+                SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id, tp.team_captain_id,
                        tp.participant_type::text AS participant_type,
                        tp.status::text AS status, tp.created_at, tp.checked_in_at, tp.is_mock,
                        COALESCE(t.name, tp.team_name) AS team_name, t.logo_url AS team_logo_url,
@@ -2413,10 +2413,12 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT os.id, sta.tournament_id, os.user_id, os.role,
-                       os.permissions, os.status, os.assigned_by,
+                SELECT DISTINCT ON (t.id)
+                       os.id, t.id AS tournament_id, os.user_id, os.role,
+                       CASE WHEN os.role = 'admin' THEN @allPerms::text[] ELSE os.permissions END AS permissions,
+                       os.status, os.assigned_by,
                        os.created_at, os.updated_at, os.accepted_at,
-                       sta.id AS organization_staff_id,
+                       os.id AS organization_staff_id,
                        jsonb_build_object(
                            'id', t.id, 'name', t.name, 'slug', t.slug,
                            'game', t.game, 'start_date', t.start_date,
@@ -2428,13 +2430,15 @@ public static class TournamentEndpoints
                            'email', p.email
                        ) AS organizer_profile
                 FROM organization_staff os
-                JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                JOIN tournaments t ON t.id = sta.tournament_id
+                JOIN tournaments t ON t.organization_id = os.organization_id AND t.deleted_at IS NULL
+                LEFT JOIN staff_tournament_assignments sta
+                  ON sta.organization_staff_id = os.id AND sta.tournament_id = t.id
                 LEFT JOIN profiles p ON p.id = os.assigned_by
                 WHERE os.user_id = @userId AND os.status = 'active'
-                ORDER BY os.updated_at DESC
+                  AND (os.role = 'admin' OR sta.id IS NOT NULL)
+                ORDER BY t.id, os.updated_at DESC
                 """,
-                new { userId = userCtx.UserIdGuid });
+                new { userId = userCtx.UserIdGuid, allPerms = StaffAuthHelper.AllStaffPermissions });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
 
@@ -2589,9 +2593,12 @@ public static class TournamentEndpoints
                 WHERE (t.organizer_id = @userId
                    OR EXISTS (
                        SELECT 1 FROM organization_staff os
-                       JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                       WHERE sta.tournament_id = td.tournament_id
-                         AND os.user_id = @userId AND os.status = 'active'
+                       LEFT JOIN staff_tournament_assignments sta
+                         ON sta.organization_staff_id = os.id
+                        AND sta.tournament_id = td.tournament_id
+                       WHERE os.user_id = @userId AND os.status = 'active'
+                         AND os.organization_id = t.organization_id
+                         AND (os.role = 'admin' OR sta.id IS NOT NULL)
                    ))
                   AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
                 ORDER BY td.created_at DESC
@@ -2700,9 +2707,12 @@ public static class TournamentEndpoints
                     WHERE td.id = @disputeId
                       AND (t.organizer_id = @userId OR EXISTS (
                           SELECT 1 FROM organization_staff os
-                          JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                          WHERE sta.tournament_id = td.tournament_id
-                            AND os.user_id = @userId AND os.status = 'active'
+                          LEFT JOIN staff_tournament_assignments sta
+                            ON sta.organization_staff_id = os.id
+                           AND sta.tournament_id = td.tournament_id
+                          WHERE os.user_id = @userId AND os.status = 'active'
+                            AND os.organization_id = t.organization_id
+                            AND (os.role = 'admin' OR sta.id IS NOT NULL)
                       ))
                 )
                 """,
@@ -3359,8 +3369,12 @@ public static class TournamentEndpoints
                         SELECT 1 FROM tournaments t
                         WHERE t.id = @tid AND (t.organizer_id = @uid OR EXISTS (
                             SELECT 1 FROM organization_staff os
-                            JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                            WHERE sta.tournament_id = @tid AND os.user_id = @uid AND os.status = 'active'
+                            LEFT JOIN staff_tournament_assignments sta
+                              ON sta.organization_staff_id = os.id
+                             AND sta.tournament_id = t.id
+                            WHERE os.user_id = @uid AND os.status = 'active'
+                              AND os.organization_id = t.organization_id
+                              AND (os.role = 'admin' OR sta.id IS NOT NULL)
                         ))
                     )
                     """, new { tid = tournamentId, uid = userCtx.UserIdGuid });

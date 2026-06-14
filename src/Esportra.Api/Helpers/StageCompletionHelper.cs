@@ -1,6 +1,7 @@
 using System.Data;
 using Dapper;
 using Esportra.Api.Services;
+using Esportra.Core.Br;
 
 namespace Esportra.Api.Helpers;
 
@@ -74,8 +75,8 @@ public static class StageCompletionHelper
             """,
             new { stageId });
         var stageConfig = stageMeta?.stage_config as string;
-        var format = BattleRoyaleConfigResolver.ResolveFormat(stageConfig);
-        var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+        var format = BrConfigService.ResolveFormat(stageConfig);
+        var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(
             stageMeta?.settings, stageConfig) ?? 6;
 
         var groups = (await conn.QueryAsync<Guid>(
@@ -129,8 +130,8 @@ public static class StageCompletionHelper
             """,
             new { stageId });
 
-        var usesWaveCompletion = format is BattleRoyaleConfigResolver.BrStageFormat.GroupRotation
-            or BattleRoyaleConfigResolver.BrStageFormat.MultiLobbyCut;
+        var usesWaveCompletion = format is BrStageFormat.GroupRotation
+            or BrStageFormat.MultiLobbyCut;
 
         if (usesWaveCompletion)
         {

@@ -117,3 +117,6 @@ jobs:
       - name: Assert migration replay completed
         run: bash .github/scripts/assert-migration-replay-complete.sh
 
+      - name: Assert BR games model schema
+        run: bash .github/scripts/assert-br-games-schema.sh
+

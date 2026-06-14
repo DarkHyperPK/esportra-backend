@@ -711,6 +711,15 @@ public static class MatchEndpoints
                     status = 'pending',
                     team1_score = NULL,
                     team2_score = NULL,
+                    scheduled_time = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM brkt_advancements a
+                            WHERE a.source_match_id = @matchId
+                              AND a.target_match_id = target.id
+                              AND (a.target_slot = 1 OR a.target_slot = 2)
+                        ) THEN NULL
+                        ELSE target.scheduled_time
+                    END,
                     version = target.version + 1,
                     updated_at = NOW()
                 WHERE target.id IN (

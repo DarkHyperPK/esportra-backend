@@ -186,7 +186,8 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                                winner_id = NULL,
                                loser_id = NULL,
                                team1_score = NULL,
-                               team2_score = NULL
+                               team2_score = NULL,
+                               scheduled_time = NULL
                          WHERE id = @id
                         """,
                         new { id = (Guid)match.id }, tx);
@@ -202,7 +203,8 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                                winner_id = NULL,
                                loser_id = NULL,
                                team1_score = NULL,
-                               team2_score = NULL
+                               team2_score = NULL,
+                               scheduled_time = NULL
                          WHERE id = @id
                         """,
                         new { id = (Guid)match.id }, tx);

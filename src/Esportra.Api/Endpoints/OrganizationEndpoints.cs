@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using System.Dynamic;
 using System.Text.Json;
 using Dapper;
@@ -1088,21 +1088,19 @@ public static class OrganizationEndpoints
             // Resolve staff permissions for the calling user
             var userCtx = ctx.Items["UserContext"] as UserContext;
             string[]? staffPermissions = null;
+            string? staffRole = null;
             if (userCtx is not null && row is IDictionary<string, object?> d)
             {
                 var tournamentId = d["id"] is Guid g ? g : Guid.Parse(d["id"]!.ToString()!);
-                staffPermissions = (await conn.QueryAsync<string>(
-                    """
-                    SELECT DISTINCT unnest(os.permissions)
-                    FROM organization_staff os
-                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                    WHERE sta.tournament_id = @tid
-                      AND os.user_id = @userId AND os.status = 'active'
-                    """,
-                    new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
-
-                if (staffPermissions.Length > 0)
+                var staffAccess = await StaffAuthHelper.ResolveStaffAccessAsync(
+                    conn, userCtx.UserIdGuid, tournamentId);
+                if (staffAccess.CanAccess)
+                {
+                    staffPermissions = staffAccess.Permissions;
+                    staffRole = staffAccess.Role;
                     d["staffPermissions"] = staffPermissions;
+                    d["staffRole"] = staffRole;
+                }
             }
 
             return Results.Ok(row);

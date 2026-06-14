@@ -30,6 +30,7 @@ public static class ParticipantResponseHelper
             tournament_id = (Guid)first.tournament_id,
             user_id = first.user_id as Guid?,
             team_id = first.team_id as Guid?,
+            captain_id = first.team_captain_id as Guid?,
             participant_type = participantType,
             status = (string)first.status,
             created_at = first.created_at,

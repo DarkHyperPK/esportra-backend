@@ -6,6 +6,7 @@ using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
+using Esportra.Core.Br;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Npgsql;
@@ -73,13 +74,13 @@ public static class BrGameEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            var gamesPerLobby = BattleRoyaleConfigResolver.ResolveGamesPerLobby(
+            var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(
                 context.settings, context.stage_config) ?? 6;
             var catalogBrConfig = string.IsNullOrWhiteSpace(context.game as string)
                 ? null
                 : (await catalog.GetGameAsync(((string)context.game).Trim(), ct))?.BrConfig;
 
-            var gameIds = await BrGameMaterializer.EnsureGamesForLobbyAsync(
+            var gameIds = await BrGameRepository.EnsureGamesForLobbyAsync(
                 conn,
                 lobbyId,
                 gamesPerLobby,
@@ -217,9 +218,9 @@ public static class BrGameEndpoints
                 var catalogBrConfig = string.IsNullOrWhiteSpace(gameName)
                     ? null
                     : (await catalog.GetGameAsync(gameName.Trim(), ct))?.BrConfig;
-                var mapConfig = BattleRoyaleConfigResolver.ResolveMapConfig(
+                var mapConfig = BrConfigService.ResolveMapConfig(
                     context.settings, context.stage_config, catalogBrConfig);
-                if (!BattleRoyaleConfigResolver.ValidateMapInPool(mapConfig, mapValue, out string? mapError))
+                if (!BrConfigService.ValidateMapInPool(mapConfig, mapValue, out string? mapError))
                     return Results.BadRequest(new { error = mapError });
             }
 
@@ -241,6 +242,34 @@ public static class BrGameEndpoints
             using var tx = conn.BeginTransaction();
             try
             {
+                if (scheduleProvided)
+                {
+                    var (tournamentStart, tournamentEnd, _) =
+                        await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                    var scheduleWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
+                        scheduledAt,
+                        tournamentStart,
+                        tournamentEnd,
+                        "Game schedule");
+                    if (scheduleWindowError is not null)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = scheduleWindowError });
+                    }
+
+                    if (scheduledAt is not null)
+                    {
+                        var gameNumber = Convert.ToInt32(context.game_number);
+                        var sequentialError = await TournamentTimelineValidator.ValidateBrGameScheduleOrderAsync(
+                            conn, lobbyId, gameId, gameNumber, scheduledAt, tx);
+                        if (sequentialError is not null)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = sequentialError });
+                        }
+                    }
+                }
+
                 if (statusValue == "active")
                 {
                     var otherActiveGame = await conn.ExecuteScalarAsync<bool>(
@@ -359,7 +388,7 @@ public static class BrGameEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var hasParticipant = await ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
+            var hasParticipant = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
 
             var results = await conn.QueryAsync<dynamic>(
                 hasParticipant
@@ -438,40 +467,15 @@ public static class BrGameEndpoints
                     return Results.Forbid();
             }
 
-            var evidence = await conn.QueryAsync<dynamic>(
-                """
-                SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
-                       CASE
-                           WHEN re.team_id IS NOT NULL THEN t.name
-                           ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
-                       END AS entity_name,
-                       CASE WHEN re.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                       re.image_url, re.submitted_at, re.placement, re.kills, re.reviewed
-                FROM br_lobby_evidence re
-                LEFT JOIN teams t ON t.id = re.team_id
-                LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
-                LEFT JOIN profiles p ON p.id = tp.user_id
-                WHERE re.game_id = @gameId
-                  AND (
-                    @isStaff = TRUE
-                    OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
-                    OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
-                  )
-                ORDER BY re.submitted_at DESC
-                """,
-                new { gameId, isStaff, viewerTeamId, viewerParticipantId });
+            var payload = await BrGameRouteHelper.ListLobbyEvidenceAsync(
+                conn,
+                lobbyId,
+                isStaff,
+                viewerTeamId,
+                viewerParticipantId,
+                gameId: gameId);
 
-            return Results.Ok(evidence.Select(row => new
-            {
-                teamId = ((Guid)row.entity_id).ToString(),
-                teamName = (string?)row.entity_name ?? "Unknown",
-                logoUrl = (string?)row.logo_url,
-                imageUrl = (string)row.image_url,
-                submittedAt = ((DateTimeOffset)row.submitted_at).ToString("o"),
-                placement = row.placement is not null ? Convert.ToInt32(row.placement) : (int?)null,
-                kills = row.kills is not null ? Convert.ToInt32(row.kills) : (int?)null,
-                reviewed = (bool)row.reviewed,
-            }));
+            return Results.Ok(payload);
         }).RequireAuthorization("Authenticated");
 
         app.MapPut("/api/br/games/{gameId}/evidence", async (
@@ -617,11 +621,12 @@ public static class BrGameEndpoints
                 """
                 SELECT tp.id
                 FROM tournament_participants tp
-                JOIN br_group_members gm ON gm.participant_id = tp.id
-                JOIN br_lobby_groups lg ON lg.group_id = gm.group_id
+                JOIN br_group_teams bgt ON bgt.participant_id = tp.id
+                JOIN br_lobby_groups lg ON lg.group_id = bgt.group_id
                 WHERE lg.lobby_id = @lobbyId
                   AND tp.tournament_id = @tournamentId
                   AND tp.user_id = @userId
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                 LIMIT 1
                 """,
                 new { lobbyId, tournamentId, userId });
@@ -632,12 +637,14 @@ public static class BrGameEndpoints
             """
             SELECT tm.team_id
             FROM team_members tm
-            JOIN tournament_teams tt ON tt.team_id = tm.team_id
-            JOIN br_group_members gm ON gm.team_id = tt.team_id
-            JOIN br_lobby_groups lg ON lg.group_id = gm.group_id
+            JOIN tournament_participants tp ON tp.team_id = tm.team_id
+            JOIN br_group_teams bgt ON bgt.team_id = tm.team_id
+            JOIN br_lobby_groups lg ON lg.group_id = bgt.group_id
             WHERE lg.lobby_id = @lobbyId
-              AND tt.tournament_id = @tournamentId
+              AND tp.tournament_id = @tournamentId
               AND tm.user_id = @userId
+              AND tm.is_active = TRUE
+              AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
             LIMIT 1
             """,
             new { lobbyId, tournamentId, userId });
@@ -688,17 +695,4 @@ public static class BrGameEndpoints
             )
             """,
             new { stageId });
-
-    private static async Task<bool> ColumnExistsAsync(IDbConnection conn, string tableName, string columnName) =>
-        await conn.QuerySingleAsync<bool>(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = @tableName
-                  AND column_name = @columnName
-            )
-            """,
-            new { tableName, columnName });
 }

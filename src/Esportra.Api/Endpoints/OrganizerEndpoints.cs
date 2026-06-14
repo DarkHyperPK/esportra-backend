@@ -133,8 +133,9 @@ public static class OrganizerEndpoints
                     )
                 )
                   AND (
-                    (m.scheduled_time IS NOT NULL AND m.scheduled_time >= @startDt AND m.scheduled_time < @endDt)
-                    OR (m.scheduled_time IS NULL AND t.start_date >= @startDt AND t.start_date < @endDt)
+                    m.scheduled_time IS NOT NULL
+                    AND m.scheduled_time >= @startDt
+                    AND m.scheduled_time < @endDt
                   )
                 ORDER BY m.scheduled_time ASC NULLS LAST, m.round_index ASC, m.match_number ASC
                 LIMIT 100
