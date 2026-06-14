@@ -1120,11 +1120,27 @@ public static class MatchSystemEndpoints
 
             if (tournamentId is not null)
             {
+                JsonElement? schedulingConfigPayload = null;
+                try
+                {
+                    schedulingConfigPayload = JsonDocument.Parse(json).RootElement;
+                }
+                catch (JsonException)
+                {
+                    // Broadcast without inline config; clients will refetch.
+                }
+
                 await bracketHub.Clients
                     .Group(BracketHub.TournamentGroup(tournamentId.Value.ToString()))
                     .SendAsync(
                         BracketHubEvents.StageUpdated,
-                        new { stageId, tournamentId, field = "scheduling_config" },
+                        new
+                        {
+                            stageId,
+                            tournamentId,
+                            field = "scheduling_config",
+                            schedulingConfig = schedulingConfigPayload,
+                        },
                         ct);
             }
 
