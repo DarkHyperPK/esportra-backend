@@ -1151,6 +1151,7 @@ public static partial class BRGroupEndpoints
             GameCatalogService   catalog,
             IHubContext<NotificationHub> notifHub,
             IHubContext<BRHub>   brHub,
+            BrScheduleNotificationService scheduleNotify,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1165,6 +1166,10 @@ public static partial class BRGroupEndpoints
             Guid broadcastGroupId = default;
             string broadcastOldStatus = string.Empty;
             string broadcastNewStatus = string.Empty;
+            var notifyLobbySchedule = false;
+            DateTimeOffset? previousLobbySchedule = null;
+            DateTimeOffset? nextLobbySchedule = null;
+            var gamesModelReadyForSchedule = false;
             try
             {
                 var currentRound = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1182,7 +1187,8 @@ public static partial class BRGroupEndpoints
                            r.map,
                            r.lobby_code,
                            r.queue_timer_minutes,
-                           r.queue_started_at
+                           r.queue_started_at,
+                           r.scheduled_at
                     FROM br_lobbies r
                     WHERE r.id = @lobbyId
                     FOR UPDATE OF r
@@ -1209,6 +1215,12 @@ public static partial class BRGroupEndpoints
                     ? Convert.ToInt32(currentRound.queue_timer_minutes)
                     : null;
                 var currentQueueStartedAt = currentRound.queue_started_at as DateTimeOffset?;
+                previousLobbySchedule = currentRound.scheduled_at switch
+                {
+                    DateTimeOffset dto => dto,
+                    DateTime dt => new DateTimeOffset(dt),
+                    _ => null,
+                };
 
                 var allowed = await StaffAuthHelper.CanActOnStageAsync(
                     conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
@@ -1227,6 +1239,7 @@ public static partial class BRGroupEndpoints
                 string? finalMap = currentMap;
                 var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map", tx);
                 var gamesModelReady = await BrSchemaRepository.BrGamesModelReadyAsync(conn, tx);
+                gamesModelReadyForSchedule = gamesModelReady;
 
                 if (roundsHasMapColumn && body.TryGetProperty("map", out var mapProp))
                 {
@@ -1282,9 +1295,17 @@ public static partial class BRGroupEndpoints
 
                 if (body.TryGetProperty("scheduledAt", out var saProp))
                 {
+                    if (gamesModelReady)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "Set start times per game in the Schedule tab." });
+                    }
+
+                    notifyLobbySchedule = true;
                     if (saProp.ValueKind == JsonValueKind.Null)
                     {
                         setClauses.Add("scheduled_at = NULL");
+                        nextLobbySchedule = null;
                     }
                     else
                     {
@@ -1305,6 +1326,7 @@ public static partial class BRGroupEndpoints
 
                             setClauses.Add("scheduled_at = @scheduledAt");
                             parameters.Add("scheduledAt", dt);
+                            nextLobbySchedule = dt;
                         }
                         else
                         {
@@ -1681,8 +1703,11 @@ public static partial class BRGroupEndpoints
 
                         if (userIds.Count == 0) return;
 
-                        var title   = $"Round {waveNumber} is Live!";
-                        var message = $"Your group '{groupName}' has started a new round. Join the game room.";
+                        var title   = $"Round {waveNumber} is live — {groupName}";
+                        var lobbyCodeForNotif = roundMeta.lobby_code as string;
+                        var message = !string.IsNullOrWhiteSpace(lobbyCodeForNotif)
+                            ? $"Group '{groupName}' Round {waveNumber} is live. Lobby code: {lobbyCodeForNotif.Trim()}. Open Match Room to join."
+                            : $"Group '{groupName}' Round {waveNumber} is live. Open Match Room — the organizer will share the lobby code shortly.";
                         var link    = $"/tournaments/{tournamentSlug}/br-game-room";
                         var type    = "br_round_active";
 
@@ -1711,6 +1736,12 @@ public static partial class BRGroupEndpoints
                         Console.Error.WriteLine($"[BRGroupEndpoints] Notification error for round {lobbyId}: {ex.Message}");
                     }
                 });
+            }
+
+            if (notifyLobbySchedule && !gamesModelReadyForSchedule)
+            {
+                await scheduleNotify.DispatchLobbyScheduleChangedAsync(
+                    lobbyId, previousLobbySchedule, nextLobbySchedule, ct);
             }
 
             return Results.Ok(updated);

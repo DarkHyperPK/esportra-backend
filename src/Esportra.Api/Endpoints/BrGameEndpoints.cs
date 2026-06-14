@@ -138,6 +138,7 @@ public static class BrGameEndpoints
             IDbConnectionFactory db,
             GameCatalogService catalog,
             IHubContext<BRHub> brHub,
+            BrScheduleNotificationService scheduleNotify,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -146,7 +147,7 @@ public static class BrGameEndpoints
             using var conn = db.CreateConnection();
             var context = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT g.id, g.lobby_id, g.game_number, g.status AS game_status,
+                SELECT g.id, g.lobby_id, g.game_number, g.status AS game_status, g.scheduled_at,
                        l.stage_id, l.status AS lobby_status, l.lobby_code,
                        t.settings, ts.config AS stage_config, t.game
                 FROM br_games g
@@ -162,6 +163,13 @@ public static class BrGameEndpoints
 
             var stageId = (Guid)context.stage_id;
             var lobbyId = (Guid)context.lobby_id;
+            DateTimeOffset? previousScheduledAt = context.scheduled_at switch
+            {
+                DateTimeOffset dto => dto,
+                DateTime dt => new DateTimeOffset(dt),
+                null => null,
+                _ => null,
+            };
             var allowed = await StaffAuthHelper.CanActOnStageAsync(
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
@@ -445,6 +453,12 @@ public static class BrGameEndpoints
                 {
                     await BrBroadcastHelper.BroadcastAsync(
                         brHub, BRHubEvents.GameCompleted, stageId, groupId, lobbyId, gameId, payload, ct);
+                }
+
+                if (scheduleProvided)
+                {
+                    await scheduleNotify.DispatchGameScheduleChangedAsync(
+                        gameId, previousScheduledAt, scheduledAt, ct);
                 }
 
                 return Results.Ok(updated);
