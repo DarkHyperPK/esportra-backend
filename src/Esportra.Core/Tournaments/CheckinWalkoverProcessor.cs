@@ -5,9 +5,9 @@ using Esportra.Core.Bracket;
 namespace Esportra.Core.Tournaments;
 
 /// <summary>
-/// Awards walkovers when the check-in window has closed and only one team checked in,
-/// or double-forfeits when neither team checked in. Uses the same effective schedule
-/// and window rules as <see cref="SelfPlayMatchRoomService"/>.
+/// Awards walkovers when the check-in window has closed and only one team checked in.
+/// When neither team checks in, the match stays pending for organizer reset / force go-live.
+/// Uses the same effective schedule and window rules as <see cref="SelfPlayMatchRoomService"/>.
 /// </summary>
 public sealed class CheckinWalkoverProcessor(
     IDbConnectionFactory db,
@@ -110,7 +110,8 @@ public sealed class CheckinWalkoverProcessor(
         if (!ctx.Team1CheckedIn && ctx.Team2CheckedIn)
             return CheckinWalkoverOutcome.Walkover(ctx.Team2Id!.Value, false, true);
 
-        return CheckinWalkoverOutcome.DoubleForfeit(false, false);
+        // Neither team checked in — leave match pending for organizer intervention.
+        return CheckinWalkoverOutcome.WindowNotClosed;
     }
 
     internal async Task<CheckinWalkoverOutcome> TryProcessDueWalkoverAsync(
@@ -158,10 +159,7 @@ public sealed class CheckinWalkoverProcessor(
                 : CheckinWalkoverOutcome.Failed;
         }
 
-        var forfeited = await AwardDoubleForfeitAsync(conn, ctx.MatchId);
-        return forfeited
-            ? CheckinWalkoverOutcome.DoubleForfeit(ctx.Team1CheckedIn, ctx.Team2CheckedIn)
-            : CheckinWalkoverOutcome.Failed;
+        return CheckinWalkoverOutcome.WindowNotClosed;
     }
 
     public async Task<IReadOnlyList<Guid>> FindCandidateMatchIdsAsync(CancellationToken ct = default)
@@ -183,47 +181,6 @@ public sealed class CheckinWalkoverProcessor(
                     )
               )
             """)).AsList();
-    }
-
-    private static async Task<bool> AwardDoubleForfeitAsync(System.Data.IDbConnection conn, Guid matchId)
-    {
-        var version = await conn.QuerySingleOrDefaultAsync<int?>(
-            "SELECT version FROM public.brkt_matches WHERE id = @matchId",
-            new { matchId });
-
-        if (version is null)
-            return false;
-
-        var rows = await conn.ExecuteAsync(
-            """
-            UPDATE public.brkt_matches
-            SET status      = 'completed',
-                team1_score = 0,
-                team2_score = 0,
-                version     = version + 1,
-                updated_at  = NOW()
-            WHERE id = @matchId AND version = @version AND LOWER(COALESCE(status, 'pending')) = 'pending'
-            """,
-            new { matchId, version });
-
-        if (rows == 0)
-            return false;
-
-        try
-        {
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
-                VALUES (@matchId, NULL, NULL, 'double_forfeit')
-                """,
-                new { matchId });
-        }
-        catch
-        {
-            // Non-critical audit
-        }
-
-        return true;
     }
 
     private sealed class WalkoverMatchRow

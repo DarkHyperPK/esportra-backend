@@ -58,15 +58,16 @@ public sealed class CheckinWalkoverProcessorTests
     }
 
     [Fact]
-    public void EvaluateEligibility_after_window_neither_checked_in_double_forfeit()
+    public void EvaluateEligibility_after_window_neither_checked_in_stays_pending()
     {
         var scheduled = DateTime.UtcNow.AddHours(-2);
         var ctx = BaseContext(scheduledTime: scheduled);
 
         var outcome = CheckinWalkoverProcessor.EvaluateEligibility(ctx, DateTime.UtcNow);
 
-        Assert.Equal(CheckinWalkoverStatus.DoubleForfeit, outcome.Status);
+        Assert.Equal(CheckinWalkoverStatus.WindowNotClosed, outcome.Status);
         Assert.Null(outcome.WinnerId);
+        Assert.False(outcome.Processed);
     }
 
     [Fact]
@@ -88,7 +89,8 @@ public sealed class CheckinWalkoverProcessorTests
 
         var outcome = CheckinWalkoverProcessor.EvaluateEligibility(ctx, DateTime.UtcNow);
 
-        Assert.Equal(CheckinWalkoverStatus.DoubleForfeit, outcome.Status);
+        Assert.Equal(CheckinWalkoverStatus.WindowNotClosed, outcome.Status);
+        Assert.False(outcome.Processed);
     }
 
     [Fact]
