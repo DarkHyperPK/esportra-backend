@@ -520,6 +520,7 @@ public static class MatchEndpoints
             HttpContext                  ctx,
             MatchFinalizationService     finalizer,
             IDbConnectionFactory         db,
+            StaffTournamentAuditService  staffAudit,
             IHubContext<MatchHub>        matchHub,
             CancellationToken            ct) =>
         {
@@ -531,7 +532,8 @@ public static class MatchEndpoints
             // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            var isOrgTeamActor = allowed || StaffAuthHelper.IsPlatformAdmin(userCtx);
+            if (!isOrgTeamActor)
             {
                 var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
                     """
@@ -566,6 +568,13 @@ public static class MatchEndpoints
 
             var success = await finalizer.FinalizeAsync(matchId, winnerId, loserId, ct: ct);
 
+            if (isOrgTeamActor && success)
+            {
+                await staffAudit.TryLogMatchActionAsync(
+                    conn, userCtx.UserIdGuid, matchId, "match.finalize",
+                    new { winner_id = winnerId, loser_id = loserId }, ct: ct);
+            }
+
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
@@ -582,6 +591,7 @@ public static class MatchEndpoints
             HttpContext                  ctx,
             MatchFinalizationService     finalizer,
             IDbConnectionFactory         db,
+            StaffTournamentAuditService  staffAudit,
             IHubContext<MatchHub>        matchHub,
             CancellationToken            ct) =>
         {
@@ -593,7 +603,8 @@ public static class MatchEndpoints
             // Verify caller has permission (organizer staff OR match captain for self-play)
             var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate);
-            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            var isOrgTeamActor = allowed || StaffAuthHelper.IsPlatformAdmin(userCtx);
+            if (!isOrgTeamActor)
             {
                 var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
                     """
@@ -613,6 +624,20 @@ public static class MatchEndpoints
                     matchId, req.WinnerId, req.LoserId, req.Team1Score, req.Team2Score, ct);
 
                 if (!success) return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
+
+                if (isOrgTeamActor)
+                {
+                    await staffAudit.TryLogMatchActionAsync(
+                        conn, userCtx.UserIdGuid, matchId, "match.walkover",
+                        new
+                        {
+                            winner_id = req.WinnerId,
+                            loser_id = req.LoserId,
+                            team1_score = req.Team1Score,
+                            team2_score = req.Team2Score,
+                        },
+                        ct: ct);
+                }
             }
             catch (InvalidOperationException)
             {
@@ -629,11 +654,12 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/swap-teams ──────────────────────────
         app.MapPost("/api/matches/{matchId}/swap-teams", async (
-            Guid                 matchId,
-            HttpContext           ctx,
-            IDbConnectionFactory db,
-            IHubContext<MatchHub> matchHub,
-            CancellationToken    ct) =>
+            Guid                        matchId,
+            HttpContext                 ctx,
+            IDbConnectionFactory        db,
+            StaffTournamentAuditService staffAudit,
+            IHubContext<MatchHub>       matchHub,
+            CancellationToken           ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -656,6 +682,9 @@ public static class MatchEndpoints
 
             if (rows == 0) return Results.NotFound();
 
+            await staffAudit.TryLogMatchActionAsync(
+                conn, userCtx.UserIdGuid, matchId, "match.swap_teams", ct: ct);
+
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
@@ -666,13 +695,14 @@ public static class MatchEndpoints
 
         // ── POST /api/matches/{matchId}/reset ───────────────────────────────
         app.MapPost("/api/matches/{matchId}/reset", async (
-            Guid                     matchId,
-            HttpContext              ctx,
-            IDbConnectionFactory     db,
-            IHubContext<MatchHub>    matchHub,
-            IHubContext<VetoHub>     vetoHub,
-            IHubContext<BracketHub>  bracketHub,
-            CancellationToken        ct) =>
+            Guid                        matchId,
+            HttpContext                 ctx,
+            IDbConnectionFactory        db,
+            StaffTournamentAuditService staffAudit,
+            IHubContext<MatchHub>       matchHub,
+            IHubContext<VetoHub>        vetoHub,
+            IHubContext<BracketHub>     bracketHub,
+            CancellationToken           ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -788,19 +818,24 @@ public static class MatchEndpoints
                         new { versionId, matchId }, ct);
             }
 
+            await staffAudit.TryLogMatchActionAsync(
+                conn, userCtx.UserIdGuid, matchId, "match.reset", ct: ct);
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/go-live ─────────────────────────────
         app.MapPost("/api/matches/{matchId}/go-live", async (
-            Guid                      matchId,
-            [FromBody] GoLiveRequest  req,
-            HttpContext               ctx,
-            IDbConnectionFactory      db,
-            SelfPlayMatchRoomService  roomService,
-            GameCatalogService        gameCatalog,
-            IHubContext<MatchHub>     matchHub,
-            CancellationToken         ct) =>
+            Guid                        matchId,
+            [FromBody] GoLiveRequest     req,
+            HttpContext                  ctx,
+            IDbConnectionFactory         db,
+            SelfPlayMatchRoomService     roomService,
+            GameCatalogService           gameCatalog,
+            StaffTournamentAuditService  staffAudit,
+            IHubContext<MatchHub>        matchHub,
+            IHubContext<BracketHub>      bracketHub,
+            CancellationToken            ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -889,6 +924,10 @@ public static class MatchEndpoints
                     return Results.Json(new { error = timingGuard.Message, code = timingGuard.Code }, statusCode: 400);
             }
 
+            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT version_id FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+
             var rows = await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET status = 'in_progress', party_code = @code WHERE id = @matchId",
                 new { matchId, code });
@@ -898,9 +937,24 @@ public static class MatchEndpoints
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
-                    new { matchId, status = "in_progress" }, ct);
+                    new { matchId, status = "in_progress", partyCode = code }, ct);
 
-            return Results.Ok(new { success = true });
+            if (versionId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId, matchId, status = "in_progress", partyCode = code }, ct);
+            }
+
+            if (canForceGoLive)
+            {
+                await staffAudit.TryLogMatchActionAsync(
+                    conn, userCtx.UserIdGuid, matchId, "match.go_live",
+                    new { party_code = code }, ct: ct);
+            }
+
+            return Results.Ok(new { success = true, status = "in_progress", partyCode = code });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/save-score ──────────────────────────
@@ -910,6 +964,7 @@ public static class MatchEndpoints
             [FromBody] SaveScoreRequest  req,
             HttpContext                  ctx,
             IDbConnectionFactory         db,
+            StaffTournamentAuditService  staffAudit,
             IHubContext<BracketHub>      bracketHub,
             IHubContext<MatchHub>        matchHub,
             TournamentWinnerService      winnerService,
@@ -1008,6 +1063,20 @@ public static class MatchEndpoints
                     new { matchId, winnerId, loserId });
             }
             catch { /* Non-critical */ }
+
+            if (isOrganizerOrStaff)
+            {
+                await staffAudit.TryLogMatchActionAsync(
+                    conn, userCtx.UserIdGuid, matchId, "match.score_update",
+                    new
+                    {
+                        team1_score = req.Team1Score,
+                        team2_score = req.Team2Score,
+                        winner_id = winnerId,
+                        loser_id = loserId,
+                    },
+                    ct: ct);
+            }
 
             // 3. Advance winner/loser
             var advancements = await conn.QueryAsync<dynamic>(

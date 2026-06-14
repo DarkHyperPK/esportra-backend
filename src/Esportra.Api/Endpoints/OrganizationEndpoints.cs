@@ -642,6 +642,7 @@ public static class OrganizationEndpoints
                     @tournamentId IS NULL
                     OR sal.details @> jsonb_build_object('tournamentIds', jsonb_build_array(@tournamentId::text))
                     OR sal.details->>'tournamentId' = @tournamentId::text
+                    OR sal.details->>'tournament_id' = @tournamentId::text
                   )
                 """;
 

@@ -1213,6 +1213,7 @@ public static class MatchSystemEndpoints
             HttpContext                         ctx,
             IDbConnectionFactory               db,
             MatchScheduleNotificationService   scheduleNotify,
+            StaffTournamentAuditService        staffAudit,
             CancellationToken                  ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1264,6 +1265,14 @@ public static class MatchSystemEndpoints
                 await scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct);
             }
 
+            if (updated > 0)
+            {
+                await staffAudit.TryLogStageActionAsync(
+                    conn, userCtx.UserIdGuid, stageId, "tournament.schedule_bulk",
+                    new { matches_updated = updated, matches_notified = changedMatchIds.Count },
+                    ct: ct);
+            }
+
             return Results.Ok(new { success = true, updated });
         }).RequireAuthorization("Authenticated");
 
@@ -1274,6 +1283,7 @@ public static class MatchSystemEndpoints
             HttpContext                             ctx,
             IDbConnectionFactory                   db,
             MatchScheduleNotificationService       scheduleNotify,
+            StaffTournamentAuditService            staffAudit,
             CancellationToken                      ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1300,6 +1310,11 @@ public static class MatchSystemEndpoints
 
             if (!MatchScheduleNotificationService.ScheduledTimesEqual(previousTime, scheduledTime))
                 await scheduleNotify.DispatchScheduleChangedAsync(matchId, scheduledTime, ct);
+
+            await staffAudit.TryLogMatchActionAsync(
+                conn, userCtx.UserIdGuid, matchId, "match.schedule_update",
+                new { scheduled_time = scheduledTime?.ToString("o"), previous_scheduled_time = previousTime?.ToString("o") },
+                ct: ct);
 
             return Results.Ok(new { success = true, matchId });
         }).RequireAuthorization("Authenticated");
@@ -1606,6 +1621,7 @@ public static class MatchSystemEndpoints
             [FromBody] ResolveDisputeRequest     req,
             HttpContext                           ctx,
             IDbConnectionFactory                 db,
+            StaffTournamentAuditService          staffAudit,
             CancellationToken                    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1693,6 +1709,12 @@ public static class MatchSystemEndpoints
                               message = notifMessage, link = disputeLink, data = notifDataWithSlug });
                 }
             }
+
+            await staffAudit.TryLogMatchActionAsync(
+                conn, userCtx.UserIdGuid, matchId,
+                req.Status == "resolved" ? "dispute.resolve" : "dispute.reject",
+                new { dispute_id = disputeId, status = req.Status, resolution = req.Resolution },
+                ct: ct);
 
             return Results.Ok(new { success = true, disputeId, status = req.Status });
         }).RequireAuthorization("Authenticated");
