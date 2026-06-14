@@ -647,15 +647,26 @@ public static class BrGameEndpoints
                     return Results.Forbid();
             }
 
-            var payload = await BrGameRouteHelper.ListLobbyEvidenceAsync(
-                conn,
-                lobbyId,
-                isStaff,
-                viewerTeamId,
-                viewerParticipantId,
-                gameId: gameId);
+            try
+            {
+                var payload = await BrGameRouteHelper.ListLobbyEvidenceAsync(
+                    conn,
+                    lobbyId,
+                    isStaff,
+                    viewerTeamId,
+                    viewerParticipantId,
+                    gameId: gameId);
 
-            return Results.Ok(payload);
+                return Results.Ok(payload);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[BrGameEndpoints] Failed to list evidence for game {gameId}: {ex}");
+                return Results.Problem(
+                    detail: "Could not load evidence submissions.",
+                    statusCode: StatusCodes.Status500InternalServerError);
+            }
         }).RequireAuthorization("Authenticated");
 
         app.MapPut("/api/br/games/{gameId}/evidence", async (

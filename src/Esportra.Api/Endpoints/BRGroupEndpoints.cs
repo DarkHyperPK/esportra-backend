@@ -1990,15 +1990,26 @@ public static partial class BRGroupEndpoints
                     return Results.Forbid();
             }
 
-            var payload = await BrGameRouteHelper.ListLobbyEvidenceAsync(
-                conn,
-                lobbyId,
-                isStaff,
-                viewerTeamId,
-                viewerParticipantId,
-                gameNumber: gameNumber);
+            try
+            {
+                var payload = await BrGameRouteHelper.ListLobbyEvidenceAsync(
+                    conn,
+                    lobbyId,
+                    isStaff,
+                    viewerTeamId,
+                    viewerParticipantId,
+                    gameNumber: gameNumber);
 
-            return Results.Ok(payload);
+                return Results.Ok(payload);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[BRGroupEndpoints] Failed to list evidence for lobby {lobbyId}: {ex}");
+                return Results.Problem(
+                    detail: "Could not load evidence submissions.",
+                    statusCode: StatusCodes.Status500InternalServerError);
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/br/lobbies/{lobbyId}/evidence ───────────────────────────

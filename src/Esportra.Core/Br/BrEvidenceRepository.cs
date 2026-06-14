@@ -46,7 +46,7 @@ public static class BrEvidenceRepository
             BuildSelectSql(evidenceHasParticipantId) + """
             WHERE re.game_id = @targetGameId
               AND (
-                @isStaff = TRUE
+                @isStaff::boolean
                 OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
                 OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
               )
@@ -78,9 +78,16 @@ public static class BrEvidenceRepository
             tx);
     }
 
-    public static BrEvidenceEntry MapRow(dynamic row, bool includeGameNumber = false)
+    public static BrEvidenceEntry? TryMapRow(dynamic row, bool includeGameNumber = false)
     {
-        var entityId = ReadGuid(row.entity_id);
+        if (row.entity_id is null or DBNull) return null;
+
+        var entityId = TryReadGuid(row.entity_id);
+        if (entityId is not Guid resolvedEntityId) return null;
+
+        var imageUrl = ReadNullableString(row.image_url);
+        if (string.IsNullOrWhiteSpace(imageUrl)) return null;
+
         int? gameNumber = null;
         if (includeGameNumber && row is IDictionary<string, object> dict
             && dict.TryGetValue("game_number", out var gn) && gn is not null and not DBNull)
@@ -89,31 +96,24 @@ public static class BrEvidenceRepository
         }
 
         return new BrEvidenceEntry(
-            entityId.ToString(),
-            (string?)row.entity_name ?? "Unknown",
-            (string?)row.logo_url,
-            (string)row.image_url,
+            resolvedEntityId.ToString(),
+            ReadNullableString(row.entity_name) ?? "Unknown",
+            ReadNullableString(row.logo_url),
+            imageUrl,
             FormatTimestamp(row.submitted_at),
-            row.placement is not null ? Convert.ToInt32(row.placement) : null,
-            row.kills is not null ? Convert.ToInt32(row.kills) : null,
-            Convert.ToBoolean(row.reviewed),
+            ReadNullableInt(row.placement),
+            ReadNullableInt(row.kills),
+            ReadNullableBool(row.reviewed) ?? false,
             gameNumber);
     }
 
+    public static BrEvidenceEntry MapRow(dynamic row, bool includeGameNumber = false) =>
+        TryMapRow(row, includeGameNumber)
+        ?? throw new InvalidOperationException("Evidence row is missing required fields.");
+
     private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence, bool includeGameNumber = false) =>
         evidence
-            .Select<dynamic, BrEvidenceEntry?>(row =>
-            {
-                if (row.entity_id is null or DBNull) return null;
-                try
-                {
-                    return MapRow(row, includeGameNumber);
-                }
-                catch
-                {
-                    return null;
-                }
-            })
+            .Select<dynamic, BrEvidenceEntry?>(row => TryMapRow(row, includeGameNumber))
             .Where(entry => entry is not null)
             .Select(entry => entry!)
             .ToList();
@@ -162,11 +162,24 @@ public static class BrEvidenceRepository
             _ => DateTimeOffset.UtcNow.ToString("o"),
         };
 
-    private static Guid ReadGuid(object? value) =>
+    private static Guid? TryReadGuid(object? value) =>
         value switch
         {
             Guid guid => guid,
             string text when Guid.TryParse(text, out var parsed) => parsed,
-            _ => throw new InvalidOperationException("Evidence row is missing entity id."),
+            _ => null,
         };
+
+    private static string? ReadNullableString(object? value) =>
+        value is null or DBNull ? null : Convert.ToString(value);
+
+    private static int? ReadNullableInt(object? value) =>
+        value is null or DBNull ? null : Convert.ToInt32(value);
+
+    private static bool? ReadNullableBool(object? value) =>
+        value is null or DBNull ? null : Convert.ToBoolean(value);
+
+    private static Guid ReadGuid(object? value) =>
+        TryReadGuid(value)
+        ?? throw new InvalidOperationException("Evidence row is missing entity id.");
 }
