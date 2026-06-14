@@ -124,6 +124,18 @@ public sealed class SelfPlayMatchRoomServiceTests
     }
 
     [Fact]
+    public void ResolveEffectiveSchedule_self_play_organizer_override_wins_after_agreement()
+    {
+        var agreed = new DateTime(2026, 6, 11, 20, 0, 0, DateTimeKind.Utc);
+        var overridden = new DateTime(2026, 6, 12, 15, 30, 0, DateTimeKind.Utc);
+        var ctx = BaseContext(scheduledTime: overridden, acceptedProposalTime: agreed);
+        var (time, source) = SelfPlayMatchRoomService.ResolveEffectiveSchedule(ctx);
+
+        Assert.Equal(overridden, time);
+        Assert.Equal("organizer_override", source);
+    }
+
+    [Fact]
     public void ResolveEffectiveSchedule_non_self_play_uses_organizer_schedule()
     {
         var scheduled = new DateTime(2026, 6, 10, 18, 0, 0, DateTimeKind.Utc);

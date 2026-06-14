@@ -346,18 +346,40 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
     {
         if (IsSelfPlayActive(ctx))
         {
-            // Self-play: only a captain-accepted time proposal counts — never tournament
-            // start or organizer bulk schedule until teams agree.
-            if (ctx.AcceptedProposalTime.HasValue)
-                return (ctx.AcceptedProposalTime, "accepted_proposal");
+            var matchTime = NormalizeUtc(ctx.MatchScheduledTime);
+            var acceptedTime = NormalizeUtc(ctx.AcceptedProposalTime);
+
+            if (acceptedTime.HasValue && matchTime.HasValue)
+            {
+                if (matchTime.Value != acceptedTime.Value)
+                    return (matchTime, "organizer_override");
+
+                return (acceptedTime, "accepted_proposal");
+            }
+
+            if (acceptedTime.HasValue)
+                return (acceptedTime, "accepted_proposal");
 
             return (null, null);
         }
 
         if (ctx.MatchScheduledTime.HasValue)
-            return (ctx.MatchScheduledTime, "match_schedule");
+            return (NormalizeUtc(ctx.MatchScheduledTime), "match_schedule");
 
         return (null, null);
+    }
+
+    private static DateTime? NormalizeUtc(DateTime? value)
+    {
+        if (!value.HasValue)
+            return null;
+
+        return value.Value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.Value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc),
+        };
     }
 
     public static SelfPlayPhase CalculatePhase(

@@ -1,4 +1,5 @@
 using System.Data;
+using System.Globalization;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Core.Tournaments;
@@ -52,7 +53,8 @@ public sealed class MatchScheduleNotificationService(
             if (match is null)
                 return;
 
-            var scheduledIso = scheduledTime?.ToString("o");
+            var scheduledUtc = NormalizeUtc(scheduledTime);
+            var scheduledIso = scheduledUtc?.ToString("o");
             var hubPayload = new
             {
                 matchId = matchId.ToString(),
@@ -106,17 +108,17 @@ public sealed class MatchScheduleNotificationService(
             var tournamentName = string.IsNullOrWhiteSpace(match.TournamentName)
                 ? "Tournament"
                 : match.TournamentName.Trim();
-            var timeLabel = scheduledTime.HasValue
-                ? scheduledTime.Value.ToUniversalTime().ToString("ddd, MMM d · h:mm tt 'UTC'")
+            var timeLabel = scheduledUtc.HasValue
+                ? scheduledUtc.Value.ToString("ddd, MMM d · h:mm tt 'UTC'", CultureInfo.InvariantCulture)
                 : "Time TBD";
-            var title = scheduledTime.HasValue
+            var title = scheduledUtc.HasValue
                 ? $"{tournamentName} · {matchLabel} scheduled"
                 : $"{tournamentName} · {matchLabel} schedule cleared";
             var bodyLines = new List<string>();
             if (!string.IsNullOrWhiteSpace(match.StageName))
                 bodyLines.Add(match.StageName.Trim());
             bodyLines.Add(matchup);
-            bodyLines.Add(scheduledTime.HasValue
+            bodyLines.Add(scheduledUtc.HasValue
                 ? timeLabel
                 : "Organizer removed the scheduled time.");
             var message = string.Join('\n', bodyLines);
@@ -138,7 +140,7 @@ public sealed class MatchScheduleNotificationService(
                 matchup,
                 scheduled_time = scheduledIso,
                 time_label = timeLabel,
-                schedule_cleared = !scheduledTime.HasValue,
+                schedule_cleared = !scheduledUtc.HasValue,
             });
 
             foreach (var userId in captainUserIds)
@@ -194,11 +196,26 @@ public sealed class MatchScheduleNotificationService(
         return $"{left} vs {right}";
     }
 
+    internal static DateTime? NormalizeUtc(DateTime? value)
+    {
+        if (!value.HasValue)
+            return null;
+
+        return value.Value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.Value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value.Value, DateTimeKind.Utc),
+        };
+    }
+
     internal static bool ScheduledTimesEqual(DateTime? left, DateTime? right)
     {
-        if (left is null && right is null) return true;
-        if (left is null || right is null) return false;
-        return left.Value.ToUniversalTime() == right.Value.ToUniversalTime();
+        var normalizedLeft = NormalizeUtc(left);
+        var normalizedRight = NormalizeUtc(right);
+        if (normalizedLeft is null && normalizedRight is null) return true;
+        if (normalizedLeft is null || normalizedRight is null) return false;
+        return normalizedLeft.Value == normalizedRight.Value;
     }
 
     private sealed class MatchScheduleRow

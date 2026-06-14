@@ -1259,10 +1259,9 @@ public static class MatchSystemEndpoints
                 if (!changedMatchIds.Contains(bulkMatchId))
                     continue;
 
-                var scheduledTime = string.IsNullOrEmpty(update.ScheduledTime)
-                    ? (DateTime?)null
-                    : DateTime.Parse(update.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind);
+                var scheduledTime = ParseScheduledTimeUtc(update.ScheduledTime);
                 await scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct);
+                await SyncProposalsAfterOrganizerScheduleAsync(conn, bulkMatchId, scheduledTime);
             }
 
             if (updated > 0)
@@ -1296,9 +1295,7 @@ public static class MatchSystemEndpoints
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
-            var scheduledTime = string.IsNullOrEmpty(req.ScheduledTime)
-                ? (DateTime?)null
-                : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind);
+            var scheduledTime = ParseScheduledTimeUtc(req.ScheduledTime);
 
             var previousTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
                 "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
@@ -1307,6 +1304,8 @@ public static class MatchSystemEndpoints
             await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET scheduled_time = @scheduledTime WHERE id = @matchId",
                 new { matchId, scheduledTime });
+
+            await SyncProposalsAfterOrganizerScheduleAsync(conn, matchId, scheduledTime);
 
             if (!MatchScheduleNotificationService.ScheduledTimesEqual(previousTime, scheduledTime))
                 await scheduleNotify.DispatchScheduleChangedAsync(matchId, scheduledTime, ct);
@@ -1410,6 +1409,7 @@ public static class MatchSystemEndpoints
             IDbConnectionFactory db,
             SelfPlayMatchRoomService roomService,
             GameCatalogService   gameCatalog,
+            MatchScheduleNotificationService scheduleNotify,
             IHubContext<MatchHub> matchHub,
             CancellationToken    ct) =>
         {
@@ -1450,6 +1450,12 @@ public static class MatchSystemEndpoints
                 new { proposalId, matchId });
 
             if (rows == 0) return Results.BadRequest(new { error = "Proposal not found or already handled." });
+
+            var acceptedTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+
+            await scheduleNotify.DispatchScheduleChangedAsync(matchId, acceptedTime, ct);
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
@@ -1890,6 +1896,44 @@ public static class MatchSystemEndpoints
             mapVetoEnabled = room.MapVetoEnabled,
             mapVetoCompleted = room.MapVetoCompleted,
         };
+
+    private static DateTime? ParseScheduledTimeUtc(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw))
+            return null;
+
+        var parsed = DateTime.Parse(raw, null, System.Globalization.DateTimeStyles.RoundtripKind);
+        return MatchScheduleNotificationService.NormalizeUtc(parsed);
+    }
+
+    private static Task SyncProposalsAfterOrganizerScheduleAsync(
+        IDbConnection conn,
+        Guid matchId,
+        DateTime? scheduledTime)
+    {
+        if (scheduledTime.HasValue)
+        {
+            return conn.ExecuteAsync(
+                """
+                UPDATE match_time_proposals
+                SET status = 'rejected', responded_at = NOW()
+                WHERE match_id = @matchId AND status = 'pending';
+
+                UPDATE match_time_proposals
+                SET proposed_time = @scheduledTime, responded_at = NOW()
+                WHERE match_id = @matchId AND status = 'accepted';
+                """,
+                new { matchId, scheduledTime });
+        }
+
+        return conn.ExecuteAsync(
+            """
+            UPDATE match_time_proposals
+            SET status = 'rejected', responded_at = NOW()
+            WHERE match_id = @matchId AND status IN ('pending', 'accepted');
+            """,
+            new { matchId });
+    }
 
     private static async Task<IResult?> TryGetProposalGuardAsync(
         IDbConnection conn,
