@@ -8,4 +8,5 @@ public sealed record BrEvidenceEntry(
     string SubmittedAt,
     int? Placement,
     int? Kills,
-    bool Reviewed);
+    bool Reviewed,
+    int? GameNumber = null);

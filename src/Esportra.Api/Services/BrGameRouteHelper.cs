@@ -40,6 +40,7 @@ public static class BrGameRouteHelper
                 placement = entry.Placement,
                 kills = entry.Kills,
                 reviewed = entry.Reviewed,
+                gameNumber = entry.GameNumber,
             })
             .Cast<object>()
             .ToList();
@@ -61,5 +62,6 @@ public static class BrGameRouteHelper
         placement = entry.Placement,
         kills = entry.Kills,
         reviewed = entry.Reviewed,
+        gameNumber = entry.GameNumber,
     };
 }

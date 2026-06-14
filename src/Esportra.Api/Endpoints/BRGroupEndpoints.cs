@@ -2192,18 +2192,31 @@ public static partial class BRGroupEndpoints
             }
 
             var entityId = teamId ?? participantId!.Value;
+            var resolvedGameNumber = gameNumber ?? await conn.QuerySingleOrDefaultAsync<int?>(
+                "SELECT game_number FROM br_games WHERE id = @targetGameId",
+                new { targetGameId });
             try
             {
                 var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
+                var lobbyGroupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, groupId);
                 var evidencePayload = new
                 {
                     stageId = stageId.ToString(),
                     groupId = groupId.ToString(),
                     lobbyId = lobbyId.ToString(),
+                    gameId = targetGameId.ToString(),
+                    gameNumber = resolvedGameNumber,
                     entityId = entityId.ToString(),
                     pendingCount,
                 };
-                await BroadcastBrAsync(brHub, BRHubEvents.EvidenceSubmitted, stageId, groupId, lobbyId, evidencePayload, ct);
+                await BroadcastBrToLobbyGroupsAsync(
+                    brHub,
+                    BRHubEvents.EvidenceSubmitted,
+                    stageId,
+                    lobbyId,
+                    lobbyGroupIds,
+                    evidencePayload,
+                    ct);
             }
             catch (Exception ex)
             {
@@ -2285,6 +2298,7 @@ public static partial class BRGroupEndpoints
                 return Results.NotFound(new { error = "Evidence submission not found." });
 
             var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
+            var lobbyGroupIds = await GetLobbyGroupIdsAsync(conn, lobbyId, groupId);
             var reviewPayload = new
             {
                 stageId = stageId.ToString(),
@@ -2293,8 +2307,16 @@ public static partial class BRGroupEndpoints
                 entityId = entityId.ToString(),
                 reviewed,
                 pendingCount,
+                gameNumber,
             };
-            await BroadcastBrAsync(brHub, BRHubEvents.EvidenceReviewed, stageId, groupId, lobbyId, reviewPayload, ct);
+            await BroadcastBrToLobbyGroupsAsync(
+                brHub,
+                BRHubEvents.EvidenceReviewed,
+                stageId,
+                lobbyId,
+                lobbyGroupIds,
+                reviewPayload,
+                ct);
 
             return Results.Ok(new { success = true, reviewed });
         }).RequireAuthorization("Authenticated");

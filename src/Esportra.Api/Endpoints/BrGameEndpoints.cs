@@ -663,7 +663,9 @@ public static class BrGameEndpoints
             [FromBody] JsonElement body,
             HttpContext ctx,
             IDbConnectionFactory db,
-            IConfiguration config) =>
+            IConfiguration config,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -694,8 +696,8 @@ public static class BrGameEndpoints
             using var conn = db.CreateConnection();
             var gameInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT g.lobby_id, g.status AS game_status, l.status AS lobby_status,
-                       ts.tournament_id, t.team_size
+                SELECT g.lobby_id, g.game_number, g.status AS game_status, l.status AS lobby_status,
+                       l.stage_id, ts.tournament_id, t.team_size
                 FROM br_games g
                 JOIN br_lobbies l ON l.id = g.lobby_id
                 JOIN tournament_stages ts ON ts.id = l.stage_id
@@ -780,6 +782,46 @@ public static class BrGameEndpoints
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
             {
                 return Results.Conflict(new { error = "Evidence has already been submitted for this game." });
+            }
+
+            var stageId = (Guid)gameInfo.stage_id;
+            var entityId = access.ParticipantId ?? access.TeamId!.Value;
+            var lobbyGroupIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT lg.group_id
+                FROM br_lobby_groups lg
+                WHERE lg.lobby_id = @lobbyId
+                ORDER BY lg.group_id
+                """,
+                new { lobbyId })).ToList();
+
+            try
+            {
+                var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
+                var evidencePayload = new
+                {
+                    stageId = stageId.ToString(),
+                    groupId = lobbyGroupIds.Count > 0 ? lobbyGroupIds[0].ToString() : null,
+                    lobbyId = lobbyId.ToString(),
+                    gameId = gameId.ToString(),
+                    gameNumber = Convert.ToInt32(gameInfo.game_number),
+                    entityId = entityId.ToString(),
+                    pendingCount,
+                };
+                await BrBroadcastHelper.BroadcastToLobbyGroupsAsync(
+                    brHub,
+                    BRHubEvents.EvidenceSubmitted,
+                    stageId,
+                    lobbyGroupIds,
+                    lobbyId,
+                    gameId,
+                    evidencePayload,
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[BrGameEndpoints] Evidence saved for game {gameId} but post-submit notify failed: {ex.Message}");
             }
 
             return Results.Ok(new { success = true });

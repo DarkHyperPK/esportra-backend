@@ -24,6 +24,20 @@ public static class BrEvidenceRepository
         var evidenceHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(
             conn, "br_lobby_evidence", "participant_id", tx);
 
+        if (isStaff && gameId is null && gameNumber is null)
+        {
+            var allEvidence = await conn.QueryAsync<dynamic>(
+                BuildSelectSql(evidenceHasParticipantId, includeGameNumber: true) + """
+                JOIN br_games g ON g.id = re.game_id
+                WHERE g.lobby_id = @lobbyId
+                ORDER BY g.game_number ASC, re.submitted_at DESC
+                """,
+                new { lobbyId },
+                tx);
+
+            return MapRows(allEvidence, includeGameNumber: true);
+        }
+
         var targetGameId = await BrGameRepository.ResolveTargetGameIdAsync(conn, lobbyId, gameId, gameNumber, tx);
         if (targetGameId is null)
             return Array.Empty<BrEvidenceEntry>();
@@ -64,9 +78,17 @@ public static class BrEvidenceRepository
             tx);
     }
 
-    public static BrEvidenceEntry MapRow(dynamic row)
+    public static BrEvidenceEntry MapRow(dynamic row, bool includeGameNumber = false)
     {
         var entityId = ReadGuid(row.entity_id);
+        int? gameNumber = null;
+        if (includeGameNumber)
+        {
+            var dict = (IDictionary<string, object>)row;
+            if (dict.TryGetValue("game_number", out var gn) && gn is not null and not DBNull)
+                gameNumber = Convert.ToInt32(gn);
+        }
+
         return new BrEvidenceEntry(
             entityId.ToString(),
             (string?)row.entity_name ?? "Unknown",
@@ -75,18 +97,21 @@ public static class BrEvidenceRepository
             FormatTimestamp(row.submitted_at),
             row.placement is not null ? Convert.ToInt32(row.placement) : null,
             row.kills is not null ? Convert.ToInt32(row.kills) : null,
-            Convert.ToBoolean(row.reviewed));
+            Convert.ToBoolean(row.reviewed),
+            gameNumber);
     }
 
-    private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence) =>
+    private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence, bool includeGameNumber = false) =>
         evidence
             .Where(row => row.entity_id is not null && row.entity_id is not DBNull)
-            .Select(MapRow)
+            .Select<dynamic, BrEvidenceEntry>(row => MapRow(row, includeGameNumber))
             .ToList();
 
-    private static string BuildSelectSql(bool hasParticipantId) =>
-        hasParticipantId
-            ? """
+    private static string BuildSelectSql(bool hasParticipantId, bool includeGameNumber = false)
+    {
+        var gameNumberSelect = includeGameNumber ? ", g.game_number" : string.Empty;
+        return hasParticipantId
+            ? $"""
               SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
                      CASE
                          WHEN re.team_id IS NOT NULL THEN t.name
@@ -97,13 +122,13 @@ public static class BrEvidenceRepository
                      re.submitted_at,
                      re.placement,
                      re.kills,
-                     re.reviewed
+                     re.reviewed{gameNumberSelect}
               FROM br_lobby_evidence re
               LEFT JOIN teams t ON t.id = re.team_id
               LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
               LEFT JOIN profiles p ON p.id = tp.user_id
               """
-            : """
+            : $"""
               SELECT re.team_id AS entity_id,
                      t.name AS entity_name,
                      t.logo_url AS logo_url,
@@ -111,10 +136,11 @@ public static class BrEvidenceRepository
                      re.submitted_at,
                      re.placement,
                      re.kills,
-                     re.reviewed
+                     re.reviewed{gameNumberSelect}
               FROM br_lobby_evidence re
               LEFT JOIN teams t ON t.id = re.team_id
               """;
+    }
 
     private static string FormatTimestamp(object? value) =>
         value switch

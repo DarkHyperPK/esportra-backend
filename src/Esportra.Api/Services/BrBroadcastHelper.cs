@@ -49,4 +49,26 @@ public static class BrBroadcastHelper
                 $"[BrBroadcastHelper] Failed to broadcast {eventName} for stage {stageId}: {ex.Message}");
         }
     }
+
+    public static async Task BroadcastToLobbyGroupsAsync(
+        IHubContext<BRHub> hub,
+        string eventName,
+        Guid stageId,
+        IReadOnlyList<Guid> groupIds,
+        Guid? lobbyId,
+        Guid? gameId,
+        object payload,
+        CancellationToken ct = default)
+    {
+        if (groupIds.Count == 0)
+        {
+            await BroadcastAsync(hub, eventName, stageId, null, lobbyId, gameId, payload, ct);
+            return;
+        }
+
+        foreach (var groupId in groupIds)
+        {
+            await BroadcastAsync(hub, eventName, stageId, groupId, lobbyId, gameId, payload, ct);
+        }
+    }
 }

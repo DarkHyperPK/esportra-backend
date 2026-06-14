@@ -24,4 +24,23 @@ public sealed class BrEvidenceServiceContractTests
         Assert.Equal(2, entry.Placement);
         Assert.False(entry.Reviewed);
     }
+
+    [Fact]
+    public void MapRow_includes_game_number_when_present()
+    {
+        dynamic row = new System.Dynamic.ExpandoObject();
+        row.entity_id = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        row.entity_name = "Team Alpha";
+        row.logo_url = null;
+        row.image_url = "https://example.com/evidence.png";
+        row.submitted_at = DateTime.UtcNow;
+        row.placement = 1;
+        row.kills = 3;
+        row.reviewed = false;
+        row.game_number = 2;
+
+        var entry = BrEvidenceRepository.MapRow(row, includeGameNumber: true);
+
+        Assert.Equal(2, entry.GameNumber);
+    }
 }
