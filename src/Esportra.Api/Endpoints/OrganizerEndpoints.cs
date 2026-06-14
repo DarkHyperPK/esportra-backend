@@ -1,4 +1,5 @@
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
@@ -124,13 +125,12 @@ public static class OrganizerEndpoints
                 {BracketTeamResolutionSql.Team1Joins}
                 {BracketTeamResolutionSql.Team2Joins}
                 WHERE (
-                    t.organizer_id = @organizerId
+                    t.organizer_id = @userId
                     OR EXISTS (
-                        SELECT 1 FROM organization_staff os
-                        WHERE os.user_id = @organizerId
-                          AND os.organization_id = t.organization_id
-                          AND os.status = 'active'
+                        SELECT 1 FROM organizations o
+                        WHERE o.id = t.organization_id AND o.owner_id = @userId
                     )
+                    OR {StaffAuthHelper.StaffTournamentAccessExistsSql}
                 )
                   AND (
                     m.scheduled_time IS NOT NULL
@@ -139,7 +139,7 @@ public static class OrganizerEndpoints
                   )
                 ORDER BY m.scheduled_time ASC NULLS LAST, m.round_index ASC, m.match_number ASC
                 LIMIT 100
-                """, new { organizerId = userCtx.UserIdGuid, startDt, endDt });
+                """, new { userId = userCtx.UserIdGuid, startDt, endDt });
             return Results.Ok(matches);
         }).RequireAuthorization("Authenticated");
     }
