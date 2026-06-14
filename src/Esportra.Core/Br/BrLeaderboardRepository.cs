@@ -19,7 +19,7 @@ public static class BrLeaderboardRepository
             new { groupId },
             tx);
 
-        var mapped = rows.Select(MapGroupRow).Where(row => row is not null).Select(row => row!).ToList();
+        var mapped = rows.Select(MapRow).Where(row => row is not null).Select(row => row!).ToList();
         return SortRows(mapped, tiebreaker);
     }
 
@@ -34,7 +34,7 @@ public static class BrLeaderboardRepository
             new { stageId },
             tx);
 
-        var mapped = rows.Select(MapStageRow).Where(row => row is not null).Select(row => row!).ToList();
+        var mapped = rows.Select(MapRow).Where(row => row is not null).Select(row => row!).ToList();
         return SortRows(mapped, tiebreaker);
     }
 
@@ -83,25 +83,7 @@ public static class BrLeaderboardRepository
             .ToList();
     }
 
-    private static BrLeaderboardRow? MapGroupRow(dynamic row)
-    {
-        if (row.team_id is null) return null;
-
-        return new BrLeaderboardRow(
-            row.team_id.ToString(),
-            row.team_name?.ToString() ?? "Unknown",
-            row.logo_url?.ToString(),
-            Convert.ToInt32(row.games_played ?? 0),
-            Convert.ToInt64(row.total_placement_points ?? 0),
-            Convert.ToInt64(row.total_kill_points ?? 0),
-            Convert.ToInt64(row.total_points ?? 0),
-            Convert.ToInt64(row.total_kills ?? 0),
-            Convert.ToInt64(row.wins ?? 0),
-            Convert.ToInt32(row.best_placement ?? 0),
-            row.avg_placement is null ? null : Convert.ToDouble(row.avg_placement));
-    }
-
-    private static BrLeaderboardRow? MapStageRow(dynamic row)
+    private static BrLeaderboardRow? MapRow(dynamic row)
     {
         if (row.team_id is null) return null;
 
