@@ -2005,7 +2005,7 @@ public static partial class BRGroupEndpoints
             catch (Exception ex)
             {
                 Console.Error.WriteLine(
-                    $"[BRGroupEndpoints] Failed to list evidence for lobby {lobbyId}: {ex}");
+                    $"[BRGroupEndpoints] Failed to list evidence for lobby {lobbyId}, gameNumber={gameNumber}: {ex.GetType().Name}: {ex.Message}");
                 return Results.Problem(
                     detail: "Could not load evidence submissions.",
                     statusCode: StatusCodes.Status500InternalServerError);

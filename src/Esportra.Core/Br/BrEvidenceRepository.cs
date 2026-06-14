@@ -26,36 +26,66 @@ public static class BrEvidenceRepository
 
         if (isStaff && gameId is null && gameNumber is null)
         {
-            var allEvidence = await conn.QueryAsync<dynamic>(
-                BuildSelectSql(evidenceHasParticipantId, includeGameNumber: true) + """
+            return await QueryAsync(
+                conn,
+                evidenceHasParticipantId,
+                """
                 JOIN br_games g ON g.id = re.game_id
                 WHERE g.lobby_id = @lobbyId
                 ORDER BY g.game_number ASC, re.submitted_at DESC
                 """,
                 new { lobbyId },
-                tx);
-
-            return MapRows(allEvidence, includeGameNumber: true);
+                tx,
+                includeGameNumber: true);
         }
 
         var targetGameId = await BrGameRepository.ResolveTargetGameIdAsync(conn, lobbyId, gameId, gameNumber, tx);
         if (targetGameId is null)
             return Array.Empty<BrEvidenceEntry>();
 
-        var evidence = await conn.QueryAsync<dynamic>(
-            BuildSelectSql(evidenceHasParticipantId) + """
+        if (isStaff)
+        {
+            return await QueryAsync(
+                conn,
+                evidenceHasParticipantId,
+                """
+                WHERE re.game_id = @targetGameId
+                ORDER BY re.submitted_at DESC
+                """,
+                new { targetGameId },
+                tx);
+        }
+
+        if (evidenceHasParticipantId)
+        {
+            return await QueryAsync(
+                conn,
+                evidenceHasParticipantId: true,
+                """
+                WHERE re.game_id = @targetGameId
+                  AND (
+                    (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
+                    OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
+                  )
+                ORDER BY re.submitted_at DESC
+                """,
+                new { targetGameId, viewerTeamId, viewerParticipantId },
+                tx);
+        }
+
+        if (viewerTeamId is null)
+            return Array.Empty<BrEvidenceEntry>();
+
+        return await QueryAsync(
+            conn,
+            evidenceHasParticipantId: false,
+            """
             WHERE re.game_id = @targetGameId
-              AND (
-                @isStaff::boolean
-                OR (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
-                OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
-              )
+              AND re.team_id = @viewerTeamId
             ORDER BY re.submitted_at DESC
             """,
-            new { targetGameId, isStaff, viewerTeamId, viewerParticipantId },
+            new { targetGameId, viewerTeamId },
             tx);
-
-        return MapRows(evidence);
     }
 
     public static async Task<int> CountPendingAsync(
@@ -78,45 +108,77 @@ public static class BrEvidenceRepository
             tx);
     }
 
-    public static BrEvidenceEntry? TryMapRow(dynamic row, bool includeGameNumber = false)
+    public static BrEvidenceEntry? TryMapRow(object? row, bool includeGameNumber = false)
     {
-        if (row.entity_id is null or DBNull) return null;
+        if (row is null or DBNull)
+            return null;
 
-        var entityId = TryReadGuid(row.entity_id);
-        if (entityId is not Guid resolvedEntityId) return null;
+        if (row is not IDictionary<string, object> values)
+            return null;
 
-        var imageUrl = ReadNullableString(row.image_url);
-        if (string.IsNullOrWhiteSpace(imageUrl)) return null;
+        var entityRaw = ReadValue(values, "entity_id");
+        if (entityRaw is null)
+            return null;
+
+        if (TryReadGuid(entityRaw) is not Guid resolvedEntityId)
+            return null;
+
+        var imageUrl = ReadNullableString(ReadValue(values, "image_url"));
+        if (string.IsNullOrWhiteSpace(imageUrl))
+            return null;
 
         int? gameNumber = null;
-        if (includeGameNumber && row is IDictionary<string, object> dict
-            && dict.TryGetValue("game_number", out var gn) && gn is not null and not DBNull)
+        if (includeGameNumber)
         {
-            gameNumber = Convert.ToInt32(gn);
+            var gameNumberRaw = ReadValue(values, "game_number");
+            if (gameNumberRaw is not null)
+                gameNumber = Convert.ToInt32(gameNumberRaw);
         }
 
         return new BrEvidenceEntry(
             resolvedEntityId.ToString(),
-            ReadNullableString(row.entity_name) ?? "Unknown",
-            ReadNullableString(row.logo_url),
+            ReadNullableString(ReadValue(values, "entity_name")) ?? "Unknown",
+            ReadNullableString(ReadValue(values, "logo_url")),
             imageUrl,
-            FormatTimestamp(row.submitted_at),
-            ReadNullableInt(row.placement),
-            ReadNullableInt(row.kills),
-            ReadNullableBool(row.reviewed) ?? false,
+            FormatTimestamp(ReadValue(values, "submitted_at")),
+            ReadNullableInt(ReadValue(values, "placement")),
+            ReadNullableInt(ReadValue(values, "kills")),
+            ReadNullableBool(ReadValue(values, "reviewed")) ?? false,
             gameNumber);
     }
 
-    public static BrEvidenceEntry MapRow(dynamic row, bool includeGameNumber = false) =>
+    public static BrEvidenceEntry MapRow(object row, bool includeGameNumber = false) =>
         TryMapRow(row, includeGameNumber)
         ?? throw new InvalidOperationException("Evidence row is missing required fields.");
 
-    private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence, bool includeGameNumber = false) =>
-        evidence
-            .Select<dynamic, BrEvidenceEntry?>(row => TryMapRow(row, includeGameNumber))
-            .Where(entry => entry is not null)
-            .Select(entry => entry!)
-            .ToList();
+    private static async Task<IReadOnlyList<BrEvidenceEntry>> QueryAsync(
+        IDbConnection conn,
+        bool evidenceHasParticipantId,
+        string whereAndOrderSql,
+        object parameters,
+        IDbTransaction? tx = null,
+        bool includeGameNumber = false)
+    {
+        var rows = await conn.QueryAsync<dynamic>(
+            BuildSelectSql(evidenceHasParticipantId, includeGameNumber) + whereAndOrderSql,
+            parameters,
+            tx);
+
+        return MapRows(rows, includeGameNumber);
+    }
+
+    private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence, bool includeGameNumber = false)
+    {
+        var entries = new List<BrEvidenceEntry>();
+        foreach (var row in evidence)
+        {
+            var entry = TryMapRow(row, includeGameNumber);
+            if (entry is not null)
+                entries.Add(entry);
+        }
+
+        return entries;
+    }
 
     private static string BuildSelectSql(bool hasParticipantId, bool includeGameNumber = false)
     {
@@ -153,6 +215,17 @@ public static class BrEvidenceRepository
               """;
     }
 
+    private static object? ReadValue(IDictionary<string, object> dict, string key)
+    {
+        foreach (var pair in dict)
+        {
+            if (string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+                return pair.Value is DBNull ? null : pair.Value;
+        }
+
+        return null;
+    }
+
     private static string FormatTimestamp(object? value) =>
         value switch
         {
@@ -178,8 +251,4 @@ public static class BrEvidenceRepository
 
     private static bool? ReadNullableBool(object? value) =>
         value is null or DBNull ? null : Convert.ToBoolean(value);
-
-    private static Guid ReadGuid(object? value) =>
-        TryReadGuid(value)
-        ?? throw new InvalidOperationException("Evidence row is missing entity id.");
 }
