@@ -31,6 +31,21 @@ public static class StaffAuthHelper
         PermDisputesAssist,
     ];
 
+    /// <summary>SQL: org staff row applies to tournament t (handles null t.organization_id for org admins).</summary>
+    public const string StaffOrgTournamentLinkSql = """
+        (
+            (t.organization_id IS NOT NULL AND os.organization_id = t.organization_id)
+            OR (
+                os.role = 'admin'
+                AND EXISTS (
+                    SELECT 1 FROM organizations o
+                    WHERE o.id = os.organization_id
+                      AND o.owner_id = t.organizer_id
+                )
+            )
+        )
+        """;
+
     /// <summary>
     /// Resolves staff access for a user on a tournament (org admin bypass + assigned staff).
     /// Use for read endpoints that expose staffPermissions / route UX gates.
@@ -39,7 +54,7 @@ public static class StaffAuthHelper
         IDbConnection conn, Guid userId, Guid tournamentId, IDbTransaction? tx = null)
     {
         var row = await conn.QuerySingleOrDefaultAsync<(string role, bool has_assignment, string[]? permissions)>(
-            """
+            $"""
             SELECT os.role,
                    (sta.id IS NOT NULL) AS has_assignment,
                    os.permissions
@@ -47,7 +62,7 @@ public static class StaffAuthHelper
             JOIN organization_staff os
               ON os.user_id = @userId
              AND os.status = 'active'
-             AND os.organization_id = t.organization_id
+             AND {StaffOrgTournamentLinkSql}
             LEFT JOIN staff_tournament_assignments sta
               ON sta.organization_staff_id = os.id
              AND sta.tournament_id = t.id
@@ -72,7 +87,7 @@ public static class StaffAuthHelper
     }
 
     /// <summary>SQL fragment: user has staff visibility on tournament t (admin or assigned).</summary>
-    public const string StaffTournamentAccessExistsSql = """
+    public const string StaffTournamentAccessExistsSql = $"""
         EXISTS (
             SELECT 1 FROM organization_staff os
             LEFT JOIN staff_tournament_assignments sta
@@ -80,7 +95,7 @@ public static class StaffAuthHelper
              AND sta.tournament_id = t.id
             WHERE os.user_id = @userId
               AND os.status = 'active'
-              AND os.organization_id = t.organization_id
+              AND {StaffOrgTournamentLinkSql}
               AND (os.role = 'admin' OR sta.id IS NOT NULL)
         )
         """;

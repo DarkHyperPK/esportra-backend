@@ -2430,7 +2430,18 @@ public static class TournamentEndpoints
                            'email', p.email
                        ) AS organizer_profile
                 FROM organization_staff os
-                JOIN tournaments t ON t.organization_id = os.organization_id AND t.deleted_at IS NULL
+                JOIN tournaments t ON t.deleted_at IS NULL
+                  AND (
+                    t.organization_id = os.organization_id
+                    OR (
+                      os.role = 'admin'
+                      AND EXISTS (
+                        SELECT 1 FROM organizations o
+                        WHERE o.id = os.organization_id
+                          AND o.owner_id = t.organizer_id
+                      )
+                    )
+                  )
                 LEFT JOIN staff_tournament_assignments sta
                   ON sta.organization_staff_id = os.id AND sta.tournament_id = t.id
                 LEFT JOIN profiles p ON p.id = os.assigned_by
