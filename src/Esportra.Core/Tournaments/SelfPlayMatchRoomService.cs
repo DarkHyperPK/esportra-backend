@@ -182,9 +182,6 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         Guid competitorId,
         DateTime nowUtc)
     {
-        if (!IsSelfPlayActive(ctx))
-            return SelfPlayGuardResult.Allow();
-
         var room = BuildPreviewState(ctx, nowUtc);
         var status = NormalizeStatus(ctx.Status);
 
@@ -198,13 +195,21 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             return Deny("match_missing_competitors", "Competitor is not part of this match.", room);
 
         var (effectiveTime, _) = ResolveEffectiveSchedule(ctx);
-        if (!effectiveTime.HasValue)
-            return Deny("match_schedule_required", "A match time must be agreed before check-in.", room, SelfPlayNextAction.ProposeTime);
+        if (IsSelfPlayActive(ctx))
+        {
+            if (!effectiveTime.HasValue)
+                return Deny("match_schedule_required", "A match time must be agreed before check-in.", room, SelfPlayNextAction.ProposeTime);
+        }
+        else if (!effectiveTime.HasValue)
+        {
+            return SelfPlayGuardResult.Allow();
+        }
 
-        if (IsCheckinWindowClosed(effectiveTime.Value, ctx.SchedulingConfig.CheckinWindowMinutes, nowUtc))
+        var windowMinutes = ctx.SchedulingConfig.CheckinWindowMinutes;
+        if (IsCheckinWindowClosed(effectiveTime!.Value, windowMinutes, nowUtc))
             return Deny("checkin_window_closed", "The check-in window has closed.", room, SelfPlayNextAction.None);
 
-        if (!IsCheckinWindowOpen(effectiveTime.Value, ctx.SchedulingConfig.CheckinWindowMinutes, nowUtc))
+        if (!IsCheckinWindowOpen(effectiveTime.Value, windowMinutes, nowUtc))
             return Deny("checkin_window_not_open", "Check-in is not open yet.", room, SelfPlayNextAction.CheckIn);
 
         return SelfPlayGuardResult.Allow();
@@ -420,18 +425,18 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         };
     }
 
+    /// <summary>
+    /// Check-in opens <paramref name="windowMinutes"/> before scheduled match time
+    /// and closes at scheduled match time (walkover deadline).
+    /// </summary>
     public static bool IsCheckinWindowOpen(DateTime effectiveScheduledTime, int windowMinutes, DateTime nowUtc)
     {
         var windowStart = effectiveScheduledTime.AddMinutes(-windowMinutes);
-        var windowEnd = effectiveScheduledTime.AddMinutes(windowMinutes);
-        return nowUtc >= windowStart && nowUtc < windowEnd;
+        return nowUtc >= windowStart && nowUtc < effectiveScheduledTime;
     }
 
     public static bool IsCheckinWindowClosed(DateTime effectiveScheduledTime, int windowMinutes, DateTime nowUtc)
-    {
-        var windowEnd = effectiveScheduledTime.AddMinutes(windowMinutes);
-        return nowUtc >= windowEnd;
-    }
+        => nowUtc >= effectiveScheduledTime;
 
     public static string ToApiPhase(SelfPlayPhase phase) => phase switch
     {

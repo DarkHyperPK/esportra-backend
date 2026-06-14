@@ -92,6 +92,17 @@ public sealed class CheckinWalkoverProcessorTests
     }
 
     [Fact]
+    public void EvaluateEligibility_at_scheduled_time_one_checked_in_awards_walkover()
+    {
+        var scheduled = DateTime.UtcNow;
+        var ctx = BaseContext(scheduledTime: scheduled, team1CheckedIn: true);
+
+        var outcome = CheckinWalkoverProcessor.EvaluateEligibility(ctx, scheduled);
+
+        Assert.Equal(CheckinWalkoverStatus.WalkoverAwarded, outcome.Status);
+    }
+
+    [Fact]
     public void EvaluateEligibility_completed_match_not_applicable()
     {
         var scheduled = DateTime.UtcNow.AddHours(-2);

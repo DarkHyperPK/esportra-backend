@@ -279,6 +279,34 @@ public sealed class SelfPlayMatchRoomServiceTests
     }
 
     [Fact]
+    public void CanCheckIn_non_self_play_after_window_denied()
+    {
+        var service = new SelfPlayMatchRoomService(null!);
+        var scheduled = DateTime.UtcNow.AddHours(-1);
+        var ctx = BaseContext(scheduledTime: scheduled) with
+        {
+            SchedulingConfig = new SchedulingConfigSnapshot(
+                SelfPlayEnabled: false,
+                CheckinWindowMinutes: 15,
+                RoundDeadlines: new Dictionary<string, string>()),
+            AcceptedProposalTime = null,
+        };
+
+        var result = service.CanCheckIn(ctx, ctx.Team1Id!.Value, DateTime.UtcNow);
+
+        Assert.False(result.Allowed);
+        Assert.Equal("checkin_window_closed", result.Code);
+    }
+
+    [Fact]
+    public void IsCheckinWindow_closed_at_scheduled_match_time()
+    {
+        var scheduled = new DateTime(2026, 6, 15, 19, 0, 0, DateTimeKind.Utc);
+        Assert.False(SelfPlayMatchRoomService.IsCheckinWindowOpen(scheduled, 15, scheduled));
+        Assert.True(SelfPlayMatchRoomService.IsCheckinWindowClosed(scheduled, 15, scheduled));
+    }
+
+    [Fact]
     public void CanStaffForceGoLive_without_code_denied()
     {
         var service = new SelfPlayMatchRoomService(null!);

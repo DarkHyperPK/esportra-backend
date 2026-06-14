@@ -1037,6 +1037,8 @@ public static class MatchSystemEndpoints
             HttpContext                 ctx,
             IDbConnectionFactory       db,
             SelfPlayMatchRoomService   roomService,
+            CheckinWalkoverProcessor   walkoverProcessor,
+            CheckinWalkoverNotifier    walkoverNotifier,
             GameCatalogService         gameCatalog,
             IHubContext<MatchHub>      matchHub,
             CancellationToken          ct) =>
@@ -1062,6 +1064,7 @@ public static class MatchSystemEndpoints
                 WHERE m.id = @matchId
                 """,
                 new { matchId = id });
+
             if (gameRow?.Game is not null)
             {
                 var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
@@ -1069,9 +1072,19 @@ public static class MatchSystemEndpoints
                 var context = await roomService.LoadContextAsync(id, supportsMapVeto, ct);
                 if (context is not null)
                 {
-                    var guard = roomService.CanCheckIn(context, competitorIdGuid, DateTime.UtcNow);
+                    var nowUtc = DateTime.UtcNow;
+                    var guard = roomService.CanCheckIn(context, competitorIdGuid, nowUtc);
                     if (!guard.Allowed)
+                    {
+                        if (guard.Code == "checkin_window_closed")
+                        {
+                            var walkover = await walkoverProcessor.TryProcessDueWalkoverAsync(id, nowUtc, ct);
+                            if (walkover.Processed)
+                                await walkoverNotifier.NotifyAsync(id, walkover, ct);
+                        }
+
                         return SelfPlayGuardResponse(guard);
+                    }
                 }
             }
 
