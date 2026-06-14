@@ -927,6 +927,17 @@ public static partial class BRGroupEndpoints
             using var tx = conn.BeginTransaction();
             try
             {
+                var gamesModelReadyOnCreate = await BrSchemaRepository.BrGamesModelReadyAsync(conn, tx);
+                if (BrLobbyFieldPolicy.RejectsLobbyPerGameFieldsInBody(
+                        gamesModelReadyOnCreate,
+                        body.TryGetProperty("scheduledAt", out _),
+                        body.TryGetProperty("queueTimerMinutes", out _),
+                        body.TryGetProperty("map", out _)))
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = BrLobbyFieldPolicy.PerGameFieldsError });
+                }
+
                 var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
                 var scheduleWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
                     parsedSchedule,
@@ -1241,7 +1252,17 @@ public static partial class BRGroupEndpoints
                 var gamesModelReady = await BrSchemaRepository.BrGamesModelReadyAsync(conn, tx);
                 gamesModelReadyForSchedule = gamesModelReady;
 
-                if (roundsHasMapColumn && body.TryGetProperty("map", out var mapProp))
+                if (BrLobbyFieldPolicy.RejectsLobbyPerGameFieldsInBody(
+                        gamesModelReady,
+                        body.TryGetProperty("scheduledAt", out _),
+                        body.TryGetProperty("queueTimerMinutes", out _),
+                        roundsHasMapColumn && body.TryGetProperty("map", out _)))
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = BrLobbyFieldPolicy.PerGameFieldsError });
+                }
+
+                if (!gamesModelReady && roundsHasMapColumn && body.TryGetProperty("map", out var mapProp))
                 {
                     if (mapProp.ValueKind == JsonValueKind.Null)
                     {
@@ -1293,14 +1314,8 @@ public static partial class BRGroupEndpoints
                     parameters.Add("lobbyCode", finalLobbyCode);
                 }
 
-                if (body.TryGetProperty("scheduledAt", out var saProp))
+                if (!gamesModelReady && body.TryGetProperty("scheduledAt", out var saProp))
                 {
-                    if (gamesModelReady)
-                    {
-                        tx.Rollback();
-                        return Results.BadRequest(new { error = "Set start times per game in the Schedule tab." });
-                    }
-
                     notifyLobbySchedule = true;
                     if (saProp.ValueKind == JsonValueKind.Null)
                     {
@@ -1334,12 +1349,6 @@ public static partial class BRGroupEndpoints
                             return Results.BadRequest(new { error = "Invalid scheduledAt format." });
                         }
                     }
-                }
-
-                if (gamesModelReady && body.TryGetProperty("queueTimerMinutes", out _))
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = "Queue timer is set per game. Configure it on each game before starting." });
                 }
 
                 if (!gamesModelReady && body.TryGetProperty("queueTimerMinutes", out var qtmProp))
@@ -2838,6 +2847,7 @@ public static partial class BRGroupEndpoints
                     stageName        = (string?)null,
                     groupId          = (string?)null,
                     groupName        = (string?)null,
+                    gamesModelActive = false,
                     totalRounds      = 0,
                     completedRounds  = 0,
                     activeRound      = (object?)null,
@@ -2858,6 +2868,7 @@ public static partial class BRGroupEndpoints
                 new { stageId });
             var gamesPerLobby = BrConfigService.ResolveGamesPerLobby(
                 stageMeta?.settings, stageMeta?.stage_config) ?? 6;
+            var gamesModelActive = await BrSchemaRepository.BrGamesModelReadyAsync(conn);
 
             // ── Fetch lobbies linked to the player's seed group ────────────────
             var rounds = (await conn.QueryAsync<dynamic>(
@@ -2958,7 +2969,17 @@ public static partial class BRGroupEndpoints
                 var currentGame = activeGameRow
                     ?? games.FirstOrDefault(g => (Guid)g.lobby_id == activeLobbyGuid && (string)g.status != "completed");
                 var activeRoundMap = currentGame is not null ? (string?)currentGame.map : null;
-                var useGameQueue = games.Count > 0;
+                var useGameFields = gamesModelActive;
+
+                string? activeRoundScheduledAt = null;
+                if (useGameFields && currentGame is not null && currentGame.scheduled_at is not null)
+                {
+                    activeRoundScheduledAt = ((DateTimeOffset)currentGame.scheduled_at).ToString("o");
+                }
+                else if (!useGameFields && activeRoundRow.scheduled_at is not null)
+                {
+                    activeRoundScheduledAt = ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o");
+                }
 
                 activeRoundPayload = new
                 {
@@ -2968,19 +2989,17 @@ public static partial class BRGroupEndpoints
                     matchupLabel = (string?)activeRoundRow.matchup_label,
                     lobbyCode,
                     status = (string)activeRoundRow.status,
-                    queueTimerMinutes = useGameQueue
+                    queueTimerMinutes = useGameFields
                         ? null
                         : activeRoundRow.queue_timer_minutes is not null
                             ? Convert.ToInt32(activeRoundRow.queue_timer_minutes)
                             : (int?)null,
-                    queueStartedAt = useGameQueue
+                    queueStartedAt = useGameFields
                         ? null
                         : activeRoundRow.queue_started_at is not null
                             ? ((DateTimeOffset)activeRoundRow.queue_started_at).ToString("o")
                             : (string?)null,
-                    scheduledAt = activeRoundRow.scheduled_at is not null
-                        ? ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o")
-                        : (string?)null,
+                    scheduledAt = activeRoundScheduledAt,
                     map = activeRoundMap,
                 };
 
@@ -3036,9 +3055,11 @@ public static partial class BRGroupEndpoints
                     waveNumber = Convert.ToInt32(r.wave_number),
                     matchupLabel = (string?)r.matchup_label,
                     status = (string)r.status,
-                    scheduledAt = r.scheduled_at is not null
-                        ? ((DateTimeOffset)r.scheduled_at).ToString("o")
-                        : (string?)null,
+                    scheduledAt = gamesModelActive
+                        ? (string?)null
+                        : r.scheduled_at is not null
+                            ? ((DateTimeOffset)r.scheduled_at).ToString("o")
+                            : (string?)null,
                     games = lobbyGames,
                 };
             }).ToList();
@@ -3049,6 +3070,7 @@ public static partial class BRGroupEndpoints
                 stageName = groupInfo.StageName,
                 groupId = groupInfo.GroupId.ToString(),
                 groupName = groupInfo.GroupName,
+                gamesModelActive,
                 gamesPerLobby,
                 totalRounds,
                 completedRounds,

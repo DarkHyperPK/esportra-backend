@@ -55,6 +55,7 @@ public static partial class BRGroupEndpoints
 
             return Results.Ok(new
             {
+                gamesModelActive,
                 gamesPerLobby = resolved.GamesPerLobby,
                 mapScope = resolved.MapScope,
                 mapConfig = new
