@@ -38,6 +38,9 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
               m.party_code      AS PartyCode,
               m.team1_id        AS Team1Id,
               m.team2_id        AS Team2Id,
+              m.winner_id       AS WinnerId,
+              m.team1_score     AS Team1Score,
+              m.team2_score     AS Team2Score,
               m.best_of         AS BestOf,
               v.stage_id        AS StageId,
               v.tournament_id   AS TournamentId,
@@ -91,6 +94,9 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             PartyCode = row.PartyCode,
             Team1Id = row.Team1Id,
             Team2Id = row.Team2Id,
+            WinnerId = row.WinnerId,
+            Team1Score = row.Team1Score,
+            Team2Score = row.Team2Score,
             BestOf = row.BestOf,
             StageId = row.StageId,
             TournamentId = row.TournamentId,
@@ -125,15 +131,19 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         string? nextAction = null;
         string? message = null;
 
+        var (matchOutcome, forfeitReason) = ResolveForfeitContext(ctx);
+
         if (selfPlayEnabled)
         {
             var computedPhase = CalculatePhase(ctx, effectiveTime, bothCheckedIn, mapVetoCompleted);
             phase = ToApiPhase(computedPhase);
             nextAction = ToApiNextAction(ResolveNextAction(computedPhase, ctx, effectiveTime, bothCheckedIn, mapVetoCompleted));
-            message = GetFlowMessage(
-                computedPhase,
-                ctx.MapVetoEnabled,
-                callerCompetitorId.HasValue && ctx.Team1Id.HasValue && callerCompetitorId == ctx.Team1Id);
+            message = matchOutcome is not null && status == "completed"
+                ? GetCompletedForfeitMessage(matchOutcome, forfeitReason, callerCompetitorId, ctx)
+                : GetFlowMessage(
+                    computedPhase,
+                    ctx.MapVetoEnabled,
+                    callerCompetitorId.HasValue && ctx.Team1Id.HasValue && callerCompetitorId == ctx.Team1Id);
         }
         else if (status == "completed")
         {
@@ -174,6 +184,8 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             PartyCode = ctx.PartyCode,
             MapVetoEnabled = ctx.MapVetoEnabled,
             MapVetoCompleted = mapVetoCompleted,
+            MatchOutcome = matchOutcome,
+            ForfeitReason = forfeitReason,
         };
     }
 
@@ -425,6 +437,70 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         };
     }
 
+    public static (string? MatchOutcome, string? ForfeitReason) ResolveForfeitContext(SelfPlayMatchRoomContext ctx)
+    {
+        if (NormalizeStatus(ctx.Status) != "completed")
+            return (null, null);
+
+        if (!ctx.WinnerId.HasValue
+            && ctx.Team1Score == 0
+            && ctx.Team2Score == 0
+            && !ctx.Team1CheckedIn
+            && !ctx.Team2CheckedIn)
+        {
+            return ("double_forfeit", "neither_checked_in");
+        }
+
+        if (ctx.WinnerId.HasValue
+            && ctx.Team1Id.HasValue
+            && ctx.WinnerId == ctx.Team1Id
+            && !ctx.Team2CheckedIn)
+        {
+            return ("walkover", "team2_not_checked_in");
+        }
+
+        if (ctx.WinnerId.HasValue
+            && ctx.Team2Id.HasValue
+            && ctx.WinnerId == ctx.Team2Id
+            && !ctx.Team1CheckedIn)
+        {
+            return ("walkover", "team1_not_checked_in");
+        }
+
+        return (null, null);
+    }
+
+    public static string GetCompletedForfeitMessage(
+        string matchOutcome,
+        string? forfeitReason,
+        Guid? callerCompetitorId,
+        SelfPlayMatchRoomContext ctx)
+    {
+        if (matchOutcome == "double_forfeit")
+            return "Forfeited: neither team checked in before the check-in deadline.";
+
+        if (matchOutcome != "walkover")
+            return "This match is complete.";
+
+        if (forfeitReason == "team1_not_checked_in")
+        {
+            if (callerCompetitorId.HasValue && callerCompetitorId == ctx.Team1Id)
+                return "Forfeited: your team did not check in before the deadline.";
+
+            return "Walkover win: your opponent did not check in.";
+        }
+
+        if (forfeitReason == "team2_not_checked_in")
+        {
+            if (callerCompetitorId.HasValue && callerCompetitorId == ctx.Team2Id)
+                return "Forfeited: your team did not check in before the deadline.";
+
+            return "Walkover win: your opponent did not check in.";
+        }
+
+        return "This match is complete.";
+    }
+
     public static string GetFlowMessage(SelfPlayPhase phase, bool mapVetoEnabled, bool isTeam1Captain)
     {
         return phase switch
@@ -545,6 +621,9 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         public string? PartyCode { get; init; }
         public Guid? Team1Id { get; init; }
         public Guid? Team2Id { get; init; }
+        public Guid? WinnerId { get; init; }
+        public int? Team1Score { get; init; }
+        public int? Team2Score { get; init; }
         public int BestOf { get; init; }
         public Guid? StageId { get; init; }
         public Guid TournamentId { get; init; }

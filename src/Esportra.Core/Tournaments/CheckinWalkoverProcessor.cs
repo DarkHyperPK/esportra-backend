@@ -5,8 +5,8 @@ using Esportra.Core.Bracket;
 namespace Esportra.Core.Tournaments;
 
 /// <summary>
-/// Awards walkovers when the check-in window has closed and only one team checked in.
-/// When neither team checks in, the match stays pending for organizer reset / force go-live.
+/// Awards walkovers when the check-in window has closed. When neither team checks in,
+/// the match is completed as a double forfeit and organizers are notified.
 /// Uses the same effective schedule and window rules as <see cref="SelfPlayMatchRoomService"/>.
 /// </summary>
 public sealed class CheckinWalkoverProcessor(
@@ -110,8 +110,8 @@ public sealed class CheckinWalkoverProcessor(
         if (!ctx.Team1CheckedIn && ctx.Team2CheckedIn)
             return CheckinWalkoverOutcome.Walkover(ctx.Team2Id!.Value, false, true);
 
-        // Neither team checked in — leave match pending for organizer intervention.
-        return CheckinWalkoverOutcome.WindowNotClosed;
+        // Neither team checked in — both teams forfeit, and organizers are notified.
+        return CheckinWalkoverOutcome.DoubleForfeit(false, false);
     }
 
     internal async Task<CheckinWalkoverOutcome> TryProcessDueWalkoverAsync(
@@ -159,7 +159,64 @@ public sealed class CheckinWalkoverProcessor(
                 : CheckinWalkoverOutcome.Failed;
         }
 
-        return CheckinWalkoverOutcome.WindowNotClosed;
+        return await MarkDoubleForfeitAsync(conn, ctx, ct)
+            ? CheckinWalkoverOutcome.DoubleForfeit(ctx.Team1CheckedIn, ctx.Team2CheckedIn)
+            : CheckinWalkoverOutcome.Failed;
+    }
+
+    private static async Task<bool> MarkDoubleForfeitAsync(
+        System.Data.IDbConnection conn,
+        SelfPlayMatchRoomContext ctx,
+        CancellationToken ct)
+    {
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var locked = await conn.QuerySingleOrDefaultAsync<LockedMatchRow>(
+                """
+                SELECT id AS Id, LOWER(COALESCE(status, 'pending')) AS Status
+                FROM public.brkt_matches
+                WHERE id = @matchId
+                FOR UPDATE
+                """,
+                new { matchId = ctx.MatchId },
+                tx);
+
+            if (locked is null)
+            {
+                tx.Rollback();
+                return false;
+            }
+
+            if (locked.Status == "completed")
+            {
+                tx.Commit();
+                return true;
+            }
+
+            await conn.ExecuteAsync(
+                """
+                UPDATE public.brkt_matches
+                SET winner_id = NULL,
+                    loser_id = NULL,
+                    team1_score = 0,
+                    team2_score = 0,
+                    status = 'completed',
+                    version = version + 1,
+                    updated_at = NOW()
+                WHERE id = @matchId
+                """,
+                new { matchId = ctx.MatchId },
+                tx);
+
+            tx.Commit();
+            return true;
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
     }
 
     public async Task<IReadOnlyList<Guid>> FindCandidateMatchIdsAsync(CancellationToken ct = default)
@@ -181,6 +238,12 @@ public sealed class CheckinWalkoverProcessor(
                     )
               )
             """)).AsList();
+    }
+
+    private sealed class LockedMatchRow
+    {
+        public Guid Id { get; init; }
+        public string Status { get; init; } = "pending";
     }
 
     private sealed class WalkoverMatchRow
@@ -214,6 +277,9 @@ public sealed record CheckinWalkoverOutcome(
 {
     public bool Processed =>
         Status is CheckinWalkoverStatus.WalkoverAwarded or CheckinWalkoverStatus.DoubleForfeit;
+
+    public bool NeedsOrganizerNotification =>
+        Status is CheckinWalkoverStatus.DoubleForfeit;
 
     public static CheckinWalkoverOutcome WindowNotClosed { get; } =
         new(CheckinWalkoverStatus.WindowNotClosed);

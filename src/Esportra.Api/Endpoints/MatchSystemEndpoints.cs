@@ -993,17 +993,20 @@ public static class MatchSystemEndpoints
             if (room.CheckinWindowClosed && !room.BothCheckedIn)
             {
                 var walkover = await walkoverProcessor.TryProcessDueWalkoverAsync(matchId, nowUtc, ct);
-                if (walkover.Processed)
+                if (walkover.Processed || walkover.NeedsOrganizerNotification)
                 {
-                    await walkoverNotifier.NotifyAsync(matchId, walkover, ct);
-                    context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
-                    if (context is not null)
+                    await walkoverNotifier.DispatchAsync(matchId, walkover, ct);
+                    if (walkover.Processed)
                     {
-                        room = roomService.BuildRoomState(
-                            context,
-                            callerCompetitorId,
-                            canForceGoLive,
-                            nowUtc);
+                        context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+                        if (context is not null)
+                        {
+                            room = roomService.BuildRoomState(
+                                context,
+                                callerCompetitorId,
+                                canForceGoLive,
+                                nowUtc);
+                        }
                     }
                 }
             }
@@ -1079,8 +1082,8 @@ public static class MatchSystemEndpoints
                         if (guard.Code == "checkin_window_closed")
                         {
                             var walkover = await walkoverProcessor.TryProcessDueWalkoverAsync(id, nowUtc, ct);
-                            if (walkover.Processed)
-                                await walkoverNotifier.NotifyAsync(id, walkover, ct);
+                            if (walkover.Processed || walkover.NeedsOrganizerNotification)
+                                await walkoverNotifier.DispatchAsync(id, walkover, ct);
                         }
 
                         return SelfPlayGuardResponse(guard);
@@ -1895,6 +1898,8 @@ public static class MatchSystemEndpoints
             partyCode = room.PartyCode,
             mapVetoEnabled = room.MapVetoEnabled,
             mapVetoCompleted = room.MapVetoCompleted,
+            matchOutcome = room.MatchOutcome,
+            forfeitReason = room.ForfeitReason,
         };
 
     private static DateTime? ParseScheduledTimeUtc(string? raw)

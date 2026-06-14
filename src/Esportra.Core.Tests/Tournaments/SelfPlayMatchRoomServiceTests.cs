@@ -369,4 +369,60 @@ public sealed class SelfPlayMatchRoomServiceTests
         Assert.False(room.SelfPlayEnabled);
         Assert.Contains("party code", room.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void ResolveForfeitContext_double_no_show()
+    {
+        var ctx = BaseContext(status: "completed") with
+        {
+            Team1Score = 0,
+            Team2Score = 0,
+            WinnerId = null,
+        };
+
+        var (outcome, reason) = SelfPlayMatchRoomService.ResolveForfeitContext(ctx);
+
+        Assert.Equal("double_forfeit", outcome);
+        Assert.Equal("neither_checked_in", reason);
+    }
+
+    [Fact]
+    public void BuildRoomState_double_forfeit_exposes_outcome_and_message()
+    {
+        var service = new SelfPlayMatchRoomService(null!);
+        var scheduled = DateTime.UtcNow.AddHours(-2);
+        var ctx = BaseContext(status: "completed", scheduledTime: scheduled) with
+        {
+            Team1Score = 0,
+            Team2Score = 0,
+            WinnerId = null,
+        };
+
+        var room = service.BuildRoomState(ctx, ctx.Team1Id, false, DateTime.UtcNow);
+
+        Assert.Equal("completed", room.Phase);
+        Assert.Equal("double_forfeit", room.MatchOutcome);
+        Assert.Equal("neither_checked_in", room.ForfeitReason);
+        Assert.Contains("neither team checked in", room.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildRoomState_walkover_exposes_caller_specific_message()
+    {
+        var service = new SelfPlayMatchRoomService(null!);
+        var scheduled = DateTime.UtcNow.AddHours(-2);
+        var ctx = BaseContext(status: "completed", scheduledTime: scheduled, team1CheckedIn: true) with
+        {
+            WinnerId = null,
+        };
+        ctx = ctx with { WinnerId = ctx.Team1Id, Team1Score = 1, Team2Score = 0 };
+
+        var winnerRoom = service.BuildRoomState(ctx, ctx.Team1Id, false, DateTime.UtcNow);
+        var loserRoom = service.BuildRoomState(ctx, ctx.Team2Id, false, DateTime.UtcNow);
+
+        Assert.Equal("walkover", winnerRoom.MatchOutcome);
+        Assert.Equal("team2_not_checked_in", winnerRoom.ForfeitReason);
+        Assert.Contains("Walkover win", winnerRoom.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Forfeited", loserRoom.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

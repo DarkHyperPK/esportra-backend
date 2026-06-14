@@ -54,6 +54,9 @@ public sealed record SelfPlayMatchRoomContext
     public DateTime? AcceptedProposalTime { get; init; }
     public string? VetoStatus { get; init; }
     public bool MapVetoEnabled { get; init; }
+    public Guid? WinnerId { get; init; }
+    public int? Team1Score { get; init; }
+    public int? Team2Score { get; init; }
 }
 
 public sealed record SelfPlayRoomState
@@ -79,6 +82,8 @@ public sealed record SelfPlayRoomState
     public string? PartyCode { get; init; }
     public bool MapVetoEnabled { get; init; }
     public bool MapVetoCompleted { get; init; }
+    public string? MatchOutcome { get; init; }
+    public string? ForfeitReason { get; init; }
 }
 
 public sealed record SelfPlayGuardResult

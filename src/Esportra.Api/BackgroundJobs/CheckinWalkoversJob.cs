@@ -51,11 +51,11 @@ public sealed class CheckinWalkoversJob(
             try
             {
                 var outcome = await processor.TryProcessDueWalkoverAsync(matchId, DateTime.UtcNow, ct);
-                if (!outcome.Processed)
+                if (!outcome.Processed && !outcome.NeedsOrganizerNotification)
                     continue;
 
                 processed++;
-                await notifier.NotifyAsync(matchId, outcome, ct);
+                await notifier.DispatchAsync(matchId, outcome, ct);
 
                 logger.LogInformation(
                     "[CheckinWalkovers] Match {MatchId}: {Status} (winner={WinnerId}).",
