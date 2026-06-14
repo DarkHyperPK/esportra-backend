@@ -82,11 +82,10 @@ public static class BrEvidenceRepository
     {
         var entityId = ReadGuid(row.entity_id);
         int? gameNumber = null;
-        if (includeGameNumber)
+        if (includeGameNumber && row is IDictionary<string, object> dict
+            && dict.TryGetValue("game_number", out var gn) && gn is not null and not DBNull)
         {
-            var dict = (IDictionary<string, object>)row;
-            if (dict.TryGetValue("game_number", out var gn) && gn is not null and not DBNull)
-                gameNumber = Convert.ToInt32(gn);
+            gameNumber = Convert.ToInt32(gn);
         }
 
         return new BrEvidenceEntry(
@@ -103,8 +102,20 @@ public static class BrEvidenceRepository
 
     private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence, bool includeGameNumber = false) =>
         evidence
-            .Where(row => row.entity_id is not null && row.entity_id is not DBNull)
-            .Select<dynamic, BrEvidenceEntry>(row => MapRow(row, includeGameNumber))
+            .Select<dynamic, BrEvidenceEntry?>(row =>
+            {
+                if (row.entity_id is null or DBNull) return null;
+                try
+                {
+                    return MapRow(row, includeGameNumber);
+                }
+                catch
+                {
+                    return null;
+                }
+            })
+            .Where(entry => entry is not null)
+            .Select(entry => entry!)
             .ToList();
 
     private static string BuildSelectSql(bool hasParticipantId, bool includeGameNumber = false)
