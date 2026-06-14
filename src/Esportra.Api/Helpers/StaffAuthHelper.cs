@@ -110,7 +110,29 @@ public static class StaffAuthHelper
                 SELECT 1 FROM tournaments t
                 LEFT JOIN organizations o ON o.id = t.organization_id
                 WHERE t.id = @tournamentId
-                  AND (t.organizer_id = @userId OR o.owner_id = @userId)
+                  AND (
+                      t.organizer_id = @userId
+                      OR o.owner_id = @userId
+                      OR EXISTS (
+                          SELECT 1 FROM organizations o2
+                          WHERE o2.owner_id = @userId
+                            AND (
+                                o2.id = t.organization_id
+                                OR (
+                                    t.organization_id IS NULL
+                                    AND (
+                                        t.organizer_id = o2.owner_id
+                                        OR EXISTS (
+                                            SELECT 1 FROM organization_staff os
+                                            WHERE os.organization_id = o2.id
+                                              AND os.user_id = t.organizer_id
+                                              AND os.status = 'active'
+                                        )
+                                    )
+                                )
+                            )
+                      )
+                  )
             )
             """,
             new { userId, tournamentId }, tx);

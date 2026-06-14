@@ -31,6 +31,16 @@ public class StaffAuthHelperTests
         Assert.DoesNotContain("AND (os.organization_id = t.organization_id)", helperSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void IsTournamentOrganizerOrOrgOwnerSql_CoversOrgOwnerWhenOrganizationIdUnset()
+    {
+        var helperSource = File.ReadAllText(FindStaffAuthHelperCs());
+
+        Assert.Contains("o2.owner_id = @userId", helperSource, StringComparison.Ordinal);
+        Assert.Contains("t.organization_id IS NULL", helperSource, StringComparison.Ordinal);
+        Assert.Contains("organization_staff os", helperSource, StringComparison.Ordinal);
+    }
+
     private static string FindStaffAuthHelperCs()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
