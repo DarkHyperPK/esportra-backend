@@ -118,6 +118,8 @@ public static class BrLobbyRepository
             new { lobbyId },
             tx);
 
+        await BrLobbyReadinessRepository.ClearForLobbyAsync(conn, lobbyId, tx);
+
         var gamesHasMap = await BrSchemaRepository.ColumnExistsAsync(conn, "br_games", "map", tx);
         if (gamesHasMap)
         {

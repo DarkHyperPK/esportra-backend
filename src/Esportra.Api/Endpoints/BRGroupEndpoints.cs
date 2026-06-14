@@ -806,13 +806,14 @@ public static partial class BRGroupEndpoints
             var mapSelect = roundsHasMapColumn ? ", r.map" : ", NULL::text AS map";
 
             var rounds = await conn.QueryAsync<dynamic>(
-                $"""
+                """
                 SELECT r.id, r.wave_number, r.lobby_index, r.lobby_code, r.status,
                        r.scheduled_at, r.started_at, r.completed_at, r.created_at,
-                       r.queue_timer_minutes, r.queue_started_at{mapSelect},
-                       (SELECT COUNT(*) FROM br_lobby_results rr JOIN br_games g ON g.id = rr.game_id WHERE g.lobby_id = r.id) AS result_count,
-                       (SELECT COUNT(*) FROM br_lobby_evidence re JOIN br_games g ON g.id = re.game_id WHERE g.lobby_id = r.id) AS evidence_count,
-                       (SELECT COUNT(*) FROM br_lobby_evidence re JOIN br_games g ON g.id = re.game_id WHERE g.lobby_id = r.id AND re.reviewed = FALSE) AS pending_evidence_count,
+                       r.queue_timer_minutes, r.queue_started_at
+                """ + mapSelect + """
+                       , (SELECT COUNT(*) FROM br_lobby_results rr JOIN br_games g ON g.id = rr.game_id WHERE g.lobby_id = r.id) AS result_count,
+                       (SELECT COUNT(*) FROM br_lobby_evidence ev JOIN br_games g ON g.id = ev.game_id WHERE g.lobby_id = r.id) AS evidence_count,
+                       (SELECT COUNT(*) FROM br_lobby_evidence ev JOIN br_games g ON g.id = ev.game_id WHERE g.lobby_id = r.id AND ev.reviewed = FALSE) AS pending_evidence_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id) AS game_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id AND g.status = 'completed') AS games_completed,
                        COALESCE((
@@ -2298,6 +2299,182 @@ public static partial class BRGroupEndpoints
             return Results.Ok(new { success = true, reviewed });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/br/lobbies/{lobbyId}/readiness ──────────────────────────
+        app.MapGet("/api/br/lobbies/{lobbyId}/readiness", async (
+            Guid lobbyId,
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId ?? Guid.Empty;
+            var tournamentId = roundInfo.TournamentId;
+            var isSolo = roundInfo.TeamSize == 1;
+
+            var isStaff = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            isStaff = isStaff || StaffAuthHelper.IsPlatformAdmin(userCtx);
+
+            if (!isStaff && (string)roundInfo.Status != "active")
+                return Results.Forbid();
+
+            var entityAccess = await ResolveRoundEntityAccessAsync(
+                conn, lobbyId, tournamentId, userCtx.UserIdGuid, isSolo);
+            if (!isStaff && entityAccess.TeamId is null && entityAccess.ParticipantId is null)
+                return Results.Forbid();
+
+            var entries = await BrLobbyReadinessRepository.ListAsync(conn, lobbyId);
+            var assignedCount = await conn.QuerySingleAsync<int>(
+                """
+                SELECT COUNT(*)::int
+                FROM br_lobby_groups lg
+                JOIN br_group_teams bgt ON bgt.group_id = lg.group_id
+                WHERE lg.lobby_id = @lobbyId
+                """,
+                new { lobbyId });
+
+            var viewerEntityId = entityAccess.TeamId ?? entityAccess.ParticipantId;
+            var isReady = viewerEntityId is not null
+                && entries.Any(entry =>
+                    (entityAccess.TeamId is not null && entry.TeamId == entityAccess.TeamId.Value.ToString())
+                    || (entityAccess.ParticipantId is not null && entry.ParticipantId == entityAccess.ParticipantId.Value.ToString()));
+
+            return Results.Ok(new
+            {
+                readyCount = entries.Count,
+                totalAssigned = assignedCount,
+                isReady,
+                entries = isStaff
+                    ? entries.Select(entry => new
+                    {
+                        userId = entry.UserId,
+                        displayName = entry.DisplayName,
+                        teamId = entry.TeamId,
+                        participantId = entry.ParticipantId,
+                        checkedInAt = entry.CheckedInAt,
+                    })
+                    : null,
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/br/lobbies/{lobbyId}/readiness ─────────────────────────
+        app.MapPost("/api/br/lobbies/{lobbyId}/readiness", async (
+            Guid lobbyId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            if ((string)roundInfo.Status != "active")
+                return Results.Conflict(new { error = "Readiness check-in is only available while the lobby is live." });
+
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId ?? Guid.Empty;
+            var tournamentId = roundInfo.TournamentId;
+            var isSolo = roundInfo.TeamSize == 1;
+
+            var entityAccess = await ResolveRoundEntityAccessAsync(
+                conn, lobbyId, tournamentId, userCtx.UserIdGuid, isSolo);
+            if (entityAccess.TeamId is null && entityAccess.ParticipantId is null)
+                return Results.Forbid();
+
+            await BrLobbyReadinessRepository.UpsertAsync(
+                conn,
+                lobbyId,
+                userCtx.UserIdGuid,
+                entityAccess.TeamId,
+                entityAccess.ParticipantId);
+
+            var entries = await BrLobbyReadinessRepository.ListAsync(conn, lobbyId);
+            var assignedCount = await conn.QuerySingleAsync<int>(
+                """
+                SELECT COUNT(*)::int
+                FROM br_lobby_groups lg
+                JOIN br_group_teams bgt ON bgt.group_id = lg.group_id
+                WHERE lg.lobby_id = @lobbyId
+                """,
+                new { lobbyId });
+
+            var payload = new
+            {
+                stageId = stageId.ToString(),
+                groupId = groupId.ToString(),
+                lobbyId = lobbyId.ToString(),
+                readyCount = entries.Count,
+                totalAssigned = assignedCount,
+            };
+            await BroadcastBrAsync(brHub, BRHubEvents.LobbyReadinessUpdated, stageId, groupId, lobbyId, payload, ct);
+
+            return Results.Ok(new { success = true, readyCount = entries.Count, totalAssigned = assignedCount });
+        }).RequireAuthorization("Authenticated");
+
+        // ── DELETE /api/br/lobbies/{lobbyId}/readiness ───────────────────────
+        app.MapDelete("/api/br/lobbies/{lobbyId}/readiness", async (
+            Guid lobbyId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
+            if (roundInfo is null)
+                return Results.NotFound(new { error = "Round not found." });
+
+            var stageId = roundInfo.StageId;
+            var groupId = roundInfo.GroupId ?? Guid.Empty;
+            var tournamentId = roundInfo.TournamentId;
+            var isSolo = roundInfo.TeamSize == 1;
+
+            var entityAccess = await ResolveRoundEntityAccessAsync(
+                conn, lobbyId, tournamentId, userCtx.UserIdGuid, isSolo);
+            if (entityAccess.TeamId is null && entityAccess.ParticipantId is null)
+                return Results.Forbid();
+
+            await BrLobbyReadinessRepository.DeleteForEntityAsync(
+                conn, lobbyId, entityAccess.TeamId, entityAccess.ParticipantId);
+
+            var entries = await BrLobbyReadinessRepository.ListAsync(conn, lobbyId);
+            var assignedCount = await conn.QuerySingleAsync<int>(
+                """
+                SELECT COUNT(*)::int
+                FROM br_lobby_groups lg
+                JOIN br_group_teams bgt ON bgt.group_id = lg.group_id
+                WHERE lg.lobby_id = @lobbyId
+                """,
+                new { lobbyId });
+
+            var payload = new
+            {
+                stageId = stageId.ToString(),
+                groupId = groupId.ToString(),
+                lobbyId = lobbyId.ToString(),
+                readyCount = entries.Count,
+                totalAssigned = assignedCount,
+            };
+            await BroadcastBrAsync(brHub, BRHubEvents.LobbyReadinessUpdated, stageId, groupId, lobbyId, payload, ct);
+
+            return Results.Ok(new { success = true, readyCount = entries.Count, totalAssigned = assignedCount });
+        }).RequireAuthorization("Authenticated");
+
         // ── PUT /api/br/lobbies/{lobbyId}/results ────────────────────────────
         // Bulk submit/update results for a round (idempotent upsert).
         app.MapPut("/api/br/lobbies/{lobbyId}/results", async (
@@ -2968,7 +3145,10 @@ public static partial class BRGroupEndpoints
 
                 var currentGame = activeGameRow
                     ?? games.FirstOrDefault(g => (Guid)g.lobby_id == activeLobbyGuid && (string)g.status != "completed");
-                var activeRoundMap = currentGame is not null ? (string?)currentGame.map : null;
+                var liveGame = currentGame is not null && (string)currentGame.status == "active"
+                    ? currentGame
+                    : null;
+                var activeRoundMap = liveGame is not null ? (string?)liveGame.map : null;
                 var useGameFields = gamesModelActive;
 
                 string? activeRoundScheduledAt = null;
@@ -3003,23 +3183,23 @@ public static partial class BRGroupEndpoints
                     map = activeRoundMap,
                 };
 
-                if (currentGame is not null)
+                if (liveGame is not null)
                 {
                     activeGamePayload = new
                     {
-                        id = ((Guid)currentGame.id).ToString(),
+                        id = ((Guid)liveGame.id).ToString(),
                         lobbyId = activeLobbyGuid.ToString(),
-                        gameNumber = Convert.ToInt32(currentGame.game_number),
-                        map = (string?)currentGame.map,
-                        status = (string)currentGame.status,
-                        scheduledAt = currentGame.scheduled_at is not null
-                            ? ((DateTimeOffset)currentGame.scheduled_at).ToString("o")
+                        gameNumber = Convert.ToInt32(liveGame.game_number),
+                        map = (string?)liveGame.map,
+                        status = (string)liveGame.status,
+                        scheduledAt = liveGame.scheduled_at is not null
+                            ? ((DateTimeOffset)liveGame.scheduled_at).ToString("o")
                             : (string?)null,
-                        queueTimerMinutes = currentGame.queue_timer_minutes is not null
-                            ? Convert.ToInt32(currentGame.queue_timer_minutes)
+                        queueTimerMinutes = liveGame.queue_timer_minutes is not null
+                            ? Convert.ToInt32(liveGame.queue_timer_minutes)
                             : (int?)null,
-                        queueStartedAt = currentGame.queue_started_at is not null
-                            ? ((DateTimeOffset)currentGame.queue_started_at).ToString("o")
+                        queueStartedAt = liveGame.queue_started_at is not null
+                            ? ((DateTimeOffset)liveGame.queue_started_at).ToString("o")
                             : (string?)null,
                     };
                 }
