@@ -11,6 +11,7 @@ public enum BrEvidenceApprovalStatus
     InvalidStats,
     PlacementConflict,
     RosterMismatch,
+    AlreadyApproved,
 }
 
 public sealed record BrEvidenceApprovalOutcome(
@@ -33,7 +34,7 @@ public static class BrEvidenceApprovalService
     {
         var evidence = await conn.QuerySingleOrDefaultAsync<dynamic>(
             """
-            SELECT placement, kills, team_id, participant_id
+            SELECT placement, kills, team_id, participant_id, reviewed
             FROM br_lobby_evidence
             WHERE game_id = @targetGameId
               AND (team_id = @entityId OR participant_id = @entityId)
@@ -45,6 +46,17 @@ public static class BrEvidenceApprovalService
             return new BrEvidenceApprovalOutcome(BrEvidenceApprovalStatus.NotFound);
 
         var values = (IDictionary<string, object>)evidence;
+
+        if (ReadNullableBool(ReadValue(values, "reviewed")) == true)
+        {
+            var existingPlacement = ReadNullableInt(ReadValue(values, "placement"));
+            var existingKills = ReadNullableInt(ReadValue(values, "kills"));
+            return new BrEvidenceApprovalOutcome(
+                BrEvidenceApprovalStatus.AlreadyApproved,
+                existingPlacement ?? 0,
+                existingKills ?? 0);
+        }
+
         var placementRaw = ReadValue(values, "placement");
         var killsRaw = ReadValue(values, "kills");
 
@@ -126,52 +138,26 @@ public static class BrEvidenceApprovalService
 
         if (existingResultId is not null)
         {
-            if (canPersistParticipantBackedResults && teamId is null && participantId is not null)
-            {
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE br_lobby_results
-                    SET placement = @placement,
-                        kills = @kills,
-                        placement_points = @placementPoints,
-                        kill_points = @killPoints,
-                        lobby_id = @lobbyId
-                    WHERE id = @id
-                    """,
-                    new
-                    {
-                        id = existingResultId,
-                        placement,
-                        kills,
-                        placementPoints,
-                        killPoints,
-                        lobbyId,
-                    },
-                    tx);
-            }
-            else
-            {
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE br_lobby_results
-                    SET placement = @placement,
-                        kills = @kills,
-                        placement_points = @placementPoints,
-                        kill_points = @killPoints,
-                        lobby_id = @lobbyId
-                    WHERE id = @id
-                    """,
-                    new
-                    {
-                        id = existingResultId,
-                        placement,
-                        kills,
-                        placementPoints,
-                        killPoints,
-                        lobbyId,
-                    },
-                    tx);
-            }
+            await conn.ExecuteAsync(
+                """
+                UPDATE br_lobby_results
+                SET placement = @placement,
+                    kills = @kills,
+                    placement_points = @placementPoints,
+                    kill_points = @killPoints,
+                    lobby_id = @lobbyId
+                WHERE id = @id
+                """,
+                new
+                {
+                    id = existingResultId,
+                    placement,
+                    kills,
+                    placementPoints,
+                    killPoints,
+                    lobbyId,
+                },
+                tx);
         }
         else if (canPersistParticipantBackedResults && teamId is null && participantId is not null)
         {
@@ -263,6 +249,12 @@ public static class BrEvidenceApprovalService
 
         return null;
     }
+
+    private static int? ReadNullableInt(object? value) =>
+        value is null or DBNull ? null : Convert.ToInt32(value);
+
+    private static bool? ReadNullableBool(object? value) =>
+        value is null or DBNull ? null : Convert.ToBoolean(value);
 
     private static Guid? TryReadGuid(object? value) =>
         value switch

@@ -2263,6 +2263,14 @@ public static partial class BRGroupEndpoints
             var wantsReopen = body.TryGetProperty("reviewed", out var reviewedProp)
                 && reviewedProp.ValueKind == JsonValueKind.False;
 
+            if (wantsApprove && wantsReopen)
+            {
+                return Results.BadRequest(new
+                {
+                    error = "Request body cannot include both approve and reviewed: false.",
+                });
+            }
+
             if (!wantsApprove && !wantsReopen)
             {
                 return Results.BadRequest(new
@@ -2279,7 +2287,6 @@ public static partial class BRGroupEndpoints
 
             var stageId = roundInfo.StageId;
             var groupId = roundInfo.GroupId ?? Guid.Empty;
-            var isSolo = roundInfo.TeamSize == 1;
 
             if (wantsApprove)
             {
@@ -2295,6 +2302,31 @@ public static partial class BRGroupEndpoints
                     conn, lobbyId, gameNumber: gameNumber);
                 if (targetGameId is null)
                     return Results.NotFound(new { error = "No game found for this lobby." });
+
+                if (gameNumber is null)
+                {
+                    var gameCount = await conn.ExecuteScalarAsync<int>(
+                        "SELECT COUNT(*)::int FROM br_games WHERE lobby_id = @lobbyId",
+                        new { lobbyId });
+                    if (gameCount > 1)
+                    {
+                        return Results.BadRequest(new
+                        {
+                            error = "gameNumber is required when this lobby has multiple games.",
+                        });
+                    }
+                }
+
+                var gameStatus = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT status FROM br_games WHERE id = @targetGameId",
+                    new { targetGameId });
+                if (string.Equals(gameStatus, "completed", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.Conflict(new
+                    {
+                        error = "This game is completed. Re-open the game before approving evidence.",
+                    });
+                }
 
                 var rosterSize = await conn.ExecuteScalarAsync<int>(
                     "SELECT COUNT(*) FROM br_group_teams WHERE group_id = @groupId",
@@ -2346,6 +2378,15 @@ public static partial class BRGroupEndpoints
                         case BrEvidenceApprovalStatus.RosterMismatch:
                             tx.Rollback();
                             return Results.Conflict(new { error = "This submission does not match the current group roster." });
+                        case BrEvidenceApprovalStatus.AlreadyApproved:
+                            tx.Rollback();
+                            return Results.Ok(new
+                            {
+                                success = true,
+                                approved = true,
+                                reviewed = true,
+                                alreadyApproved = true,
+                            });
                     }
 
                     tx.Commit();
@@ -2357,6 +2398,13 @@ public static partial class BRGroupEndpoints
                     {
                         error = "Could not apply this result because it conflicts with an existing placement or player row.",
                     });
+                }
+                catch (Exception ex)
+                {
+                    tx.Rollback();
+                    Console.Error.WriteLine(
+                        $"[BRGroupEndpoints] Failed to approve evidence for lobby {lobbyId}, entity {entityId}, gameNumber={gameNumber}: {ex}");
+                    throw;
                 }
 
                 var pendingCount = await BrEvidenceService.CountPendingAsync(conn, lobbyId);
@@ -2413,23 +2461,14 @@ public static partial class BRGroupEndpoints
                 return Results.NotFound(new { error = "No game found for this lobby." });
 
             var updated = await conn.ExecuteAsync(
-                isSolo
-                    ? """
-                      UPDATE br_lobby_evidence
-                      SET reviewed = FALSE,
-                          reviewed_at = NULL,
-                          reviewed_by = NULL
-                      WHERE game_id = @targetGameId
-                        AND participant_id = @entityId
-                      """
-                    : """
-                      UPDATE br_lobby_evidence
-                      SET reviewed = FALSE,
-                          reviewed_at = NULL,
-                          reviewed_by = NULL
-                      WHERE game_id = @targetGameId
-                        AND team_id = @entityId
-                      """,
+                """
+                UPDATE br_lobby_evidence
+                SET reviewed = FALSE,
+                    reviewed_at = NULL,
+                    reviewed_by = NULL
+                WHERE game_id = @targetGameId
+                  AND (team_id = @entityId OR participant_id = @entityId)
+                """,
                 new
                 {
                     targetGameId = reopenGameId,
