@@ -192,6 +192,10 @@ public static class BrGameEndpoints
             if (body.TryGetProperty("status", out var statusProp) && statusProp.ValueKind == JsonValueKind.String)
                 statusValue = statusProp.GetString()?.Trim().ToLowerInvariant();
 
+            var currentGameStatus = (context.game_status as string) ?? "pending";
+            var isReopeningGame = string.Equals(statusValue, "active", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(currentGameStatus, "completed", StringComparison.OrdinalIgnoreCase);
+
             DateTimeOffset? scheduledAt = null;
             var scheduleProvided = false;
             if (body.TryGetProperty("scheduledAt", out var scheduleProp))
@@ -253,7 +257,7 @@ public static class BrGameEndpoints
                     return Results.BadRequest(new { error = mapError });
             }
 
-            if (statusValue == "active")
+            if (statusValue == "active" && !isReopeningGame)
             {
                 var lobbyStatus = (string)context.lobby_status;
                 if (!string.Equals(lobbyStatus, "active", StringComparison.OrdinalIgnoreCase))
@@ -345,23 +349,26 @@ public static class BrGameEndpoints
                         return Results.BadRequest(new { error = "Another game in this lobby is already live. Complete it before starting the next game." });
                     }
 
-                    var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
-                    var liveError = await TournamentTimelineValidator.EnsureTournamentLiveAsync(conn, stageId, tx);
-                    if (liveError is not null)
+                    if (!isReopeningGame)
                     {
-                        tx.Rollback();
-                        return Results.BadRequest(new { error = liveError });
-                    }
+                        var (tournamentStart, tournamentEnd, _) = await StageCompletionHelper.GetTournamentWindowForStageAsync(conn, stageId, tx);
+                        var liveError = await TournamentTimelineValidator.EnsureTournamentLiveAsync(conn, stageId, tx);
+                        if (liveError is not null)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = liveError });
+                        }
 
-                    var liveWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
-                        DateTimeOffset.UtcNow,
-                        tournamentStart,
-                        tournamentEnd,
-                        "Starting a game");
-                    if (liveWindowError is not null)
-                    {
-                        tx.Rollback();
-                        return Results.BadRequest(new { error = liveWindowError });
+                        var liveWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
+                            DateTimeOffset.UtcNow,
+                            tournamentStart,
+                            tournamentEnd,
+                            "Starting a game");
+                        if (liveWindowError is not null)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = liveWindowError });
+                        }
                     }
                 }
                 var updated = await conn.QuerySingleAsync<dynamic>(
