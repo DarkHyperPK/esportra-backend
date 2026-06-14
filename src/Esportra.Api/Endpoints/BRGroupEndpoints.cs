@@ -1226,6 +1226,7 @@ public static partial class BRGroupEndpoints
                 int? finalQueueTimerMinutes = currentQueueTimerMinutes;
                 string? finalMap = currentMap;
                 var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map", tx);
+                var gamesModelReady = await BrSchemaRepository.BrGamesModelReadyAsync(conn, tx);
 
                 if (roundsHasMapColumn && body.TryGetProperty("map", out var mapProp))
                 {
@@ -1313,7 +1314,13 @@ public static partial class BRGroupEndpoints
                     }
                 }
 
-                if (body.TryGetProperty("queueTimerMinutes", out var qtmProp))
+                if (gamesModelReady && body.TryGetProperty("queueTimerMinutes", out _))
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Queue timer is set per game. Configure it on each game before starting." });
+                }
+
+                if (!gamesModelReady && body.TryGetProperty("queueTimerMinutes", out var qtmProp))
                 {
                     if (qtmProp.ValueKind == JsonValueKind.Null)
                     {
@@ -1372,40 +1379,43 @@ public static partial class BRGroupEndpoints
 
                         if (roundsHasMapColumn)
                         {
-                            var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                                """
-                                SELECT t.game, t.settings, ts.config AS stage_config
-                                FROM tournament_stages ts
-                                JOIN tournaments t ON t.id = ts.tournament_id
-                                WHERE ts.id = @stageId
-                                """,
-                                new { stageId },
-                                tx);
-
-                            var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
-                            var mapConfig = BrConfigService.ResolveMapConfig(
-                                stageContext?.settings,
-                                stageContext?.stage_config,
-                                catalogBrConfig);
-
-                            var effectiveMap = BrConfigService.ResolveMapForRound(
-                                mapConfig,
-                                currentRoundNumber,
-                                finalMap);
-
-                            if (mapConfig.Mode == BrMapMode.PerRound
-                                && string.IsNullOrWhiteSpace(effectiveMap))
+                            if (!gamesModelReady)
                             {
-                                tx.Rollback();
-                                return Results.BadRequest(new { error = "Map is required before starting a round." });
-                            }
+                                var stageContext = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                                    """
+                                    SELECT t.game, t.settings, ts.config AS stage_config
+                                    FROM tournament_stages ts
+                                    JOIN tournaments t ON t.id = ts.tournament_id
+                                    WHERE ts.id = @stageId
+                                    """,
+                                    new { stageId },
+                                    tx);
 
-                            if (!string.IsNullOrWhiteSpace(effectiveMap))
-                            {
-                                if (!BrConfigService.ValidateMapInPool(mapConfig, effectiveMap, out string? mapError))
+                                var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stageContext?.game as string, ct);
+                                var mapConfig = BrConfigService.ResolveMapConfig(
+                                    stageContext?.settings,
+                                    stageContext?.stage_config,
+                                    catalogBrConfig);
+
+                                var effectiveMap = BrConfigService.ResolveMapForRound(
+                                    mapConfig,
+                                    currentRoundNumber,
+                                    finalMap);
+
+                                if (mapConfig.Mode == BrMapMode.PerRound
+                                    && string.IsNullOrWhiteSpace(effectiveMap))
                                 {
                                     tx.Rollback();
-                                    return Results.BadRequest(new { error = mapError });
+                                    return Results.BadRequest(new { error = "Map is required before starting a round." });
+                                }
+
+                                if (!string.IsNullOrWhiteSpace(effectiveMap))
+                                {
+                                    if (!BrConfigService.ValidateMapInPool(mapConfig, effectiveMap, out string? mapError))
+                                    {
+                                        tx.Rollback();
+                                        return Results.BadRequest(new { error = mapError });
+                                    }
                                 }
                             }
                         }
@@ -1490,7 +1500,15 @@ public static partial class BRGroupEndpoints
                 var hasLiveLobbyCode = finalStatus == "active" && !string.IsNullOrWhiteSpace(finalLobbyCode);
                 var hasQueueTimer = finalQueueTimerMinutes is > 0;
 
-                if (!hasLiveLobbyCode || !hasQueueTimer)
+                if (gamesModelReady)
+                {
+                    if (finalStatus == "active" && currentStatus != "active")
+                    {
+                        setClauses.Add("queue_timer_minutes = NULL");
+                    }
+                    setClauses.Add("queue_started_at = NULL");
+                }
+                else if (!hasLiveLobbyCode || !hasQueueTimer)
                 {
                     setClauses.Add("queue_started_at = NULL");
                 }
@@ -1714,7 +1732,7 @@ public static partial class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
@@ -1901,7 +1919,7 @@ public static partial class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
@@ -1991,7 +2009,7 @@ public static partial class BRGroupEndpoints
                 gameNumber = gn;
             }
 
-            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
@@ -2178,7 +2196,7 @@ public static partial class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId);
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
@@ -2256,7 +2274,7 @@ public static partial class BRGroupEndpoints
 
             using var conn = db.CreateConnection();
 
-            var roundInfo = await QueryLobbyContextAsync(conn, lobbyId, includeStageConfig: true);
+            var roundInfo = await BrLobbyRepository.GetContextAsync(conn, lobbyId, includeStageConfig: true);
             if (roundInfo is null)
                 return Results.NotFound(new { error = "Round not found." });
 
@@ -2834,7 +2852,8 @@ public static partial class BRGroupEndpoints
                 : (await conn.QueryAsync<dynamic>(
                     """
                     SELECT g.id, g.lobby_id, g.game_number, g.map, g.status,
-                           g.scheduled_at, g.started_at, g.completed_at
+                           g.scheduled_at, g.started_at, g.completed_at,
+                           g.queue_timer_minutes, g.queue_started_at
                     FROM br_games g
                     WHERE g.lobby_id = ANY(@lobbyIds)
                     ORDER BY g.lobby_id, g.game_number
@@ -2908,6 +2927,7 @@ public static partial class BRGroupEndpoints
                 var currentGame = activeGameRow
                     ?? games.FirstOrDefault(g => (Guid)g.lobby_id == activeLobbyGuid && (string)g.status != "completed");
                 var activeRoundMap = currentGame is not null ? (string?)currentGame.map : null;
+                var useGameQueue = games.Count > 0;
 
                 activeRoundPayload = new
                 {
@@ -2917,12 +2937,16 @@ public static partial class BRGroupEndpoints
                     matchupLabel = (string?)activeRoundRow.matchup_label,
                     lobbyCode,
                     status = (string)activeRoundRow.status,
-                    queueTimerMinutes = activeRoundRow.queue_timer_minutes is not null
-                        ? Convert.ToInt32(activeRoundRow.queue_timer_minutes)
-                        : (int?)null,
-                    queueStartedAt = activeRoundRow.queue_started_at is not null
-                        ? ((DateTimeOffset)activeRoundRow.queue_started_at).ToString("o")
-                        : (string?)null,
+                    queueTimerMinutes = useGameQueue
+                        ? null
+                        : activeRoundRow.queue_timer_minutes is not null
+                            ? Convert.ToInt32(activeRoundRow.queue_timer_minutes)
+                            : (int?)null,
+                    queueStartedAt = useGameQueue
+                        ? null
+                        : activeRoundRow.queue_started_at is not null
+                            ? ((DateTimeOffset)activeRoundRow.queue_started_at).ToString("o")
+                            : (string?)null,
                     scheduledAt = activeRoundRow.scheduled_at is not null
                         ? ((DateTimeOffset)activeRoundRow.scheduled_at).ToString("o")
                         : (string?)null,
@@ -2940,6 +2964,12 @@ public static partial class BRGroupEndpoints
                         status = (string)currentGame.status,
                         scheduledAt = currentGame.scheduled_at is not null
                             ? ((DateTimeOffset)currentGame.scheduled_at).ToString("o")
+                            : (string?)null,
+                        queueTimerMinutes = currentGame.queue_timer_minutes is not null
+                            ? Convert.ToInt32(currentGame.queue_timer_minutes)
+                            : (int?)null,
+                        queueStartedAt = currentGame.queue_started_at is not null
+                            ? ((DateTimeOffset)currentGame.queue_started_at).ToString("o")
                             : (string?)null,
                     };
                 }
@@ -2959,6 +2989,12 @@ public static partial class BRGroupEndpoints
                         status = (string)g.status,
                         scheduledAt = g.scheduled_at is not null
                             ? ((DateTimeOffset)g.scheduled_at).ToString("o")
+                            : (string?)null,
+                        queueTimerMinutes = g.queue_timer_minutes is not null
+                            ? Convert.ToInt32(g.queue_timer_minutes)
+                            : (int?)null,
+                        queueStartedAt = g.queue_started_at is not null
+                            ? ((DateTimeOffset)g.queue_started_at).ToString("o")
                             : (string?)null,
                     })
                     .ToList();
@@ -4210,68 +4246,5 @@ public static partial class BRGroupEndpoints
                 $"[BRGroupEndpoints] Failed to broadcast {eventName} for stage {stageId}, group {groupId}, round {lobbyId}: {ex.Message}");
         }
     }
-
-    private sealed record BrLobbyContextRow(
-        Guid StageId,
-        Guid? GroupId,
-        int WaveNumber,
-        string Status,
-        Guid TournamentId,
-        int TeamSize,
-        string? Game = null,
-        object? Settings = null,
-        object? StageConfig = null);
-
-    /// <summary>
-    /// One row per lobby — avoids QuerySingle failures when a lobby spans multiple seed groups.
-    /// </summary>
-    private static Task<BrLobbyContextRow?> QueryLobbyContextAsync(
-        IDbConnection conn,
-        Guid lobbyId,
-        bool includeStageConfig = false,
-        IDbTransaction? tx = null) =>
-        conn.QuerySingleOrDefaultAsync<BrLobbyContextRow>(
-            includeStageConfig
-                ? """
-                  SELECT r.stage_id AS StageId,
-                         (
-                             SELECT lg.group_id
-                             FROM br_lobby_groups lg
-                             WHERE lg.lobby_id = r.id
-                             ORDER BY lg.group_id
-                             LIMIT 1
-                         ) AS GroupId,
-                         r.wave_number AS WaveNumber,
-                         r.status AS Status,
-                         ts.tournament_id AS TournamentId,
-                         COALESCE(t.team_size, 1) AS TeamSize,
-                         t.game AS Game,
-                         t.settings AS Settings,
-                         ts.config AS StageConfig
-                  FROM br_lobbies r
-                  JOIN tournament_stages ts ON ts.id = r.stage_id
-                  JOIN tournaments t ON t.id = ts.tournament_id
-                  WHERE r.id = @lobbyId
-                  """
-                : """
-                  SELECT r.stage_id AS StageId,
-                         (
-                             SELECT lg.group_id
-                             FROM br_lobby_groups lg
-                             WHERE lg.lobby_id = r.id
-                             ORDER BY lg.group_id
-                             LIMIT 1
-                         ) AS GroupId,
-                         r.wave_number AS WaveNumber,
-                         r.status AS Status,
-                         ts.tournament_id AS TournamentId,
-                         COALESCE(t.team_size, 1) AS TeamSize
-                  FROM br_lobbies r
-                  JOIN tournament_stages ts ON ts.id = r.stage_id
-                  JOIN tournaments t ON t.id = ts.tournament_id
-                  WHERE r.id = @lobbyId
-                  """,
-            new { lobbyId },
-            tx);
 
 }

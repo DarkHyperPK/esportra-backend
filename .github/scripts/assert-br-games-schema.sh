@@ -45,4 +45,20 @@ assert_exists "column" "br_lobby_results.game_id" \
        AND column_name = 'game_id'
    )"
 
+assert_exists "column" "br_games.queue_timer_minutes" \
+  "SELECT EXISTS (
+     SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'br_games'
+       AND column_name = 'queue_timer_minutes'
+   )"
+
+assert_exists "column" "br_games.queue_started_at" \
+  "SELECT EXISTS (
+     SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'br_games'
+       AND column_name = 'queue_started_at'
+   )"
+
 echo "BR games model schema checks passed."

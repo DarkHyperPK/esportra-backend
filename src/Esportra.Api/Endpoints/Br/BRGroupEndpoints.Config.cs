@@ -45,15 +45,18 @@ public static partial class BRGroupEndpoints
                 return Results.NotFound(new { error = "Stage not found." });
 
             var catalogBrConfig = await LoadCatalogBrConfigAsync(catalog, stage.game as string, ct);
+            var gamesModelActive = await BrSchemaRepository.BrGamesModelReadyAsync(conn);
             var resolved = BrConfigService.ResolveForApi(
                 stage.settings,
                 stage.config,
                 catalogBrConfig,
-                stage.advancement_count is not null ? Convert.ToInt32(stage.advancement_count) : null);
+                stage.advancement_count is not null ? Convert.ToInt32(stage.advancement_count) : null,
+                gamesModelActive);
 
             return Results.Ok(new
             {
                 gamesPerLobby = resolved.GamesPerLobby,
+                mapScope = resolved.MapScope,
                 mapConfig = new
                 {
                     mode = resolved.MapConfig.Mode switch

@@ -171,4 +171,5 @@ public static class BRHubEvents
     public const string GameCreated = "GameCreated";
     public const string GameUpdated = "GameUpdated";
     public const string GameCompleted = "GameCompleted";
+    public const string GameReset = "GameReset";
 }

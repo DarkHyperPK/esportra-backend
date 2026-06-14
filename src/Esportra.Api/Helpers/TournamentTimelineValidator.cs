@@ -256,19 +256,22 @@ public static class TournamentTimelineValidator
             return $"Game {gameNumber} must be scheduled before the next game in this lobby.";
         }
 
-        var lobbySchedule = await BrGameRepository.QuerySingleTimestampOrDefaultAsync(
-            conn,
-            """
-            SELECT scheduled_at
-            FROM br_lobbies
-            WHERE id = @lobbyId
-            """,
-            new { lobbyId },
-            tx);
-
-        if (lobbySchedule is not null && scheduledAt < lobbySchedule)
+        if (!await BrSchemaRepository.BrGamesModelReadyAsync(conn, tx))
         {
-            return $"Game {gameNumber} cannot be scheduled before its lobby start time.";
+            var lobbySchedule = await BrGameRepository.QuerySingleTimestampOrDefaultAsync(
+                conn,
+                """
+                SELECT scheduled_at
+                FROM br_lobbies
+                WHERE id = @lobbyId
+                """,
+                new { lobbyId },
+                tx);
+
+            if (lobbySchedule is not null && scheduledAt < lobbySchedule)
+            {
+                return $"Game {gameNumber} cannot be scheduled before its lobby start time.";
+            }
         }
 
         return null;

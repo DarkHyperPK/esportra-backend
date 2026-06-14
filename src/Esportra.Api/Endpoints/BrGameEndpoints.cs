@@ -33,6 +33,7 @@ public static class BrGameEndpoints
                 """
                 SELECT g.id, g.lobby_id, g.game_number, g.map, g.status,
                        g.scheduled_at, g.started_at, g.completed_at, g.created_at,
+                       g.queue_timer_minutes, g.queue_started_at,
                        (SELECT COUNT(*) FROM br_lobby_results rr WHERE rr.game_id = g.id) AS result_count,
                        (SELECT COUNT(*) FROM br_lobby_evidence re WHERE re.game_id = g.id) AS evidence_count
                 FROM br_games g
@@ -91,7 +92,8 @@ public static class BrGameEndpoints
             var games = await conn.QueryAsync<dynamic>(
                 """
                 SELECT g.id, g.lobby_id, g.game_number, g.map, g.status,
-                       g.scheduled_at, g.started_at, g.completed_at, g.created_at
+                       g.scheduled_at, g.started_at, g.completed_at, g.created_at,
+                       g.queue_timer_minutes, g.queue_started_at
                 FROM br_games g
                 WHERE g.lobby_id = @lobbyId
                 ORDER BY g.game_number
@@ -111,8 +113,8 @@ public static class BrGameEndpoints
                 """
                 SELECT g.id, g.lobby_id, g.game_number, g.map, g.status,
                        g.scheduled_at, g.started_at, g.completed_at, g.created_at,
-                       l.stage_id, l.wave_number, l.lobby_index, l.lobby_code,
-                       l.queue_timer_minutes, l.queue_started_at
+                       g.queue_timer_minutes, g.queue_started_at,
+                       l.stage_id, l.wave_number, l.lobby_index, l.lobby_code
                 FROM br_games g
                 JOIN br_lobbies l ON l.id = g.lobby_id
                 WHERE g.id = @gameId
@@ -212,6 +214,25 @@ public static class BrGameEndpoints
                 }
             }
 
+            int? queueTimerMinutes = null;
+            var queueProvided = false;
+            if (body.TryGetProperty("queueTimerMinutes", out var qtmProp))
+            {
+                queueProvided = true;
+                if (qtmProp.ValueKind == JsonValueKind.Null)
+                {
+                    queueTimerMinutes = null;
+                }
+                else if (qtmProp.TryGetInt32(out var parsedQueue) && parsedQueue >= 0 && parsedQueue <= 180)
+                {
+                    queueTimerMinutes = parsedQueue == 0 ? null : parsedQueue;
+                }
+                else
+                {
+                    return Results.BadRequest(new { error = "queueTimerMinutes must be between 0 and 180." });
+                }
+            }
+
             if (mapProvided && mapValue is not null)
             {
                 var gameName = context.game as string;
@@ -236,6 +257,32 @@ public static class BrGameEndpoints
                 if (string.IsNullOrWhiteSpace(lobbyCode))
                 {
                     return Results.BadRequest(new { error = "Lobby code is required before starting a game." });
+                }
+
+                var gameName = context.game as string;
+                var catalogBrConfig = string.IsNullOrWhiteSpace(gameName)
+                    ? null
+                    : (await catalog.GetGameAsync(gameName.Trim(), ct))?.BrConfig;
+                var mapConfig = BrConfigService.ResolveMapConfig(
+                    context.settings, context.stage_config, catalogBrConfig);
+                var gameNumber = Convert.ToInt32(context.game_number);
+                var effectiveMap = BrConfigService.ResolveMapForGame(mapConfig, gameNumber, mapProvided ? mapValue : null);
+                if (BrConfigService.RequiresExplicitMapForGame(mapConfig)
+                    && string.IsNullOrWhiteSpace(effectiveMap))
+                {
+                    return Results.BadRequest(new { error = $"Map is required before starting game {gameNumber}." });
+                }
+
+                if (!string.IsNullOrWhiteSpace(effectiveMap))
+                {
+                    if (!BrConfigService.ValidateMapInPool(mapConfig, effectiveMap, out string? startMapError))
+                        return Results.BadRequest(new { error = startMapError });
+                }
+
+                if (!mapProvided && !string.IsNullOrWhiteSpace(effectiveMap))
+                {
+                    mapValue = effectiveMap;
+                    mapProvided = true;
                 }
             }
 
@@ -315,14 +362,36 @@ public static class BrGameEndpoints
                     SET map = CASE WHEN @mapProvided THEN @map ELSE map END,
                         status = COALESCE(@status, status),
                         scheduled_at = CASE WHEN @scheduleProvided THEN @scheduledAt ELSE scheduled_at END,
-                        started_at = CASE WHEN @startedProvided THEN @startedAt ELSE started_at END,
+                        queue_timer_minutes = CASE
+                            WHEN @queueProvided THEN @queueTimerMinutes
+                            ELSE queue_timer_minutes
+                        END,
+                        queue_started_at = CASE
+                            WHEN COALESCE(@status, status) IN ('completed', 'pending') THEN NULL
+                            WHEN @queueProvided AND COALESCE(@queueTimerMinutes, 0) = 0 THEN NULL
+                            WHEN @status = 'active' AND COALESCE(
+                                CASE WHEN @queueProvided THEN @queueTimerMinutes ELSE queue_timer_minutes END, 0) = 0 THEN NULL
+                            WHEN COALESCE(@status, status) = 'active'
+                                 AND COALESCE(
+                                     CASE WHEN @queueProvided THEN @queueTimerMinutes ELSE queue_timer_minutes END, 0) > 0
+                                 AND (@status = 'active'
+                                      OR (@queueProvided AND COALESCE(@queueTimerMinutes, 0) > 0))
+                                THEN NOW()
+                            ELSE queue_started_at
+                        END,
+                        started_at = CASE
+                            WHEN @startedProvided THEN @startedAt
+                            WHEN @status = 'active' THEN COALESCE(started_at, now())
+                            ELSE started_at
+                        END,
                         completed_at = CASE
                             WHEN @status = 'completed' THEN COALESCE(completed_at, now())
                             WHEN @status IS NOT NULL AND @status <> 'completed' THEN NULL
                             ELSE completed_at
                         END
                     WHERE id = @gameId
-                    RETURNING id, lobby_id, game_number, map, status, scheduled_at, started_at, completed_at, created_at
+                    RETURNING id, lobby_id, game_number, map, status, scheduled_at, started_at, completed_at,
+                              queue_timer_minutes, queue_started_at, created_at
                     """,
                     new
                     {
@@ -334,6 +403,8 @@ public static class BrGameEndpoints
                         scheduledAt,
                         startedProvided,
                         startedAt,
+                        queueProvided,
+                        queueTimerMinutes,
                     },
                     tx);
 
@@ -359,6 +430,12 @@ public static class BrGameEndpoints
                     gameNumber = Convert.ToInt32(updated.game_number),
                     status = (string)updated.status,
                     map = (string?)updated.map,
+                    queueTimerMinutes = updated.queue_timer_minutes is not null
+                        ? Convert.ToInt32(updated.queue_timer_minutes)
+                        : (int?)null,
+                    queueStartedAt = updated.queue_started_at is not null
+                        ? ((DateTimeOffset)updated.queue_started_at).ToString("o")
+                        : (string?)null,
                 };
 
                 await BrBroadcastHelper.BroadcastAsync(
@@ -377,6 +454,95 @@ public static class BrGameEndpoints
                 tx.Rollback();
                 throw;
             }
+        }).RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/br/games/{gameId}/reset", async (
+            Guid gameId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var context = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT g.id, g.lobby_id, g.game_number, g.map, g.status, g.scheduled_at,
+                       l.stage_id
+                FROM br_games g
+                JOIN br_lobbies l ON l.id = g.lobby_id
+                WHERE g.id = @gameId
+                """,
+                new { gameId });
+
+            if (context is null)
+                return Results.NotFound(new { error = "Game not found." });
+
+            var stageId = (Guid)context.stage_id;
+            var lobbyId = (Guid)context.lobby_id;
+            var allowed = await StaffAuthHelper.CanActOnStageAsync(
+                conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            var guardError = await BrGameService.ValidateResetAllowedAsync(conn, gameId);
+            if (guardError is not null)
+                return Results.Conflict(new { error = guardError });
+
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                await BrGameService.ResetGameAsync(conn, gameId, tx);
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+
+            var groupId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT lg.group_id
+                FROM br_lobby_groups lg
+                WHERE lg.lobby_id = @lobbyId
+                ORDER BY lg.group_id
+                LIMIT 1
+                """,
+                new { lobbyId });
+
+            var resetGame = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT g.id, g.lobby_id, g.game_number, g.map, g.status, g.scheduled_at,
+                       g.queue_timer_minutes, g.queue_started_at
+                FROM br_games g
+                WHERE g.id = @gameId
+                """,
+                new { gameId });
+
+            var payload = new
+            {
+                stageId = stageId.ToString(),
+                groupId = groupId?.ToString(),
+                lobbyId = lobbyId.ToString(),
+                gameId = gameId.ToString(),
+                gameNumber = Convert.ToInt32(resetGame.game_number),
+                status = "pending",
+                map = (string?)resetGame.map,
+                queueTimerMinutes = resetGame.queue_timer_minutes is not null
+                    ? Convert.ToInt32(resetGame.queue_timer_minutes)
+                    : (int?)null,
+                queueStartedAt = (string?)null,
+            };
+
+            await BrBroadcastHelper.BroadcastAsync(
+                brHub, BRHubEvents.GameReset, stageId, groupId, lobbyId, gameId, payload, ct);
+            await BrBroadcastHelper.BroadcastAsync(
+                brHub, BRHubEvents.LeaderboardUpdated, stageId, groupId, lobbyId, null, new { stageId = stageId.ToString() }, ct);
+
+            return Results.Ok(resetGame);
         }).RequireAuthorization("Authenticated");
 
         app.MapGet("/api/br/games/{gameId}/results", async (

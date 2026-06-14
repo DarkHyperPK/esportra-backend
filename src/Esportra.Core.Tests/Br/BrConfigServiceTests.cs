@@ -28,5 +28,22 @@ public sealed class BrConfigServiceTests
         var dto = BrConfigService.ResolveForApi(null, """{"br":{"gamesPerLobby":3}}""", null);
         Assert.Equal(3, dto.GamesPerLobby);
         Assert.Equal("static_groups", dto.Format);
+        Assert.Equal("none", dto.MapScope);
+    }
+
+    [Fact]
+    public void DeriveMapScope_uses_game_when_games_model_active()
+    {
+        var mapConfig = new BrMapConfig(BrMapMode.PerRound, ["Erangel"], null);
+        Assert.Equal("game", BrConfigService.DeriveMapScope(mapConfig, gamesModelActive: true));
+        Assert.Equal("lobby", BrConfigService.DeriveMapScope(mapConfig, gamesModelActive: false));
+        Assert.Equal("none", BrConfigService.DeriveMapScope(new BrMapConfig(BrMapMode.None, [], null), true));
+    }
+
+    [Fact]
+    public void ResolveMapForGame_matches_rotation_by_game_number()
+    {
+        var mapConfig = new BrMapConfig(BrMapMode.Rotation, ["A", "B", "C"], null);
+        Assert.Equal("B", BrConfigService.ResolveMapForGame(mapConfig, 2, null));
     }
 }

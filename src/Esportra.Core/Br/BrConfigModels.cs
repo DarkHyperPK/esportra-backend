@@ -62,4 +62,5 @@ public sealed record ResolvedBrStageConfigDto(
     BrAdvancementConfig Advancement,
     BrLobbyFormation LobbyFormation,
     BrLeaderboardScope LeaderboardScope,
-    int PlayersPerLobby);
+    int PlayersPerLobby,
+    string MapScope);

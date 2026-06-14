@@ -290,6 +290,19 @@ public static class BrConfigService
         return (placementPoints, killPoints, placementPoints + killPoints);
     }
 
+    public static string? ResolveMapForGame(BrMapConfig mapConfig, int gameNumber, string? explicitMap) =>
+        ResolveMapForRound(mapConfig, gameNumber, explicitMap);
+
+    public static string DeriveMapScope(BrMapConfig mapConfig, bool gamesModelActive) =>
+        mapConfig.Mode == BrMapMode.None
+            ? "none"
+            : gamesModelActive
+                ? "game"
+                : "lobby";
+
+    public static bool RequiresExplicitMapForGame(BrMapConfig mapConfig) =>
+        mapConfig.Mode is BrMapMode.PerRound or BrMapMode.Rotation;
+
     public static string? ResolveMapForRound(BrMapConfig mapConfig, int roundNumber, string? explicitMap)
     {
         if (mapConfig.Mode == BrMapMode.None)
@@ -344,12 +357,14 @@ public static class BrConfigService
         object? tournamentSettings,
         object? stageConfig,
         object? catalogBrConfig,
-        int? stageAdvancementCount = null)
+        int? stageAdvancementCount = null,
+        bool gamesModelActive = false)
     {
         var resolved = Resolve(tournamentSettings, stageConfig, catalogBrConfig);
         var format = ResolveFormat(stageConfig);
         var advancementMode = ResolveAdvancement(stageConfig);
         var advancementCount = ResolveAdvancementCount(stageConfig, stageAdvancementCount);
+        var mapScope = DeriveMapScope(resolved.Map, gamesModelActive);
 
         return new ResolvedBrStageConfigDto(
             resolved.GameCount ?? 6,
@@ -360,7 +375,8 @@ public static class BrConfigService
             new BrAdvancementConfig(advancementMode, advancementCount),
             ResolveLobbyFormation(format),
             ResolveLeaderboardScope(stageConfig),
-            BrCatalogConfigReader.ReadPlayersPerLobby(catalogBrConfig));
+            BrCatalogConfigReader.ReadPlayersPerLobby(catalogBrConfig),
+            mapScope);
     }
 
     private static string TiebreakerToApi(BrTiebreaker tiebreaker) =>
