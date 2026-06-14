@@ -825,7 +825,10 @@ public static partial class BRGroupEndpoints
 
             var readinessSelect = isStaff
                 ? readyCountSelect + """
-                  (SELECT COUNT(*)::int FROM br_group_teams bgt WHERE bgt.group_id = @groupId) AS total_assigned,
+                  (SELECT COUNT(*)::int
+                   FROM br_lobby_groups lg2
+                   JOIN br_group_teams bgt ON bgt.group_id = lg2.group_id
+                   WHERE lg2.lobby_id = r.id) AS total_assigned,
                   """
                 : string.Empty;
 
@@ -1138,6 +1141,28 @@ public static partial class BRGroupEndpoints
 
             var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map");
             var mapSelect = roundsHasMapColumn ? ", l.map" : ", NULL::text AS map";
+            var readinessTableExists = await BrLobbyReadinessRepository.TableExistsAsync(conn);
+            var readyCountSelect = readinessTableExists
+                ? """
+                  (SELECT COUNT(*)::int FROM br_lobby_readiness br
+                   WHERE br.lobby_id = l.id AND br.game_id IS NULL) AS ready_count,
+                  """
+                : "0::int AS ready_count,";
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            var isStaff = userCtx is not null
+                && (await StaffAuthHelper.CanActOnStageAsync(
+                        conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
+                    || StaffAuthHelper.IsPlatformAdmin(userCtx));
+
+            var readinessSelect = isStaff
+                ? readyCountSelect + """
+                  (SELECT COUNT(*)::int
+                   FROM br_lobby_groups lg2
+                   JOIN br_group_teams bgt ON bgt.group_id = lg2.group_id
+                   WHERE lg2.lobby_id = l.id) AS total_assigned,
+                  """
+                : string.Empty;
 
             var lobbies = await conn.QueryAsync<dynamic>(
                 $"""
@@ -1152,8 +1177,12 @@ public static partial class BRGroupEndpoints
                        l.created_at,
                        l.queue_timer_minutes,
                        l.queue_started_at{mapSelect},
+                       (SELECT COUNT(*) FROM br_lobby_results rr JOIN br_games g ON g.id = rr.game_id WHERE g.lobby_id = l.id) AS result_count,
+                       (SELECT COUNT(*) FROM br_lobby_evidence ev JOIN br_games g ON g.id = ev.game_id WHERE g.lobby_id = l.id) AS evidence_count,
+                       (SELECT COUNT(*) FROM br_lobby_evidence ev JOIN br_games g ON g.id = ev.game_id WHERE g.lobby_id = l.id AND ev.reviewed = FALSE) AS pending_evidence_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = l.id) AS game_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = l.id AND g.status = 'completed') AS games_completed,
+                       {readinessSelect}
                        COALESCE(array_agg(lg.group_id) FILTER (WHERE lg.group_id IS NOT NULL), ARRAY[]::uuid[]) AS group_ids
                 FROM br_lobbies l
                 LEFT JOIN br_lobby_groups lg ON lg.lobby_id = l.id
