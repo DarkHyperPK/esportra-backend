@@ -804,6 +804,30 @@ public static partial class BRGroupEndpoints
 
             var roundsHasMapColumn = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobbies", "map");
             var mapSelect = roundsHasMapColumn ? ", r.map" : ", NULL::text AS map";
+            var readinessTableExists = await BrLobbyReadinessRepository.TableExistsAsync(conn);
+            var readyCountSelect = readinessTableExists
+                ? """
+                  (SELECT COUNT(*)::int FROM br_lobby_readiness br
+                   WHERE br.lobby_id = r.id AND br.game_id IS NULL) AS ready_count,
+                  """
+                : "0::int AS ready_count,";
+
+            // Lobby code visibility rules:
+            // - Staff/admin: see all codes (any round status)
+            // - Authenticated tournament participants: see code only when round is 'active'
+            // - All others (unauthenticated or non-participants): never see codes
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+
+            var isStaff = userCtx is not null
+                && (await StaffAuthHelper.CanActOnStageAsync(
+                        conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
+                    || StaffAuthHelper.IsPlatformAdmin(userCtx));
+
+            var readinessSelect = isStaff
+                ? readyCountSelect + """
+                  (SELECT COUNT(*)::int FROM br_group_teams bgt WHERE bgt.group_id = @groupId) AS total_assigned,
+                  """
+                : string.Empty;
 
             var rounds = await conn.QueryAsync<dynamic>(
                 """
@@ -816,6 +840,7 @@ public static partial class BRGroupEndpoints
                        (SELECT COUNT(*) FROM br_lobby_evidence ev JOIN br_games g ON g.id = ev.game_id WHERE g.lobby_id = r.id AND ev.reviewed = FALSE) AS pending_evidence_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id) AS game_count,
                        (SELECT COUNT(*)::int FROM br_games g WHERE g.lobby_id = r.id AND g.status = 'completed') AS games_completed,
+                       """ + readinessSelect + """
                        COALESCE((
                            SELECT array_agg(lg2.group_id ORDER BY g2.group_order)
                            FROM br_lobby_groups lg2
@@ -827,17 +852,6 @@ public static partial class BRGroupEndpoints
                 ORDER BY r.wave_number, r.lobby_index
                 """,
                 new { groupId });
-
-            // Lobby code visibility rules:
-            // - Staff/admin: see all codes (any round status)
-            // - Authenticated tournament participants: see code only when round is 'active'
-            // - All others (unauthenticated or non-participants): never see codes
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-
-            var isStaff = userCtx is not null
-                && (await StaffAuthHelper.CanActOnStageAsync(
-                        conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit)
-                    || StaffAuthHelper.IsPlatformAdmin(userCtx));
 
             if (isStaff)
                 return Results.Ok(rounds);
@@ -2533,29 +2547,21 @@ public static partial class BRGroupEndpoints
             if (!isStaff && entityAccess.TeamId is null && entityAccess.ParticipantId is null)
                 return Results.Forbid();
 
-            var entries = await BrLobbyReadinessRepository.ListAsync(conn, lobbyId);
-            var assignedCount = await conn.QuerySingleAsync<int>(
-                """
-                SELECT COUNT(*)::int
-                FROM br_lobby_groups lg
-                JOIN br_group_teams bgt ON bgt.group_id = lg.group_id
-                WHERE lg.lobby_id = @lobbyId
-                """,
-                new { lobbyId });
-
-            var viewerEntityId = entityAccess.TeamId ?? entityAccess.ParticipantId;
-            var isReady = viewerEntityId is not null
-                && entries.Any(entry =>
-                    (entityAccess.TeamId is not null && entry.TeamId == entityAccess.TeamId.Value.ToString())
-                    || (entityAccess.ParticipantId is not null && entry.ParticipantId == entityAccess.ParticipantId.Value.ToString()));
+            var summary = await BrLobbyReadinessService.GetSummaryAsync(
+                conn,
+                lobbyId,
+                groupId,
+                includeEntries: isStaff,
+                viewerTeamId: entityAccess.TeamId,
+                viewerParticipantId: entityAccess.ParticipantId);
 
             return Results.Ok(new
             {
-                readyCount = entries.Count,
-                totalAssigned = assignedCount,
-                isReady,
-                entries = isStaff
-                    ? entries.Select(entry => new
+                readyCount = summary.ReadyCount,
+                totalAssigned = summary.TotalAssigned,
+                isReady = summary.IsReady,
+                entries = isStaff && summary.Entries is not null
+                    ? summary.Entries.Select(entry => new
                     {
                         userId = entry.UserId,
                         displayName = entry.DisplayName,
@@ -2603,27 +2609,20 @@ public static partial class BRGroupEndpoints
                 entityAccess.TeamId,
                 entityAccess.ParticipantId);
 
-            var entries = await BrLobbyReadinessRepository.ListAsync(conn, lobbyId);
-            var assignedCount = await conn.QuerySingleAsync<int>(
-                """
-                SELECT COUNT(*)::int
-                FROM br_lobby_groups lg
-                JOIN br_group_teams bgt ON bgt.group_id = lg.group_id
-                WHERE lg.lobby_id = @lobbyId
-                """,
-                new { lobbyId });
+            var summary = await BrLobbyReadinessService.GetSummaryAsync(
+                conn, lobbyId, groupId, includeEntries: true);
 
             var payload = new
             {
                 stageId = stageId.ToString(),
                 groupId = groupId.ToString(),
                 lobbyId = lobbyId.ToString(),
-                readyCount = entries.Count,
-                totalAssigned = assignedCount,
+                readyCount = summary.ReadyCount,
+                totalAssigned = summary.TotalAssigned,
             };
             await BroadcastBrAsync(brHub, BRHubEvents.LobbyReadinessUpdated, stageId, groupId, lobbyId, payload, ct);
 
-            return Results.Ok(new { success = true, readyCount = entries.Count, totalAssigned = assignedCount });
+            return Results.Ok(new { success = true, readyCount = summary.ReadyCount, totalAssigned = summary.TotalAssigned });
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/br/lobbies/{lobbyId}/readiness ───────────────────────
@@ -2655,27 +2654,20 @@ public static partial class BRGroupEndpoints
             await BrLobbyReadinessRepository.DeleteForEntityAsync(
                 conn, lobbyId, entityAccess.TeamId, entityAccess.ParticipantId);
 
-            var entries = await BrLobbyReadinessRepository.ListAsync(conn, lobbyId);
-            var assignedCount = await conn.QuerySingleAsync<int>(
-                """
-                SELECT COUNT(*)::int
-                FROM br_lobby_groups lg
-                JOIN br_group_teams bgt ON bgt.group_id = lg.group_id
-                WHERE lg.lobby_id = @lobbyId
-                """,
-                new { lobbyId });
+            var summary = await BrLobbyReadinessService.GetSummaryAsync(
+                conn, lobbyId, groupId, includeEntries: true);
 
             var payload = new
             {
                 stageId = stageId.ToString(),
                 groupId = groupId.ToString(),
                 lobbyId = lobbyId.ToString(),
-                readyCount = entries.Count,
-                totalAssigned = assignedCount,
+                readyCount = summary.ReadyCount,
+                totalAssigned = summary.TotalAssigned,
             };
             await BroadcastBrAsync(brHub, BRHubEvents.LobbyReadinessUpdated, stageId, groupId, lobbyId, payload, ct);
 
-            return Results.Ok(new { success = true, readyCount = entries.Count, totalAssigned = assignedCount });
+            return Results.Ok(new { success = true, readyCount = summary.ReadyCount, totalAssigned = summary.TotalAssigned });
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/br/lobbies/{lobbyId}/results ────────────────────────────
@@ -3107,95 +3099,8 @@ public static partial class BRGroupEndpoints
                 new { stageId });
             var tiebreaker = BrConfigService.ResolveTiebreaker(stageMeta?.settings);
 
-            var roundResultsHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id");
-
-            // Unified leaderboard with COALESCE for team/solo
-            var leaderboardRows = (await conn.QueryAsync<dynamic>(
-                roundResultsHasParticipantId
-                    ? """
-                      SELECT
-                          COALESCE(rr.team_id, rr.participant_id) AS team_id,
-                          CASE
-                              WHEN rr.team_id IS NOT NULL THEN t.name
-                              ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
-                          END AS team_name,
-                          CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                          COUNT(DISTINCT rr.game_id) AS games_played,
-                          SUM(rr.placement_points) AS total_placement_points,
-                          SUM(rr.kill_points) AS total_kill_points,
-                          SUM(rr.total_points) AS total_points,
-                          SUM(rr.kills) AS total_kills,
-                          COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
-                          MIN(rr.placement) AS best_placement,
-                          AVG(rr.placement::numeric) AS avg_placement
-                      FROM br_lobby_results rr
-                      JOIN br_games g ON g.id = rr.game_id
-                      JOIN br_lobbies r ON r.id = g.lobby_id
-                      LEFT JOIN teams t ON t.id = rr.team_id
-                      LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
-                      LEFT JOIN profiles p ON p.id = tp.user_id
-                      WHERE EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = @groupId)
-                        AND g.status = 'completed'
-                      GROUP BY COALESCE(rr.team_id, rr.participant_id),
-                               CASE
-                                   WHEN rr.team_id IS NOT NULL THEN t.name
-                                   ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
-                               END,
-                               CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
-                      """
-                    : """
-                      SELECT
-                          rr.team_id AS team_id,
-                          t.name AS team_name,
-                          t.logo_url AS logo_url,
-                          COUNT(DISTINCT rr.game_id) AS games_played,
-                          SUM(rr.placement_points) AS total_placement_points,
-                          SUM(rr.kill_points) AS total_kill_points,
-                          SUM(rr.total_points) AS total_points,
-                          SUM(rr.kills) AS total_kills,
-                          COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
-                          MIN(rr.placement) AS best_placement,
-                          AVG(rr.placement::numeric) AS avg_placement
-                      FROM br_lobby_results rr
-                      JOIN br_games g ON g.id = rr.game_id
-                      JOIN br_lobbies r ON r.id = g.lobby_id
-                      LEFT JOIN teams t ON t.id = rr.team_id
-                      WHERE EXISTS (SELECT 1 FROM br_lobby_groups lg WHERE lg.lobby_id = r.id AND lg.group_id = @groupId)
-                        AND g.status = 'completed'
-                      GROUP BY rr.team_id, t.name, t.logo_url
-                      """,
-                new { groupId })).ToList();
-
-            leaderboardRows.Sort((a, b) =>
-            {
-                var aggregateA = new BrLeaderboardAggregate(
-                    Convert.ToInt64(a.total_points),
-                    Convert.ToInt64(a.wins),
-                    Convert.ToInt64(a.total_kills),
-                    a.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(a.avg_placement));
-                var aggregateB = new BrLeaderboardAggregate(
-                    Convert.ToInt64(b.total_points),
-                    Convert.ToInt64(b.wins),
-                    Convert.ToInt64(b.total_kills),
-                    b.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(b.avg_placement));
-                return BrConfigService.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
-            });
-
-            var leaderboard = leaderboardRows.Select(row => new
-                {
-                    team_id = row.team_id,
-                    team_name = row.team_name,
-                    logo_url = row.logo_url,
-                    games_played = row.games_played,
-                    total_placement_points = row.total_placement_points,
-                    total_kill_points = row.total_kill_points,
-                    total_points = row.total_points,
-                    total_kills = row.total_kills,
-                    wins = row.wins,
-                    best_placement = row.best_placement,
-                });
-
-            return Results.Ok(leaderboard);
+            var rows = await BrLeaderboardRepository.ListForGroupAsync(conn, groupId, tiebreaker);
+            return Results.Ok(BrLeaderboardRepository.ToGroupApiPayload(rows));
         });
 
         // ── GET /api/tournaments/{tournamentId}/br/player-context ────────────
@@ -3678,49 +3583,8 @@ public static partial class BRGroupEndpoints
                 new { stageId });
             var tiebreaker = BrConfigService.ResolveTiebreaker(stageMeta?.settings);
 
-            var leaderboardRows = (await conn.QueryAsync<dynamic>(
-                """
-                SELECT
-                    COALESCE(rr.team_id, rr.participant_id) AS team_id,
-                    CASE
-                        WHEN rr.team_id IS NOT NULL THEN t.name
-                        ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
-                    END AS team_name,
-                    CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                    SUM(rr.total_points) AS total_points,
-                    SUM(rr.kills) AS total_kills,
-                    COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
-                    AVG(rr.placement::numeric) AS avg_placement
-                FROM br_lobby_results rr
-                JOIN br_games g ON g.id = rr.game_id
-                JOIN br_lobbies l ON l.id = g.lobby_id
-                LEFT JOIN teams t ON t.id = rr.team_id
-                LEFT JOIN tournament_participants tp ON tp.id = rr.participant_id
-                LEFT JOIN profiles p ON p.id = tp.user_id
-                WHERE l.stage_id = @stageId
-                  AND g.status = 'completed'
-                GROUP BY COALESCE(rr.team_id, rr.participant_id),
-                        CASE WHEN rr.team_id IS NOT NULL THEN t.name ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player') END,
-                        CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END
-                """,
-                new { stageId })).ToList();
-
-            leaderboardRows.Sort((a, b) =>
-            {
-                var aggregateA = new BrLeaderboardAggregate(
-                    Convert.ToInt64(a.total_points),
-                    Convert.ToInt64(a.wins),
-                    Convert.ToInt64(a.total_kills),
-                    a.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(a.avg_placement));
-                var aggregateB = new BrLeaderboardAggregate(
-                    Convert.ToInt64(b.total_points),
-                    Convert.ToInt64(b.wins),
-                    Convert.ToInt64(b.total_kills),
-                    b.avg_placement is null ? double.PositiveInfinity : Convert.ToDouble(b.avg_placement));
-                return BrConfigService.CompareLeaderboardEntries(aggregateA, aggregateB, tiebreaker);
-            });
-
-            return Results.Ok(leaderboardRows);
+            var rows = await BrLeaderboardRepository.ListForStageAsync(conn, stageId, tiebreaker);
+            return Results.Ok(BrLeaderboardRepository.ToStageApiPayload(rows));
         });
 
         // Preview or execute advancement of top teams from each group to next stage.
