@@ -59,9 +59,13 @@ public static class BrLeaderboardRepository
             team_id = row.TeamId,
             team_name = row.TeamName,
             logo_url = row.LogoUrl,
+            games_played = row.GamesPlayed,
+            total_placement_points = row.TotalPlacementPoints,
+            total_kill_points = row.TotalKillPoints,
             total_points = row.TotalPoints,
             total_kills = row.TotalKills,
             wins = row.Wins,
+            best_placement = row.BestPlacement,
             avg_placement = row.AvgPlacement,
         }).Cast<object>().ToList();
 
@@ -105,13 +109,13 @@ public static class BrLeaderboardRepository
             row.team_id.ToString(),
             row.team_name?.ToString() ?? "Unknown",
             row.logo_url?.ToString(),
-            GamesPlayed: 0,
-            TotalPlacementPoints: 0,
-            TotalKillPoints: 0,
+            Convert.ToInt32(row.games_played ?? 0),
+            Convert.ToInt64(row.total_placement_points ?? 0),
+            Convert.ToInt64(row.total_kill_points ?? 0),
             Convert.ToInt64(row.total_points ?? 0),
             Convert.ToInt64(row.total_kills ?? 0),
             Convert.ToInt64(row.wins ?? 0),
-            BestPlacement: 0,
+            Convert.ToInt32(row.best_placement ?? 0),
             row.avg_placement is null ? null : Convert.ToDouble(row.avg_placement));
     }
 }

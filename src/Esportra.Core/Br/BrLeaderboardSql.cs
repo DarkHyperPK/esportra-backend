@@ -71,9 +71,13 @@ public static class BrLeaderboardSql
                 ELSE COALESCE(p.username, tp.team_name, t.name, 'Unknown')
             END AS team_name,
             CASE WHEN rr.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
+            COUNT(DISTINCT rr.game_id) AS games_played,
+            SUM(rr.placement_points) AS total_placement_points,
+            SUM(rr.kill_points) AS total_kill_points,
             SUM(rr.total_points) AS total_points,
             SUM(rr.kills) AS total_kills,
             COUNT(*) FILTER (WHERE rr.placement = 1) AS wins,
+            MIN(rr.placement) AS best_placement,
             AVG(rr.placement::numeric) AS avg_placement
         FROM br_lobby_results rr
         JOIN br_games g ON g.id = rr.game_id
