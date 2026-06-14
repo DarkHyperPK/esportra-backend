@@ -26,24 +26,10 @@ public static class BrGameRouteHelper
         int? gameNumber = null,
         IDbTransaction? tx = null)
     {
-        var entries = await BrEvidenceService.ListAsync(
+        var rows = await BrEvidenceService.ListRawAsync(
             conn, lobbyId, isStaff, viewerTeamId, viewerParticipantId, gameId, gameNumber, tx);
 
-        return entries
-            .Select(entry => new
-            {
-                teamId = entry.TeamId,
-                teamName = entry.TeamName,
-                logoUrl = entry.LogoUrl,
-                imageUrl = entry.ImageUrl,
-                submittedAt = entry.SubmittedAt,
-                placement = entry.Placement,
-                kills = entry.Kills,
-                reviewed = entry.Reviewed,
-                gameNumber = entry.GameNumber,
-            })
-            .Cast<object>()
-            .ToList();
+        return rows.Cast<object>().ToList();
     }
 
     public static Task SyncLobbyStatusFromGamesAsync(

@@ -6,6 +6,26 @@ namespace Esportra.Api.Tests;
 public sealed class BrEvidenceServiceContractTests
 {
     [Fact]
+    public void TryMapRow_accepts_team_id_alias()
+    {
+        dynamic row = new System.Dynamic.ExpandoObject();
+        row.team_id = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        row.team_name = "Team Beta";
+        row.logo_url = null;
+        row.image_url = "https://example.com/evidence.png";
+        row.submitted_at = DateTime.UtcNow;
+        row.placement = 1;
+        row.kills = 0;
+        row.reviewed = true;
+
+        var entry = BrEvidenceRepository.TryMapRow(row);
+
+        Assert.NotNull(entry);
+        Assert.Equal("Team Beta", entry!.TeamName);
+        Assert.True(entry.Reviewed);
+    }
+
+    [Fact]
     public void TryMapRow_returns_null_when_image_url_missing()
     {
         dynamic row = new System.Dynamic.ExpandoObject();

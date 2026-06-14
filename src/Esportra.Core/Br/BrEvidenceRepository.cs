@@ -5,7 +5,7 @@ namespace Esportra.Core.Br;
 
 public static class BrEvidenceRepository
 {
-    public static async Task<IReadOnlyList<BrEvidenceEntry>> ListAsync(
+    public static async Task<IReadOnlyList<dynamic>> ListRawAsync(
         IDbConnection conn,
         Guid lobbyId,
         bool isStaff,
@@ -16,77 +16,82 @@ public static class BrEvidenceRepository
         IDbTransaction? tx = null)
     {
         if (!await BrSchemaRepository.TableExistsAsync(conn, "br_lobby_evidence", tx))
-            return Array.Empty<BrEvidenceEntry>();
+            return Array.Empty<dynamic>();
 
         if (!await BrSchemaRepository.BrGamesModelReadyAsync(conn, tx))
-            return Array.Empty<BrEvidenceEntry>();
+            return Array.Empty<dynamic>();
 
         var evidenceHasParticipantId = await BrSchemaRepository.ColumnExistsAsync(
             conn, "br_lobby_evidence", "participant_id", tx);
 
         if (isStaff && gameId is null && gameNumber is null)
         {
-            return await QueryAsync(
-                conn,
-                evidenceHasParticipantId,
-                """
-                JOIN br_games g ON g.id = re.game_id
-                WHERE g.lobby_id = @lobbyId
-                ORDER BY g.game_number ASC, re.submitted_at DESC
-                """,
+            var rows = await conn.QueryAsync<dynamic>(
+                evidenceHasParticipantId ? BrEvidenceSql.StaffParticipantLobby : BrEvidenceSql.StaffTeamLobby,
                 new { lobbyId },
-                tx,
-                includeGameNumber: true);
+                tx);
+            return rows.AsList();
         }
 
         var targetGameId = await BrGameRepository.ResolveTargetGameIdAsync(conn, lobbyId, gameId, gameNumber, tx);
         if (targetGameId is null)
-            return Array.Empty<BrEvidenceEntry>();
+            return Array.Empty<dynamic>();
 
         if (isStaff)
         {
-            return await QueryAsync(
-                conn,
-                evidenceHasParticipantId,
-                """
-                WHERE re.game_id = @targetGameId
-                ORDER BY re.submitted_at DESC
-                """,
+            var rows = await conn.QueryAsync<dynamic>(
+                evidenceHasParticipantId ? BrEvidenceSql.StaffParticipantGame : BrEvidenceSql.StaffTeamGame,
                 new { targetGameId },
                 tx);
+            return rows.AsList();
         }
 
         if (evidenceHasParticipantId)
         {
-            return await QueryAsync(
-                conn,
-                evidenceHasParticipantId: true,
-                """
-                WHERE re.game_id = @targetGameId
-                  AND (
-                    (@viewerTeamId IS NOT NULL AND re.team_id = @viewerTeamId)
-                    OR (@viewerParticipantId IS NOT NULL AND re.participant_id = @viewerParticipantId)
-                  )
-                ORDER BY re.submitted_at DESC
-                """,
+            var rows = await conn.QueryAsync<dynamic>(
+                BrEvidenceSql.PlayerParticipantGame,
                 new { targetGameId, viewerTeamId, viewerParticipantId },
                 tx);
+            return rows.AsList();
         }
 
         if (viewerTeamId is null)
-            return Array.Empty<BrEvidenceEntry>();
+            return Array.Empty<dynamic>();
 
-        return await QueryAsync(
-            conn,
-            evidenceHasParticipantId: false,
-            """
-            WHERE re.game_id = @targetGameId
-              AND re.team_id = @viewerTeamId
-            ORDER BY re.submitted_at DESC
-            """,
+        var teamRows = await conn.QueryAsync<dynamic>(
+            BrEvidenceSql.PlayerTeamGame,
             new { targetGameId, viewerTeamId },
             tx);
+        return teamRows.AsList();
     }
+
+    public static async Task<IReadOnlyList<BrEvidenceEntry>> ListAsync(
+        IDbConnection conn,
+        Guid lobbyId,
+        bool isStaff,
+        Guid? viewerTeamId,
+        Guid? viewerParticipantId,
+        Guid? gameId = null,
+        int? gameNumber = null,
+        IDbTransaction? tx = null)
+    {
+        var rows = await ListRawAsync(
+            conn, lobbyId, isStaff, viewerTeamId, viewerParticipantId, gameId, gameNumber, tx);
+
+        var mapped = new List<BrEvidenceEntry>(rows.Count);
+        foreach (var row in rows)
+        {
+            var entry = TryMapRow((object)row, HasColumn(row, "game_number"));
+            if (entry is not null)
+                mapped.Add(entry);
+        }
+
+        return mapped;
+    }
+
+    private static bool HasColumn(object row, string column) =>
+        row is IDictionary<string, object> values
+        && values.Keys.Any(key => string.Equals(key, column, StringComparison.OrdinalIgnoreCase));
 
     public static async Task<int> CountPendingAsync(
         IDbConnection conn,
@@ -116,7 +121,7 @@ public static class BrEvidenceRepository
         if (row is not IDictionary<string, object> values)
             return null;
 
-        var entityRaw = ReadValue(values, "entity_id");
+        var entityRaw = ReadValue(values, "entity_id") ?? ReadValue(values, "team_id");
         if (entityRaw is null)
             return null;
 
@@ -137,7 +142,7 @@ public static class BrEvidenceRepository
 
         return new BrEvidenceEntry(
             resolvedEntityId.ToString(),
-            ReadNullableString(ReadValue(values, "entity_name")) ?? "Unknown",
+            ReadNullableString(ReadValue(values, "entity_name")) ?? ReadNullableString(ReadValue(values, "team_name")) ?? "Unknown",
             ReadNullableString(ReadValue(values, "logo_url")),
             imageUrl,
             FormatTimestamp(ReadValue(values, "submitted_at")),
@@ -150,70 +155,6 @@ public static class BrEvidenceRepository
     public static BrEvidenceEntry MapRow(object row, bool includeGameNumber = false) =>
         TryMapRow(row, includeGameNumber)
         ?? throw new InvalidOperationException("Evidence row is missing required fields.");
-
-    private static async Task<IReadOnlyList<BrEvidenceEntry>> QueryAsync(
-        IDbConnection conn,
-        bool evidenceHasParticipantId,
-        string whereAndOrderSql,
-        object parameters,
-        IDbTransaction? tx = null,
-        bool includeGameNumber = false)
-    {
-        var rows = await conn.QueryAsync<dynamic>(
-            BuildSelectSql(evidenceHasParticipantId, includeGameNumber) + whereAndOrderSql,
-            parameters,
-            tx);
-
-        return MapRows(rows, includeGameNumber);
-    }
-
-    private static IReadOnlyList<BrEvidenceEntry> MapRows(IEnumerable<dynamic> evidence, bool includeGameNumber = false)
-    {
-        var entries = new List<BrEvidenceEntry>();
-        foreach (var row in evidence)
-        {
-            var entry = TryMapRow(row, includeGameNumber);
-            if (entry is not null)
-                entries.Add(entry);
-        }
-
-        return entries;
-    }
-
-    private static string BuildSelectSql(bool hasParticipantId, bool includeGameNumber = false)
-    {
-        var gameNumberSelect = includeGameNumber ? ", g.game_number" : string.Empty;
-        return hasParticipantId
-            ? $"""
-              SELECT COALESCE(re.team_id, re.participant_id) AS entity_id,
-                     CASE
-                         WHEN re.team_id IS NOT NULL THEN t.name
-                         ELSE COALESCE(p.username, tp.team_name, t.name, 'Mock Player')
-                     END AS entity_name,
-                     CASE WHEN re.team_id IS NOT NULL THEN t.logo_url ELSE p.avatar_url END AS logo_url,
-                     re.image_url,
-                     re.submitted_at,
-                     re.placement,
-                     re.kills,
-                     re.reviewed{gameNumberSelect}
-              FROM br_lobby_evidence re
-              LEFT JOIN teams t ON t.id = re.team_id
-              LEFT JOIN tournament_participants tp ON tp.id = re.participant_id
-              LEFT JOIN profiles p ON p.id = tp.user_id
-              """
-            : $"""
-              SELECT re.team_id AS entity_id,
-                     t.name AS entity_name,
-                     t.logo_url AS logo_url,
-                     re.image_url,
-                     re.submitted_at,
-                     re.placement,
-                     re.kills,
-                     re.reviewed{gameNumberSelect}
-              FROM br_lobby_evidence re
-              LEFT JOIN teams t ON t.id = re.team_id
-              """;
-    }
 
     private static object? ReadValue(IDictionary<string, object> dict, string key)
     {

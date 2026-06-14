@@ -1953,7 +1953,8 @@ public static partial class BRGroupEndpoints
             Guid                lobbyId,
             [FromQuery] int?    gameNumber,
             HttpContext          ctx,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            IHostEnvironment     env) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2006,8 +2007,11 @@ public static partial class BRGroupEndpoints
             {
                 Console.Error.WriteLine(
                     $"[BRGroupEndpoints] Failed to list evidence for lobby {lobbyId}, gameNumber={gameNumber}: {ex.GetType().Name}: {ex.Message}");
+                var detail = env.IsProduction()
+                    ? "Could not load evidence submissions."
+                    : $"Could not load evidence submissions: {ex.Message}";
                 return Results.Problem(
-                    detail: "Could not load evidence submissions.",
+                    detail: detail,
                     statusCode: StatusCodes.Status500InternalServerError);
             }
         }).RequireAuthorization("Authenticated");
