@@ -54,4 +54,7 @@ public static class MatchHubEvents
 
     /// <summary>Match status changed (scheduled → in_progress → completed).</summary>
     public const string StatusChanged = "StatusChanged";
+
+    /// <summary>Organizer updated match scheduled time.</summary>
+    public const string ScheduleChanged = "ScheduleChanged";
 }

@@ -319,6 +319,7 @@ builder.Services.AddScoped<MatchFinalizationService>();
 builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
+builder.Services.AddScoped<MatchScheduleNotificationService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.SelfPlayMatchRoomService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<OperationsAuditService>();

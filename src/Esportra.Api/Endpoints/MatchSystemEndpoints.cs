@@ -1177,6 +1177,7 @@ public static class MatchSystemEndpoints
             [FromBody] BulkScheduleRequest     req,
             HttpContext                         ctx,
             IDbConnectionFactory               db,
+            MatchScheduleNotificationService   scheduleNotify,
             CancellationToken                  ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1195,6 +1196,16 @@ public static class MatchSystemEndpoints
             var ids   = req.Updates.Select(u => u.MatchId).ToArray();
             var times = req.Updates.Select(u => u.ScheduledTime).ToArray();
 
+            var changedMatchIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT m.id
+                FROM brkt_matches m
+                JOIN UNNEST(@ids::uuid[], @times::timestamptz[]) AS u(id, scheduled_time) ON m.id = u.id
+                WHERE m.version_id IN (SELECT v.id FROM brkt_versions v WHERE v.stage_id = @stageId)
+                  AND m.scheduled_time IS DISTINCT FROM u.scheduled_time
+                """,
+                new { ids, times, stageId })).ToList();
+
             var updated = await conn.ExecuteAsync(
                 """
                 UPDATE brkt_matches m
@@ -1205,6 +1216,19 @@ public static class MatchSystemEndpoints
                 """,
                 new { ids, times, stageId });
 
+            foreach (var update in req.Updates)
+            {
+                if (!Guid.TryParse(update.MatchId, out var bulkMatchId))
+                    continue;
+                if (!changedMatchIds.Contains(bulkMatchId))
+                    continue;
+
+                var scheduledTime = string.IsNullOrEmpty(update.ScheduledTime)
+                    ? (DateTime?)null
+                    : DateTime.Parse(update.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind);
+                await scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct);
+            }
+
             return Results.Ok(new { success = true, updated });
         }).RequireAuthorization("Authenticated");
 
@@ -1214,7 +1238,7 @@ public static class MatchSystemEndpoints
             [FromBody] UpdateMatchTimeRequest      req,
             HttpContext                             ctx,
             IDbConnectionFactory                   db,
-            IHubContext<BracketHub>                bracketHub,
+            MatchScheduleNotificationService       scheduleNotify,
             CancellationToken                      ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1231,19 +1255,16 @@ public static class MatchSystemEndpoints
                 ? (DateTime?)null
                 : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind);
 
+            var previousTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+
             await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET scheduled_time = @scheduledTime WHERE id = @matchId",
                 new { matchId, scheduledTime });
 
-            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
-            if (versionId is not null)
-            {
-                await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
-                    .SendAsync(BracketHubEvents.MatchUpdated,
-                        new { versionId, matchId, scheduledTime }, ct);
-            }
+            if (!MatchScheduleNotificationService.ScheduledTimesEqual(previousTime, scheduledTime))
+                await scheduleNotify.DispatchScheduleChangedAsync(matchId, scheduledTime, ct);
 
             return Results.Ok(new { success = true, matchId });
         }).RequireAuthorization("Authenticated");
