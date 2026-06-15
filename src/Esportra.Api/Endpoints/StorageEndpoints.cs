@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
@@ -83,7 +84,8 @@ public static class StorageEndpoints
 
             var folder = form["folder"].FirstOrDefault() ?? "";
 
-            if (!await ValidateStorageUploadAsync(userCtx, bucket, folder, ctx.RequestServices))
+            var uploadAllowed = await ValidateStorageUploadAsync(userCtx, bucket, folder, ctx.RequestServices);
+            if (!uploadAllowed)
                 return Results.Forbid();
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
@@ -149,7 +151,29 @@ public static class StorageEndpoints
             if (string.IsNullOrWhiteSpace(teamIdStr) || !Guid.TryParse(teamIdStr, out var teamId))
                 return Results.BadRequest(new { error = "Form parameter 'teamId' is required." });
 
+            if (file.Length > MaxFileSizeBytes)
+                return Results.BadRequest(new { error = $"File exceeds maximum size of {MaxFileSizeBytes / (1024 * 1024)}MB." });
+
+            var ext = Path.GetExtension(file.FileName);
+            if (string.IsNullOrEmpty(ext) || !AllowedImageExtensions.Contains(ext))
+                return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg)." });
+
             using var conn = db.CreateConnection();
+
+            var isActiveMember = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM team_members
+                    WHERE team_id = @teamId
+                      AND user_id = @userId
+                      AND is_active = true
+                )
+                """,
+                new { teamId, userId = userCtx.UserIdGuid });
+
+            if (!isActiveMember)
+                return Results.Forbid();
+
             var teamName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM teams WHERE id = @teamId", new { teamId });
 
@@ -161,9 +185,9 @@ public static class StorageEndpoints
             var serviceKey = config["Supabase:ServiceKey"]
                 ?? throw new InvalidOperationException("Supabase:ServiceKey not configured");
 
-            var ext = Path.GetExtension(file.FileName);
+            var teamSlug = SanitizeTeamSlug(teamName);
             var uniqueName = $"{userCtx.UserIdGuid}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
-            var storagePath = $"Player-cards/{teamName}/{uniqueName}";
+            var storagePath = $"Player-cards/{teamSlug}/{uniqueName}";
 
             var client = httpFactory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", serviceKey);
@@ -322,10 +346,46 @@ public static class StorageEndpoints
 
         if (bucket.StartsWith("users.", StringComparison.OrdinalIgnoreCase))
         {
+            if (normalizedFolder.StartsWith("Player-cards/", StringComparison.OrdinalIgnoreCase))
+            {
+                var segments = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length < 2)
+                    return false;
+
+                return await IsActiveMemberOfTeamWithSlugAsync(
+                    userCtx.UserIdGuid,
+                    segments[1],
+                    services);
+            }
+
             return string.IsNullOrWhiteSpace(normalizedFolder)
                 || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
         }
 
         return true;
+    }
+
+    private static string SanitizeTeamSlug(string teamName) =>
+        Regex.Replace(teamName, @"[^a-z0-9]", "_", RegexOptions.IgnoreCase).ToLowerInvariant();
+
+    private static async Task<bool> IsActiveMemberOfTeamWithSlugAsync(
+        Guid userId,
+        string teamSlug,
+        IServiceProvider services)
+    {
+        var db = services.GetRequiredService<IDbConnectionFactory>();
+        using var conn = db.CreateConnection();
+
+        var teams = await conn.QueryAsync<string>(
+            """
+            SELECT t.name
+            FROM teams t
+            JOIN team_members tm ON tm.team_id = t.id
+            WHERE tm.user_id = @userId
+              AND tm.is_active = true
+            """,
+            new { userId });
+
+        return teams.Any(name => SanitizeTeamSlug(name) == teamSlug);
     }
 }
