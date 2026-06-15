@@ -4,6 +4,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
 
@@ -635,6 +636,7 @@ public static class TeamEndpoints
             Guid                 inviteId,
             HttpContext          ctx,
             IDbConnectionFactory db,
+            GameCatalogService   catalog,
             CancellationToken    ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -667,6 +669,29 @@ public static class TeamEndpoints
                 if (invite.roster_id is not null)
                 {
                     var rosterId = (Guid)invite.roster_id;
+                    var onRoster = await conn.QuerySingleAsync<bool>(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM team_roster_members
+                            WHERE roster_id = @rosterId AND user_id = @userId
+                        )
+                        """,
+                        new { rosterId, userId = userCtx.UserIdGuid }, tx);
+
+                    if (!onRoster)
+                    {
+                        try
+                        {
+                            await RosterMemberValidationHelper.ValidateCanAddMemberAsync(
+                                conn, catalog, rosterId, "starter", tx: tx);
+                        }
+                        catch (GameCatalogValidationException ex)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = ex.Message });
+                        }
+                    }
+
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
@@ -902,7 +927,8 @@ public static class TeamEndpoints
             Guid                      id,
             [FromBody] CreateRosterRequest req,
             HttpContext               ctx,
-            IDbConnectionFactory      db) =>
+            IDbConnectionFactory      db,
+            GameCatalogService        catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -924,6 +950,16 @@ public static class TeamEndpoints
                 new { teamId = id });
             if (ownerId is not null)
             {
+                try
+                {
+                    await RosterMemberValidationHelper.ValidateCanAddMemberAsync(
+                        conn, catalog, rosterId, "starter");
+                }
+                catch (GameCatalogValidationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
@@ -1019,7 +1055,8 @@ public static class TeamEndpoints
             Guid                            rosterId,
             [FromBody] RosterMemberRequest  req,
             HttpContext                     ctx,
-            IDbConnectionFactory            db) =>
+            IDbConnectionFactory            db,
+            GameCatalogService              catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1030,6 +1067,33 @@ public static class TeamEndpoints
             var userIdGuid = Guid.Parse(req.UserId);
 
             var rosterRole = ResolveRosterRole(req.RosterRole, req.IsStarter);
+
+            var alreadyOnRoster = await conn.QuerySingleAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM team_roster_members
+                    WHERE roster_id = @rosterId AND user_id = @userId
+                )
+                """,
+                new { rosterId, userId = userIdGuid });
+
+            try
+            {
+                if (alreadyOnRoster)
+                {
+                    await RosterMemberValidationHelper.ValidateRoleChangeAsync(
+                        conn, catalog, rosterId, userIdGuid, rosterRole);
+                }
+                else
+                {
+                    await RosterMemberValidationHelper.ValidateCanAddMemberAsync(
+                        conn, catalog, rosterId, rosterRole);
+                }
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
 
             await conn.ExecuteAsync(
                 """
@@ -1082,7 +1146,8 @@ public static class TeamEndpoints
             Guid                           userId,
             [FromBody] ToggleStarterRequest req,
             HttpContext                    ctx,
-            IDbConnectionFactory           db) =>
+            IDbConnectionFactory           db,
+            GameCatalogService             catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1091,6 +1156,16 @@ public static class TeamEndpoints
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             var rosterRole = req.IsStarter ? "starter" : "substitute";
+
+            try
+            {
+                await RosterMemberValidationHelper.ValidateRoleChangeAsync(
+                    conn, catalog, rosterId, userId, rosterRole);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
 
             await conn.ExecuteAsync(
                 """
@@ -1110,7 +1185,8 @@ public static class TeamEndpoints
             Guid                            userId,
             [FromBody] UpdateRosterRoleRequest req,
             HttpContext                     ctx,
-            IDbConnectionFactory            db) =>
+            IDbConnectionFactory            db,
+            GameCatalogService              catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1132,18 +1208,14 @@ public static class TeamEndpoints
             if (!onRoster)
                 return Results.NotFound(new { error = "Member is not on this roster." });
 
-            if (req.RosterRole == "coach")
+            try
             {
-                var coachCount = await conn.QuerySingleAsync<int>(
-                    """
-                    SELECT COUNT(*) FROM team_roster_members
-                    WHERE roster_id = @rosterId
-                      AND roster_role = 'coach'
-                      AND user_id <> @userId
-                    """,
-                    new { rosterId, userId });
-                if (coachCount >= 2)
-                    return Results.BadRequest(new { error = "Maximum 2 coaches for this roster." });
+                await RosterMemberValidationHelper.ValidateRoleChangeAsync(
+                    conn, catalog, rosterId, userId, req.RosterRole);
+            }
+            catch (GameCatalogValidationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
             }
 
             var isStarter = req.RosterRole == "starter";
