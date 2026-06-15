@@ -252,13 +252,43 @@ public sealed partial class GameCatalogService(
         return mode.ParticipantMode;
     }
 
+    public async Task<bool> TournamentUsesRosterPoolAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        Guid tournamentId)
+    {
+        var tournament = await conn.QuerySingleAsync<TournamentRegistrationCatalogRow>(
+            """
+            SELECT id, game, game_mode AS gameMode, team_size AS teamSize
+            FROM public.tournaments
+            WHERE id = @tournamentId
+            """,
+            new { tournamentId }, tx);
+
+        var resolved = await ResolveTournamentAsync(
+            tournament.Game,
+            tournament.GameMode,
+            tournament.TeamSize,
+            null,
+            null,
+            Array.Empty<string>(),
+            false,
+            null,
+            conn,
+            tx);
+
+        var mode = await ResolveModeAsync(conn, resolved.GameSlug, resolved.GameMode, resolved.TeamSize, tx);
+        return UsesRosterPoolSelection(mode);
+    }
+
     public async Task ValidateRegistrationAsync(
         IDbConnection conn,
         IDbTransaction tx,
         Guid tournamentId,
         Guid? teamId,
         Guid? rosterId,
-        Guid userId)
+        Guid userId,
+        string? rosterLineupJson = null)
     {
         var tournament = await conn.QuerySingleAsync<TournamentRegistrationCatalogRow>(
             """
@@ -333,9 +363,6 @@ public sealed partial class GameCatalogService(
         if (!rosterGameMatches)
             throw new GameCatalogValidationException("Team roster game does not match this tournament.");
 
-        if (!ModeMatches(mode, roster.Format, roster.TeamSize))
-            throw new GameCatalogValidationException($"Roster mode must match tournament mode '{mode.ModeKey}'.");
-
         var memberRows = (await conn.QueryAsync<RosterMemberCatalogRow>(
             """
             SELECT trm.user_id AS userId,
@@ -350,16 +377,68 @@ public sealed partial class GameCatalogService(
             """,
             new { rosterId }, tx)).AsList();
 
+        var modeRules = new RosterModeRules(
+            mode.TeamSize,
+            mode.AllowsSubstitutes,
+            mode.MaxRosterSize,
+            mode.MaxSubstitutes,
+            mode.AllowsCoaches,
+            mode.MaxCoaches);
+
+        if (UsesRosterPoolSelection(mode))
+        {
+            var gameRow = await ResolveGameAsync(conn, tournament.Game, tx)
+                ?? throw new GameCatalogValidationException($"Unsupported game '{tournament.Game}'.");
+            var poolMode = await ResolveModeAsync(conn, resolved.GameSlug, gameRow.DefaultModeKey, null, tx);
+
+            if (!RosterMatchesPoolSource(poolMode, roster.Format))
+                throw new GameCatalogValidationException(
+                    $"Select a {poolMode.Name} roster to use as your player pool for this tournament.");
+
+            var playerCount = memberRows.Count(IsRosterPlayer);
+            var requiredPoolSize = mode.MaxRosterSize ?? mode.TeamSize;
+            if (playerCount < requiredPoolSize)
+                throw new GameCatalogValidationException(
+                    $"Roster pool needs at least {requiredPoolSize} players (has {playerCount}).");
+
+            if (string.IsNullOrWhiteSpace(rosterLineupJson))
+                throw new GameCatalogValidationException("Select a tournament lineup from your roster pool.");
+
+            IReadOnlyList<RosterLineupMember> lineupMembers;
+            try
+            {
+                lineupMembers = RosterLineupSubmissionParser.ToValidatorMembers(
+                    RosterLineupSubmissionParser.Parse(rosterLineupJson));
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new GameCatalogValidationException(ex.Message);
+            }
+
+            var rosterUserIds = memberRows.Select(row => row.UserId).ToHashSet();
+            if (lineupMembers.Any(member => !rosterUserIds.Contains(member.UserId)))
+                throw new GameCatalogValidationException(
+                    "Tournament lineup includes a player who is not on the selected roster.");
+
+            try
+            {
+                RosterLineupValidator.Validate(modeRules, lineupMembers);
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new GameCatalogValidationException(ex.Message);
+            }
+
+            return;
+        }
+
+        if (!ModeMatches(mode, roster.Format, roster.TeamSize))
+            throw new GameCatalogValidationException($"Roster mode must match tournament mode '{mode.ModeKey}'.");
+
         try
         {
             RosterLineupValidator.Validate(
-                new RosterModeRules(
-                    mode.TeamSize,
-                    mode.AllowsSubstitutes,
-                    mode.MaxRosterSize,
-                    mode.MaxSubstitutes,
-                    mode.AllowsCoaches,
-                    mode.MaxCoaches),
+                modeRules,
                 memberRows.Select(m => new RosterLineupMember(
                     m.UserId,
                     m.RosterRole ?? (m.IsStarter ? "starter" : "substitute"),
@@ -784,6 +863,22 @@ public sealed partial class GameCatalogService(
 
     private static bool StrictGameMatches(string candidate, string expected) =>
         string.Equals(candidate.Trim(), expected.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static bool UsesRosterPoolSelection(ModeRow mode) =>
+        RosterPoolModeRules.UsesRosterPoolSelection(
+            mode.ParticipantMode,
+            mode.ModeKey,
+            mode.ModeGroup,
+            mode.MapPoolFilter);
+
+    private static bool IsRosterPlayer(RosterMemberCatalogRow member)
+    {
+        var role = RosterLineupValidator.NormalizeRole(member.RosterRole, member.IsStarter);
+        return role is "starter" or "substitute";
+    }
+
+    private static bool RosterMatchesPoolSource(ModeRow poolMode, string? rosterFormat) =>
+        RosterPoolModeRules.RosterMatchesPoolSource(poolMode.ModeKey, rosterFormat, poolMode.Aliases);
 
     private static bool ModeMatches(ModeRow mode, string? candidateKey, int? teamSize)
     {

@@ -628,7 +628,8 @@ public static class TournamentInvitationEndpoints
                         tournamentId,
                         isSoloTournament ? null : req.TeamId,
                         isSoloTournament ? null : req.RosterId,
-                        userCtx.UserIdGuid);
+                        userCtx.UserIdGuid,
+                        req.RosterLineup);
                 }
                 catch (GameCatalogValidationException ex)
                 {
@@ -756,8 +757,27 @@ public static class TournamentInvitationEndpoints
                         return Results.Conflict(new { error = "Your team is already registered for this tournament." });
                     }
 
-                    var (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
-                        conn, rosterId!.Value, tx);
+                    var usesRosterPool = await gameCatalog.TournamentUsesRosterPoolAsync(conn, tx, tournamentId);
+                    string teamMembersJson;
+                    string rosterLineupJson;
+                    if (usesRosterPool && !string.IsNullOrWhiteSpace(req.RosterLineup))
+                    {
+                        try
+                        {
+                            (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildFromSubmittedLineupAsync(
+                                conn, rosterId!.Value, req.RosterLineup, tx);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            tx.Rollback();
+                            return Results.BadRequest(new { error = ex.Message });
+                        }
+                    }
+                    else
+                    {
+                        (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
+                            conn, rosterId!.Value, tx);
+                    }
 
                     var teamName = string.IsNullOrWhiteSpace((string?)rosterMeta.roster_name)
                         ? (string)teamMeta.team_name
@@ -1165,7 +1185,7 @@ public static class TournamentInvitationEndpoints
 
 public sealed record DraftInvitesRequest(List<string>? Emails = null);
 public sealed record SendInvitesRequest(Guid[]? InvitationIds = null);
-public sealed record RedeemInviteRequest(string Code, Guid? TeamId = null, Guid? RosterId = null);
+public sealed record RedeemInviteRequest(string Code, Guid? TeamId = null, Guid? RosterId = null, string? RosterLineup = null);
 public sealed record ResendInvitesRequest(Guid[]? InvitationIds = null);
 public sealed record CsvImportRequest(string? CsvContent = null);
 

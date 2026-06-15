@@ -45,4 +45,75 @@ public static class RosterRegistrationHelper
             JsonSerializer.Serialize(RosterLineupSnapshotHelper.ToDisplayNameList(lineup)),
             JsonSerializer.Serialize(payload));
     }
+
+    public static async Task<(string TeamMembersJson, string RosterLineupJson)> BuildFromSubmittedLineupAsync(
+        IDbConnection conn,
+        Guid rosterId,
+        string rosterLineupJson,
+        IDbTransaction? tx = null)
+    {
+        var parsed = RosterLineupSubmissionParser.Parse(rosterLineupJson);
+        var rosterUserIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT user_id
+            FROM public.team_roster_members
+            WHERE roster_id = @rosterId
+            """,
+            new { rosterId }, tx)).ToHashSet();
+
+        if (parsed.Any(entry => !rosterUserIds.Contains(entry.UserId)))
+            throw new InvalidOperationException("Tournament lineup includes a player who is not on the selected roster.");
+
+        var userIds = parsed.Select(entry => entry.UserId).Distinct().ToArray();
+        var profiles = (await conn.QueryAsync<(Guid Id, string? Username, string? FullName)>(
+            """
+            SELECT id AS Id, username AS Username, full_name AS FullName
+            FROM public.profiles
+            WHERE id = ANY(@userIds)
+            """,
+            new { userIds }, tx)).ToDictionary(row => row.Id);
+
+        string ResolveName(RosterLineupSubmissionParser.ParsedEntry entry)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.DisplayName)) return entry.DisplayName.Trim();
+            if (profiles.TryGetValue(entry.UserId, out var profile))
+            {
+                if (!string.IsNullOrWhiteSpace(profile.Username)) return profile.Username.Trim();
+                if (!string.IsNullOrWhiteSpace(profile.FullName)) return profile.FullName.Trim();
+            }
+            return entry.UserId.ToString();
+        }
+
+        var payload = new
+        {
+            starters = parsed
+                .Where(entry => entry.Role == "starter")
+                .Select(entry => new { userId = entry.UserId.ToString(), displayName = ResolveName(entry) })
+                .ToList(),
+            substitutes = parsed
+                .Where(entry => entry.Role == "substitute")
+                .Select(entry => new { userId = entry.UserId.ToString(), displayName = ResolveName(entry) })
+                .ToList(),
+            coaches = parsed
+                .Where(entry => entry.Role == "coach")
+                .Select(entry => new { userId = entry.UserId.ToString(), displayName = ResolveName(entry) })
+                .ToList(),
+        };
+
+        var displayNames = parsed
+            .Where(entry => entry.Role is "starter" or "substitute" or "coach")
+            .OrderBy(entry => entry.Role switch
+            {
+                "starter" => 0,
+                "substitute" => 1,
+                _ => 2,
+            })
+            .ThenBy(entry => ResolveName(entry), StringComparer.OrdinalIgnoreCase)
+            .Select(ResolveName)
+            .ToList();
+
+        return (
+            JsonSerializer.Serialize(displayNames),
+            JsonSerializer.Serialize(payload));
+    }
 }

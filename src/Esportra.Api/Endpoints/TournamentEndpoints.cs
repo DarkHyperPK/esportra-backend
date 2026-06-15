@@ -1206,7 +1206,7 @@ public static class TournamentEndpoints
 
             try
             {
-                await gameCatalog.ValidateRegistrationAsync(conn, txn, id, teamIdGuid, rosterIdGuid, userCtx.UserIdGuid);
+                await gameCatalog.ValidateRegistrationAsync(conn, txn, id, teamIdGuid, rosterIdGuid, userCtx.UserIdGuid, req.RosterLineup);
             }
             catch (GameCatalogValidationException ex)
             {
@@ -1239,8 +1239,25 @@ public static class TournamentEndpoints
             string? rosterLineupJson = null;
             if (rosterIdGuid.HasValue)
             {
-                (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
-                    conn, rosterIdGuid.Value, txn);
+                var usesRosterPool = await gameCatalog.TournamentUsesRosterPoolAsync(conn, txn, id);
+                if (usesRosterPool && !string.IsNullOrWhiteSpace(req.RosterLineup))
+                {
+                    try
+                    {
+                        (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildFromSubmittedLineupAsync(
+                            conn, rosterIdGuid.Value, req.RosterLineup, txn);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        txn.Rollback();
+                        return Results.BadRequest(new { error = ex.Message });
+                    }
+                }
+                else
+                {
+                    (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
+                        conn, rosterIdGuid.Value, txn);
+                }
             }
             else if (participantType == "solo" && !string.IsNullOrWhiteSpace(soloDisplayName))
             {
