@@ -1516,53 +1516,6 @@ public static class TournamentEndpoints
             return Results.Ok(new { receiptUrl = receiptRef });
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
 
-        // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
-        // Streams the receipt file — organizer-only; avoids broken public storage URLs.
-        app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
-            Guid                 id,
-            Guid                 participantId,
-            HttpContext          ctx,
-            IDbConnectionFactory db,
-            IConfiguration       config,
-            CancellationToken    ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
-            using var conn = db.CreateConnection();
-
-            if (!await CanManageTournamentParticipantsAsync(conn, userCtx, id))
-                return Results.Forbid();
-
-            var receiptRef = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT payment_receipt_url FROM tournament_participants WHERE id = @participantId AND tournament_id = @id",
-                new { participantId, id });
-            if (string.IsNullOrWhiteSpace(receiptRef)) return Results.NotFound(new { error = "No receipt found." });
-
-            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
-            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
-                return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
-
-            if (!TryParseStorageRef(receiptRef, out var bucket, out var storagePath))
-                return Results.BadRequest(new { error = "Invalid receipt reference." });
-
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
-            http.DefaultRequestHeaders.Add("apikey", serviceKey);
-
-            var objectUrl  = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
-            var objectResp = await http.GetAsync(objectUrl, ct);
-            if (!objectResp.IsSuccessStatusCode)
-                return Results.NotFound(new { error = "Receipt file not found." });
-
-            var bytes       = await objectResp.Content.ReadAsByteArrayAsync(ct);
-            var contentType = objectResp.Content.Headers.ContentType?.MediaType
-                ?? InferReceiptContentType(storagePath);
-
-            return Results.File(bytes, contentType);
-        }).RequireAuthorization("Authenticated");
-
         app.MapPost("/api/tournaments/{id}/check-in", async (
             Guid                 id,
             HttpContext          ctx,
@@ -4438,47 +4391,6 @@ public static class TournamentEndpoints
 
         return await StaffAuthHelper.CanActOnTournamentAsync(
             conn, userCtx.UserIdGuid, tournamentId, StaffAuthHelper.PermTeamsManage);
-    }
-
-    private static bool TryParseStorageRef(string receiptRef, out string bucket, out string path)
-    {
-        bucket = string.Empty;
-        path   = string.Empty;
-
-        var trimmed = receiptRef.Trim();
-        if (string.IsNullOrWhiteSpace(trimmed))
-            return false;
-
-        const string publicMarker = "/storage/v1/object/public/";
-        var publicIdx = trimmed.IndexOf(publicMarker, StringComparison.OrdinalIgnoreCase);
-        if (publicIdx >= 0)
-            return TryParseStorageRef(trimmed[(publicIdx + publicMarker.Length)..], out bucket, out path);
-
-        const string objectMarker = "/storage/v1/object/";
-        var objectIdx = trimmed.IndexOf(objectMarker, StringComparison.OrdinalIgnoreCase);
-        if (objectIdx >= 0)
-            return TryParseStorageRef(trimmed[(objectIdx + objectMarker.Length)..], out bucket, out path);
-
-        var slash = trimmed.IndexOf('/');
-        if (slash <= 0 || slash >= trimmed.Length - 1)
-            return false;
-
-        bucket = trimmed[..slash];
-        path   = trimmed[(slash + 1)..];
-        return !string.IsNullOrWhiteSpace(bucket) && !string.IsNullOrWhiteSpace(path);
-    }
-
-    private static string InferReceiptContentType(string storagePath)
-    {
-        var ext = Path.GetExtension(storagePath).ToLowerInvariant();
-        return ext switch
-        {
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".png"            => "image/png",
-            ".webp"           => "image/webp",
-            ".pdf"            => "application/pdf",
-            _                 => "application/octet-stream",
-        };
     }
 }
 
