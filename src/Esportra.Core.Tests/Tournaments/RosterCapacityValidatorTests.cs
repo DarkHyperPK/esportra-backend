@@ -107,4 +107,46 @@ public sealed class RosterCapacityValidatorTests
         Assert.Throws<InvalidOperationException>(() =>
             RosterCapacityValidator.ValidateRoleChange(ApexTriosRules, current, userId, "coach"));
     }
+
+    [Fact]
+    public void ResolveDefaultPlayerRole_apex_trios_three_starters_returns_substitute()
+    {
+        var current = Enumerable.Range(1, 3)
+            .Select(_ => new RosterLineupMember(Guid.NewGuid(), "starter", true))
+            .ToList();
+
+        var role = RosterCapacityValidator.ResolveDefaultPlayerRole(ApexTriosRules, current);
+        Assert.Equal("substitute", role);
+    }
+
+    [Fact]
+    public void ResolveDefaultPlayerRole_valorant_four_starters_returns_starter()
+    {
+        var current = Enumerable.Range(1, 4)
+            .Select(_ => new RosterLineupMember(Guid.NewGuid(), "starter", true))
+            .ToList();
+
+        var role = RosterCapacityValidator.ResolveDefaultPlayerRole(ValorantRules, current);
+        Assert.Equal("starter", role);
+    }
+
+    [Fact]
+    public void ResolveDefaultPlayerRole_valorant_five_starters_returns_substitute()
+    {
+        var current = Enumerable.Range(1, 5)
+            .Select(_ => new RosterLineupMember(Guid.NewGuid(), "starter", true))
+            .ToList();
+
+        var role = RosterCapacityValidator.ResolveDefaultPlayerRole(ValorantRules, current);
+        Assert.Equal("substitute", role);
+    }
+
+    [Fact]
+    public void ResolveRoleForNewMember_honors_explicit_coach_and_substitute()
+    {
+        var current = new List<RosterLineupMember>();
+
+        Assert.Equal("coach", RosterCapacityValidator.ResolveRoleForNewMember(ApexTriosRules, current, "coach", null));
+        Assert.Equal("substitute", RosterCapacityValidator.ResolveRoleForNewMember(ApexTriosRules, current, "substitute", null));
+    }
 }

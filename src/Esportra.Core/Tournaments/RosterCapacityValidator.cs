@@ -57,16 +57,55 @@ public static class RosterCapacityValidator
         int maxCoaches) =>
         new(teamSize, allowsSubstitutes, maxRosterSize, maxSubstitutes, allowsCoaches, maxCoaches);
 
-    private static (int Players, int Substitutes, int Coaches) CountRoles(IReadOnlyList<RosterLineupMember> members)
+    /// <summary>
+    /// Picks starter when slots remain, otherwise substitute (never coach).
+    /// </summary>
+    public static string ResolveDefaultPlayerRole(
+        RosterModeRules mode,
+        IReadOnlyList<RosterLineupMember> current)
+    {
+        var counts = CountRoles(current);
+
+        if (counts.Starters < mode.TeamSize)
+            return "starter";
+
+        if (!mode.AllowsSubstitutes)
+            throw new InvalidOperationException($"Starter slots are full (max {mode.TeamSize}).");
+
+        var maxSubstitutes = ResolveMaxSubstitutes(mode);
+        if (maxSubstitutes.HasValue && counts.Substitutes >= maxSubstitutes.Value)
+            throw new InvalidOperationException($"Substitute limit reached (max {maxSubstitutes.Value}).");
+
+        return "substitute";
+    }
+
+    public static string ResolveRoleForNewMember(
+        RosterModeRules mode,
+        IReadOnlyList<RosterLineupMember> current,
+        string? requestedRole,
+        bool? isStarter)
+    {
+        if (requestedRole == "coach")
+            return "coach";
+
+        if (requestedRole == "substitute" || isStarter == false)
+            return "substitute";
+
+        return ResolveDefaultPlayerRole(mode, current);
+    }
+
+    private static (int Players, int Starters, int Substitutes, int Coaches) CountRoles(
+        IReadOnlyList<RosterLineupMember> members)
     {
         var normalized = members
             .Select(m => RosterLineupValidator.NormalizeRole(m.RosterRole, m.IsStarter))
             .ToList();
 
+        var starters = normalized.Count(r => r == "starter");
         var substitutes = normalized.Count(r => r == "substitute");
         var coaches = normalized.Count(r => r == "coach");
-        var players = normalized.Count(r => r is "starter" or "substitute");
-        return (players, substitutes, coaches);
+        var players = starters + substitutes;
+        return (players, starters, substitutes, coaches);
     }
 
     private static int? ResolveMaxSubstitutes(RosterModeRules mode) =>

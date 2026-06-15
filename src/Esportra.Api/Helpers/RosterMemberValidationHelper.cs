@@ -49,6 +49,25 @@ internal static class RosterMemberValidationHelper
         }
     }
 
+    public static async Task<string> ResolveRoleForNewMemberAsync(
+        IDbConnection conn,
+        GameCatalogService catalog,
+        Guid rosterId,
+        string? requestedRole,
+        bool? isStarter,
+        IDbTransaction? tx = null)
+    {
+        var (rules, members) = await LoadContextAsync(conn, catalog, rosterId, tx);
+        try
+        {
+            return RosterCapacityValidator.ResolveRoleForNewMember(rules, members, requestedRole, isStarter);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new GameCatalogValidationException(ex.Message);
+        }
+    }
+
     private static async Task<(RosterModeRules Rules, List<RosterLineupMember> Members)> LoadContextAsync(
         IDbConnection conn,
         GameCatalogService catalog,

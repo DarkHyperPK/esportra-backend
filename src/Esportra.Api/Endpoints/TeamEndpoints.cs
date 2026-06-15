@@ -680,25 +680,35 @@ public static class TeamEndpoints
 
                     if (!onRoster)
                     {
+                        string rosterRole;
                         try
                         {
+                            rosterRole = await RosterMemberValidationHelper.ResolveRoleForNewMemberAsync(
+                                conn, catalog, rosterId, "starter", null, tx);
                             await RosterMemberValidationHelper.ValidateCanAddMemberAsync(
-                                conn, catalog, rosterId, "starter", tx: tx);
+                                conn, catalog, rosterId, rosterRole, tx: tx);
                         }
                         catch (GameCatalogValidationException ex)
                         {
                             tx.Rollback();
                             return Results.BadRequest(new { error = ex.Message });
                         }
-                    }
 
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
-                        VALUES (@rosterId, @userId, 'starter'::public.roster_member_role, TRUE)
-                        ON CONFLICT (roster_id, user_id) DO NOTHING
-                        """,
-                        new { rosterId, userId = userCtx.UserIdGuid }, tx);
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO team_roster_members (roster_id, user_id, roster_role, is_starter)
+                            VALUES (@rosterId, @userId, @rosterRole::public.roster_member_role, @isStarter)
+                            ON CONFLICT (roster_id, user_id) DO NOTHING
+                            """,
+                            new
+                            {
+                                rosterId,
+                                userId = userCtx.UserIdGuid,
+                                rosterRole,
+                                isStarter = rosterRole == "starter",
+                            },
+                            tx);
+                    }
                 }
 
                 tx.Commit();
@@ -1066,8 +1076,6 @@ public static class TeamEndpoints
 
             var userIdGuid = Guid.Parse(req.UserId);
 
-            var rosterRole = ResolveRosterRole(req.RosterRole, req.IsStarter);
-
             var alreadyOnRoster = await conn.QuerySingleAsync<bool>(
                 """
                 SELECT EXISTS(
@@ -1077,15 +1085,19 @@ public static class TeamEndpoints
                 """,
                 new { rosterId, userId = userIdGuid });
 
+            string rosterRole;
             try
             {
                 if (alreadyOnRoster)
                 {
+                    rosterRole = ResolveRosterRole(req.RosterRole, req.IsStarter);
                     await RosterMemberValidationHelper.ValidateRoleChangeAsync(
                         conn, catalog, rosterId, userIdGuid, rosterRole);
                 }
                 else
                 {
+                    rosterRole = await RosterMemberValidationHelper.ResolveRoleForNewMemberAsync(
+                        conn, catalog, rosterId, req.RosterRole, req.IsStarter);
                     await RosterMemberValidationHelper.ValidateCanAddMemberAsync(
                         conn, catalog, rosterId, rosterRole);
                 }
