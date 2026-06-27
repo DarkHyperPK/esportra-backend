@@ -1982,7 +1982,7 @@ public static class TournamentEndpoints
                 LEFT JOIN profiles sp ON sp.id = tp.user_id
                 WHERE tp.tournament_id = @id {statusFilter}
                 ORDER BY tp.created_at ASC
-                LIMIT 500
+                LIMIT 2048
                 """, new { id, status });
 
             // Group by participant to nest members
