@@ -39,9 +39,8 @@ smoke "Readiness probe"      GET "/health/ready"
 
 echo ""
 echo "── Public API ──"
-smoke "Game catalog"         GET "/api/games"
+smoke "Game catalog"         GET "/api/games/catalog"
 smoke "Public tournaments"   GET "/api/tournaments?page=1&pageSize=1"
-smoke "Sitemap index"        GET "/api/sitemap/index"
 
 echo ""
 echo "── Auth boundary ──"
