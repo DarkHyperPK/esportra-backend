@@ -16,10 +16,10 @@ public static class AuthEndpoints
         // Replaces: set-password Edge Function
         // Two paths: token_hash (stateless recovery) OR existing JWT session.
         app.MapPost("/api/auth/set-password", async (
-            [FromBody] SetPasswordRequest  req,
-            HttpContext                    ctx,
-            ISupabaseAdminClient           supabase,
-            CancellationToken              ct) =>
+            [FromBody] SetPasswordRequest req,
+            HttpContext ctx,
+            ISupabaseAdminClient supabase,
+            CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 8)
                 return Results.BadRequest(new { error = "Password must be at least 8 characters." });
@@ -36,7 +36,7 @@ public static class AuthEndpoints
                 if (user is null)
                     return Results.BadRequest(new { error = "Invalid or expired recovery token." });
 
-                userId    = user.Id;
+                userId = user.Id;
                 userEmail = user.Email;
             }
             else

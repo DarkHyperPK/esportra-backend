@@ -15,18 +15,18 @@ public static class WalletEndpoints
     {
         // ── GET /api/venues/{venueId}/wallets — list active wallets ──────────
         app.MapGet("/api/venues/{venueId}/wallets", async (
-            Guid                 venueId,
-            string?              search,
-            int                  limit  = 20,
-            int                  offset = 0,
-            HttpContext          ctx    = null!,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            Guid venueId,
+            string? search,
+            int limit = 20,
+            int offset = 0,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            limit  = Math.Clamp(limit, 1, 100);
+            limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
 
             using var conn = db.CreateConnection();
@@ -62,11 +62,11 @@ public static class WalletEndpoints
 
         // ── GET /api/venues/{venueId}/wallets/{walletId} — single wallet ────
         app.MapGet("/api/venues/{venueId}/wallets/{walletId}", async (
-            Guid                 venueId,
-            Guid                 walletId,
-            HttpContext          ctx    = null!,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            Guid venueId,
+            Guid walletId,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -103,11 +103,11 @@ public static class WalletEndpoints
 
         // ── POST /api/venues/{venueId}/wallets/topup — add funds ────────────
         app.MapPost("/api/venues/{venueId}/wallets/topup", async (
-            Guid                                venueId,
-            [FromBody] WalletTopupRequest        req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            CancellationToken                   ct) =>
+            Guid venueId,
+            [FromBody] WalletTopupRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -177,10 +177,10 @@ public static class WalletEndpoints
                     {
                         walletId,
                         venueId,
-                        amount      = req.Amount,
+                        amount = req.Amount,
                         newBalance,
                         description = req.Description,
-                        createdBy   = userCtx.UserIdGuid
+                        createdBy = userCtx.UserIdGuid
                     }, tx);
 
                 tx.Commit();
@@ -209,11 +209,11 @@ public static class WalletEndpoints
 
         // ── POST /api/venues/{venueId}/wallets/deduct — subtract funds ──────
         app.MapPost("/api/venues/{venueId}/wallets/deduct", async (
-            Guid                                venueId,
-            [FromBody] WalletDeductRequest       req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            CancellationToken                   ct) =>
+            Guid venueId,
+            [FromBody] WalletDeductRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -274,11 +274,11 @@ public static class WalletEndpoints
                     {
                         walletId,
                         venueId,
-                        amount      = req.Amount,
+                        amount = req.Amount,
                         newBalance,
                         description = req.Description,
                         referenceId = req.ReferenceId,
-                        createdBy   = userCtx.UserIdGuid
+                        createdBy = userCtx.UserIdGuid
                     }, tx);
 
                 tx.Commit();
@@ -307,16 +307,16 @@ public static class WalletEndpoints
 
         // ── GET /api/wallets/my — gamer's own wallets across venues ─────────
         app.MapGet("/api/wallets/my", async (
-            HttpContext          ctx      = null!,
-            IDbConnectionFactory db       = null!,
-            int                  page     = 1,
-            int                  pageSize = 20,
-            CancellationToken    ct       = default) =>
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            int page = 1,
+            int pageSize = 20,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            page     = Math.Max(page, 1);
+            page = Math.Max(page, 1);
             pageSize = Math.Clamp(pageSize, 1, 50);
             var offset = (page - 1) * pageSize;
 
@@ -340,18 +340,18 @@ public static class WalletEndpoints
 
         // ── GET /api/venues/{venueId}/wallets/{walletId}/transactions ────────
         app.MapGet("/api/venues/{venueId}/wallets/{walletId}/transactions", async (
-            Guid                 venueId,
-            Guid                 walletId,
-            int                  limit  = 20,
-            int                  offset = 0,
-            HttpContext          ctx    = null!,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            Guid venueId,
+            Guid walletId,
+            int limit = 20,
+            int offset = 0,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            limit  = Math.Clamp(limit, 1, 100);
+            limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
 
             using var conn = db.CreateConnection();
@@ -390,11 +390,11 @@ public static class WalletEndpoints
 
         // ── POST /api/venues/{venueId}/wallets/find-or-create ───────────────
         app.MapPost("/api/venues/{venueId}/wallets/find-or-create", async (
-            Guid                                     venueId,
-            [FromBody] WalletFindOrCreateRequest      req,
-            HttpContext                               ctx,
-            IDbConnectionFactory                     db,
-            CancellationToken                        ct) =>
+            Guid venueId,
+            [FromBody] WalletFindOrCreateRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -434,12 +434,12 @@ public static class WalletEndpoints
     // ── Request DTOs ────────────────────────────────────────────────────────────
 
     private sealed record WalletTopupRequest(
-        string  UserId,
+        string UserId,
         decimal Amount,
         string? Description);
 
     private sealed record WalletDeductRequest(
-        string  WalletId,
+        string WalletId,
         decimal Amount,
         string? Description,
         string? ReferenceId);

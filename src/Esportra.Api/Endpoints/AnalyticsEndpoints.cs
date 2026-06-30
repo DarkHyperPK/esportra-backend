@@ -17,9 +17,9 @@ public static class AnalyticsEndpoints
         // ── POST /api/analytics/events ───────────────────────────────────────
         app.MapPost("/api/analytics/events", async (
             [FromBody] TrackEventRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
 
@@ -32,7 +32,7 @@ public static class AnalyticsEndpoints
                 """,
                 new
                 {
-                    userId    = userCtx?.UserIdGuid,
+                    userId = userCtx?.UserIdGuid,
                     eventType = req.EventType,
                     eventData = req.EventData ?? "{}",
                     sessionId = req.SessionId,
@@ -94,15 +94,15 @@ public static class AnalyticsEndpoints
             var events = data.AsList();
             var summary = new
             {
-                total_events       = events.Count,
-                page_views         = events.Count(e => (string)e.event_type == "page_view"),
-                user_actions       = events.Count(e => (string)e.event_type == "user_action"),
-                tournament_events  = events.Count(e => (string)e.event_type == "tournament_event"),
-                team_events        = events.Count(e => (string)e.event_type == "team_event"),
-                venue_events       = events.Count(e => (string)e.event_type == "venue_event"),
-                payment_events     = events.Count(e => (string)e.event_type == "payment_event"),
-                search_events      = events.Count(e => (string)e.event_type == "search"),
-                error_events       = events.Count(e => (string)e.event_type == "error"),
+                total_events = events.Count,
+                page_views = events.Count(e => (string)e.event_type == "page_view"),
+                user_actions = events.Count(e => (string)e.event_type == "user_action"),
+                tournament_events = events.Count(e => (string)e.event_type == "tournament_event"),
+                team_events = events.Count(e => (string)e.event_type == "team_event"),
+                venue_events = events.Count(e => (string)e.event_type == "venue_event"),
+                payment_events = events.Count(e => (string)e.event_type == "payment_event"),
+                search_events = events.Count(e => (string)e.event_type == "search"),
+                error_events = events.Count(e => (string)e.event_type == "error"),
             };
 
             return Results.Ok(new { data = events, summary });
@@ -112,9 +112,9 @@ public static class AnalyticsEndpoints
         // Returns active user_roles + verified_roles for the current user.
         // Replaces RoleContext's Supabase queries.
         app.MapGet("/api/me/roles", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();

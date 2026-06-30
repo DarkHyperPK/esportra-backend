@@ -23,11 +23,11 @@ public static class VetoEndpoints
         // ── GET /api/veto/{matchId} ──────────────────────────────────────────
         // S4: Require auth — veto state includes team strategy info
         app.MapGet("/api/veto/{matchId}", async (
-            Guid                 matchId,
-            HttpContext          ctx,
+            Guid matchId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            VetoDbService        veto,
-            CancellationToken    ct) =>
+            VetoDbService veto,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -47,12 +47,12 @@ public static class VetoEndpoints
 
         // ── GET /api/veto/{matchId}/history ────────────────────────────────────
         app.MapGet("/api/veto/{matchId}/history", async (
-            Guid                 matchId,
-            HttpContext          ctx,
+            Guid matchId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            VetoDbService        veto,
-            IConfiguration       config,
-            CancellationToken    ct) =>
+            VetoDbService veto,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -78,15 +78,15 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/init ────────────────────────────────────
         app.MapPost("/api/veto/{matchId}/init", async (
-            Guid                      matchId,
+            Guid matchId,
             [FromBody] VetoInitRequest req,
-            HttpContext                ctx,
-            VetoDbService              veto,
-            IDbConnectionFactory       db,
-            GameCatalogService         gameCatalog,
-            IHubContext<VetoHub>       hub,
-            ILogger<VetoDbService>    logger,
-            CancellationToken         ct) =>
+            HttpContext ctx,
+            VetoDbService veto,
+            IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
+            IHubContext<VetoHub> hub,
+            ILogger<VetoDbService> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -181,12 +181,12 @@ public static class VetoEndpoints
         // ── POST /api/veto/{matchId}/ban ─────────────────────────────────────
         // S1+D2: FSM + captain auth enforced in VetoDbService
         app.MapPost("/api/veto/{matchId}/ban", async (
-            Guid                      matchId,
+            Guid matchId,
             [FromBody] VetoActionRequest req,
-            HttpContext                ctx,
-            VetoDbService              veto,
-            IHubContext<VetoHub>       hub,
-            CancellationToken         ct) =>
+            HttpContext ctx,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -214,18 +214,18 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/pick ────────────────────────────────────
         app.MapPost("/api/veto/{matchId}/pick", async (
-            Guid                      matchId,
+            Guid matchId,
             [FromBody] VetoActionRequest req,
-            HttpContext                ctx,
-            VetoDbService              veto,
-            IHubContext<VetoHub>       hub,
-            IDbConnectionFactory       db,
-            IDatHostService            dathost,
-            IHubContext<MatchHub>      matchHub,
-            IConfiguration             config,
-            ILogger<VetoDbService>     vetoLogger,
-            ILogger<DatHostService>    serverLogger,
-            CancellationToken         ct) =>
+            HttpContext ctx,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            IDbConnectionFactory db,
+            IDatHostService dathost,
+            IHubContext<MatchHub> matchHub,
+            IConfiguration config,
+            ILogger<VetoDbService> vetoLogger,
+            ILogger<DatHostService> serverLogger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -271,17 +271,17 @@ public static class VetoEndpoints
 
         // ── POST /api/veto/{matchId}/pick-side ───────────────────────────────
         app.MapPost("/api/veto/{matchId}/pick-side", async (
-            Guid                         matchId,
+            Guid matchId,
             [FromBody] VetoPickSideRequest req,
-            HttpContext                   ctx,
-            VetoDbService                 veto,
-            IHubContext<VetoHub>          hub,
-            IDbConnectionFactory          db,
-            IDatHostService               dathost,
-            IHubContext<MatchHub>         matchHub,
-            IConfiguration                config,
-            ILogger<DatHostService>       serverLogger,
-            CancellationToken            ct) =>
+            HttpContext ctx,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            IDbConnectionFactory db,
+            IDatHostService dathost,
+            IHubContext<MatchHub> matchHub,
+            IConfiguration config,
+            ILogger<DatHostService> serverLogger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -320,11 +320,11 @@ public static class VetoEndpoints
         // ── POST /api/veto/{matchId}/reset ───────────────────────────────────
         // S3: Organizer-only
         app.MapPost("/api/veto/{matchId}/reset", async (
-            Guid                 matchId,
-            HttpContext           ctx,
-            VetoDbService         veto,
-            IHubContext<VetoHub>  hub,
-            CancellationToken    ct) =>
+            Guid matchId,
+            HttpContext ctx,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -348,13 +348,13 @@ public static class VetoEndpoints
         // ── PUT /api/veto/{matchId}/update ───────────────────────────────────
         // S2: Organizer-only (this is a raw state override, not a normal action)
         app.MapPut("/api/veto/{matchId}/update", async (
-            Guid                        matchId,
+            Guid matchId,
             [FromBody] VetoUpdateRequest req,
-            HttpContext                  ctx,
-            IDbConnectionFactory         db,
-            VetoDbService                veto,
-            IHubContext<VetoHub>         hub,
-            CancellationToken           ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            VetoDbService veto,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -393,8 +393,8 @@ public static class VetoEndpoints
                     req.CurrentTeamId,
                     req.CurrentAction,
                     req.CurrentActionNumber,
-                    Team1BannedMaps     = req.Team1BannedMaps,
-                    Team2BannedMaps     = req.Team2BannedMaps,
+                    Team1BannedMaps = req.Team1BannedMaps,
+                    Team2BannedMaps = req.Team2BannedMaps,
                     Team1PickedMapsJson = req.Team1PickedMaps is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.Team1PickedMaps, Esportra.Core.JsonDefaults.SnakeCase)
                         : (string?)null,
@@ -419,10 +419,10 @@ public static class VetoEndpoints
         // ── GET /api/veto/token/{token} ──────────────────────────────────────
         // S5: Token-based access uses cryptographic tokens (not UUIDs)
         app.MapGet("/api/veto/token/{token}", async (
-            string               token,
+            string token,
             IDbConnectionFactory db,
-            VetoDbService        veto,
-            CancellationToken    ct) =>
+            VetoDbService veto,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -458,35 +458,35 @@ public static class VetoEndpoints
 
             return Results.Ok(new
             {
-                id               = state.Id,
-                match_id         = state.MatchId,
-                tournament_id    = state.TournamentId,
-                team1_id         = state.Team1Id,
-                team2_id         = state.Team2Id,
-                best_of          = state.BestOf,
-                status           = state.Status,
-                current_team_id  = state.CurrentTeamId,
-                current_action   = state.CurrentAction,
+                id = state.Id,
+                match_id = state.MatchId,
+                tournament_id = state.TournamentId,
+                team1_id = state.Team1Id,
+                team2_id = state.Team2Id,
+                best_of = state.BestOf,
+                status = state.Status,
+                current_team_id = state.CurrentTeamId,
+                current_action = state.CurrentAction,
                 current_action_number = state.CurrentActionNumber,
                 team1_banned_maps = state.Team1BannedMaps,
                 team2_banned_maps = state.Team2BannedMaps,
                 team1_picked_maps = state.Team1PickedMaps,
                 team2_picked_maps = state.Team2PickedMaps,
-                selected_map_id   = state.SelectedMapId,
+                selected_map_id = state.SelectedMapId,
                 selected_map_pool = state.SelectedMapPool,
-                started_at        = state.StartedAt,
-                completed_at      = state.CompletedAt,
-                game              = state.Game,
-                stage_id         = (object?)null,
-                team_side        = teamSide,
+                started_at = state.StartedAt,
+                completed_at = state.CompletedAt,
+                game = state.Game,
+                stage_id = (object?)null,
+                team_side = teamSide,
                 team1_link_token = state.Team1LinkToken,
                 team2_link_token = state.Team2LinkToken,
                 match = new
                 {
-                    status  = row.match_status,
+                    status = row.match_status,
                     best_of = row.match_best_of,
-                    team1   = new { id = row.t1_id, name = row.t1_name },
-                    team2   = new { id = row.t2_id, name = row.t2_name },
+                    team1 = new { id = row.t1_id, name = row.t1_name },
+                    team2 = new { id = row.t2_id, name = row.t2_name },
                 },
                 tournament = new { game = row.tournament_game },
             });
@@ -749,10 +749,10 @@ public static class VetoEndpoints
 }
 
 public sealed record VetoInitRequest(
-    Guid    TournamentId,
-    Guid?   Team1Id,
-    Guid?   Team2Id,
-    int     BestOf,
+    Guid TournamentId,
+    Guid? Team1Id,
+    Guid? Team2Id,
+    int BestOf,
     string? Game = "valorant");
 
 public sealed record VetoActionRequest(string MapId);
@@ -760,14 +760,14 @@ public sealed record VetoActionRequest(string MapId);
 public sealed record VetoPickSideRequest(string MapId, string Side);
 
 public sealed record VetoUpdateRequest(
-    string?      Status              = null,
-    int?         BestOf              = null,
-    Guid?        CurrentTeamId       = null,
-    string?      CurrentAction       = null,
-    int?         CurrentActionNumber = null,
-    string[]?    Team1BannedMaps     = null,
-    string[]?    Team2BannedMaps     = null,
-    PickedMap[]? Team1PickedMaps     = null,
-    PickedMap[]? Team2PickedMaps     = null,
-    Guid?        SelectedMapId       = null,
-    string?      TurnStartedAt       = null);
+    string? Status = null,
+    int? BestOf = null,
+    Guid? CurrentTeamId = null,
+    string? CurrentAction = null,
+    int? CurrentActionNumber = null,
+    string[]? Team1BannedMaps = null,
+    string[]? Team2BannedMaps = null,
+    PickedMap[]? Team1PickedMaps = null,
+    PickedMap[]? Team2PickedMaps = null,
+    Guid? SelectedMapId = null,
+    string? TurnStartedAt = null);

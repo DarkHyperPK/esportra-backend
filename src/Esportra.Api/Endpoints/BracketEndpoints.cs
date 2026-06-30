@@ -30,12 +30,12 @@ public static class BracketEndpoints
     {
         // ── POST /api/brackets/generate ───────────────────────────────────────
         app.MapPost("/api/brackets/generate", async (
-            HttpContext                         ctx,
-            [FromBody] GenerateBracketRequest   req,
-            BracketPersistenceService           persistence,
-            TournamentAuthorizationService      tournamentAuth,
-            IHubContext<BracketHub>             bracketHub,
-            CancellationToken                   ct) =>
+            HttpContext ctx,
+            [FromBody] GenerateBracketRequest req,
+            BracketPersistenceService persistence,
+            TournamentAuthorizationService tournamentAuth,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -59,9 +59,9 @@ public static class BracketEndpoints
             IBracketGenerator generator = req.Format.ToLowerInvariant() switch
             {
                 "double_elimination" => new DoubleEliminationGenerator(),
-                "round_robin"        => new RoundRobinGenerator(),
-                "swiss"              => new SwissGenerator(),
-                _                    => new SingleEliminationGenerator(),
+                "round_robin" => new RoundRobinGenerator(),
+                "swiss" => new SwissGenerator(),
+                _ => new SingleEliminationGenerator(),
             };
 
             var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
@@ -69,12 +69,12 @@ public static class BracketEndpoints
                 return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
 
             var config = new BracketConfig(
-                DailyStartTime:      req.DailyStartTime,
+                DailyStartTime: req.DailyStartTime,
                 TournamentStartDate: req.TournamentStartDate,
-                SwissGroups:         req.SwissGroups,
-                SwissRounds:         req.SwissRounds);
+                SwissGroups: req.SwissGroups,
+                SwissRounds: req.SwissRounds);
 
-            var graph  = generator.Generate(teams, req.TournamentId, req.StageId,
+            var graph = generator.Generate(teams, req.TournamentId, req.StageId,
                 req.BestOf, req.BracketSize, req.AdvancementCount, config);
 
             var errors = GraphValidator.Validate(graph);
@@ -95,9 +95,9 @@ public static class BracketEndpoints
 
             return Results.Ok(new
             {
-                versionId  = version.Id,
-                nodeCount  = graph.Nodes.Count,
-                edgeCount  = graph.Edges.Count,
+                versionId = version.Id,
+                nodeCount = graph.Nodes.Count,
+                edgeCount = graph.Edges.Count,
             });
         }).RequireAuthorization("Authenticated");
 
@@ -105,13 +105,13 @@ public static class BracketEndpoints
         // Used by MatchRepository.ts to save a client-generated bracket graph.
         // Frontend sends snake_case JSON — deserialize with SnakeCaseLower naming policy.
         app.MapPost("/api/brackets/persist", async (
-            HttpContext                         ctx,
-            BracketPersistenceService          persistence,
-            IDbConnectionFactory               db,
-            TournamentAuthorizationService     tournamentAuth,
-            IHubContext<BracketHub>            bracketHub,
-            ILoggerFactory                     loggerFactory,
-            CancellationToken                  ct) =>
+            HttpContext ctx,
+            BracketPersistenceService persistence,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            IHubContext<BracketHub> bracketHub,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
             var graph = await ctx.Request.ReadFromJsonAsync<BracketGraph>(s_snakeCase, ct);
             if (graph is null) return Results.BadRequest("Invalid bracket graph");
@@ -179,12 +179,12 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
         app.MapPost("/api/brackets/{versionId}/advance-byes", async (
-            Guid                      versionId,
-            HttpContext               ctx,
+            Guid versionId,
+            HttpContext ctx,
             BracketPersistenceService persistence,
-            IDbConnectionFactory      db,
-            IHubContext<BracketHub>   bracketHub,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -210,12 +210,12 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/reset ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/reset", async (
-            Guid                      versionId,
-            HttpContext               ctx,
+            Guid versionId,
+            HttpContext ctx,
             BracketPersistenceService persistence,
-            IDbConnectionFactory      db,
-            IHubContext<BracketHub>   bracketHub,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -236,11 +236,11 @@ public static class BracketEndpoints
 
         // ── DELETE /api/brackets/{versionId} ─────────────────────────────────
         app.MapDelete("/api/brackets/{versionId}", async (
-            Guid                      versionId,
-            HttpContext               ctx,
+            Guid versionId,
+            HttpContext ctx,
             BracketPersistenceService persistence,
-            IDbConnectionFactory      db,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -264,11 +264,11 @@ public static class BracketEndpoints
         // ── PUT /api/brackets/{versionId} ─────────────────────────────────────
         // Update version status (draft → active → archived) and activated_at.
         app.MapPut("/api/brackets/{versionId}", async (
-            Guid                 versionId,
-            HttpContext           ctx,
+            Guid versionId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<BracketHub> bracketHub,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -326,8 +326,8 @@ public static class BracketEndpoints
 
         // ── GET /api/brackets/{versionId}/standings ───────────────────────────
         app.MapGet("/api/brackets/{versionId}/standings", async (
-            Guid             versionId,
-            string?          groupId,
+            Guid versionId,
+            string? groupId,
             StandingsService standingsSvc,
             IDbConnectionFactory db,
             CancellationToken ct) =>
@@ -346,8 +346,8 @@ public static class BracketEndpoints
         // ── GET /api/stages/{stageId}/standings ──────────────────────────────
         // Convenience route: frontend passes stageId directly (not versionId)
         app.MapGet("/api/stages/{stageId}/standings", async (
-            Guid             stageId,
-            string?          groupId,
+            Guid stageId,
+            string? groupId,
             StandingsService standingsSvc,
             CancellationToken ct) =>
         {
@@ -357,12 +357,12 @@ public static class BracketEndpoints
 
         // ── POST /api/swiss/next-round ────────────────────────────────────────
         app.MapPost("/api/swiss/next-round", async (
-            [FromBody]      SwissNextRoundRequest req,
-            HttpContext                           ctx,
-            SwissNextRoundService                 swissSvc,
-            IDbConnectionFactory                  db,
-            IHubContext<BracketHub>               bracketHub,
-            CancellationToken                     ct) =>
+            [FromBody] SwissNextRoundRequest req,
+            HttpContext ctx,
+            SwissNextRoundService swissSvc,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -386,13 +386,13 @@ public static class BracketEndpoints
 
         // ── DELETE /api/swiss/{stageId}/round/{roundNumber} ─────────────────
         app.MapDelete("/api/swiss/{stageId}/round/{roundNumber:int}", async (
-            Guid                     stageId,
-            int                      roundNumber,
-            HttpContext              ctx,
-            IDbConnectionFactory     db,
-            TournamentWinnerService  winnerService,
-            IHubContext<BracketHub>  bracketHub,
-            CancellationToken        ct) =>
+            Guid stageId,
+            int roundNumber,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -451,11 +451,11 @@ public static class BracketEndpoints
         // Called by a DB webhook trigger after match completion.
         app.MapPost("/api/brackets/advance", async (
             [FromBody] AdvanceBracketRequest req,
-            HttpContext                      ctx,
-            IDbConnectionFactory             db,
-            IHubContext<BracketHub>          bracketHub,
-            ILogger<BracketHub>             logger,
-            CancellationToken                ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            ILogger<BracketHub> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -488,8 +488,8 @@ public static class BracketEndpoints
                 .Select(adv => new
                 {
                     TargetMatchId = (Guid)adv.target_match_id,
-                    TargetSlot    = (int)adv.target_slot,
-                    TeamId        = (Guid?)((string)adv.type == "winner" ? adv.winner_id : adv.loser_id),
+                    TargetSlot = (int)adv.target_slot,
+                    TeamId = (Guid?)((string)adv.type == "winner" ? adv.winner_id : adv.loser_id),
                 })
                 .Where(u => u.TeamId is not null)
                 .ToList();
@@ -499,8 +499,8 @@ public static class BracketEndpoints
             {
                 // Batch all slot updates in a single UNNEST query
                 var targetIds = updates.Select(u => u.TargetMatchId).ToArray();
-                var slots     = updates.Select(u => u.TargetSlot).ToArray();
-                var teamIds   = updates.Select(u => u.TeamId!.Value).ToArray();
+                var slots = updates.Select(u => u.TargetSlot).ToArray();
+                var teamIds = updates.Select(u => u.TeamId!.Value).ToArray();
 
                 advanced = await conn.ExecuteAsync("""
                     UPDATE public.brkt_matches m
@@ -542,11 +542,11 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/cache ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/cache", async (
-            Guid                           versionId,
-            HttpContext                    ctx,
-            IDbConnectionFactory           db,
+            Guid versionId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
-            CancellationToken              ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -560,9 +560,9 @@ public static class BracketEndpoints
 
         // ── GET /api/brackets/{versionId} ─────────────────────────────────────
         app.MapGet("/api/brackets/{versionId}", async (
-            Guid                 versionId,
+            Guid versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var cached = await conn.QuerySingleOrDefaultAsync<string>(
@@ -579,9 +579,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/{versionId}/graph ──────────────────────────────
         // Full graph structure (replaces MatchRepository.getGraphStructure)
         app.MapGet("/api/brackets/{versionId}/graph", async (
-            Guid                 versionId,
+            Guid versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -614,9 +614,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/{versionId}/bye-matches ────────────────────────
         // Pending matches with exactly one team (BYE matches)
         app.MapGet("/api/brackets/{versionId}/bye-matches", async (
-            Guid                 versionId,
+            Guid versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -633,10 +633,10 @@ public static class BracketEndpoints
         // ── GET /api/brackets/matches ─────────────────────────────────────────
         // Returns all matches for a bracket version
         app.MapGet("/api/brackets/matches", async (
-            Guid?                versionId,
-            Guid?                stageId,
+            Guid? versionId,
+            Guid? stageId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -678,10 +678,10 @@ public static class BracketEndpoints
 
         // ── GET /api/brackets/matches/{id} ────────────────────────────────────
         app.MapGet("/api/brackets/matches/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -709,10 +709,10 @@ public static class BracketEndpoints
         // ── GET /api/brackets/events ──────────────────────────────────────────
         // Returns bracket match events (scores, status changes, etc.)
         app.MapGet("/api/brackets/events", async (
-            Guid?                matchId,
-            Guid?                versionId,
+            Guid? matchId,
+            Guid? versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -744,11 +744,11 @@ public static class BracketEndpoints
         // Returns individual game results within a match (by matchId) or
         // all completed games for a tournament (by tournament_id + status)
         app.MapGet("/api/brackets/match-games", async (
-            Guid?                matchId,
-            Guid?                tournament_id,
-            string?              status,
+            Guid? matchId,
+            Guid? tournament_id,
+            string? status,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -783,9 +783,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/versions/tournament/{tournamentId} ─────────────
         // List bracket versions for a tournament (replaces direct Supabase query)
         app.MapGet("/api/brackets/versions/tournament/{tournamentId}", async (
-            Guid                 tournamentId,
+            Guid tournamentId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -803,9 +803,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/versions/{id} ──────────────────────────────────
         // Alias for GET /api/brackets/{versionId} — same data, different URL pattern
         app.MapGet("/api/brackets/versions/{id}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -936,25 +936,25 @@ public static class BracketEndpoints
 
         var uiMatches = matches.Select(m => new
         {
-            id               = $"db-{m.id}",
-            round            = m.round_index,
-            matchNumber      = m.match_number,
-            team1            = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo },
-            team2            = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo },
-            winner           = m.winner_id,
-            team1_score      = m.team1_score,
-            team2_score      = m.team2_score,
-            status           = m.status ?? "pending",
-            scheduledTime    = m.scheduled_time,
-            bestOf           = m.best_of,
-            partyCode        = m.party_code,
-            bracketType      = m.bracket_type,
-            nextMatchId      = nextMatchMap.TryGetValue(((Guid)m.id).ToString(), out string? nm) ? nm : null,
+            id = $"db-{m.id}",
+            round = m.round_index,
+            matchNumber = m.match_number,
+            team1 = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo },
+            team2 = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo },
+            winner = m.winner_id,
+            team1_score = m.team1_score,
+            team2_score = m.team2_score,
+            status = m.status ?? "pending",
+            scheduledTime = m.scheduled_time,
+            bestOf = m.best_of,
+            partyCode = m.party_code,
+            bracketType = m.bracket_type,
+            nextMatchId = nextMatchMap.TryGetValue(((Guid)m.id).ToString(), out string? nm) ? nm : null,
             loserNextMatchId = loserNextMap.TryGetValue(((Guid)m.id).ToString(), out string? lm) ? lm : null,
-            stageId          = m.stage_id,
-            groupId          = m.group_id,
-            x                = m.x_pos,
-            y                = m.y_pos,
+            stageId = m.stage_id,
+            groupId = m.group_id,
+            x = m.x_pos,
+            y = m.y_pos,
         }).ToList();
 
         var json = JsonSerializer.Serialize(uiMatches);

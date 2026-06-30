@@ -255,18 +255,18 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             new
             {
                 id,
-                match_id          = matchId,
-                tournament_id     = tournamentId,
-                team1_id          = team1Id,
-                team2_id          = team2Id,
-                best_of           = bestOf,
-                current_team_id   = firstTeamId,
-                current_action    = firstStep.Action,
-                action_number     = firstStep.ActionNumber,
+                match_id = matchId,
+                tournament_id = tournamentId,
+                team1_id = team1Id,
+                team2_id = team2Id,
+                best_of = bestOf,
+                current_team_id = firstTeamId,
+                current_action = firstStep.Action,
+                action_number = firstStep.ActionNumber,
                 selected_map_pool = mapPoolIds,
                 game,
-                team1_token       = team1Token,
-                team2_token       = team2Token,
+                team1_token = team1Token,
+                team2_token = team2Token,
             });
 
         await conn.ExecuteAsync(
@@ -291,7 +291,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         await AssertIsCaptainOfCurrentTeam(userId, veto, ct);
 
         bool isTeam1 = veto.CurrentTeamId == veto.Team1Id;
-        string col   = isTeam1 ? "team1_banned_maps" : "team2_banned_maps";
+        string col = isTeam1 ? "team1_banned_maps" : "team2_banned_maps";
 
         var next = NextActionFor(veto);
 
@@ -331,7 +331,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         await AssertIsCaptainOfCurrentTeam(userId, veto, ct);
 
         bool isTeam1 = veto.CurrentTeamId == veto.Team1Id;
-        string col   = isTeam1 ? "team1_picked_maps" : "team2_picked_maps";
+        string col = isTeam1 ? "team1_picked_maps" : "team2_picked_maps";
 
         var next = NextActionFor(veto);
         await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, userId, "pick", isPick: true);
@@ -690,16 +690,16 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             ON CONFLICT (veto_id, action_number) DO NOTHING",
             new
             {
-                vetoId        = veto.Id,
-                matchId       = veto.MatchId,
-                tournamentId  = veto.TournamentId,
+                vetoId = veto.Id,
+                matchId = veto.MatchId,
+                tournamentId = veto.TournamentId,
                 teamId,
                 teamSide,
                 actionType,
                 mapId,
-                actionNumber  = veto.CurrentActionNumber,
+                actionNumber = veto.CurrentActionNumber,
                 side,
-                createdBy     = userId,
+                createdBy = userId,
             });
     }
 
@@ -746,7 +746,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                 {
                     matchId,
                     nextTeamId,
-                    action       = next.Value.Action,
+                    action = next.Value.Action,
                     actionNumber = nextActionNumber,
                 });
         }
@@ -975,8 +975,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
     private static string[] ParseStringArray(object? arr) => arr switch
     {
         string[] s => s,
-        string   s => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
-        _          => []
+        string s => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
+        _ => []
     };
 
     // ── Row mapping ──────────────────────────────────────────────────────────
@@ -987,33 +987,33 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         static string[] ParseArray(object? arr) => arr switch
         {
             string[] s => s,
-            string   s => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
-            _          => []
+            string s => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
+            _ => []
         };
 
         return new MatchMapVeto
         {
-            Id                  = (Guid)row.id,
-            MatchId             = (Guid)row.match_id,
-            TournamentId        = (Guid)row.tournament_id,
-            Team1Id             = (Guid?)row.team1_id,
-            Team2Id             = (Guid?)row.team2_id,
-            BestOf              = row.best_of ?? 1,
-            Status              = row.status ?? "pending",
-            CurrentTeamId       = (Guid?)row.current_team_id,
-            CurrentAction       = row.current_action,
+            Id = (Guid)row.id,
+            MatchId = (Guid)row.match_id,
+            TournamentId = (Guid)row.tournament_id,
+            Team1Id = (Guid?)row.team1_id,
+            Team2Id = (Guid?)row.team2_id,
+            BestOf = row.best_of ?? 1,
+            Status = row.status ?? "pending",
+            CurrentTeamId = (Guid?)row.current_team_id,
+            CurrentAction = row.current_action,
             CurrentActionNumber = row.current_action_number ?? 0,
-            Team1BannedMaps     = ParseArray(row.team1_banned_maps),
-            Team2BannedMaps     = ParseArray(row.team2_banned_maps),
-            Team1PickedMaps     = ParsePicked(row.team1_picked_maps),
-            Team2PickedMaps     = ParsePicked(row.team2_picked_maps),
-            SelectedMapId       = row.selected_map_id,
-            SelectedMapPool     = ParseArray(row.selected_map_pool),
-            StartedAt           = row.started_at?.ToString(),
-            CompletedAt         = row.completed_at?.ToString(),
-            Game                = row.game ?? "valorant",
-            Team1LinkToken      = (string?)row.team1_link_token,
-            Team2LinkToken      = (string?)row.team2_link_token,
+            Team1BannedMaps = ParseArray(row.team1_banned_maps),
+            Team2BannedMaps = ParseArray(row.team2_banned_maps),
+            Team1PickedMaps = ParsePicked(row.team1_picked_maps),
+            Team2PickedMaps = ParsePicked(row.team2_picked_maps),
+            SelectedMapId = row.selected_map_id,
+            SelectedMapPool = ParseArray(row.selected_map_pool),
+            StartedAt = row.started_at?.ToString(),
+            CompletedAt = row.completed_at?.ToString(),
+            Game = row.game ?? "valorant",
+            Team1LinkToken = (string?)row.team1_link_token,
+            Team2LinkToken = (string?)row.team2_link_token,
         };
     }
 }

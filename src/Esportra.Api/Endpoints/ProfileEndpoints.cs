@@ -32,10 +32,10 @@ public static class ProfileEndpoints
     {
         // ── GET /api/profiles/me ──────────────────────────────────────────────
         app.MapGet("/api/profiles/me", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -44,22 +44,22 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/{id} ────────────────────────────────────────────
         app.MapGet("/api/profiles/{id}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             return await GetProfileResult(id, db, cache, ct, includePrivateFields: false);
         });
 
         // ── PUT /api/profiles/{id} ────────────────────────────────────────────
         app.MapPut("/api/profiles/{id}", async (
-            Guid                       id,
+            Guid id,
             [FromBody] Dictionary<string, object?> updates,
-            HttpContext                ctx,
-            IDbConnectionFactory       db,
-            HybridCache                cache,
-            CancellationToken          ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -184,7 +184,7 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/by-username/{username} ─────────────────────────
         app.MapGet("/api/profiles/by-username/{username}", async (
-            string               username,
+            string username,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -196,9 +196,9 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/search ─────────────────────────────────────────
         app.MapGet("/api/profiles/search", async (
-            [FromQuery] string?  q,
-            [FromQuery] string?  email,
-            [FromQuery] bool?    verified,
+            [FromQuery] string? q,
+            [FromQuery] string? email,
+            [FromQuery] bool? verified,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -238,9 +238,9 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/{id}/licenses ────────────────────────────────────
         app.MapGet("/api/profiles/{id}/licenses", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -257,9 +257,9 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/me/licenses ─────────────────────────────────────
         app.MapGet("/api/profiles/me/licenses", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -281,7 +281,7 @@ public static class ProfileEndpoints
         // Achievements table not yet migrated — return empty array gracefully
         app.MapGet("/api/achievements", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             try
@@ -295,11 +295,11 @@ public static class ProfileEndpoints
 
         // ── POST /api/profiles/me/achievements/{achievementId} ──────────────
         app.MapPost("/api/profiles/me/achievements/{achievementId}", async (
-            Guid                 achievementId,
-            HttpContext          ctx,
+            Guid achievementId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -325,10 +325,10 @@ public static class ProfileEndpoints
         // ── PUT /api/profiles/me/skill-level ────────────────────────────────
         app.MapPut("/api/profiles/me/skill-level", async (
             [FromBody] UpdateSkillLevelRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            HybridCache                        cache,
-            CancellationToken                  ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -345,13 +345,13 @@ public static class ProfileEndpoints
         // ── GET /api/profiles ─────────────────────────────────────────────────
         // Paginated list of profiles with optional search
         app.MapGet("/api/profiles", async (
-            string?              q,
-            string?              ids,
-            string?              game,
-            int                  page  = 1,
-            int                  limit = 50,
-            IDbConnectionFactory db    = default!,
-            CancellationToken    ct    = default) =>
+            string? q,
+            string? ids,
+            string? game,
+            int page = 1,
+            int limit = 50,
+            IDbConnectionFactory db = default!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             using var conn = db.CreateConnection();
@@ -398,10 +398,10 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/riot-accounts ───────────────────────────────────
         app.MapGet("/api/profiles/riot-accounts", async (
-            string?              userIds,
-            HttpContext          ctx,
+            string? userIds,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -437,9 +437,9 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/me/verification ─────────────────────────────────
         app.MapGet("/api/profiles/me/verification", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -453,9 +453,9 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/me/verification-requests ────────────────────────
         app.MapGet("/api/profiles/me/verification-requests", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -476,11 +476,11 @@ public static class ProfileEndpoints
         // ── POST /api/profiles/me/verification-requests ───────────────────────
         app.MapPost("/api/profiles/me/verification-requests", async (
             [FromBody] VerificationRequestBody req,
-            HttpContext                        ctx,
-            IDbConnectionFactory               db,
-            IEmailService                      email,
-            IConfiguration                     config,
-            CancellationToken                  ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IEmailService email,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -559,7 +559,7 @@ public static class ProfileEndpoints
                         EmailType.LicenseApplicationReceived,
                         new
                         {
-                            username    = (string?)profile?.username ?? req.First_Name ?? "there",
+                            username = (string?)profile?.username ?? req.First_Name ?? "there",
                             licenseType = role,
                             dashboardUrl = $"{frontendUrl}/verification",
                         },
@@ -573,11 +573,11 @@ public static class ProfileEndpoints
 
         // ── POST /api/profiles/me/verification-requests/organizer ─────────────
         app.MapPost("/api/profiles/me/verification-requests/organizer", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            IEmailService        email,
-            IConfiguration       config,
-            CancellationToken    ct) =>
+            IEmailService email,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -604,8 +604,8 @@ public static class ProfileEndpoints
                         EmailType.LicenseApplicationReceived,
                         new
                         {
-                            username     = (string?)profile.username ?? "there",
-                            licenseType  = "organizer",
+                            username = (string?)profile.username ?? "there",
+                            licenseType = "organizer",
                             dashboardUrl = $"{frontendUrl}/verification-status",
                         },
                         ct);
@@ -618,11 +618,11 @@ public static class ProfileEndpoints
 
         // ── POST /api/profiles/me/verification-requests/venue_owner ───────────
         app.MapPost("/api/profiles/me/verification-requests/venue_owner", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            IEmailService        email,
-            IConfiguration       config,
-            CancellationToken    ct) =>
+            IEmailService email,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -649,8 +649,8 @@ public static class ProfileEndpoints
                         EmailType.LicenseApplicationReceived,
                         new
                         {
-                            username     = (string?)profile.username ?? "there",
-                            licenseType  = "venue_owner",
+                            username = (string?)profile.username ?? "there",
+                            licenseType = "venue_owner",
                             dashboardUrl = $"{frontendUrl}/verification-status",
                         },
                         ct);
@@ -664,19 +664,24 @@ public static class ProfileEndpoints
         // ── GET /api/profiles/{id}/stats ──────────────────────────────────────
         // user_statistics and achievements tables not yet created — graceful fallback
         app.MapGet("/api/profiles/{id}/stats", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
             dynamic? stats = null;
-            try { stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM user_statistics WHERE user_id = @id", new { id }); }
+            try
+            {
+                stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM user_statistics WHERE user_id = @id", new { id });
+            }
             catch { /* table not yet migrated */ }
 
             IEnumerable<dynamic> achievements = Array.Empty<dynamic>();
-            try { achievements = await conn.QueryAsync<dynamic>(
+            try
+            {
+                achievements = await conn.QueryAsync<dynamic>(
                 """
                 SELECT ua.id, ua.earned_at, ua.progress,
                        a.id AS achievement_id, a.name, a.description,
@@ -685,7 +690,8 @@ public static class ProfileEndpoints
                 JOIN achievements a ON a.id = ua.achievement_id
                 WHERE ua.user_id = @id AND a.is_active = TRUE
                 ORDER BY ua.earned_at DESC
-                """, new { id }); }
+                """, new { id });
+            }
             catch { /* tables not yet migrated */ }
 
             return Results.Ok(new { statistics = stats, achievements });
@@ -730,8 +736,8 @@ public static class ProfileEndpoints
     {
         app.MapPost("/api/profiles/resolve-players", async (
             [FromBody] ResolvePlayersRequest req,
-            IDbConnectionFactory             db,
-            CancellationToken                ct) =>
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -773,9 +779,9 @@ public static class ProfileEndpoints
         // ── GET /api/rosters/{rosterId}/members — get roster members ─────────
         // Replaces supabase.rpc('get_roster_members')
         app.MapGet("/api/rosters/{rosterId}/members", async (
-            Guid                 rosterId,
+            Guid rosterId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -795,9 +801,9 @@ public static class ProfileEndpoints
         // Toggle Discord DM notifications on/off
         app.MapPut("/api/profiles/me/discord-dm", async (
             [FromBody] ToggleDiscordDmRequest req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            CancellationToken                 ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -828,9 +834,9 @@ public static class ProfileEndpoints
 
         // ── GET /api/profiles/me/discord-dm ──────────────────────────────────
         app.MapGet("/api/profiles/me/discord-dm", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -852,11 +858,11 @@ public static class ProfileEndpoints
         // ── POST /api/profiles/me/discord-join ──────────────────────────────
         // Auto-join the user to the Esportra Discord server using their OAuth token
         app.MapPost("/api/profiles/me/discord-join", async (
-            [FromBody] DiscordJoinRequest      req,
-            HttpContext                         ctx,
-            IDbConnectionFactory               db,
-            DiscordNotificationService          discord,
-            CancellationToken                   ct) =>
+            [FromBody] DiscordJoinRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            DiscordNotificationService discord,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();

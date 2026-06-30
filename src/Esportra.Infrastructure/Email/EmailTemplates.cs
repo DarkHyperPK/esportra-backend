@@ -384,26 +384,26 @@ public static class EmailTemplates
 
     private static string GetQuickStartText(string licenseType) => licenseType switch
     {
-        "organizer"   => "Create your first tournament and start building your competitive community. You have access to all bracket formats, scheduling tools, and match management features.",
+        "organizer" => "Create your first tournament and start building your competitive community. You have access to all bracket formats, scheduling tools, and match management features.",
         "venue_owner" => "List your venue and start accepting bookings. Add photos, set your pricing, configure your gaming stations, and go live.",
         "broadcaster" => "Connect your streaming setup and start broadcasting tournaments. You have access to multi-match views and real-time commentary tools.",
-        _             => "Head to your dashboard to explore all the features now available to you."
+        _ => "Head to your dashboard to explore all the features now available to you."
     };
 
     private static (string Url, string Label) GetPrimaryCta(string licenseType, string dashboardUrl) => licenseType switch
     {
-        "organizer"   => ($"{dashboardUrl.Replace("/verification-status", "")}/organizer/tournaments/new", "Create Your First Tournament"),
+        "organizer" => ($"{dashboardUrl.Replace("/verification-status", "")}/organizer/tournaments/new", "Create Your First Tournament"),
         "venue_owner" => ($"{dashboardUrl.Replace("/verification-status", "")}/venues/new", "List Your Venue"),
         "broadcaster" => (dashboardUrl, "Go to Dashboard"),
-        _             => (dashboardUrl, "Go to Dashboard")
+        _ => (dashboardUrl, "Go to Dashboard")
     };
 
     private static string FormatLicenseType(string licenseType) =>
         licenseType switch
         {
-            "organizer"   => "Organizer",
+            "organizer" => "Organizer",
             "venue_owner" => "Venue Owner",
             "broadcaster" => "Broadcaster",
-            _             => licenseType
+            _ => licenseType
         };
 }

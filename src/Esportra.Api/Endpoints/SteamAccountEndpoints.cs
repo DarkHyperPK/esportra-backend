@@ -36,9 +36,9 @@ public static class SteamAccountEndpoints
         //  GET /api/accounts/steam — Get linked Steam account
         // =====================================================================
         app.MapGet("/api/accounts/steam", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -56,12 +56,12 @@ public static class SteamAccountEndpoints
 
             return Results.Ok(new
             {
-                steam64Id  = (string?)account.steam64_id,
-                steamName  = (string?)account.steam_name,
-                avatarUrl  = (string?)account.avatar_url,
+                steam64Id = (string?)account.steam64_id,
+                steamName = (string?)account.steam_name,
+                avatarUrl = (string?)account.avatar_url,
                 profileUrl = (string?)account.profile_url,
-                linkedAt   = (DateTime?)account.linked_at,
-                verified   = (bool?)account.verified
+                linkedAt = (DateTime?)account.linked_at,
+                verified = (bool?)account.verified
             });
         }).RequireAuthorization("Authenticated");
 
@@ -69,25 +69,25 @@ public static class SteamAccountEndpoints
         //  GET /api/accounts/steam/auth — Initiate Steam OpenID login
         // =====================================================================
         app.MapGet("/api/accounts/steam/auth", (
-            HttpContext    ctx,
+            HttpContext ctx,
             IConfiguration config) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             var frontendUrl = ResolveFrontendUrl(config).TrimEnd('/');
-            var jwtSecret   = config["Supabase:JwtSecret"] ?? "";
-            var state       = ComputeStateHmac(userCtx.UserId, jwtSecret);
-            var returnTo    = $"{frontendUrl}/auth/steam/callback?userId={userCtx.UserId}&state={state}";
-            var realm       = $"{frontendUrl}/";
+            var jwtSecret = config["Supabase:JwtSecret"] ?? "";
+            var state = ComputeStateHmac(userCtx.UserId, jwtSecret);
+            var returnTo = $"{frontendUrl}/auth/steam/callback?userId={userCtx.UserId}&state={state}";
+            var realm = $"{frontendUrl}/";
 
             var queryParams = new Dictionary<string, string>
             {
-                ["openid.ns"]         = "http://specs.openid.net/auth/2.0",
-                ["openid.mode"]       = "checkid_setup",
-                ["openid.return_to"]  = returnTo,
-                ["openid.realm"]      = realm,
-                ["openid.identity"]   = "http://specs.openid.net/auth/2.0/identifier_select",
+                ["openid.ns"] = "http://specs.openid.net/auth/2.0",
+                ["openid.mode"] = "checkid_setup",
+                ["openid.return_to"] = returnTo,
+                ["openid.realm"] = realm,
+                ["openid.identity"] = "http://specs.openid.net/auth/2.0/identifier_select",
                 ["openid.claimed_id"] = "http://specs.openid.net/auth/2.0/identifier_select"
             };
 
@@ -103,12 +103,12 @@ public static class SteamAccountEndpoints
         // =====================================================================
         //  Public — Steam redirects here with no JWT.
         app.MapGet("/api/accounts/steam/callback", async (
-            HttpContext          ctx,
-            IConfiguration       config,
+            HttpContext ctx,
+            IConfiguration config,
             IDbConnectionFactory db,
-            HttpClient           http,
-            ILogger<Program>     logger,
-            CancellationToken    ct) =>
+            HttpClient http,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var frontendUrl = ResolveFrontendUrl(config);
 
@@ -121,9 +121,9 @@ public static class SteamAccountEndpoints
             }
 
             // ── Verify HMAC state — prevents userId tampering ────────────────
-            var state     = ctx.Request.Query["state"].FirstOrDefault();
+            var state = ctx.Request.Query["state"].FirstOrDefault();
             var jwtSecret = config["Supabase:JwtSecret"] ?? "";
-            var expected  = ComputeStateHmac(userIdStr, jwtSecret);
+            var expected = ComputeStateHmac(userIdStr, jwtSecret);
             if (string.IsNullOrEmpty(state) ||
                 !string.Equals(state, expected, StringComparison.OrdinalIgnoreCase))
             {
@@ -187,8 +187,8 @@ public static class SteamAccountEndpoints
             }
 
             // ── Fetch Steam player summary ───────────────────────────────────
-            string? steamName  = null;
-            string? avatarUrl  = null;
+            string? steamName = null;
+            string? avatarUrl = null;
             string? profileUrl = null;
 
             var steamApiKey = config["Steam:ApiKey"];
@@ -211,9 +211,9 @@ public static class SteamAccountEndpoints
                         if (players.GetArrayLength() > 0)
                         {
                             var player = players[0];
-                            steamName  = player.TryGetProperty("personaname", out var pn)  ? pn.GetString()  : null;
-                            avatarUrl  = player.TryGetProperty("avatarfull",  out var av)  ? av.GetString()  : null;
-                            profileUrl = player.TryGetProperty("profileurl",  out var pu)  ? pu.GetString()  : null;
+                            steamName = player.TryGetProperty("personaname", out var pn) ? pn.GetString() : null;
+                            avatarUrl = player.TryGetProperty("avatarfull", out var av) ? av.GetString() : null;
+                            profileUrl = player.TryGetProperty("profileurl", out var pu) ? pu.GetString() : null;
                         }
                     }
                     else
@@ -275,9 +275,9 @@ public static class SteamAccountEndpoints
         //  DELETE /api/accounts/steam — Unlink Steam account
         // =====================================================================
         app.MapDelete("/api/accounts/steam", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -300,10 +300,10 @@ public static class SteamAccountEndpoints
         // =====================================================================
         //  Used by MatchZy config generation to populate team configs.
         app.MapGet("/api/teams/{teamId}/steam-ids", async (
-            Guid                 teamId,
-            HttpContext          ctx,
+            Guid teamId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -325,10 +325,10 @@ public static class SteamAccountEndpoints
 
             var result = members.Select(m => new
             {
-                userId   = (Guid)m.user_id,
+                userId = (Guid)m.user_id,
                 steam64Id = (string?)m.steam64_id,
                 steamName = (string?)m.steam_name,
-                gamerTag  = (string?)m.gamer_tag
+                gamerTag = (string?)m.gamer_tag
             });
 
             return Results.Ok(result);
@@ -357,7 +357,7 @@ public static class SteamAccountEndpoints
     /// </summary>
     private static async Task<bool> VerifySteamOpenIdResponse(
         IQueryCollection query,
-        HttpClient       http,
+        HttpClient http,
         CancellationToken ct)
     {
         // Build verification form — copy all openid.* params,
@@ -382,7 +382,7 @@ public static class SteamAccountEndpoints
             !verifyParams.ContainsKey("openid.sig"))
             return false;
 
-        var content  = new FormUrlEncodedContent(verifyParams);
+        var content = new FormUrlEncodedContent(verifyParams);
         var response = await http.PostAsync(SteamOpenIdEndpoint, content, ct);
 
         if (!response.IsSuccessStatusCode)

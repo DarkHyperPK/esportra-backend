@@ -123,8 +123,8 @@ public static class BrLobbyRepository
         var gamesHasMap = await BrSchemaRepository.ColumnExistsAsync(conn, "br_games", "map", tx);
         if (gamesHasMap)
         {
-        await conn.ExecuteAsync(
-            """
+            await conn.ExecuteAsync(
+                """
             UPDATE br_games
             SET status = 'pending',
                 map = NULL,
@@ -135,8 +135,8 @@ public static class BrLobbyRepository
                 queue_started_at = NULL
             WHERE lobby_id = @lobbyId
             """,
-            new { lobbyId },
-            tx);
+                new { lobbyId },
+                tx);
         }
         else
         {

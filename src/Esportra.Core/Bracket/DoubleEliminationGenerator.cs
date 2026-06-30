@@ -5,24 +5,24 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
     public BracketGraph Generate(
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
-        Guid?   stageId          = null,
-        int     bestOf           = 1,
-        int?    bracketSize      = null,
-        int?    advancementCount = null,
-        BracketConfig? config    = null)
+        Guid? stageId = null,
+        int bestOf = 1,
+        int? bracketSize = null,
+        int? advancementCount = null,
+        BracketConfig? config = null)
     {
         var versionId = Guid.NewGuid();
-        var nodes     = new List<BracketNode>();
-        var edges     = new List<BracketEdge>();
+        var nodes = new List<BracketNode>();
+        var edges = new List<BracketEdge>();
 
-        int numTeams   = teams.Count;
+        int numTeams = teams.Count;
         int targetSize = bracketSize ?? Math.Max(numTeams, 2);
-        int P          = (int)Math.Pow(2, Math.Ceiling(Math.Log2(targetSize)));
+        int P = (int)Math.Pow(2, Math.Ceiling(Math.Log2(targetSize)));
 
         int numUpperRounds = (int)Math.Round(Math.Log2(P));
         int numLowerRounds = 2 * numUpperRounds - 2;
 
-        var seeded   = SeedTeams(teams, P);
+        var seeded = SeedTeams(teams, P);
         var matchMap = new Dictionary<string, BracketNode>();
 
         // 1. Upper bracket nodes
@@ -150,7 +150,7 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
 
     private static (Guid Id, string Name)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
     {
-        var seeded    = new (Guid Id, string Name)?[bracketSize];
+        var seeded = new (Guid Id, string Name)?[bracketSize];
         var positions = GetStandardBracketSlots(bracketSize);
         for (int i = 0; i < teams.Count; i++)
             seeded[positions[i]] = teams[i];
@@ -162,12 +162,12 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
         if (n == 1) return [0];
         if (n == 2) return [0, 1];
 
-        var slots    = new int[n];
+        var slots = new int[n];
         int halfSize = n / 2;
-        var upper    = GetStandardBracketSlots(halfSize);
+        var upper = GetStandardBracketSlots(halfSize);
         for (int i = 0; i < halfSize; i++)
         {
-            slots[i]         = upper[i] * 2;
+            slots[i] = upper[i] * 2;
             slots[n - 1 - i] = upper[i] * 2 + 1;
         }
         return slots;

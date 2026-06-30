@@ -77,13 +77,13 @@ public sealed class LiveHub : Hub
             return rows.Select(r => (object)new
             {
                 station_id = (string)r.station_id,
-                x          = (decimal?)r.x ?? 0m,
-                y          = (decimal?)r.y ?? 0m,
-                width      = (decimal?)r.width ?? 1m,
-                height     = (decimal?)r.height ?? 1m,
-                rotation   = (decimal?)r.rotation ?? 0m,
-                label      = (string?)r.label ?? "",
-                zone       = (string?)r.zone,
+                x = (decimal?)r.x ?? 0m,
+                y = (decimal?)r.y ?? 0m,
+                width = (decimal?)r.width ?? 1m,
+                height = (decimal?)r.height ?? 1m,
+                rotation = (decimal?)r.rotation ?? 0m,
+                label = (string?)r.label ?? "",
+                zone = (string?)r.zone,
             }).ToArray();
         }
         catch (Exception ex)
@@ -129,15 +129,15 @@ public sealed class LiveHub : Hub
                     """,
                     new
                     {
-                        VenueId   = vid.Value,
+                        VenueId = vid.Value,
                         StationId = p.station_id,
-                        X         = p.x,
-                        Y         = p.y,
-                        Width     = p.width ?? 1m,
-                        Height    = p.height ?? 1m,
-                        Rotation  = p.rotation ?? 0m,
-                        Label     = p.label ?? "",
-                        Zone      = p.zone,
+                        X = p.x,
+                        Y = p.y,
+                        Width = p.width ?? 1m,
+                        Height = p.height ?? 1m,
+                        Rotation = p.rotation ?? 0m,
+                        Label = p.label ?? "",
+                        Zone = p.zone,
                     },
                     tx);
             }
@@ -223,13 +223,13 @@ public sealed class LiveHub : Hub
 
             return new
             {
-                default_hourly_rate    = (decimal?)row.price_per_hour ?? 0m,
-                default_daily_rate     = ((decimal?)row.price_per_hour ?? 0m) * 8m,
-                currency               = (string?)row.currency ?? "GBP",
-                grace_period_minutes   = (int?)row.grace_period_minutes ?? 5,
-                zones                  = DeserializeJsonb<object[]>(row.zones) ?? Array.Empty<object>(),
-                packages               = DeserializeJsonb<object[]>(row.packages) ?? Array.Empty<object>(),
-                vouchers               = DeserializeJsonb<object[]>(row.vouchers) ?? Array.Empty<object>(),
+                default_hourly_rate = (decimal?)row.price_per_hour ?? 0m,
+                default_daily_rate = ((decimal?)row.price_per_hour ?? 0m) * 8m,
+                currency = (string?)row.currency ?? "GBP",
+                grace_period_minutes = (int?)row.grace_period_minutes ?? 5,
+                zones = DeserializeJsonb<object[]>(row.zones) ?? Array.Empty<object>(),
+                packages = DeserializeJsonb<object[]>(row.packages) ?? Array.Empty<object>(),
+                vouchers = DeserializeJsonb<object[]>(row.vouchers) ?? Array.Empty<object>(),
             };
         }
         catch (Exception ex)
@@ -280,12 +280,12 @@ public sealed class LiveHub : Hub
                 """,
                 new
                 {
-                    VenueId      = vid.Value,
-                    Currency     = config.currency,
-                    Zones        = config.zones is not null ? JsonSerializer.Serialize(config.zones, JsonOpts) : null,
-                    Packages     = config.packages is not null ? JsonSerializer.Serialize(config.packages, JsonOpts) : null,
-                    Vouchers     = config.vouchers is not null ? JsonSerializer.Serialize(config.vouchers, JsonOpts) : null,
-                    GracePeriod  = config.grace_period_minutes,
+                    VenueId = vid.Value,
+                    Currency = config.currency,
+                    Zones = config.zones is not null ? JsonSerializer.Serialize(config.zones, JsonOpts) : null,
+                    Packages = config.packages is not null ? JsonSerializer.Serialize(config.packages, JsonOpts) : null,
+                    Vouchers = config.vouchers is not null ? JsonSerializer.Serialize(config.vouchers, JsonOpts) : null,
+                    GracePeriod = config.grace_period_minutes,
                 }, tx);
 
             tx.Commit();
@@ -341,9 +341,9 @@ public sealed class LiveHub : Hub
 
                     return new
                     {
-                        valid         = true,
-                        message       = "Voucher applied successfully.",
-                        code          = normalizedCode,
+                        valid = true,
+                        message = "Voucher applied successfully.",
+                        code = normalizedCode,
                         discount,
                         discount_type = discountType,
                         description,
@@ -408,12 +408,12 @@ public sealed class LiveHub : Hub
 
             return new
             {
-                total_sessions     = (long)(stats?.total_sessions ?? 0L),
-                total_revenue      = (decimal)(stats?.total_revenue ?? 0m),
-                total_bookings     = (long)(stats?.total_bookings ?? 0L),
+                total_sessions = (long)(stats?.total_sessions ?? 0L),
+                total_revenue = (decimal)(stats?.total_revenue ?? 0m),
+                total_bookings = (long)(stats?.total_bookings ?? 0L),
                 cancelled_bookings = (long)(stats?.cancelled_bookings ?? 0L),
-                active_stations    = (long)(stats?.active_stations ?? 0L),
-                unique_users       = (long)(stats?.unique_users ?? 0L),
+                active_stations = (long)(stats?.active_stations ?? 0L),
+                unique_users = (long)(stats?.unique_users ?? 0L),
                 avg_session_minutes = Math.Round((double)(stats?.avg_session_minutes ?? 0.0), 1),
             };
         }
@@ -470,15 +470,15 @@ public sealed class LiveHub : Hub
             {
                 daily = daily.Select(r => new
                 {
-                    date     = ((DateTime)r.date).ToString("yyyy-MM-dd"),
-                    revenue  = (decimal)r.revenue,
+                    date = ((DateTime)r.date).ToString("yyyy-MM-dd"),
+                    revenue = (decimal)r.revenue,
                     sessions = (long)r.sessions,
                 }).ToArray(),
                 by_session_type = byType.Select(r => new
                 {
                     session_type = (string)r.session_type,
-                    count        = (long)r.count,
-                    revenue      = (decimal)r.revenue,
+                    count = (long)r.count,
+                    revenue = (decimal)r.revenue,
                 }).ToArray(),
             };
         }
@@ -535,10 +535,10 @@ public sealed class LiveHub : Hub
 
             return new
             {
-                items       = rows,
+                items = rows,
                 total,
                 page,
-                page_size   = pageSize,
+                page_size = pageSize,
                 total_pages = (int)Math.Ceiling((double)total / pageSize),
             };
         }
@@ -593,13 +593,13 @@ public sealed class LiveHub : Hub
 
             return rows.Select(r => (object)new
             {
-                date            = ((DateTime)r.date).ToString("yyyy-MM-dd"),
-                sessions        = (long)r.sessions,
-                revenue         = (decimal)r.revenue,
-                unique_users    = (long)r.unique_users,
+                date = ((DateTime)r.date).ToString("yyyy-MM-dd"),
+                sessions = (long)r.sessions,
+                revenue = (decimal)r.revenue,
+                unique_users = (long)r.unique_users,
                 avg_duration_min = Math.Round((double)r.avg_duration_min, 1),
-                bookings        = (long)r.bookings,
-                avg_cpu_temp    = r.avg_cpu_temp is not null ? Math.Round((double)r.avg_cpu_temp, 1) : (double?)null,
+                bookings = (long)r.bookings,
+                avg_cpu_temp = r.avg_cpu_temp is not null ? Math.Round((double)r.avg_cpu_temp, 1) : (double?)null,
             }).ToArray();
         }
         catch (Exception ex)
@@ -625,18 +625,18 @@ public sealed class LiveHub : Hub
         if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
         { await SendError("Forbidden."); return null; }
 
-        var date     = filter?.date;
-        var status   = filter?.status;
-        var page     = Math.Max(1, filter?.page ?? 1);
+        var date = filter?.date;
+        var status = filter?.status;
+        var page = Math.Max(1, filter?.page ?? 1);
         var pageSize = Math.Clamp(filter?.pageSize ?? 20, 1, 100);
-        var offset   = (page - 1) * pageSize;
+        var offset = (page - 1) * pageSize;
 
         try
         {
             using var conn = _db.CreateConnection();
 
             var whereClauses = new List<string> { "vb.venue_id = @VenueId" };
-            var parameters   = new DynamicParameters();
+            var parameters = new DynamicParameters();
             parameters.Add("VenueId", vid.Value);
 
             if (!string.IsNullOrWhiteSpace(date))
@@ -676,10 +676,10 @@ public sealed class LiveHub : Hub
 
             return new
             {
-                items       = rows,
+                items = rows,
                 total,
                 page,
-                page_size   = pageSize,
+                page_size = pageSize,
                 total_pages = (int)Math.Ceiling((double)total / pageSize),
             };
         }
@@ -786,23 +786,23 @@ public sealed class LiveHub : Hub
 
             return new
             {
-                valid   = true,
+                valid = true,
                 message = "Valid booking code.",
                 booking = new
                 {
-                    id               = ((Guid)booking.id).ToString(),
-                    user_id          = booking.user_id?.ToString(),
-                    user_name        = (string?)booking.user_name,
-                    booking_date     = booking.booking_date,
-                    start_time       = booking.start_time,
-                    end_time         = booking.end_time,
-                    duration_hours   = booking.duration_hours,
-                    stations_booked  = booking.stations_booked,
-                    total_amount     = booking.total_amount,
-                    status           = (string)booking.status,
+                    id = ((Guid)booking.id).ToString(),
+                    user_id = booking.user_id?.ToString(),
+                    user_name = (string?)booking.user_name,
+                    booking_date = booking.booking_date,
+                    start_time = booking.start_time,
+                    end_time = booking.end_time,
+                    duration_hours = booking.duration_hours,
+                    stations_booked = booking.stations_booked,
+                    total_amount = booking.total_amount,
+                    status = (string)booking.status,
                     station_preference = (string?)booking.station_preference,
-                    contact_email    = (string?)booking.contact_email,
-                    contact_phone    = (string?)booking.contact_phone,
+                    contact_email = (string?)booking.contact_email,
+                    contact_phone = (string?)booking.contact_phone,
                 },
             };
         }
@@ -1423,13 +1423,13 @@ public sealed class LiveHub : Hub
         var defaultDay = new { is_open = true, open_time = "09:00", close_time = "23:00" };
         return new
         {
-            monday    = defaultDay,
-            tuesday   = defaultDay,
+            monday = defaultDay,
+            tuesday = defaultDay,
             wednesday = defaultDay,
-            thursday  = defaultDay,
-            friday    = defaultDay,
-            saturday  = defaultDay,
-            sunday    = defaultDay,
+            thursday = defaultDay,
+            friday = defaultDay,
+            saturday = defaultDay,
+            sunday = defaultDay,
         };
     }
 }

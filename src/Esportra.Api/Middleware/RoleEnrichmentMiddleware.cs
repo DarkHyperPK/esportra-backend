@@ -107,10 +107,10 @@ public sealed class RoleEnrichmentMiddleware(
 
         return new UserContext
         {
-            UserId      = userId,
-            Email       = email,
-            Roles       = roles,
-            AdminRoles  = adminRoles,
+            UserId = userId,
+            Email = email,
+            Roles = roles,
+            AdminRoles = adminRoles,
             Permissions = permissions,
         };
     }

@@ -12,15 +12,15 @@ public sealed class SwissGenerator : IBracketGenerator
     public BracketGraph Generate(
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
-        Guid?   stageId          = null,
-        int     bestOf           = 1,
-        int?    bracketSize      = null,   // interpreted as total rounds
-        int?    advancementCount = null,
-        BracketConfig? config    = null)
+        Guid? stageId = null,
+        int bestOf = 1,
+        int? bracketSize = null,   // interpreted as total rounds
+        int? advancementCount = null,
+        BracketConfig? config = null)
     {
-        var versionId   = Guid.NewGuid();
-        var nodes       = new List<BracketNode>();
-        var edges       = new List<BracketEdge>();
+        var versionId = Guid.NewGuid();
+        var nodes = new List<BracketNode>();
+        var edges = new List<BracketEdge>();
 
         int swissGroups = config?.SwissGroups ?? 1;
         int matchCounter = 1;
@@ -41,8 +41,8 @@ public sealed class SwissGenerator : IBracketGenerator
             string? groupId = swissGroups > 1 ? $"Group {(char)('A' + gi)}" : null;
 
             // Slide pairing: top half vs bottom half
-            int half       = (groupTeams.Count + 1) / 2;
-            var topHalf    = groupTeams.Take(half).ToList();
+            int half = (groupTeams.Count + 1) / 2;
+            var topHalf = groupTeams.Take(half).ToList();
             var bottomHalf = groupTeams.Skip(half).ToList();
 
             for (int i = 0; i < topHalf.Count; i++)
@@ -51,17 +51,17 @@ public sealed class SwissGenerator : IBracketGenerator
                 var t2 = i < bottomHalf.Count ? bottomHalf[i] : ((Guid Id, string Name)?)null;
 
                 nodes.Add(new BracketNode(
-                    Id:          Guid.NewGuid(),
-                    VersionId:   versionId,
-                    RoundIndex:  0,
+                    Id: Guid.NewGuid(),
+                    VersionId: versionId,
+                    RoundIndex: 0,
                     MatchNumber: matchCounter++,
                     BracketType: "swiss_round",
                     RoundNumber: 1,
-                    Status:      "pending",
-                    BestOf:      bestOf,
-                    Team1Id:     t1.Id,
-                    Team2Id:     t2?.Id,
-                    GroupId:     groupId));
+                    Status: "pending",
+                    BestOf: bestOf,
+                    Team1Id: t1.Id,
+                    Team2Id: t2?.Id,
+                    GroupId: groupId));
             }
         }
 
@@ -75,7 +75,7 @@ public sealed class SwissGenerator : IBracketGenerator
 /// <summary>Generates subsequent Swiss rounds using DB standings.</summary>
 public sealed class SwissNextRoundService(
     IDbConnectionFactory db,
-    StandingsService     standings)
+    StandingsService standings)
 {
     public async Task<(bool Success, string? Message)> GenerateNextRoundAsync(
         Guid stageId, Guid versionId, int currentRound, CancellationToken ct = default)
@@ -109,8 +109,8 @@ public sealed class SwissNextRoundService(
         if (history.Count == 0)
             return (false, "No match history found. Cannot generate pairings.");
 
-        var playedMap   = new HashSet<string>();
-        var groupMap    = new Dictionary<string, HashSet<Guid>>();
+        var playedMap = new HashSet<string>();
+        var groupMap = new Dictionary<string, HashSet<Guid>>();
         var teamGroupMap = new Dictionary<Guid, string>();
 
         foreach (var m in history)
@@ -129,8 +129,8 @@ public sealed class SwissNextRoundService(
         }
 
         int existingCount = history.Count;
-        var newMatches    = new List<object>();
-        int matchCounter  = existingCount + 1;
+        var newMatches = new List<object>();
+        int matchCounter = existingCount + 1;
 
         foreach (var (groupId, teamIds) in groupMap)
         {
@@ -146,8 +146,8 @@ public sealed class SwissNextRoundService(
                 .ToDictionary(g => g.Key, g => g.OrderBy(s => s.Rank).ToList());
 
             var sortedScores = scoreGroups.Keys.OrderByDescending(x => x).ToList();
-            var pairings     = new List<(TeamStanding T1, TeamStanding? T2)>();
-            var floaters     = new List<TeamStanding>();
+            var pairings = new List<(TeamStanding T1, TeamStanding? T2)>();
+            var floaters = new List<TeamStanding>();
 
             foreach (var score in sortedScores)
             {
@@ -199,18 +199,18 @@ public sealed class SwissNextRoundService(
             {
                 newMatches.Add(new
                 {
-                    id           = Guid.NewGuid(),
-                    version_id   = versionId,
-                    round_index  = nextRound - 1,
+                    id = Guid.NewGuid(),
+                    version_id = versionId,
+                    round_index = nextRound - 1,
                     match_number = matchCounter++,
                     bracket_type = "swiss_round",
                     round_number = nextRound,
-                    status       = "pending",
-                    team1_id     = t1.TeamId,
-                    team2_id     = t2?.TeamId,
-                    winner_id    = (Guid?)null,
-                    best_of      = 1,
-                    group_id     = groupId == "default" ? null : groupId
+                    status = "pending",
+                    team1_id = t1.TeamId,
+                    team2_id = t2?.TeamId,
+                    winner_id = (Guid?)null,
+                    best_of = 1,
+                    group_id = groupId == "default" ? null : groupId
                 });
             }
         }

@@ -53,7 +53,7 @@ public static class StorageEndpoints
     {
         // ── POST /api/storage/upload ─────────────────────────────────────────
         app.MapPost("/api/storage/upload", async (
-            HttpContext    ctx,
+            HttpContext ctx,
             IHttpClientFactory httpFactory,
             IConfiguration config,
             ILogger<Program> logger) =>
@@ -133,11 +133,11 @@ public static class StorageEndpoints
         // ── POST /api/storage/upload-player-card ─────────────────────────────
         // Uploads to: user.avatars / Player-cards / {teamName} / {filename}
         app.MapPost("/api/storage/upload-player-card", async (
-            HttpContext         ctx,
-            IHttpClientFactory  httpFactory,
-            IConfiguration      config,
+            HttpContext ctx,
+            IHttpClientFactory httpFactory,
+            IConfiguration config,
             IDbConnectionFactory db,
-            ILogger<Program>   logger) =>
+            ILogger<Program> logger) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -226,16 +226,16 @@ public static class StorageEndpoints
 
         // ── DELETE /api/storage/delete ────────────────────────────────────────
         app.MapDelete("/api/storage/delete", async (
-            HttpContext         ctx,
-            IHttpClientFactory  httpFactory,
-            IConfiguration      config,
-            ILogger<Program>   logger) =>
+            HttpContext ctx,
+            IHttpClientFactory httpFactory,
+            IConfiguration config,
+            ILogger<Program> logger) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             var bucket = ctx.Request.Query["bucket"].FirstOrDefault();
-            var path   = ctx.Request.Query["path"].FirstOrDefault();
+            var path = ctx.Request.Query["path"].FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(path))
                 return Results.BadRequest(new { error = "Please specify the file location." });
@@ -258,7 +258,7 @@ public static class StorageEndpoints
             client.DefaultRequestHeaders.Add("apikey", serviceKey);
 
             var deleteUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{path}";
-            var response  = await client.DeleteAsync(deleteUrl);
+            var response = await client.DeleteAsync(deleteUrl);
 
             if (!response.IsSuccessStatusCode)
             {

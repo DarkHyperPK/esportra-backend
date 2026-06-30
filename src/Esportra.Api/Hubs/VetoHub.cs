@@ -17,7 +17,7 @@ public sealed class VetoHub : Hub
 
     public VetoHub(VetoDbService veto, ILogger<VetoHub> logger)
     {
-        _veto   = veto;
+        _veto = veto;
         _logger = logger;
     }
 

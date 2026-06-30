@@ -382,10 +382,10 @@ public static class VenueAnalyticsEndpoints
             switch (type)
             {
                 case "revenue":
-                {
-                    csv.AppendLine("Date,Total Sessions,Session Revenue,POS Revenue,Package Revenue,Total Revenue,Total Orders");
-                    var rows = await conn.QueryAsync<dynamic>(
-                        """
+                    {
+                        csv.AppendLine("Date,Total Sessions,Session Revenue,POS Revenue,Package Revenue,Total Revenue,Total Orders");
+                        var rows = await conn.QueryAsync<dynamic>(
+                            """
                         SELECT ds.date, ds.total_sessions, ds.session_revenue,
                                ds.pos_revenue, ds.package_revenue, ds.total_revenue, ds.total_orders
                         FROM daily_stats ds
@@ -393,18 +393,18 @@ public static class VenueAnalyticsEndpoints
                           AND ds.date >= @From::date AND ds.date <= @To::date
                         ORDER BY ds.date
                         """,
-                        new { VenueId = venueId, From = from, To = to });
+                            new { VenueId = venueId, From = from, To = to });
 
-                    foreach (var r in rows)
-                        csv.AppendLine($"{r.date:yyyy-MM-dd},{r.total_sessions},{r.session_revenue},{r.pos_revenue},{r.package_revenue},{r.total_revenue},{r.total_orders}");
-                    break;
-                }
+                        foreach (var r in rows)
+                            csv.AppendLine($"{r.date:yyyy-MM-dd},{r.total_sessions},{r.session_revenue},{r.pos_revenue},{r.package_revenue},{r.total_revenue},{r.total_orders}");
+                        break;
+                    }
 
                 case "sessions":
-                {
-                    csv.AppendLine("Session ID,Station,Type,Started At,Ended At,Duration (min),Total Charged,Member ID,Display Name");
-                    var rows = await conn.QueryAsync<dynamic>(
-                        """
+                    {
+                        csv.AppendLine("Session ID,Station,Type,Started At,Ended At,Duration (min),Total Charged,Member ID,Display Name");
+                        var rows = await conn.QueryAsync<dynamic>(
+                            """
                         SELECT s.id, s.station_id, s.session_type, s.started_at, s.ended_at,
                                s.duration_minutes, s.total_charged, s.member_id, s.display_name
                         FROM venue_sessions s
@@ -413,23 +413,23 @@ public static class VenueAnalyticsEndpoints
                           AND s.started_at < (@To::date + INTERVAL '1 day')
                         ORDER BY s.started_at
                         """,
-                        new { VenueId = venueId, From = from, To = to });
+                            new { VenueId = venueId, From = from, To = to });
 
-                    foreach (var r in rows)
-                    {
-                        var endedAt = r.ended_at is not null ? ((DateTimeOffset)r.ended_at).ToString("yyyy-MM-dd HH:mm:ss") : "";
-                        var duration = r.duration_minutes is not null ? $"{r.duration_minutes:F1}" : "";
-                        var displayName = EscapeCsv((string?)r.display_name);
-                        csv.AppendLine($"{r.id},{r.station_id},{r.session_type},{r.started_at:yyyy-MM-dd HH:mm:ss},{endedAt},{duration},{r.total_charged},{r.member_id},{displayName}");
+                        foreach (var r in rows)
+                        {
+                            var endedAt = r.ended_at is not null ? ((DateTimeOffset)r.ended_at).ToString("yyyy-MM-dd HH:mm:ss") : "";
+                            var duration = r.duration_minutes is not null ? $"{r.duration_minutes:F1}" : "";
+                            var displayName = EscapeCsv((string?)r.display_name);
+                            csv.AppendLine($"{r.id},{r.station_id},{r.session_type},{r.started_at:yyyy-MM-dd HH:mm:ss},{endedAt},{duration},{r.total_charged},{r.member_id},{displayName}");
+                        }
+                        break;
                     }
-                    break;
-                }
 
                 case "members":
-                {
-                    csv.AppendLine("Member ID,Display Name,Email,Total Sessions,Total Spent,Total Hours,Loyalty Tier,Created At");
-                    var rows = await conn.QueryAsync<dynamic>(
-                        """
+                    {
+                        csv.AppendLine("Member ID,Display Name,Email,Total Sessions,Total Spent,Total Hours,Loyalty Tier,Created At");
+                        var rows = await conn.QueryAsync<dynamic>(
+                            """
                         SELECT m.id, m.display_name, m.email, m.total_sessions,
                                m.total_spent, m.total_hours, m.loyalty_tier, m.created_at
                         FROM members m
@@ -438,16 +438,16 @@ public static class VenueAnalyticsEndpoints
                           AND m.created_at < (@To::date + INTERVAL '1 day')
                         ORDER BY m.created_at
                         """,
-                        new { VenueId = venueId, From = from, To = to });
+                            new { VenueId = venueId, From = from, To = to });
 
-                    foreach (var r in rows)
-                    {
-                        var displayName = EscapeCsv((string?)r.display_name);
-                        var email = EscapeCsv((string?)r.email);
-                        csv.AppendLine($"{r.id},{displayName},{email},{r.total_sessions},{r.total_spent},{r.total_hours},{r.loyalty_tier},{r.created_at:yyyy-MM-dd HH:mm:ss}");
+                        foreach (var r in rows)
+                        {
+                            var displayName = EscapeCsv((string?)r.display_name);
+                            var email = EscapeCsv((string?)r.email);
+                            csv.AppendLine($"{r.id},{displayName},{email},{r.total_sessions},{r.total_spent},{r.total_hours},{r.loyalty_tier},{r.created_at:yyyy-MM-dd HH:mm:ss}");
+                        }
+                        break;
                     }
-                    break;
-                }
             }
 
             var bytes = Encoding.UTF8.GetBytes(csv.ToString());

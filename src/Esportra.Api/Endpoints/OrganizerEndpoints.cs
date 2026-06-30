@@ -17,9 +17,9 @@ public static class OrganizerEndpoints
     {
         // ── GET /api/organizer/stats ─────────────────────────────────────────
         app.MapGet("/api/organizer/stats", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -73,10 +73,10 @@ public static class OrganizerEndpoints
 
             return Results.Ok(new
             {
-                totalTournaments    = (long)summary.total_tournaments,
-                activeTournaments   = (long)summary.active_tournaments,
+                totalTournaments = (long)summary.total_tournaments,
+                activeTournaments = (long)summary.active_tournaments,
                 upcomingTournaments = (long)summary.upcoming_tournaments,
-                totalPrizePool      = (decimal)summary.total_prize_pool,
+                totalPrizePool = (decimal)summary.total_prize_pool,
                 totalParticipants,
                 gameDistribution,
                 monthlyParticipation,
@@ -86,11 +86,11 @@ public static class OrganizerEndpoints
         // ── GET /api/organizer/schedule ───────────────────────────────────────
         // Returns matches for organizer's tournaments, filtered by date range
         app.MapGet("/api/organizer/schedule", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  start = null,
-            [FromQuery] string?  end   = null,
-            CancellationToken    ct    = default) =>
+            [FromQuery] string? start = null,
+            [FromQuery] string? end = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();

@@ -69,40 +69,40 @@ public static class TournamentEndpoints
     /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
     /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
     private sealed record TournamentListRow(
-        Guid      Id,
-        string    Name,
-        string?   Slug,
-        string    Game,
-        string    Status,
-        string?   Format,
-        string?   GameMode,
+        Guid Id,
+        string Name,
+        string? Slug,
+        string Game,
+        string Status,
+        string? Format,
+        string? GameMode,
         DateTime? StartDate,
         DateTime? EndDate,
         DateTime? RegistrationDeadline,
-        int?      MaxTeams,
-        int?      MinTeams,
-        int?      TeamSize,
-        decimal?  EntryFee,
-        decimal?  PrizePool,
-        string?   BannerUrl,
-        string?   LogoUrl,
-        bool      IsPublic,
-        Guid      OrganizerId,
-        Guid?     VenueId,
-        string?   Description,
-        DateTime  CreatedAt,
+        int? MaxTeams,
+        int? MinTeams,
+        int? TeamSize,
+        decimal? EntryFee,
+        decimal? PrizePool,
+        string? BannerUrl,
+        string? LogoUrl,
+        bool IsPublic,
+        Guid OrganizerId,
+        Guid? VenueId,
+        string? Description,
+        DateTime CreatedAt,
         DateTime? UpdatedAt,
-        string?   Region,
-        string?   Currency,
-        long      CurrentParticipants,
-        string?   OrganizerName,
-        string?   OrganizationSlug,
-        string?   OrganizerUsername,
-        string?   OrganizerFullName,
-        string?   WinnerTeamName = null,
-        string?   VenueCity = null,
-        string?   VenueCountry = null,
-        string?   GameBackgroundImage = null
+        string? Region,
+        string? Currency,
+        long CurrentParticipants,
+        string? OrganizerName,
+        string? OrganizationSlug,
+        string? OrganizerUsername,
+        string? OrganizerFullName,
+        string? WinnerTeamName = null,
+        string? VenueCity = null,
+        string? VenueCountry = null,
+        string? GameBackgroundImage = null
     );
 
     private const string TournamentListSql = """
@@ -156,21 +156,21 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments ───────────────────────────────────────────────
         // Replaces useTournaments N+1: participant count in a correlated subquery.
         app.MapGet("/api/tournaments", async (
-            string?              status,
-            string?              game,
-            string?              q,
-            string?              organizer_id,
-            string?              ids,
-            bool?                is_online,
-            string?              city,
-            string?              country,
-            string?              region,
-            string?              status_group,
-            int                  limit  = 50,
-            int                  offset = 0,
-            IDbConnectionFactory db     = null!,
-            HybridCache          cache  = null!,
-            CancellationToken    ct     = default) =>
+            string? status,
+            string? game,
+            string? q,
+            string? organizer_id,
+            string? ids,
+            bool? is_online,
+            string? city,
+            string? country,
+            string? region,
+            string? status_group,
+            int limit = 50,
+            int offset = 0,
+            IDbConnectionFactory db = null!,
+            HybridCache cache = null!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 200);
             offset = Math.Max(offset, 0);
@@ -250,8 +250,8 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/filters — distinct values from actual content ─
         app.MapGet("/api/tournaments/filters", async (
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var result = await cache.GetOrCreateAsync("tournament-filters", async _ =>
             {
@@ -288,8 +288,8 @@ public static class TournamentEndpoints
         // Returns public, non-deleted tournaments with status published, open, or check_in.
         app.MapGet("/api/tournaments/upcoming", async (
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var rows = await cache.GetOrCreateAsync<List<TournamentListRow>>(
                 "tournaments:upcoming",
@@ -337,10 +337,10 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{slugOrId}/access ─────────────────────────────
         // Lightweight staff/organizer access for route gates (not full dashboard).
         app.MapGet("/api/tournaments/{slugOrId}/access", async (
-            string                    slugOrId,
-            HttpContext               ctx,
+            string slugOrId,
+            HttpContext ctx,
             IStaffAuthorizationService staffAuth,
-            CancellationToken         ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -362,12 +362,12 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{slugOrId} ────────────────────────────────────
         // Replaces useTournamentDashboard — consolidated tournament + participants + stages.
         app.MapGet("/api/tournaments/{slugOrId}", async (
-            string               slugOrId,
-            HttpContext          ctx,
+            string slugOrId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   gameCatalog,
+            GameCatalogService gameCatalog,
             IStaffAuthorizationService staffAuth,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -403,7 +403,7 @@ public static class TournamentEndpoints
             if (tournament is null) return Results.NotFound();
 
             var tournamentId = (Guid)tournament.id;
-            var organizerId  = (Guid)tournament.organizer_id;
+            var organizerId = (Guid)tournament.organizer_id;
 
             // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
             var allParticipants = await conn.QueryAsync<dynamic>(
@@ -442,7 +442,8 @@ public static class TournamentEndpoints
             // Organizers see all participants (for payment management); others see only active
             var participants = isOrganizer
                 ? allParticipants
-                : allParticipants.Where(p => {
+                : allParticipants.Where(p =>
+                {
                     string status = (string)p.status;
                     return status != "rejected" && status != "cancelled";
                 });
@@ -483,24 +484,43 @@ public static class TournamentEndpoints
         // Handles slug uniqueness + stages + map pool in one transaction.
         app.MapPost("/api/tournaments", async (
             [FromBody] CreateTournamentRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            GameCatalogService                gameCatalog,
-            HybridCache                       cache,
-            CancellationToken                 ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            // TEMPORARY: Verified organizer gate (will be replaced by AuthorizationEnforcementMiddleware)
+            if (!userCtx.Roles.Contains("organizer", StringComparer.OrdinalIgnoreCase))
+                return Results.Json(new { error = "Organizer role required to create tournaments" }, statusCode: 403);
+
             using var conn = db.CreateConnection();
-            using var tx   = conn.BeginTransaction();
+
+            var isVerifiedOrganizer = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM verified_roles
+                    WHERE user_id = @userId AND role = 'organizer'
+                      AND status = 'approved' AND is_active = TRUE
+                ) AND EXISTS(
+                    SELECT 1 FROM organizations WHERE owner_id = @userId
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+            if (!isVerifiedOrganizer)
+                return Results.Json(new { error = "Approved organizer verification and organization required" }, statusCode: 403);
+
+            using var tx = conn.BeginTransaction();
 
             try
             {
                 // Unique slug: base + numeric suffix on conflict
-                var slug       = req.Slug ?? Slugify(req.Name);
+                var slug = req.Slug ?? Slugify(req.Name);
                 var uniqueSlug = slug;
-                var exists     = await conn.QuerySingleOrDefaultAsync<bool>(
+                var exists = await conn.QuerySingleOrDefaultAsync<bool>(
                     "SELECT EXISTS(SELECT 1 FROM tournaments WHERE slug = @slug)", new { slug }, tx);
                 if (exists)
                     uniqueSlug = $"{slug}-{DateTime.UtcNow.Ticks % 9999:x4}";
@@ -551,39 +571,39 @@ public static class TournamentEndpoints
                     """,
                     new
                     {
-                        name                 = req.Name,
-                        description          = req.Description,
-                        slug                 = uniqueSlug,
-                        game                 = catalog.GameName,
-                        format               = catalog.TournamentStructure,
-                        gameMode             = catalog.GameMode,
-                        maxTeams             = req.MaxTeams,
-                        teamSize             = catalog.TeamSize,
-                        entryFee             = req.EntryFee ?? 0m,
-                        prizePool            = req.PrizePool ?? 0m,
-                        startDate            = req.StartDate,
-                        endDate              = req.EndDate ?? req.StartDate.AddHours(2),
+                        name = req.Name,
+                        description = req.Description,
+                        slug = uniqueSlug,
+                        game = catalog.GameName,
+                        format = catalog.TournamentStructure,
+                        gameMode = catalog.GameMode,
+                        maxTeams = req.MaxTeams,
+                        teamSize = catalog.TeamSize,
+                        entryFee = req.EntryFee ?? 0m,
+                        prizePool = req.PrizePool ?? 0m,
+                        startDate = req.StartDate,
+                        endDate = req.EndDate ?? req.StartDate.AddHours(2),
                         registrationDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
-                        status               = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "draft",
-                        bannerUrl            = req.BannerUrl,
-                        logoUrl              = req.LogoUrl,
-                        organizationId       = organizationId,
-                        venueId              = Guid.TryParse(req.VenueId, out var venGuid) ? venGuid : (Guid?)null,
-                        isPublic             = req.IsPublic ?? false,
-                        checkInRequired      = req.CheckInRequired ?? false,
-                        checkInDeadline      = req.CheckInDeadline,
-                        autoRemoveUnchecked  = req.AutoRemoveUnchecked ?? false,
-                        rewards              = req.Rewards,
-                        streamUrl            = req.StreamUrl,
-                        settings             = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto) ?? "{}",
-                        organizerId          = userCtx.UserIdGuid,
-                        rules                = req.Rules,
-                        paymentInstructions  = req.PaymentInstructions,
-                        region               = req.Region,
-                        currency             = req.Currency ?? "USD",
-                        serverRegion         = req.ServerRegion,
-                        reservedInviteSlots  = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings),
-                        inviteExpiryDays     = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365),
+                        status = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "draft",
+                        bannerUrl = req.BannerUrl,
+                        logoUrl = req.LogoUrl,
+                        organizationId = organizationId,
+                        venueId = Guid.TryParse(req.VenueId, out var venGuid) ? venGuid : (Guid?)null,
+                        isPublic = req.IsPublic ?? false,
+                        checkInRequired = req.CheckInRequired ?? false,
+                        checkInDeadline = req.CheckInDeadline,
+                        autoRemoveUnchecked = req.AutoRemoveUnchecked ?? false,
+                        rewards = req.Rewards,
+                        streamUrl = req.StreamUrl,
+                        settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto) ?? "{}",
+                        organizerId = userCtx.UserIdGuid,
+                        rules = req.Rules,
+                        paymentInstructions = req.PaymentInstructions,
+                        region = req.Region,
+                        currency = req.Currency ?? "USD",
+                        serverRegion = req.ServerRegion,
+                        reservedInviteSlots = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings),
+                        inviteExpiryDays = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365),
                     },
                     tx);
 
@@ -628,14 +648,14 @@ public static class TournamentEndpoints
                         stagesToInsert.Select((s, i) => new
                         {
                             tournamentId,
-                            name              = s.Name,
-                            format            = s.Format,
-                            stageOrder        = s.StageOrder ?? i,
-                            bestOf            = s.BestOf ?? 1,
-                            capacity          = string.Equals(s.Format, "battle_royale", StringComparison.OrdinalIgnoreCase)
+                            name = s.Name,
+                            format = s.Format,
+                            stageOrder = s.StageOrder ?? i,
+                            bestOf = s.BestOf ?? 1,
+                            capacity = string.Equals(s.Format, "battle_royale", StringComparison.OrdinalIgnoreCase)
                                 ? s.Capacity ?? req.MaxTeams
                                 : s.Capacity,
-                            advancementCount  = s.AdvancementCount,
+                            advancementCount = s.AdvancementCount,
                         }),
                         tx);
                 }
@@ -672,15 +692,15 @@ public static class TournamentEndpoints
 
         // ── PUT /api/tournaments/{id} ──────────────────────────────────────────
         app.MapPut("/api/tournaments/{id}", async (
-            Guid                          id,
+            Guid id,
             [FromBody] UpdateTournamentRequest req,
-            HttpContext                    ctx,
-            IDbConnectionFactory          db,
-            GameCatalogService            gameCatalog,
-            TournamentWinnerService       winnerService,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
+            TournamentWinnerService winnerService,
             TournamentAuthorizationService tournamentAuth,
-            HybridCache                   cache,
-            CancellationToken             ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -827,37 +847,37 @@ public static class TournamentEndpoints
                 new
                 {
                     id,
-                    name                 = req.Name,
-                    description          = req.Description,
-                    game                 = catalog.GameName,
-                    format               = catalog.TournamentStructure,
-                    gameMode             = catalog.GameMode,
-                    status               = req.Status,
-                    maxTeams             = req.MaxTeams,
-                    teamSize             = catalog.TeamSize,
-                    entryFee             = req.EntryFee,
-                    prizePool            = req.PrizePool,
-                    startDate            = req.StartDate,
-                    endDate              = req.EndDate is not null ? effectiveEndDate : null,
+                    name = req.Name,
+                    description = req.Description,
+                    game = catalog.GameName,
+                    format = catalog.TournamentStructure,
+                    gameMode = catalog.GameMode,
+                    status = req.Status,
+                    maxTeams = req.MaxTeams,
+                    teamSize = catalog.TeamSize,
+                    entryFee = req.EntryFee,
+                    prizePool = req.PrizePool,
+                    startDate = req.StartDate,
+                    endDate = req.EndDate is not null ? effectiveEndDate : null,
                     registrationDeadline = req.RegistrationDeadline,
-                    bannerUrl            = req.BannerUrl,
-                    logoUrl              = req.LogoUrl,
-                    isPublic             = req.IsPublic,
-                    checkInRequired      = req.CheckInRequired,
-                    checkInDeadline      = req.CheckInDeadline,
-                    rewards              = req.Rewards,
-                    streamUrl            = req.StreamUrl,
-                    rules                = req.Rules,
-                    paymentInstructions  = req.PaymentInstructions,
-                    region               = req.Region,
-                    currency             = req.Currency,
-                    settings             = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto),
-                    reservedInviteSlots  = reservedSlotsForUpdate,
-                    inviteExpiryDays     = req.InviteExpiryDays.HasValue
+                    bannerUrl = req.BannerUrl,
+                    logoUrl = req.LogoUrl,
+                    isPublic = req.IsPublic,
+                    checkInRequired = req.CheckInRequired,
+                    checkInDeadline = req.CheckInDeadline,
+                    rewards = req.Rewards,
+                    streamUrl = req.StreamUrl,
+                    rules = req.Rules,
+                    paymentInstructions = req.PaymentInstructions,
+                    region = req.Region,
+                    currency = req.Currency,
+                    settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto),
+                    reservedInviteSlots = reservedSlotsForUpdate,
+                    inviteExpiryDays = req.InviteExpiryDays.HasValue
                                              ? Math.Clamp(req.InviteExpiryDays.Value, 1, 365)
                                              : (int?)null,
-                    deletedAt            = req.DeletedAt,
-                    clearDeletedAt       = req.ClearDeletedAt,
+                    deletedAt = req.DeletedAt,
+                    clearDeletedAt = req.ClearDeletedAt,
                 });
 
 
@@ -979,12 +999,12 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/{id} — permanent delete (organizer only, must be soft-deleted first)
         app.MapDelete("/api/tournaments/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1020,9 +1040,9 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/me/history ─────────────────────────────────
         // Returns tournaments the current user has participated in.
         app.MapGet("/api/tournaments/me/history", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1045,10 +1065,10 @@ public static class TournamentEndpoints
         // With ?ids=id1,id2,id3 → { id1: true, id2: false, ... } (batch check)
         // Without ids           → [{ tournament_id: "...", id: "..." }, ...] (all registrations)
         app.MapGet("/api/tournaments/me/registration-status", async (
-            string?              ids,
-            HttpContext          ctx,
+            string? ids,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1114,19 +1134,19 @@ public static class TournamentEndpoints
             }
 
             var registeredSet = registeredIdGuids.Select(g => g.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var statusMap     = idList.ToDictionary(id => id, id => registeredSet.Contains(id));
+            var statusMap = idList.ToDictionary(id => id, id => registeredSet.Contains(id));
 
             return Results.Ok(statusMap);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/register ────────────────────────────────
         app.MapPost("/api/tournaments/{id}/register", async (
-            Guid                             id,
+            Guid id,
             [FromBody] RegisterTournamentRequest req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            GameCatalogService                gameCatalog,
-            CancellationToken                ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService gameCatalog,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1146,7 +1166,7 @@ public static class TournamentEndpoints
                 FOR UPDATE
                 """,
                 new { id }, txn);
-            if (tourn is null)    { txn.Rollback(); return Results.NotFound(); }
+            if (tourn is null) { txn.Rollback(); return Results.NotFound(); }
 
             var registrationWindowError = TournamentTimelineValidator.ValidateRegistrationWindow(
                 (string?)tourn.status,
@@ -1154,19 +1174,19 @@ public static class TournamentEndpoints
                 (DateTimeOffset?)tourn.start_date,
                 TournamentTimelineValidator.ParseRegistrationOpensAt(tourn.settings));
             if (registrationWindowError is not null)
-            {   txn.Rollback(); return Results.BadRequest(new { error = registrationWindowError }); }
+            { txn.Rollback(); return Results.BadRequest(new { error = registrationWindowError }); }
 
             if (string.Equals((string?)tourn.registration_type, "invite_only", StringComparison.OrdinalIgnoreCase))
-            {   txn.Rollback(); return Results.BadRequest(new { error = "This tournament is invite-only." }); }
+            { txn.Rollback(); return Results.BadRequest(new { error = "This tournament is invite-only." }); }
             if (string.Equals((string?)tourn.registration_type, "closed", StringComparison.OrdinalIgnoreCase))
-            {   txn.Rollback(); return Results.BadRequest(new { error = "This tournament is closed for direct registration." }); }
+            { txn.Rollback(); return Results.BadRequest(new { error = "This tournament is closed for direct registration." }); }
 
             // Check capacity (0 or null = unlimited)
             int? maxTeams = (int?)tourn.max_teams;
             if (maxTeams.HasValue && maxTeams.Value > 0)
             {
                 var reservedSlots = TournamentInviteSlots.ResolveFromRow(tourn);
-                var openCap       = Math.Max(maxTeams.Value - reservedSlots, 0);
+                var openCap = Math.Max(maxTeams.Value - reservedSlots, 0);
 
                 if (reservedSlots > 0)
                 {
@@ -1180,7 +1200,7 @@ public static class TournamentEndpoints
                         """,
                         new { id }, txn);
                     if (openCount >= openCap)
-                    {   txn.Rollback(); return Results.BadRequest(new { error = "Open registration slots are full. Invited teams still have guaranteed slots." }); }
+                    { txn.Rollback(); return Results.BadRequest(new { error = "Open registration slots are full. Invited teams still have guaranteed slots." }); }
                 }
                 else
                 {
@@ -1188,7 +1208,7 @@ public static class TournamentEndpoints
                         "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled')",
                         new { id }, txn);
                     if (currentCount >= maxTeams.Value)
-                    {   txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
+                    { txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
                 }
             }
 
@@ -1197,12 +1217,12 @@ public static class TournamentEndpoints
                 "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                 new { id, userId = userCtx.UserIdGuid }, txn);
             if (existing is not null)
-            {   txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
+            { txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
 
-            Guid? teamIdGuid      = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
-            Guid? captainIdGuid   = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
-            Guid? rosterIdGuid    = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
-            var   participantType = teamIdGuid is not null ? "team" : "solo";
+            Guid? teamIdGuid = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
+            Guid? captainIdGuid = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
+            Guid? rosterIdGuid = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
+            var participantType = teamIdGuid is not null ? "team" : "solo";
 
             try
             {
@@ -1231,9 +1251,9 @@ public static class TournamentEndpoints
             bool isPaid = tournEntryFee > 0;
 
             // Server determines registration status — never trust user-supplied value
-            var   regStatus       = isPaid ? "pending" : "approved";
-            var   paymentStatus   = isPaid ? "pending" : "not_required";
-            var   entryFeePaid    = !isPaid; // free = already paid; paid = not yet
+            var regStatus = isPaid ? "pending" : "approved";
+            var paymentStatus = isPaid ? "pending" : "not_required";
+            var entryFeePaid = !isPaid; // free = already paid; paid = not yet
 
             string teamMembersJson;
             string? rosterLineupJson = null;
@@ -1291,21 +1311,21 @@ public static class TournamentEndpoints
                 """,
                 new
                 {
-                    tournamentId     = id,
-                    userId           = userCtx.UserIdGuid,
-                    teamId           = teamIdGuid,
-                    teamCaptainId    = captainIdGuid ?? userCtx.UserIdGuid,
-                    teamName         = participantType == "solo" ? soloDisplayName ?? req.TeamName : req.TeamName,
-                    teamMembers      = teamMembersJson,
-                    rosterLineup     = rosterLineupJson,
+                    tournamentId = id,
+                    userId = userCtx.UserIdGuid,
+                    teamId = teamIdGuid,
+                    teamCaptainId = captainIdGuid ?? userCtx.UserIdGuid,
+                    teamName = participantType == "solo" ? soloDisplayName ?? req.TeamName : req.TeamName,
+                    teamMembers = teamMembersJson,
+                    rosterLineup = rosterLineupJson,
                     teamContactEmail = req.TeamContactEmail,
-                    rosterId         = rosterIdGuid,
-                    rosterName       = req.RosterName,
+                    rosterId = rosterIdGuid,
+                    rosterName = req.RosterName,
                     regStatus,
                     participantType,
-                    entryFeeAmount   = tournEntryFee,
-                    entryFeePaid     = entryFeePaid,
-                    paymentStatus    = paymentStatus,
+                    entryFeeAmount = tournEntryFee,
+                    entryFeePaid = entryFeePaid,
+                    paymentStatus = paymentStatus,
                     paymentReceiptUrl = req.PaymentReceiptUrl,
                 }, txn);
 
@@ -1321,10 +1341,10 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/{id}/register — withdraw ──────────────────
         app.MapDelete("/api/tournaments/{id}/register", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1347,11 +1367,11 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/participants/{participantId}/approve-payment ──
         app.MapPost("/api/tournaments/{id}/participants/{participantId}/approve-payment", async (
-            Guid                 id,
-            Guid                 participantId,
-            HttpContext          ctx,
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1384,11 +1404,12 @@ public static class TournamentEndpoints
                     VALUES (@userId, 'tournament_announcement', @title,
                             @message, @data::jsonb)
                     """,
-                    new {
-                        userId  = (Guid)participant.user_id,
-                        title   = $"💰 Payment Confirmed!",
+                    new
+                    {
+                        userId = (Guid)participant.user_id,
+                        title = $"💰 Payment Confirmed!",
                         message = $"You're officially in! Your payment for {(string)participant.tournament_name} has been approved. Time to prepare for battle!",
-                        data    = $"{{\"tournament_id\":\"{id}\"}}"
+                        data = $"{{\"tournament_id\":\"{id}\"}}"
                     });
             }
 
@@ -1397,12 +1418,12 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/participants/{participantId}/reject-payment ──
         app.MapPost("/api/tournaments/{id}/participants/{participantId}/reject-payment", async (
-            Guid                                    id,
-            Guid                                    participantId,
-            [FromBody] PaymentRejectionRequest       req,
-            HttpContext                              ctx,
-            IDbConnectionFactory                    db,
-            CancellationToken                       ct) =>
+            Guid id,
+            Guid participantId,
+            [FromBody] PaymentRejectionRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1435,11 +1456,12 @@ public static class TournamentEndpoints
                     VALUES (@userId, 'tournament_announcement', @title,
                             @message, @data::jsonb)
                     """,
-                    new {
-                        userId  = (Guid)participant.user_id,
-                        title   = "❌ Payment Not Accepted",
+                    new
+                    {
+                        userId = (Guid)participant.user_id,
+                        title = "❌ Payment Not Accepted",
                         message = $"Your payment for {(string)participant.tournament_name} was not accepted. Reason: {req.Reason ?? "No reason provided."} — You can resubmit if eligible.",
-                        data    = $"{{\"tournament_id\":\"{id}\"}}"
+                        data = $"{{\"tournament_id\":\"{id}\"}}"
                     });
             }
 
@@ -1448,11 +1470,11 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/upload-receipt ────────────────────────────
         app.MapPost("/api/tournaments/{id}/upload-receipt", async (
-            Guid                                    id,
-            HttpContext                              ctx,
-            IDbConnectionFactory                    db,
-            IConfiguration                          config,
-            CancellationToken                       ct) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1476,20 +1498,20 @@ public static class TournamentEndpoints
 
             // Upload to Supabase storage
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            var serviceKey = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
-            var ext         = Path.GetExtension(file.FileName) ?? ".jpg";
+            var ext = Path.GetExtension(file.FileName) ?? ".jpg";
             var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
-            var bucket      = "tournaments.payment.receipts";
+            var bucket = "tournaments.payment.receipts";
 
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
             http.DefaultRequestHeaders.Add("apikey", serviceKey);
             http.DefaultRequestHeaders.Add("x-upsert", "true");
 
-            using var stream  = file.OpenReadStream();
+            using var stream = file.OpenReadStream();
             using var content = new StreamContent(stream);
             content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
 
@@ -1519,13 +1541,13 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
         // Fallback stream when direct public storage URLs are unavailable (RLS / migration).
         app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
-            Guid                 id,
-            Guid                 participantId,
-            HttpContext          ctx,
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            IConfiguration       config,
-            IHttpClientFactory   httpFactory,
-            CancellationToken    ct) =>
+            IConfiguration config,
+            IHttpClientFactory httpFactory,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1541,7 +1563,7 @@ public static class TournamentEndpoints
             if (string.IsNullOrWhiteSpace(receiptRef)) return Results.NotFound(new { error = "No receipt found." });
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            var serviceKey = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
@@ -1552,7 +1574,7 @@ public static class TournamentEndpoints
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
             http.DefaultRequestHeaders.Add("apikey", serviceKey);
 
-            var objectUrl  = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
+            var objectUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
             using var objectResp = await http.GetAsync(objectUrl, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!objectResp.IsSuccessStatusCode)
                 return Results.NotFound(new { error = "Receipt file not found." });
@@ -1564,10 +1586,10 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/check-in", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1592,10 +1614,10 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{id}/my-status ────────────────────────────────
         // Consolidated endpoint: returns ban status, registration, team info for current user.
         app.MapGet("/api/tournaments/{id}/my-status", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1658,21 +1680,21 @@ public static class TournamentEndpoints
 
             return Results.Ok(new
             {
-                userBan       = userBan is not null ? new { banReason = (string)userBan.ban_reason } : null,
-                teamBan       = teamBan is not null ? new { banReason = (string)teamBan.ban_reason, teamId = ((Guid)teamBan.team_id).ToString() } : null,
+                userBan = userBan is not null ? new { banReason = (string)userBan.ban_reason } : null,
+                teamBan = teamBan is not null ? new { banReason = (string)teamBan.ban_reason, teamId = ((Guid)teamBan.team_id).ToString() } : null,
                 registration,
                 captainTeams,
-                userTeamIds   = userTeamIds.Select(g => g.ToString()),
+                userTeamIds = userTeamIds.Select(g => g.ToString()),
             });
         }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/tournaments/{id}/banner ────────────────────────────────────
         app.MapPut("/api/tournaments/{id}/banner", async (
-            Guid                            id,
-            [FromBody] UpdateBannerRequest  req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            Guid id,
+            [FromBody] UpdateBannerRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1693,10 +1715,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/registrations — organizer: all registrations ───
         app.MapGet("/api/tournaments/{id}/registrations", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1727,10 +1749,10 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/remove-unchecked — remove unchecked participants ──
         app.MapPost("/api/tournaments/{id}/remove-unchecked", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1758,11 +1780,11 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
         app.MapPost("/api/tournaments/{id}/ban-participant", async (
-            Guid                                 id,
-            [FromBody] BanParticipantRequest     req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            CancellationToken                   ct) =>
+            Guid id,
+            [FromBody] BanParticipantRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1811,10 +1833,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/participants/{pid} — single participant ───
         app.MapGet("/api/tournaments/{id}/participants/{pid}", async (
-            Guid                 id,
-            Guid                 pid,
+            Guid id,
+            Guid pid,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var flat = await conn.QueryAsync<dynamic>(
@@ -1862,10 +1884,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
         app.MapGet("/api/tournaments/{id}/stages", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             if (!await CanViewTournamentPublicDataAsync(conn, ctx, id))
@@ -1916,11 +1938,11 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/bracket-versions ───────────────────────
         app.MapGet("/api/tournaments/{id}/bracket-versions", async (
-            Guid                 id,
-            string?              status,
-            HttpContext          ctx,
+            Guid id,
+            string? status,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             if (!await CanViewTournamentPublicDataAsync(conn, ctx, id))
@@ -1945,10 +1967,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/participants ───────────────────────────
         app.MapGet("/api/tournaments/{id}/participants", async (
-            Guid                 id,
-            string?              status,
+            Guid id,
+            string? status,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -2010,9 +2032,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/match-proofs ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-proofs", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -2023,9 +2045,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/match-games ────────────────────────────
         app.MapGet("/api/tournaments/{id}/match-games", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -2044,9 +2066,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/teams/search — search teams by name ─────────────────────────
         app.MapGet("/api/teams/search", async (
-            string?              name,
+            string? name,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             if (string.IsNullOrEmpty(name)) return Results.Ok(Array.Empty<object>());
@@ -2070,7 +2092,7 @@ public static class TournamentEndpoints
 
         // GET /api/tournaments/{id}/br-games — read BR game data (any authenticated user)
         app.MapGet("/api/tournaments/{id}/br-games", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -2087,10 +2109,10 @@ public static class TournamentEndpoints
 
         // PUT /api/tournaments/{id}/br-games — upsert BR game data (organizer/staff only)
         app.MapPut("/api/tournaments/{id}/br-games", async (
-            Guid                 id,
+            Guid id,
             [FromBody] BRGameDataRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db) =>
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2119,10 +2141,10 @@ public static class TournamentEndpoints
 
         // PUT /api/tournaments/{id}/br-games/evidence — submit evidence (any tournament participant)
         app.MapPut("/api/tournaments/{id}/br-games/evidence", async (
-            Guid                 id,
+            Guid id,
             [FromBody] BRSubmitEvidenceRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db) =>
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2218,11 +2240,11 @@ public static class TournamentEndpoints
     {
         // ── GET /api/tournaments/{tournamentId}/staff ────────────────────────
         app.MapGet("/api/tournaments/{tournamentId}/staff", async (
-            Guid                 tournamentId,
-            HttpContext          ctx,
+            Guid tournamentId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2256,12 +2278,12 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{tournamentId}/staff — invite ──────────────
         app.MapPost("/api/tournaments/{tournamentId}/staff", async (
-            Guid                                  tournamentId,
+            Guid tournamentId,
             [FromBody] InviteTournamentStaffRequest req,
-            HttpContext                             ctx,
-            IDbConnectionFactory                   db,
-            TournamentAuthorizationService          tournamentAuth,
-            CancellationToken                      ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2303,9 +2325,13 @@ public static class TournamentEndpoints
                         status = CASE WHEN status = 'active' THEN 'active' ELSE 'pending' END
                     WHERE id = @id::uuid
                     """,
-                    new { id = orgStaffId, role = req.Role,
-                          permissions = req.Permissions ?? Array.Empty<string>(),
-                          assignedBy = userCtx.UserIdGuid });
+                    new
+                    {
+                        id = orgStaffId,
+                        role = req.Role,
+                        permissions = req.Permissions ?? Array.Empty<string>(),
+                        assignedBy = userCtx.UserIdGuid
+                    });
             }
             else
             {
@@ -2317,9 +2343,14 @@ public static class TournamentEndpoints
                         (@orgId, @userId::uuid, @role, @permissions::text[], @assignedBy, 'pending')
                     RETURNING id
                     """,
-                    new { orgId, userId, role = req.Role,
-                          permissions = req.Permissions ?? Array.Empty<string>(),
-                          assignedBy = userCtx.UserIdGuid })).ToString();
+                    new
+                    {
+                        orgId,
+                        userId,
+                        role = req.Role,
+                        permissions = req.Permissions ?? Array.Empty<string>(),
+                        assignedBy = userCtx.UserIdGuid
+                    })).ToString();
             }
 
             // Upsert tournament assignment
@@ -2336,12 +2367,12 @@ public static class TournamentEndpoints
 
         // ── PUT /api/tournaments/staff/{staffId} — update role/permissions ───
         app.MapPut("/api/tournaments/staff/{staffId}", async (
-            Guid                                    staffId,
-            [FromBody] UpdateTournamentStaffRequest  req,
-            HttpContext                              ctx,
-            IDbConnectionFactory                    db,
-            TournamentAuthorizationService          tournamentAuth,
-            CancellationToken                       ct) =>
+            Guid staffId,
+            [FromBody] UpdateTournamentStaffRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2375,11 +2406,11 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/staff/{staffId} — remove ────────────────
         app.MapDelete("/api/tournaments/staff/{staffId}", async (
-            Guid                 staffId,
-            HttpContext          ctx,
+            Guid staffId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2414,9 +2445,9 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/staff/my-invites ────────────────────────────
         // OBSOLETE: Use GET /api/organizations/staff/invites instead.
         app.MapGet("/api/tournaments/staff/my-invites", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2452,9 +2483,9 @@ public static class TournamentEndpoints
         // Navigation/listing only — not for authorization. Prefer
         // GET /api/organizations/staff/assignments or GET /api/tournaments/{id}/access.
         app.MapGet("/api/tournaments/staff/my-assignments", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2504,11 +2535,11 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/staff/{inviteId}/respond ───────────────────
         app.MapPost("/api/tournaments/staff/{inviteId}/respond", async (
-            Guid                                      inviteId,
-            [FromBody] RespondToStaffInviteRequest     req,
-            HttpContext                                ctx,
-            IDbConnectionFactory                      db,
-            CancellationToken                         ct) =>
+            Guid inviteId,
+            [FromBody] RespondToStaffInviteRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2532,7 +2563,7 @@ public static class TournamentEndpoints
                 new
                 {
                     inviteId,
-                    status     = req.Accept ? "active" : "declined",
+                    status = req.Accept ? "active" : "declined",
                     acceptedAt = req.Accept ? now : (DateTime?)null,
                     respondedAt = now,
                 });
@@ -2558,9 +2589,9 @@ public static class TournamentEndpoints
         // Replaces 5 sequential Supabase calls: owned tournaments + staff tournaments
         // + tournament names + disputes + filer profiles + match context
         app.MapGet("/api/organizer/disputes", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2672,9 +2703,9 @@ public static class TournamentEndpoints
         app.MapGet("/api/organizer/disputes/unread-count", async (
             [FromQuery(Name = "tournament_id")] Guid? tournamentIdFromSnake,
             [FromQuery(Name = "tournamentId")] Guid? tournamentIdFromCamel,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2746,10 +2777,10 @@ public static class TournamentEndpoints
 
         // ── POST /api/organizer/disputes/{disputeId}/read ────────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/read", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2786,9 +2817,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/organizer/disputes/{disputeId} ──────────────────────────
         app.MapGet("/api/organizer/disputes/{disputeId}", async (
-            Guid                 disputeId,
+            Guid disputeId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -2799,10 +2830,10 @@ public static class TournamentEndpoints
 
         // ── PUT /api/organizer/disputes/{disputeId} ──────────────────────────
         app.MapPut("/api/organizer/disputes/{disputeId}", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2841,9 +2872,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/organizer/disputes/{disputeId}/comments ─────────────────
         app.MapGet("/api/organizer/disputes/{disputeId}/comments", async (
-            Guid                 disputeId,
+            Guid disputeId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -2863,12 +2894,12 @@ public static class TournamentEndpoints
 
         // ── POST /api/organizer/disputes/{disputeId}/comments ────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/comments", async (
-            Guid                              disputeId,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            IHubContext<NotificationHub>      notifHub,
-            IHubContext<MatchHub>             matchHub,
-            CancellationToken                 ct) =>
+            Guid disputeId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2904,15 +2935,15 @@ public static class TournamentEndpoints
 
         // ── POST /api/organizer/disputes/{disputeId}/resolve ─────────────────
         app.MapPost("/api/organizer/disputes/{disputeId}/resolve", async (
-            Guid                                disputeId,
-            ResolveDisputeRequest2              req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            IHubContext<NotificationHub>        notifHub,
-            IHubContext<MatchHub>               matchHub,
-            IHubContext<BracketHub>             bracketHub,
-            ILoggerFactory                      loggerFactory,
-            CancellationToken                   ct) =>
+            Guid disputeId,
+            ResolveDisputeRequest2 req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            IHubContext<MatchHub> matchHub,
+            IHubContext<BracketHub> bracketHub,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2933,51 +2964,51 @@ public static class TournamentEndpoints
             var logger = loggerFactory.CreateLogger("DisputeResolve");
             try
             {
-            using var conn = db.CreateConnection();
+                using var conn = db.CreateConnection();
 
-            var disputeRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT match_id, tournament_id, status FROM tournament_disputes WHERE id = @disputeId",
-                new { disputeId });
-            if (disputeRow is null) return Results.NotFound(new { error = "Dispute not found" });
+                var disputeRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT match_id, tournament_id, status FROM tournament_disputes WHERE id = @disputeId",
+                    new { disputeId });
+                if (disputeRow is null) return Results.NotFound(new { error = "Dispute not found" });
 
-            var currentStatus = (string?)disputeRow.status;
-            if (currentStatus is "resolved" or "rejected")
-                return Results.BadRequest(new { error = "This dispute has already been closed." });
+                var currentStatus = (string?)disputeRow.status;
+                if (currentStatus is "resolved" or "rejected")
+                    return Results.BadRequest(new { error = "This dispute has already been closed." });
 
-            Guid? disputeMatchId = disputeRow.match_id as Guid?;
-            Guid tournamentId = (Guid)disputeRow.tournament_id;
+                Guid? disputeMatchId = disputeRow.match_id as Guid?;
+                Guid tournamentId = (Guid)disputeRow.tournament_id;
 
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
-                new { tid = tournamentId, userId = userCtx.UserIdGuid });
+                var isOwner = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
+                    new { tid = tournamentId, userId = userCtx.UserIdGuid });
 
-            var canAssist = disputeMatchId is not null
-                && await StaffAuthHelper.CanActOnBracketMatchAsync(
-                    conn, userCtx.UserIdGuid, disputeMatchId.Value, StaffAuthHelper.PermDisputesAssist);
+                var canAssist = disputeMatchId is not null
+                    && await StaffAuthHelper.CanActOnBracketMatchAsync(
+                        conn, userCtx.UserIdGuid, disputeMatchId.Value, StaffAuthHelper.PermDisputesAssist);
 
-            if (!isOwner && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
-                return Results.Forbid();
+                if (!isOwner && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                    return Results.Forbid();
 
-            // Update dispute status
-            await conn.ExecuteAsync(
-                """
+                // Update dispute status
+                await conn.ExecuteAsync(
+                    """
                 UPDATE tournament_disputes
                 SET status = @status::text, resolution_notes = @notes,
                     assigned_to_user_id = @userId, updated_at = NOW()
                 WHERE id = @disputeId
                 """,
-                new { disputeId, status, notes, userId = userCtx.UserIdGuid });
+                    new { disputeId, status, notes, userId = userCtx.UserIdGuid });
 
-            var enforcedReport = false;
+                var enforcedReport = false;
 
-            // If resolving with an accepted report: enforce scores on the match
-            if (status == "resolved" && reportIdRaw is not null)
-            {
-                if (!Guid.TryParse(reportIdRaw, out var reportId))
-                    return Results.BadRequest(new { error = "Invalid report id." });
+                // If resolving with an accepted report: enforce scores on the match
+                if (status == "resolved" && reportIdRaw is not null)
+                {
+                    if (!Guid.TryParse(reportIdRaw, out var reportId))
+                        return Results.BadRequest(new { error = "Invalid report id." });
 
-                var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    """
+                    var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
                     SELECT mrr.match_id, mrr.team1_score, mrr.team2_score,
                            mrr.reported_by_team_id,
                            bm.team1_id, bm.team2_id, bm.version_id
@@ -2985,60 +3016,60 @@ public static class TournamentEndpoints
                     JOIN brkt_matches bm ON bm.id = mrr.match_id
                     WHERE mrr.id = @reportId
                     """,
-                    new { reportId });
+                        new { reportId });
 
-                if (report is null)
-                    return Results.BadRequest(new { error = "Report not found." });
+                    if (report is null)
+                        return Results.BadRequest(new { error = "Report not found." });
 
-                enforcedReport = true;
-                Guid matchId = (Guid)report.match_id;
-                if (disputeMatchId is not null && matchId != disputeMatchId.Value)
-                    return Results.BadRequest(new { error = "Report does not belong to this dispute's match." });
+                    enforcedReport = true;
+                    Guid matchId = (Guid)report.match_id;
+                    if (disputeMatchId is not null && matchId != disputeMatchId.Value)
+                        return Results.BadRequest(new { error = "Report does not belong to this dispute's match." });
 
-                int t1Score  = (int)report.team1_score;
-                int t2Score  = (int)report.team2_score;
+                    int t1Score = (int)report.team1_score;
+                    int t2Score = (int)report.team2_score;
 
-                if (t1Score == t2Score)
-                    return Results.BadRequest(new { error = "Reported scores cannot be tied." });
+                    if (t1Score == t2Score)
+                        return Results.BadRequest(new { error = "Reported scores cannot be tied." });
 
-                Guid winnerId = t1Score > t2Score ? (Guid)report.team1_id : (Guid)report.team2_id;
-                Guid loserId  = t1Score > t2Score ? (Guid)report.team2_id : (Guid)report.team1_id;
+                    Guid winnerId = t1Score > t2Score ? (Guid)report.team1_id : (Guid)report.team2_id;
+                    Guid loserId = t1Score > t2Score ? (Guid)report.team2_id : (Guid)report.team1_id;
 
-                // Enforce scores + winner on match
-                await conn.ExecuteAsync(
-                    """
+                    // Enforce scores + winner on match
+                    await conn.ExecuteAsync(
+                        """
                     UPDATE brkt_matches
                     SET team1_score = @t1, team2_score = @t2,
                         winner_id = @winner, loser_id = @loser, status = 'completed', updated_at = NOW()
                     WHERE id = @matchId
                     """,
-                    new { t1 = t1Score, t2 = t2Score, winner = winnerId, loser = loserId, matchId });
+                        new { t1 = t1Score, t2 = t2Score, winner = winnerId, loser = loserId, matchId });
 
-                // Advance winner/loser through bracket edges
-                var advancements = await conn.QueryAsync<dynamic>(
-                    "SELECT target_match_id, target_slot, type FROM brkt_advancements WHERE source_match_id = @matchId",
-                    new { matchId });
+                    // Advance winner/loser through bracket edges
+                    var advancements = await conn.QueryAsync<dynamic>(
+                        "SELECT target_match_id, target_slot, type FROM brkt_advancements WHERE source_match_id = @matchId",
+                        new { matchId });
 
-                foreach (var adv in advancements)
-                {
-                    Guid teamId = (string?)adv.type == "winner" ? winnerId : loserId;
-                    string field = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
+                    foreach (var adv in advancements)
+                    {
+                        Guid teamId = (string?)adv.type == "winner" ? winnerId : loserId;
+                        string field = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
+                        await conn.ExecuteAsync(
+                            $"UPDATE brkt_matches SET {field} = @teamId WHERE id = @targetId",
+                            new { teamId, targetId = (Guid)adv.target_match_id });
+                    }
+
+                    // Mark report as accepted, others for this match as rejected
                     await conn.ExecuteAsync(
-                        $"UPDATE brkt_matches SET {field} = @teamId WHERE id = @targetId",
-                        new { teamId, targetId = (Guid)adv.target_match_id });
-                }
-
-                // Mark report as accepted, others for this match as rejected
-                await conn.ExecuteAsync(
-                    """
+                        """
                     UPDATE match_result_reports SET status = 'accepted'  WHERE id = @reportId;
                     UPDATE match_result_reports SET status = 'rejected', responded_at = NOW(), responded_by = @userId
                       WHERE match_id = @matchId AND id != @reportId AND status IN ('disputed', 'pending');
                     """,
-                    new { reportId, matchId, userId = userCtx.UserIdGuid });
+                        new { reportId, matchId, userId = userCtx.UserIdGuid });
 
-                await conn.ExecuteAsync(
-                    """
+                    await conn.ExecuteAsync(
+                        """
                     UPDATE match_disputes
                     SET status = 'resolved',
                         resolution = @notes,
@@ -3046,17 +3077,17 @@ public static class TournamentEndpoints
                         resolved_by = @userId
                     WHERE match_id = @matchId AND status = 'pending'
                     """,
-                    new { matchId, notes, userId = userCtx.UserIdGuid });
+                        new { matchId, notes, userId = userCtx.UserIdGuid });
 
-                var versionId = (Guid?)report.version_id;
-                if (versionId is not null)
-                {
-                    await bracketHub.Clients
-                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
-                        .SendAsync(BracketHubEvents.MatchUpdated, new { versionId, matchId }, ct);
-                }
+                    var versionId = (Guid?)report.version_id;
+                    if (versionId is not null)
+                    {
+                        await bracketHub.Clients
+                            .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                            .SendAsync(BracketHubEvents.MatchUpdated, new { versionId, matchId }, ct);
+                    }
 
-                // Notify both team captains about enforced result
+                    // Notify both team captains about enforced result
                     var captains = await conn.QueryAsync<dynamic>(
                         """
                         SELECT tm.user_id, t.name AS team_name,
@@ -3066,8 +3097,13 @@ public static class TournamentEndpoints
                         JOIN team_members tm ON tm.team_id = t.id AND tm.role = 'captain' AND tm.is_active = true
                         WHERE t.id IN (@team1Id, @team2Id)
                         """,
-                        new { team1Id = (Guid)report.team1_id, team2Id = (Guid)report.team2_id,
-                              t1Score, t2Score });
+                        new
+                        {
+                            team1Id = (Guid)report.team1_id,
+                            team2Id = (Guid)report.team2_id,
+                            t1Score,
+                            t2Score
+                        });
 
                     foreach (var captain in captains)
                     {
@@ -3080,24 +3116,24 @@ public static class TournamentEndpoints
                             """,
                             new
                             {
-                                userId  = captainId,
+                                userId = captainId,
                                 message = $"The organizer has made the final call — match result: {captain.own_score} – {captain.opp_score} for your team.",
-                                data    = System.Text.Json.JsonSerializer.Serialize(new { match_id = matchId, dispute_id = disputeId }),
+                                data = System.Text.Json.JsonSerializer.Serialize(new { match_id = matchId, dispute_id = disputeId }),
                             });
                         await notifHub.Clients.Group($"user:{captainId}")
                             .SendAsync("NewNotification", new { type = "result_accepted" }, ct);
                     }
-            }
+                }
 
-            if (disputeMatchId is not null && !enforcedReport)
-            {
-                var matchId = disputeMatchId.Value;
-                var actorId = userCtx.UserIdGuid;
-
-                if (status == "resolved")
+                if (disputeMatchId is not null && !enforcedReport)
                 {
-                    await conn.ExecuteAsync(
-                        """
+                    var matchId = disputeMatchId.Value;
+                    var actorId = userCtx.UserIdGuid;
+
+                    if (status == "resolved")
+                    {
+                        await conn.ExecuteAsync(
+                            """
                         UPDATE match_disputes
                         SET status = 'resolved',
                             resolution = @notes,
@@ -3105,20 +3141,20 @@ public static class TournamentEndpoints
                             resolved_by = @userId
                         WHERE match_id = @matchId AND status = 'pending'
                         """,
-                        new { matchId, notes, userId = actorId });
+                            new { matchId, notes, userId = actorId });
 
-                    await conn.ExecuteAsync(
-                        """
+                        await conn.ExecuteAsync(
+                            """
                         UPDATE match_result_reports
                         SET status = 'rejected', responded_at = NOW(), responded_by = @userId
                         WHERE match_id = @matchId AND status = 'disputed'
                         """,
-                        new { matchId, userId = actorId });
-                }
-                else
-                {
-                    await conn.ExecuteAsync(
-                        """
+                            new { matchId, userId = actorId });
+                    }
+                    else
+                    {
+                        await conn.ExecuteAsync(
+                            """
                         UPDATE match_disputes
                         SET status = 'rejected',
                             resolution = @notes,
@@ -3126,70 +3162,70 @@ public static class TournamentEndpoints
                             resolved_by = @userId
                         WHERE match_id = @matchId AND status = 'pending'
                         """,
-                        new { matchId, notes, userId = actorId });
+                            new { matchId, notes, userId = actorId });
 
-                    await conn.ExecuteAsync(
-                        """
+                        await conn.ExecuteAsync(
+                            """
                         UPDATE match_result_reports
                         SET status = 'rejected', responded_at = NOW(), responded_by = @userId
                         WHERE match_id = @matchId AND status IN ('disputed', 'pending')
                         """,
-                        new { matchId, userId = actorId });
+                            new { matchId, userId = actorId });
+                    }
                 }
-            }
 
-            if (disputeMatchId is not null)
-            {
-                await matchHub.Clients
-                    .Group(MatchHub.MatchGroup(disputeMatchId.Value.ToString()))
-                    .SendAsync(MatchHubEvents.DisputeResolved,
-                        new { match_id = disputeMatchId.Value, dispute_id = disputeId, status }, ct);
-            }
+                if (disputeMatchId is not null)
+                {
+                    await matchHub.Clients
+                        .Group(MatchHub.MatchGroup(disputeMatchId.Value.ToString()))
+                        .SendAsync(MatchHubEvents.DisputeResolved,
+                            new { match_id = disputeMatchId.Value, dispute_id = disputeId, status }, ct);
+                }
 
-            // Notify the dispute filer (best-effort — don't fail the request)
-            try
-            {
-            var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
-                new { disputeId });
+                // Notify the dispute filer (best-effort — don't fail the request)
+                try
+                {
+                    var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
+                        new { disputeId });
 
-            if (dispute is not null)
-            {
-                Guid filerId = (Guid)dispute.raised_by_user_id;
-                string title = ((string?)dispute.title) ?? "Your dispute";
-                var notifType  = status == "resolved" ? "dispute_resolved" : "dispute_rejected";
-                var notifTitle = status == "resolved"
-                    ? "✅ Dispute Resolved"
-                    : "❌ Dispute Rejected";
-                var notifMsg   = status == "resolved"
-                    ? $"Your dispute \"{title}\" has been resolved by the organizer. Check the outcome in your disputes page."
-                    : $"Your dispute \"{title}\" was reviewed and rejected by the organizer.";
+                    if (dispute is not null)
+                    {
+                        Guid filerId = (Guid)dispute.raised_by_user_id;
+                        string title = ((string?)dispute.title) ?? "Your dispute";
+                        var notifType = status == "resolved" ? "dispute_resolved" : "dispute_rejected";
+                        var notifTitle = status == "resolved"
+                            ? "✅ Dispute Resolved"
+                            : "❌ Dispute Rejected";
+                        var notifMsg = status == "resolved"
+                            ? $"Your dispute \"{title}\" has been resolved by the organizer. Check the outcome in your disputes page."
+                            : $"Your dispute \"{title}\" was reviewed and rejected by the organizer.";
 
-                await conn.ExecuteAsync(
-                    """
+                        await conn.ExecuteAsync(
+                            """
                     INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                     VALUES (@userId, @type, @title, @message, '/user/my-disputes',
                             @data::jsonb, FALSE)
                     """,
-                    new
-                    {
-                        userId  = filerId,
-                        type    = notifType,
-                        title   = notifTitle,
-                        message = notifMsg,
-                        data    = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId }),
-                    });
+                            new
+                            {
+                                userId = filerId,
+                                type = notifType,
+                                title = notifTitle,
+                                message = notifMsg,
+                                data = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId }),
+                            });
 
-                await notifHub.Clients.Group($"user:{filerId}")
-                    .SendAsync("NewNotification", new { type = notifType }, ct);
-            }
-            }
-            catch (Exception notifEx)
-            {
-                logger.LogWarning(notifEx, "Failed to send resolve notification for dispute {DisputeId} (non-fatal)", disputeId);
-            }
+                        await notifHub.Clients.Group($"user:{filerId}")
+                            .SendAsync("NewNotification", new { type = notifType }, ct);
+                    }
+                }
+                catch (Exception notifEx)
+                {
+                    logger.LogWarning(notifEx, "Failed to send resolve notification for dispute {DisputeId} (non-fatal)", disputeId);
+                }
 
-            return Results.Ok(new { success = true });
+                return Results.Ok(new { success = true });
             }
             catch (Exception ex)
             {
@@ -3202,9 +3238,9 @@ public static class TournamentEndpoints
         // Returns tournaments where the current user is a team captain
         // Used by Details.tsx captain-match view
         app.MapGet("/api/tournaments/captain", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3232,9 +3268,9 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/my-registrations ────────────────────────────
         // Used by RaiseDispute.tsx — returns tournaments the user is registered in
         app.MapGet("/api/tournaments/my-registrations", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3255,11 +3291,11 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/announcements ──────────────────────────
         app.MapGet("/api/tournaments/{id}/announcements", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            [FromQuery] int      limit = 50,
-            [FromQuery] int      offset = 0,
-            CancellationToken    ct = default) =>
+            [FromQuery] int limit = 50,
+            [FromQuery] int offset = 0,
+            CancellationToken ct = default) =>
         {
             using var conn = db.CreateConnection();
             var announcements = await conn.QueryAsync<object>(
@@ -3279,9 +3315,9 @@ public static class TournamentEndpoints
         // ── GET /api/disputes/mine ───────────────────────────────────────────
         // Player-facing: disputes filed by user OR on matches they participated in
         app.MapGet("/api/disputes/mine", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3388,10 +3424,10 @@ public static class TournamentEndpoints
         // ── GET /api/disputes/{disputeId} ────────────────────────────────────
         // Player-facing: get single dispute details (ownership check)
         app.MapGet("/api/disputes/{disputeId}", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3427,10 +3463,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/disputes/{disputeId}/comments ───────────────────────────
         app.MapGet("/api/disputes/{disputeId}/comments", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3452,11 +3488,11 @@ public static class TournamentEndpoints
 
         // ── POST /api/disputes/{disputeId}/comments ──────────────────────────
         app.MapPost("/api/disputes/{disputeId}/comments", async (
-            Guid                              disputeId,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            IHubContext<MatchHub>             matchHub,
-            CancellationToken                 ct) =>
+            Guid disputeId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3491,11 +3527,11 @@ public static class TournamentEndpoints
 
         // ── PATCH /api/disputes/{disputeId} ──────────────────────────────────
         app.MapPatch("/api/disputes/{disputeId}", async (
-            Guid                              disputeId,
-            [FromBody] UpdateDisputeRequest   req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            Guid disputeId,
+            [FromBody] UpdateDisputeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3513,9 +3549,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/my-bans ─────────────────────────────────────
         app.MapGet("/api/tournaments/my-bans", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3535,9 +3571,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/team-bans ────────────────────────────────────
         app.MapGet("/api/tournaments/team-bans", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3562,10 +3598,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/ban-status ──────────────────────────────
         app.MapGet("/api/tournaments/{id}/ban-status", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3585,10 +3621,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/bans ────────────────────────────────────
         app.MapGet("/api/tournaments/{id}/bans", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3609,11 +3645,11 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/{id}/bans/{banId} ─────────────────────────
         app.MapDelete("/api/tournaments/{id}/bans/{banId}", async (
-            Guid                 id,
-            Guid                 banId,
-            HttpContext          ctx,
+            Guid id,
+            Guid banId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3653,10 +3689,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/participants/me ─────────────────────────
         app.MapGet("/api/tournaments/{id}/participants/me", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3675,10 +3711,10 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/map-pool ────────────────────────────────
         app.MapGet("/api/tournaments/{id}/map-pool", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            IConfiguration       config,
-            CancellationToken    ct) =>
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
@@ -3697,11 +3733,11 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/map-pool ───────────────────────────────
         app.MapPost("/api/tournaments/{id}/map-pool", async (
-            Guid                         id,
+            Guid id,
             [FromBody] AddMapToPoolRequest req,
-            HttpContext                   ctx,
-            IDbConnectionFactory          db,
-            CancellationToken             ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3722,11 +3758,11 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/{id}/map-pool/{mapId} ─────────────────────
         app.MapDelete("/api/tournaments/{id}/map-pool/{mapId}", async (
-            Guid                 id,
-            Guid                 mapId,
-            HttpContext          ctx,
+            Guid id,
+            Guid mapId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3747,9 +3783,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournaments/{id}/match-reports ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-reports", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var reports = await conn.QueryAsync<dynamic>(
@@ -3766,9 +3802,9 @@ public static class TournamentEndpoints
         // ── GET /api/tournaments/{id}/result-reports ─────────────────────────
         // Returns match_result_reports (with screenshots) for all matches in this tournament
         app.MapGet("/api/tournaments/{id}/result-reports", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var reports = await conn.QueryAsync<dynamic>(
@@ -3789,12 +3825,12 @@ public static class TournamentEndpoints
 
         // ── POST /api/tournaments/{id}/announcements ──────────────────────────
         app.MapPost("/api/tournaments/{id}/announcements", async (
-            Guid                                 id,
+            Guid id,
             [FromBody] CreateAnnouncementRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                 db,
-            IHubContext<NotificationHub>          notifHub,
-            CancellationToken                    ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3873,12 +3909,12 @@ public static class TournamentEndpoints
 
         // ── PATCH /api/tournaments/{id}/announcements/{announcementId} ────────
         app.MapPatch("/api/tournaments/{id}/announcements/{announcementId}", async (
-            Guid                                  id,
-            Guid                                  announcementId,
-            [FromBody] UpdateAnnouncementRequest  req,
-            HttpContext                           ctx,
-            IDbConnectionFactory                  db,
-            CancellationToken                     ct) =>
+            Guid id,
+            Guid announcementId,
+            [FromBody] UpdateAnnouncementRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3907,11 +3943,11 @@ public static class TournamentEndpoints
 
         // ── DELETE /api/tournaments/{id}/announcements/{announcementId} ───────
         app.MapDelete("/api/tournaments/{id}/announcements/{announcementId}", async (
-            Guid                 id,
-            Guid                 announcementId,
-            HttpContext          ctx,
+            Guid id,
+            Guid announcementId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3933,9 +3969,9 @@ public static class TournamentEndpoints
 
         // ── GET /api/tournament-participants/{id} ─────────────────────────────
         app.MapGet("/api/tournament-participants/{id}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -3952,10 +3988,10 @@ public static class TournamentEndpoints
 
         // ── POST /api/disputes ────────────────────────────────────────────────
         app.MapPost("/api/disputes", async (
-            HttpContext                     ctx,
-            IDbConnectionFactory            db,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             Esportra.Core.Alerts.AdminAlertService alertService,
-            CancellationToken               ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3997,7 +4033,7 @@ public static class TournamentEndpoints
                     tournamentId,
                     matchId,
                     teamId,
-                    userId       = userCtx.UserIdGuid,
+                    userId = userCtx.UserIdGuid,
                     title,
                     description,
                     evidenceUrl,
@@ -4018,9 +4054,9 @@ public static class TournamentEndpoints
 
         // ── POST /api/disputes/notify-admins ──────────────────────────────────
         app.MapPost("/api/disputes/notify-admins", async (
-            HttpContext                    ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4033,10 +4069,10 @@ public static class TournamentEndpoints
                            : body.TryGetValue("DisputeId", out did) ? did.GetGuid() : Guid.Empty;
             if (disputeId == Guid.Empty) return Results.BadRequest(new { error = "dispute_id is required" });
 
-            string? type    = body.TryGetValue("type", out var tv) ? tv.GetString() : null;
-            string? title   = body.TryGetValue("title", out var ttl) ? ttl.GetString() : null;
+            string? type = body.TryGetValue("type", out var tv) ? tv.GetString() : null;
+            string? title = body.TryGetValue("title", out var ttl) ? ttl.GetString() : null;
             string? message = body.TryGetValue("message", out var msg) ? msg.GetString() : null;
-            string? link    = body.TryGetValue("link", out var lnk) ? lnk.GetString() : null;
+            string? link = body.TryGetValue("link", out var lnk) ? lnk.GetString() : null;
 
             using var conn = db.CreateConnection();
 
@@ -4065,11 +4101,11 @@ public static class TournamentEndpoints
                 """,
                 new
                 {
-                    adminIds  = adminIds.ToArray(),
-                    type      = type ?? "dispute_filed",
-                    title     = title ?? "🚨 New Dispute Filed",
-                    message   = message ?? "A new dispute requires admin review and resolution.",
-                    link      = link ?? "",
+                    adminIds = adminIds.ToArray(),
+                    type = type ?? "dispute_filed",
+                    title = title ?? "🚨 New Dispute Filed",
+                    message = message ?? "A new dispute requires admin review and resolution.",
+                    link = link ?? "",
                     disputeId,
                 });
             return Results.Ok(new { notified = adminIds.Count });
@@ -4095,21 +4131,21 @@ public static class TournamentEndpoints
     private static void MapMockEndpoints(WebApplication app)
     {
         app.MapPost("/api/tournaments/{id}/mock/generate", async (
-            Guid                 id,
+            Guid id,
             [FromBody] MockGenerateRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            ILoggerFactory       loggerFactory,
-            CancellationToken    ct) =>
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
-            var logger  = loggerFactory.CreateLogger("MockEndpoints");
+            var logger = loggerFactory.CreateLogger("MockEndpoints");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             try
             {
                 using var conn = db.CreateConnection();
-                using var tx   = conn.BeginTransaction();
+                using var tx = conn.BeginTransaction();
 
                 logger.LogInformation("[mock/generate] Fetching tournament {Id}", id);
 
@@ -4120,7 +4156,7 @@ public static class TournamentEndpoints
                 if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                     return Results.Forbid();
 
-                var tStatus  = ((string)tournament.status).ToLowerInvariant();
+                var tStatus = ((string)tournament.status).ToLowerInvariant();
                 var isPublic = (bool)tournament.is_public;
                 logger.LogInformation("[mock/generate] Tournament status={Status} isPublic={IsPublic} format={Format} maxTeams={Max}",
                     tStatus, isPublic, (string)tournament.format, (int)tournament.max_teams);
@@ -4138,7 +4174,7 @@ public static class TournamentEndpoints
                     return Results.Json(MockOperationError(safety.Error, ctx.TraceIdentifier), statusCode: StatusCodes.Status409Conflict);
 
                 var maxTeams = (int)tournament.max_teams;
-                var count    = req.Count.HasValue
+                var count = req.Count.HasValue
                     ? Math.Clamp(req.Count.Value, 2, maxTeams)
                     : maxTeams;
 
@@ -4151,10 +4187,10 @@ public static class TournamentEndpoints
 
                 logger.LogInformation("[mock/generate] Cleared existing mock data, inserting {Count} rows", count);
 
-                var teamSize        = (int)tournament.team_size;
+                var teamSize = (int)tournament.team_size;
                 var participantType = teamSize == 1 ? "solo" : "team";
-                var mockNames       = MockTeamNames.Generate(count);
-                var rows            = mockNames.Select(name =>
+                var mockNames = MockTeamNames.Generate(count);
+                var rows = mockNames.Select(name =>
                 {
                     var mockId = Guid.NewGuid();
                     return new TeamCreationHelper.MockTeamParams(
@@ -4210,20 +4246,20 @@ public static class TournamentEndpoints
         // Clears all mock participants and bracket data derived from them.
         // Tournament settings, stage configs, and real participants are untouched.
         app.MapDelete("/api/tournaments/{id}/mock", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            ILoggerFactory       loggerFactory,
-            CancellationToken    ct) =>
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
-            var logger  = loggerFactory.CreateLogger("MockEndpoints");
+            var logger = loggerFactory.CreateLogger("MockEndpoints");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             try
             {
                 using var conn = db.CreateConnection();
-                using var tx   = conn.BeginTransaction();
+                using var tx = conn.BeginTransaction();
 
                 var organizerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                     "SELECT organizer_id FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
@@ -4443,7 +4479,7 @@ public static class TournamentEndpoints
     private static bool TryParseStorageRef(string receiptRef, out string bucket, out string path)
     {
         bucket = string.Empty;
-        path   = string.Empty;
+        path = string.Empty;
 
         var trimmed = receiptRef.Trim();
         if (string.IsNullOrWhiteSpace(trimmed))
@@ -4464,7 +4500,7 @@ public static class TournamentEndpoints
             return false;
 
         bucket = trimmed[..slash];
-        path   = trimmed[(slash + 1)..];
+        path = trimmed[(slash + 1)..];
         return !string.IsNullOrWhiteSpace(bucket) && !string.IsNullOrWhiteSpace(path);
     }
 
@@ -4474,10 +4510,10 @@ public static class TournamentEndpoints
         return ext switch
         {
             ".jpg" or ".jpeg" => "image/jpeg",
-            ".png"            => "image/png",
-            ".webp"           => "image/webp",
-            ".pdf"            => "application/pdf",
-            _                 => "application/octet-stream",
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            ".pdf" => "application/pdf",
+            _ => "application/octet-stream",
         };
     }
 }
@@ -4485,95 +4521,95 @@ public static class TournamentEndpoints
 // ── Request records ───────────────────────────────────────────────────────────
 
 public sealed record CreateTournamentRequest(
-    string     Name,
-    string     Game,
-    DateTime   StartDate,
-    int        MaxTeams,
-    string?    Description          = null,
-    string?    Slug                 = null,
-    string?    Format               = null,
-    string?    GameMode             = null,
-    int?       TeamSize             = null,
-    decimal?   EntryFee             = null,
-    decimal?   PrizePool            = null,
-    DateTime?  EndDate              = null,
-    DateTime?  RegistrationDeadline = null,
-    string?    Status               = null,
-    string?    BannerUrl            = null,
-    string?    LogoUrl              = null,
-    string?    OrganizationId       = null,
-    string?    VenueId              = null,
-    string?    Region               = null,
-    bool?      IsPublic             = false,
-    bool?      CheckInRequired      = false,
-    DateTime?  CheckInDeadline      = null,
-    bool?      AutoRemoveUnchecked  = false,
-    string?    Rewards              = null,
-    string?    StreamUrl            = null,
-    object?    Settings             = null,
-    List<StageRequest>?  Stages     = null,
-    string?       Rules             = null,
-    List<string>? MapPoolIds        = null,
-    string?    PaymentInstructions  = null,
-    string?    Currency             = null,
-    string?    ServerRegion         = null,
-    string?    TournamentType       = null,
-    int?       ReservedInviteSlots  = null,
-    int?       InviteExpiryDays     = null);
+    string Name,
+    string Game,
+    DateTime StartDate,
+    int MaxTeams,
+    string? Description = null,
+    string? Slug = null,
+    string? Format = null,
+    string? GameMode = null,
+    int? TeamSize = null,
+    decimal? EntryFee = null,
+    decimal? PrizePool = null,
+    DateTime? EndDate = null,
+    DateTime? RegistrationDeadline = null,
+    string? Status = null,
+    string? BannerUrl = null,
+    string? LogoUrl = null,
+    string? OrganizationId = null,
+    string? VenueId = null,
+    string? Region = null,
+    bool? IsPublic = false,
+    bool? CheckInRequired = false,
+    DateTime? CheckInDeadline = null,
+    bool? AutoRemoveUnchecked = false,
+    string? Rewards = null,
+    string? StreamUrl = null,
+    object? Settings = null,
+    List<StageRequest>? Stages = null,
+    string? Rules = null,
+    List<string>? MapPoolIds = null,
+    string? PaymentInstructions = null,
+    string? Currency = null,
+    string? ServerRegion = null,
+    string? TournamentType = null,
+    int? ReservedInviteSlots = null,
+    int? InviteExpiryDays = null);
 
 public sealed record StageRequest(
-    string  Name,
-    string  Format,
-    int?    StageOrder       = null,
-    int?    BestOf           = 1,
-    int?    Capacity         = null,
-    int?    AdvancementCount = null);
+    string Name,
+    string Format,
+    int? StageOrder = null,
+    int? BestOf = 1,
+    int? Capacity = null,
+    int? AdvancementCount = null);
 
 public sealed record UpdateTournamentRequest(
-    string?   Name                 = null,
-    string?   Description          = null,
-    string?   Game                 = null,
-    string?   Format               = null,
-    string?   GameMode             = null,
-    string?   Status               = null,
-    int?      MaxTeams             = null,
-    int?      TeamSize             = null,
-    decimal?  EntryFee             = null,
-    decimal?  PrizePool            = null,
-    DateTime? StartDate            = null,
-    DateTime? EndDate              = null,
+    string? Name = null,
+    string? Description = null,
+    string? Game = null,
+    string? Format = null,
+    string? GameMode = null,
+    string? Status = null,
+    int? MaxTeams = null,
+    int? TeamSize = null,
+    decimal? EntryFee = null,
+    decimal? PrizePool = null,
+    DateTime? StartDate = null,
+    DateTime? EndDate = null,
     DateTime? RegistrationDeadline = null,
-    string?   BannerUrl            = null,
-    string?   LogoUrl              = null,
-    string?   Region               = null,
-    bool?     IsPublic             = null,
-    bool?     CheckInRequired      = null,
-    DateTime? CheckInDeadline      = null,
-    string?   Rewards              = null,
-    string?   StreamUrl            = null,
-    string?   Rules                = null,
-    DateTime? DeletedAt            = null,
-    bool      ClearDeletedAt       = false,
-    object?   Settings             = null,
-    string?   PaymentInstructions  = null,
-    string?   Currency             = null,
-    string?   WinnerTeamName       = null,
-    int?      ReservedInviteSlots  = null,
-    int?      InviteExpiryDays     = null);
+    string? BannerUrl = null,
+    string? LogoUrl = null,
+    string? Region = null,
+    bool? IsPublic = null,
+    bool? CheckInRequired = null,
+    DateTime? CheckInDeadline = null,
+    string? Rewards = null,
+    string? StreamUrl = null,
+    string? Rules = null,
+    DateTime? DeletedAt = null,
+    bool ClearDeletedAt = false,
+    object? Settings = null,
+    string? PaymentInstructions = null,
+    string? Currency = null,
+    string? WinnerTeamName = null,
+    int? ReservedInviteSlots = null,
+    int? InviteExpiryDays = null);
 
 public sealed record RegisterTournamentRequest(
-    string? TeamId            = null,
-    string? ParticipantType   = null,
-    string? TeamCaptainId     = null,
-    string? TeamName          = null,
-    string? TeamMembers       = null,
-    string? RosterLineup      = null,
-    string? RosterId          = null,
-    string? RosterName        = null,
-    string? TeamContactEmail  = null,
-    string? Status            = null,
-    decimal? EntryFeeAmount   = null,
-    bool?   EntryFeePaid      = null,
+    string? TeamId = null,
+    string? ParticipantType = null,
+    string? TeamCaptainId = null,
+    string? TeamName = null,
+    string? TeamMembers = null,
+    string? RosterLineup = null,
+    string? RosterId = null,
+    string? RosterName = null,
+    string? TeamContactEmail = null,
+    string? Status = null,
+    decimal? EntryFeeAmount = null,
+    bool? EntryFeePaid = null,
     string? PaymentReceiptUrl = null);
 public sealed record UpdateBannerRequest(string? Url);
 public sealed record PaymentRejectionRequest(string? Reason = null);
@@ -4597,29 +4633,29 @@ public sealed record AddMapToPoolRequest(Guid MapId);
 public sealed record CreateAnnouncementRequest(string Title, string Content);
 public sealed record UpdateAnnouncementRequest(string? Title = null, string? Content = null);
 public sealed record CreateDisputeRequest(
-    Guid    TournamentId,
-    string  Title,
-    string  Description,
-    Guid?   MatchId     = null,
-    Guid?   TeamId      = null,
+    Guid TournamentId,
+    string Title,
+    string Description,
+    Guid? MatchId = null,
+    Guid? TeamId = null,
     string? EvidenceUrl = null,
-    string? Reason      = null);
+    string? Reason = null);
 public sealed record NotifyAdminsRequest(
     Guid DisputeId,
     string? Message = null,
-    string? Type    = null,
-    string? Title   = null,
-    string? Link    = null);
+    string? Type = null,
+    string? Title = null,
+    string? Link = null);
 
 // ── Tournament Staff request records ─────────────────────────────────────────
 
 public sealed record InviteTournamentStaffRequest(
-    string    UserEmail,
-    string    Role,
+    string UserEmail,
+    string Role,
     string[]? Permissions = null);
 
 public sealed record UpdateTournamentStaffRequest(
-    string    Role,
+    string Role,
     string[]? Permissions = null);
 
 public sealed record RespondToStaffInviteRequest(bool Accept);
@@ -4629,11 +4665,11 @@ public sealed record RespondToStaffInviteRequest(bool Accept);
 public sealed record BRGameDataRequest(JsonElement Games);
 
 public sealed record BRSubmitEvidenceRequest(
-    int     GameNumber,
-    string  TeamId,
-    string  ImageUrl,
-    int?    Placement = null,
-    int?    Kills     = null);
+    int GameNumber,
+    string TeamId,
+    string ImageUrl,
+    int? Placement = null,
+    int? Kills = null);
 
 public sealed record MockGenerateRequest(int? Count = null);
 
@@ -4680,9 +4716,9 @@ internal static class MockTeamNames
 
     public static List<string> Generate(int count)
     {
-        var pool   = _pool.ToList();
+        var pool = _pool.ToList();
         var result = new List<string>(count);
-        var rng    = Random.Shared;
+        var rng = Random.Shared;
 
         while (result.Count < count)
         {

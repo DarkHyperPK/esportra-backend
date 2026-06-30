@@ -11,8 +11,8 @@ public static class VetoSequences
     public sealed record VetoGameConfig(string Game, int MapPoolSize, Bo1Style Bo1Style);
 
     private static readonly VetoGameConfig ValorantConfig = new("valorant", 7, Bo1Style.BanPick);
-    private static readonly VetoGameConfig Cs2Config       = new("cs2", 7, Bo1Style.PureBan);
-    private static readonly VetoGameConfig R6Config        = new("r6s", 9, Bo1Style.PureBan);
+    private static readonly VetoGameConfig Cs2Config = new("cs2", 7, Bo1Style.PureBan);
+    private static readonly VetoGameConfig R6Config = new("r6s", 9, Bo1Style.PureBan);
 
     /// <summary>Returns game-specific pool size and BO1 style.</summary>
     public static VetoGameConfig GetGameConfig(string game)

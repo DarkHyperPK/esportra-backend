@@ -35,7 +35,7 @@ public sealed class BracketHub(IDbConnectionFactory db, ILogger<BracketHub> logg
     public async Task LeaveTournament(string tournamentId) =>
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, TournamentGroup(tournamentId));
 
-    public static string BracketGroup(string versionId)    => $"bracket:{versionId}";
+    public static string BracketGroup(string versionId) => $"bracket:{versionId}";
     public static string TournamentGroup(string tournamentId) => $"tournament:{tournamentId}";
 }
 

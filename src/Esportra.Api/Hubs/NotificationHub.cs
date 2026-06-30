@@ -16,7 +16,7 @@ public sealed class NotificationHub : Hub
 
     public NotificationHub(IDbConnectionFactory db, ILogger<NotificationHub> logger)
     {
-        _db     = db;
+        _db = db;
         _logger = logger;
     }
 
@@ -76,17 +76,17 @@ public sealed class NotificationHub : Hub
 public static class NotificationHubEvents
 {
     /// <summary>A new notification was created for this user.</summary>
-    public const string NewNotification    = "NewNotification";
+    public const string NewNotification = "NewNotification";
 
     /// <summary>A specific notification was marked as read (from another tab).</summary>
-    public const string NotificationRead   = "NotificationRead";
+    public const string NotificationRead = "NotificationRead";
 
     /// <summary>All notifications were marked as read (from another tab).</summary>
-    public const string AllRead            = "AllRead";
+    public const string AllRead = "AllRead";
 
     /// <summary>Team invite received.</summary>
-    public const string TeamInvite         = "TeamInvite";
+    public const string TeamInvite = "TeamInvite";
 
     /// <summary>Tournament status changed for a tournament the user is in.</summary>
-    public const string TournamentUpdate   = "TournamentUpdate";
+    public const string TournamentUpdate = "TournamentUpdate";
 }

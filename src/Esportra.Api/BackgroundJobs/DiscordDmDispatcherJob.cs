@@ -18,7 +18,7 @@ public sealed class DiscordDmDispatcherJob : BackgroundService
     public DiscordDmDispatcherJob(IServiceProvider services, ILogger<DiscordDmDispatcherJob> logger)
     {
         _services = services;
-        _logger   = logger;
+        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

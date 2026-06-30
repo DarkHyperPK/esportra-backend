@@ -18,7 +18,7 @@ public sealed class ChatHub : Hub
 
     public ChatHub(IDbConnectionFactory db, ILogger<ChatHub> logger)
     {
-        _db     = db;
+        _db = db;
         _logger = logger;
     }
 
@@ -96,11 +96,11 @@ public sealed class ChatHub : Hub
 
             var message = await conn.QuerySingleAsync<MessageDto>(sql, new
             {
-                MatchId    = Guid.Parse(matchId),
-                SenderId   = Guid.Parse(userId),
+                MatchId = Guid.Parse(matchId),
+                SenderId = Guid.Parse(userId),
                 SenderName = username,
-                TeamId     = competitorId,
-                Content    = content.Trim(),
+                TeamId = competitorId,
+                Content = content.Trim(),
                 IsOrganizer = isOrganizer,
             });
 
@@ -167,21 +167,21 @@ public sealed class ChatHub : Hub
 // ── DTO ───────────────────────────────────────────────────────────────────────
 
 public sealed record MessageDto(
-    string   Id,
-    string   MatchId,
-    string   SenderId,
-    string   SenderName,
-    string?  TeamId,
-    string   Content,
-    string   MessageType,
+    string Id,
+    string MatchId,
+    string SenderId,
+    string SenderName,
+    string? TeamId,
+    string Content,
+    string MessageType,
     DateTime CreatedAt,
-    bool     IsOrganizer);
+    bool IsOrganizer);
 
 /// <summary>Events broadcast to chat group clients.</summary>
 public static class ChatHubEvents
 {
     public const string MessageReceived = "MessageReceived";
-    public const string TypingStart     = "TypingStart";
-    public const string TypingStop      = "TypingStop";
-    public const string Error           = "Error";
+    public const string TypingStart = "TypingStart";
+    public const string TypingStop = "TypingStop";
+    public const string Error = "Error";
 }

@@ -29,14 +29,14 @@ public static class TeamEndpoints
         // ── GET /api/teams ──────────────────────────────────────────────────
         // List/search teams with optional filters (ids, owner_id).
         app.MapGet("/api/teams", async (
-            string?              ids,
-            string?              owner_id,
-            string?              game,
-            string?              q,
-            int                  limit  = 50,
-            int                  offset = 0,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            string? ids,
+            string? owner_id,
+            string? game,
+            string? q,
+            int limit = 50,
+            int offset = 0,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -90,9 +90,9 @@ public static class TeamEndpoints
         // Returns all teams where the user is a member or owner.
         // Single query replacing the previous 3-query + N RPC calls pattern.
         app.MapGet("/api/teams/me", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -134,9 +134,9 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id} ───────────────────────────────────────────────
         app.MapGet("/api/teams/{id:guid}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -171,15 +171,15 @@ public static class TeamEndpoints
         // ── POST /api/teams ───────────────────────────────────────────────────
         app.MapPost("/api/teams", async (
             [FromBody] CreateTeamRequest req,
-            HttpContext                  ctx,
-            IDbConnectionFactory        db,
-            CancellationToken           ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            using var tx   = conn.BeginTransaction();
+            using var tx = conn.BeginTransaction();
 
             try
             {
@@ -195,13 +195,13 @@ public static class TeamEndpoints
                     """,
                     new
                     {
-                        name        = req.Name,
-                        tag         = req.Tag,
-                        game        = req.Game ?? "General",
-                        gameFormat  = req.GameFormat,
-                        logoUrl     = req.LogoUrl,
+                        name = req.Name,
+                        tag = req.Tag,
+                        game = req.Game ?? "General",
+                        gameFormat = req.GameFormat,
+                        logoUrl = req.LogoUrl,
                         description = req.Description,
-                        ownerId     = userCtx.UserIdGuid,
+                        ownerId = userCtx.UserIdGuid,
                         countryCode = req.CountryCode,
                     },
                     tx);
@@ -241,11 +241,11 @@ public static class TeamEndpoints
 
         // ── PUT /api/teams/{id} ───────────────────────────────────────────────
         app.MapPut("/api/teams/{id}", async (
-            Guid                     id,
+            Guid id,
             [FromBody] UpdateTeamRequest req,
-            HttpContext               ctx,
-            IDbConnectionFactory     db,
-            CancellationToken        ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -271,14 +271,14 @@ public static class TeamEndpoints
                 new
                 {
                     id,
-                    name        = req.Name,
-                    tag         = req.Tag,
+                    name = req.Name,
+                    tag = req.Tag,
                     description = req.Description,
-                    logoUrl     = req.LogoUrl,
-                    bannerUrl   = req.BannerUrl,
-                    websiteUrl  = req.WebsiteUrl,
+                    logoUrl = req.LogoUrl,
+                    bannerUrl = req.BannerUrl,
+                    websiteUrl = req.WebsiteUrl,
                     countryCode = req.CountryCode,
-                    removeLogo  = req.RemoveLogo,
+                    removeLogo = req.RemoveLogo,
                     removeBanner = req.RemoveBanner,
                 });
 
@@ -287,10 +287,10 @@ public static class TeamEndpoints
 
         // ── DELETE /api/teams/{id} — disband (cascade in a transaction) ───────
         app.MapDelete("/api/teams/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -303,9 +303,9 @@ public static class TeamEndpoints
             {
                 // Cascade: invitations → members → tournament registrations → team
                 await conn.ExecuteAsync("DELETE FROM team_invitations WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id",     new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id", new { id }, tx);
                 await conn.ExecuteAsync("DELETE FROM tournament_participants WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id",                 new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id", new { id }, tx);
                 tx.Commit();
             }
             catch
@@ -319,10 +319,10 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/leave ────────────────────────────────────────
         app.MapPost("/api/teams/{id}/leave", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -344,11 +344,11 @@ public static class TeamEndpoints
 
         // ── DELETE /api/teams/{id}/members/{userId} ───────────────────────────
         app.MapDelete("/api/teams/{id}/members/{userId}", async (
-            Guid                 id,
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid id,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -366,11 +366,11 @@ public static class TeamEndpoints
         // ── POST /api/teams/{id}/transfer-captain ─────────────────────────────
         // Atomic: demote old captain → promote new → transfer team.owner_id → update registrations
         app.MapPost("/api/teams/{id}/transfer-captain", async (
-            Guid                              id,
-            [FromBody] TransferCaptainRequest  req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            Guid id,
+            [FromBody] TransferCaptainRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -422,12 +422,12 @@ public static class TeamEndpoints
 
         // ── PUT /api/teams/{id}/members/{userId}/role ─────────────────────────
         app.MapPut("/api/teams/{id}/members/{userId}/role", async (
-            Guid                        id,
-            Guid                        userId,
+            Guid id,
+            Guid userId,
             [FromBody] ChangeRoleRequest req,
-            HttpContext                  ctx,
-            IDbConnectionFactory        db,
-            CancellationToken           ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -467,11 +467,11 @@ public static class TeamEndpoints
 
         // ── PUT /api/teams/{id}/members/order ─────────────────────────────────
         app.MapPut("/api/teams/{id}/members/order", async (
-            Guid                             id,
+            Guid id,
             [FromBody] ReorderMembersRequest req,
-            HttpContext                      ctx,
-            IDbConnectionFactory            db,
-            CancellationToken               ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -500,12 +500,12 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/invite ───────────────────────────────────────
         app.MapPost("/api/teams/{id}/invite", async (
-            Guid                        id,
+            Guid id,
             [FromBody] TeamInviteRequest req,
-            HttpContext                  ctx,
-            IDbConnectionFactory        db,
-            IConfiguration              config,
-            CancellationToken           ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -573,7 +573,8 @@ public static class TeamEndpoints
                 VALUES (@userId, 'team_invite', @title,
                         @msg, '/teams', @data::jsonb, FALSE)
                 """,
-                new {
+                new
+                {
                     userId = reqUserIdGuid,
                     title = $"🤝 You're Invited to {inviteTeamName ?? "a Team"}!",
                     msg = $"You've been recruited to join {inviteTeamName ?? "a team"}. Accept the invite and jump into the action!",
@@ -607,9 +608,9 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/me/invites ─────────────────────────────────────────
         app.MapGet("/api/teams/me/invites", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -633,17 +634,17 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/invites/{inviteId}/accept ─────────────────────────
         app.MapPost("/api/teams/invites/{inviteId}/accept", async (
-            Guid                 inviteId,
-            HttpContext          ctx,
+            Guid inviteId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   catalog,
-            CancellationToken    ct) =>
+            GameCatalogService catalog,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            using var tx   = conn.BeginTransaction();
+            using var tx = conn.BeginTransaction();
 
             try
             {
@@ -724,10 +725,10 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/invites/{inviteId}/decline ────────────────────────
         app.MapPost("/api/teams/invites/{inviteId}/decline", async (
-            Guid                 inviteId,
-            HttpContext          ctx,
+            Guid inviteId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -742,10 +743,10 @@ public static class TeamEndpoints
 
         // ── DELETE /api/teams/invites/{inviteId} — revoke (captain only) ─────
         app.MapDelete("/api/teams/invites/{inviteId}", async (
-            Guid                 inviteId,
-            HttpContext          ctx,
+            Guid inviteId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -765,9 +766,9 @@ public static class TeamEndpoints
         // ── GET /api/profiles/verified ────────────────────────────────────────
         // Used by the team invite modal to search for verified players.
         app.MapGet("/api/profiles/verified", async (
-            string?              q,
+            string? q,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var users = await conn.QueryAsync<dynamic>(
@@ -788,8 +789,8 @@ public static class TeamEndpoints
         // Batch team lookup by IDs
         app.MapPost("/api/teams/batch", async (
             [FromBody] TeamBatchRequest req,
-            IDbConnectionFactory        db,
-            CancellationToken           ct) =>
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             if (req.Ids.Count == 0) return Results.Ok(Array.Empty<object>());
@@ -808,7 +809,7 @@ public static class TeamEndpoints
     {
         // ── GET /api/teams/{id}/stats ─────────────────────────────────────────
         app.MapGet("/api/teams/{id}/stats", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -833,7 +834,7 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/members/detailed ─────────────────────────────
         app.MapGet("/api/teams/{id}/members/detailed", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -855,8 +856,8 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/invites ───────────────────────────────────────
         app.MapGet("/api/teams/{id}/invites", async (
-            Guid                 id,
-            HttpContext           ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -880,7 +881,7 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/me/pending-invites ────────────────────────────────
         app.MapGet("/api/teams/me/pending-invites", async (
-            HttpContext           ctx,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -903,7 +904,7 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/rosters ───────────────────────────────────────
         app.MapGet("/api/teams/{id}/rosters", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -934,11 +935,11 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/rosters ──────────────────────────────────────
         app.MapPost("/api/teams/{id}/rosters", async (
-            Guid                      id,
+            Guid id,
             [FromBody] CreateRosterRequest req,
-            HttpContext               ctx,
-            IDbConnectionFactory      db,
-            GameCatalogService        catalog) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -996,11 +997,11 @@ public static class TeamEndpoints
 
         // ── PUT /api/teams/{id}/rosters/{rosterId} ────────────────────────────
         app.MapPut("/api/teams/{id}/rosters/{rosterId}", async (
-            Guid                      id,
-            Guid                      rosterId,
+            Guid id,
+            Guid rosterId,
             [FromBody] UpdateRosterRequest req,
-            HttpContext               ctx,
-            IDbConnectionFactory      db) =>
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1016,9 +1017,9 @@ public static class TeamEndpoints
 
         // ── DELETE /api/teams/{id}/rosters/{rosterId} ─────────────────────────
         app.MapDelete("/api/teams/{id}/rosters/{rosterId}", async (
-            Guid                 id,
-            Guid                 rosterId,
-            HttpContext           ctx,
+            Guid id,
+            Guid rosterId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1035,10 +1036,10 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/rosters/{rosterId}/members ────────────────────
         app.MapGet("/api/teams/{id}/rosters/{rosterId}/members", async (
-            Guid                 id,
-            Guid                 rosterId,
+            Guid id,
+            Guid rosterId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -1061,12 +1062,12 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/members ───────────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/members", async (
-            Guid                            id,
-            Guid                            rosterId,
-            [FromBody] RosterMemberRequest  req,
-            HttpContext                     ctx,
-            IDbConnectionFactory            db,
-            GameCatalogService              catalog) =>
+            Guid id,
+            Guid rosterId,
+            [FromBody] RosterMemberRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1127,10 +1128,10 @@ public static class TeamEndpoints
 
         // ── DELETE /api/teams/{id}/rosters/{rosterId}/members/{userId} ────────
         app.MapDelete("/api/teams/{id}/rosters/{rosterId}/members/{userId}", async (
-            Guid                 id,
-            Guid                 rosterId,
-            Guid                 userId,
-            HttpContext           ctx,
+            Guid id,
+            Guid rosterId,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1153,13 +1154,13 @@ public static class TeamEndpoints
 
         // ── PUT /api/teams/{id}/rosters/{rosterId}/members/{userId}/starter ───
         app.MapPut("/api/teams/{id}/rosters/{rosterId}/members/{userId}/starter", async (
-            Guid                           id,
-            Guid                           rosterId,
-            Guid                           userId,
+            Guid id,
+            Guid rosterId,
+            Guid userId,
             [FromBody] ToggleStarterRequest req,
-            HttpContext                    ctx,
-            IDbConnectionFactory           db,
-            GameCatalogService             catalog) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1192,13 +1193,13 @@ public static class TeamEndpoints
 
         // ── PUT /api/teams/{id}/rosters/{rosterId}/members/{userId}/role ──────
         app.MapPut("/api/teams/{id}/rosters/{rosterId}/members/{userId}/role", async (
-            Guid                            id,
-            Guid                            rosterId,
-            Guid                            userId,
+            Guid id,
+            Guid rosterId,
+            Guid userId,
             [FromBody] UpdateRosterRoleRequest req,
-            HttpContext                     ctx,
-            IDbConnectionFactory            db,
-            GameCatalogService              catalog) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService catalog) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1244,11 +1245,11 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/invite ────────────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/invite", async (
-            Guid                         id,
-            Guid                         rosterId,
+            Guid id,
+            Guid rosterId,
             [FromBody] RosterInviteRequest req,
-            HttpContext                  ctx,
-            IDbConnectionFactory         db,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             IHubContext<NotificationHub> hub) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1311,10 +1312,10 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/announce ──────────────────────────────────────
         app.MapPost("/api/teams/{id}/announce", async (
-            Guid                        id,
-            [FromBody] AnnounceRequest  req,
-            HttpContext                 ctx,
-            IDbConnectionFactory        db,
+            Guid id,
+            [FromBody] AnnounceRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             IHubContext<NotificationHub> hub) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1351,7 +1352,7 @@ public static class TeamEndpoints
 
         // ── GET /api/teams/{id}/registrations ─────────────────────────────────
         app.MapGet("/api/teams/{id}/registrations", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -1373,10 +1374,10 @@ public static class TeamEndpoints
 
         // ── PUT /api/profiles/{id}/card-image ─────────────────────────────────
         app.MapPut("/api/profiles/{id}/card-image", async (
-            Guid                        id,
+            Guid id,
             [FromBody] CardImageRequest req,
-            HttpContext                 ctx,
-            IDbConnectionFactory        db) =>
+            HttpContext ctx,
+            IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1394,12 +1395,12 @@ public static class TeamEndpoints
 
         // ── POST /api/teams/{id}/rosters/{rosterId}/invite-batch ──────────────
         app.MapPost("/api/teams/{id}/rosters/{rosterId}/invite-batch", async (
-            Guid                               id,
-            Guid                               rosterId,
+            Guid id,
+            Guid rosterId,
             [FromBody] BatchRosterInviteRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory               db,
-            IHubContext<NotificationHub>        hub) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> hub) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1441,17 +1442,17 @@ public static class TeamEndpoints
         // ── GET /api/teams/my-captain-teams ──────────────────────────────────
         // Returns real teams where the current user is captain (excludes solo/mock adapters).
         app.MapGet("/api/teams/my-captain-teams", async (
-            HttpContext          ctx,
-            string?              game,
-            int                  limit,
-            int                  offset,
+            HttpContext ctx,
+            string? game,
+            int limit,
+            int offset,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var pageLimit  = Math.Clamp(limit <= 0 ? 50 : limit, 1, 100);
+            var pageLimit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 100);
             var pageOffset = Math.Max(offset, 0);
 
             using var conn = db.CreateConnection();
@@ -1475,9 +1476,9 @@ public static class TeamEndpoints
         // ── GET /api/teams/captains ───────────────────────────────────────────
         // Returns teams with their captain's profile info
         app.MapGet("/api/teams/captains", async (
-            string?              game,
+            string? game,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -1499,18 +1500,18 @@ public static class TeamEndpoints
         // Returns team members for a given user_id or team_id
         // Supports: ?teamId=, ?userId=, ?team_ids=a,b&user_id=x&roles=captain,owner&is_active=true
         app.MapGet("/api/teams/members", async (
-            HttpContext           ctx,
-            Guid?                userId,
-            Guid?                teamId,
+            HttpContext ctx,
+            Guid? userId,
+            Guid? teamId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
             // ── Multi-team query (team_ids + user_id + roles + is_active) ──
             var teamIdsParam = ctx.Request.Query["team_ids"].FirstOrDefault();
-            var userIdParam  = ctx.Request.Query["user_id"].FirstOrDefault();
-            var rolesParam   = ctx.Request.Query["roles"].FirstOrDefault();
+            var userIdParam = ctx.Request.Query["user_id"].FirstOrDefault();
+            var rolesParam = ctx.Request.Query["roles"].FirstOrDefault();
 
             if (!string.IsNullOrEmpty(teamIdsParam))
             {
@@ -1592,9 +1593,9 @@ public static class TeamEndpoints
         // ── GET /api/teams/{id}/captain ───────────────────────────────────────
         // Returns the current captain of a team
         app.MapGet("/api/teams/{id}/captain", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var captain = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1665,11 +1666,11 @@ public static class TeamEndpoints
 // ── Request records ───────────────────────────────────────────────────────────
 
 public sealed record CreateTeamRequest(
-    string  Name,
-    string  Tag,
-    string? Game        = "General",
-    string? GameFormat  = "squad",
-    string? LogoUrl     = null,
+    string Name,
+    string Tag,
+    string? Game = "General",
+    string? GameFormat = "squad",
+    string? LogoUrl = null,
     string? Description = null,
     string? CountryCode = null,
     List<TeamMemberSeed>? Members = null);
@@ -1677,15 +1678,15 @@ public sealed record CreateTeamRequest(
 public sealed record TeamMemberSeed(string UserId, string Role = "member");
 
 public sealed record UpdateTeamRequest(
-    string? Name        = null,
-    string? Tag         = null,
+    string? Name = null,
+    string? Tag = null,
     string? Description = null,
-    string? LogoUrl     = null,
-    string? BannerUrl   = null,
-    string? WebsiteUrl  = null,
+    string? LogoUrl = null,
+    string? BannerUrl = null,
+    string? WebsiteUrl = null,
     string? CountryCode = null,
-    bool RemoveLogo     = false,
-    bool RemoveBanner   = false);
+    bool RemoveLogo = false,
+    bool RemoveBanner = false);
 
 public sealed record TransferCaptainRequest(string NewCaptainId);
 

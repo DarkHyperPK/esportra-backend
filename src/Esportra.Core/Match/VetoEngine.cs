@@ -16,20 +16,20 @@ public static class VetoEngine
 
         return veto.CurrentAction switch
         {
-            "ban"       => VetoState.Ban,
-            "pick"      => VetoState.Pick,
+            "ban" => VetoState.Ban,
+            "pick" => VetoState.Pick,
             "pick_side" => VetoState.PickSide,
-            _           => VetoState.Init,
+            _ => VetoState.Init,
         };
     }
 
     // ── Transition validation ─────────────────────────────────────────────────
 
     public static VetoTransitionResult ValidateTransition(
-        VetoState  state,
-        VetoEvent  ev,
+        VetoState state,
+        VetoEvent ev,
         TurnContext context,
-        string?    mapId = null,
+        string? mapId = null,
         MatchMapVeto? veto = null)
     {
         // RESET is organizer-only, always valid regardless of state
@@ -44,8 +44,8 @@ public static class VetoEngine
         return ev switch
         {
             VetoEvent.SetBo =>
-                state != VetoState.Init  ? new(false, "INVALID_STATE") :
-                !context.IsOrganizer     ? new(false, "FORBIDDEN") :
+                state != VetoState.Init ? new(false, "INVALID_STATE") :
+                !context.IsOrganizer ? new(false, "FORBIDDEN") :
                 new(true),
 
             VetoEvent.BanMap or VetoEvent.PickMap or VetoEvent.PickSide =>
@@ -66,8 +66,8 @@ public static class VetoEngine
             return new(false, "NOT_YOUR_TURN");
 
         // State must match event
-        if (ev == VetoEvent.BanMap  && state != VetoState.Ban)      return new(false, "INVALID_STATE");
-        if (ev == VetoEvent.PickMap && state != VetoState.Pick)     return new(false, "INVALID_STATE");
+        if (ev == VetoEvent.BanMap && state != VetoState.Ban) return new(false, "INVALID_STATE");
+        if (ev == VetoEvent.PickMap && state != VetoState.Pick) return new(false, "INVALID_STATE");
         if (ev == VetoEvent.PickSide && state != VetoState.PickSide) return new(false, "INVALID_STATE");
 
         // Map-level invariants

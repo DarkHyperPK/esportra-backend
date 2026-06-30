@@ -48,7 +48,7 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
     ?? throw new InvalidOperationException("Supabase:JwtSecret is required.");
 var jwtAudience = builder.Configuration["Supabase:JwtAudience"] ?? "authenticated";
-var jwtIssuer   = builder.Configuration["Supabase:JwtIssuer"];
+var jwtIssuer = builder.Configuration["Supabase:JwtIssuer"];
 var validateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer);
 
 // ── Authentication — Supabase JWT ─────────────────────────────────────────────
@@ -59,13 +59,13 @@ builder.Services
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-            ValidateIssuer           = validateIssuer,
-            ValidIssuer              = validateIssuer ? jwtIssuer : null,
-            ValidateAudience         = true,
-            ValidAudience            = jwtAudience,
-            ValidateLifetime         = true,
-            ClockSkew                = TimeSpan.Zero,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+            ValidateIssuer = validateIssuer,
+            ValidIssuer = validateIssuer ? jwtIssuer : null,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
         };
 
         // Supabase JWT via Authorization header (standard) or query string (SignalR WS)
@@ -153,7 +153,7 @@ static ConfigurationOptions BuildRedisConfig(IConfiguration config)
             var parts = uri.UserInfo.Split(':', 2);
             if (parts.Length == 2)
             {
-                opts.User     = Uri.UnescapeDataString(parts[0]);
+                opts.User = Uri.UnescapeDataString(parts[0]);
                 opts.Password = Uri.UnescapeDataString(parts[1]);
             }
             else
@@ -176,10 +176,10 @@ static ConfigurationOptions BuildRedisConfig(IConfiguration config)
 
 // AbortOnConnectFail=false means startup never blocks; SE.Redis reconnects automatically
 // whenever Redis becomes available after a transient outage.
-redisConfig.AbortOnConnectFail   = false;
+redisConfig.AbortOnConnectFail = false;
 redisConfig.ReconnectRetryPolicy = new LinearRetry(5_000);
-redisConfig.ConnectTimeout       = 5_000;
-redisConfig.SyncTimeout          = 3_000;
+redisConfig.ConnectTimeout = 5_000;
+redisConfig.SyncTimeout = 3_000;
 builder.Services.AddSingleton<IConnectionMultiplexer>(
     ConnectionMultiplexer.Connect(redisConfig));
 
@@ -195,14 +195,14 @@ builder.Services.AddHybridCache(opts =>
 {
     opts.DefaultEntryOptions = new HybridCacheEntryOptions
     {
-        Expiration           = TimeSpan.FromSeconds(60),
+        Expiration = TimeSpan.FromSeconds(60),
         LocalCacheExpiration = TimeSpan.FromSeconds(30),
     };
 });
 
 // ── Health checks ─────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks()
-    .AddCheck<RedisHealthCheck>("redis",    tags: ["ready"])
+    .AddCheck<RedisHealthCheck>("redis", tags: ["ready"])
     .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
 
 // ── SignalR ────────────────────────────────────────────────────────────────────
@@ -430,8 +430,8 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
     ForwardLimit = 1,
     // Trust Docker bridge network and typical Coolify/Traefik subnets
-    KnownNetworks  = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12) },
-    KnownProxies   = { },
+    KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12) },
+    KnownProxies = { },
 });
 
 // ── Health probes — mapped before middleware so they always respond ────────────
@@ -439,23 +439,23 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 // /health/ready — readiness: are Postgres + Redis reachable? (Coolify startup probe)
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
-    Predicate      = _ => false,     // no checks — pure liveness ping
+    Predicate = _ => false,     // no checks — pure liveness ping
     ResponseWriter = HealthResponseWriter.WriteJson,
 }).AllowAnonymous();
 
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
-    Predicate      = c => c.Tags.Contains("ready"),
+    Predicate = c => c.Tags.Contains("ready"),
     ResponseWriter = HealthResponseWriter.WriteJson,
 }).AllowAnonymous();
 
 // Legacy /health kept for backwards-compat with existing Coolify health check config
 app.MapGet("/health", () => Results.Ok(new
 {
-    status    = "healthy",
+    status = "healthy",
     timestamp = DateTime.UtcNow,
-    version   = "1.0.0-phase4",
-    build     = "20260328-rbac-fix",
+    version = "1.0.0-phase4",
+    build = "20260328-rbac-fix",
 }));
 
 app.UseRouting();
@@ -498,6 +498,7 @@ app.UseGhostMode();        // Validate and audit short-lived impersonation token
 app.UseAdminMutationAudit(); // Pre-audit destructive admin mutations before endpoint execution
 app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
+app.UseAuthorizationEnforcement(); // Route-level auth (AUDIT MODE until config flip)
 
 // ── JWT validation probe───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>

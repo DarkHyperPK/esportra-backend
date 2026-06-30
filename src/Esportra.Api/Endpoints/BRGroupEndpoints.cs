@@ -28,8 +28,8 @@ public static partial class BRGroupEndpoints
         // ── GET /api/stages/{stageId}/br/groups ─────────────────────────────
         // List all groups for a BR stage with team counts. Public endpoint.
         app.MapGet("/api/stages/{stageId}/br/groups", async (
-            Guid              stageId,
-            HttpContext        ctx,
+            Guid stageId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -54,9 +54,9 @@ public static partial class BRGroupEndpoints
         // group rosters when includeTeams=true.
         // Replaces N×2 parallel fetches from the organizer UI group section.
         app.MapGet("/api/stages/{stageId}/br/groups/detail", async (
-            Guid              stageId,
+            Guid stageId,
             [FromQuery] bool? includeTeams,
-            HttpContext        ctx,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -115,7 +115,7 @@ public static partial class BRGroupEndpoints
 
             using var multi = await conn.QueryMultipleAsync(sql, new { stageId });
 
-            var groups    = (await multi.ReadAsync<dynamic>()).ToList();
+            var groups = (await multi.ReadAsync<dynamic>()).ToList();
             var hasRounds = await multi.ReadSingleAsync<bool>();
 
             var teamsByGroup = new Dictionary<string, List<object>>();
@@ -133,11 +133,11 @@ public static partial class BRGroupEndpoints
 
                     list.Add(new
                     {
-                        team_id    = (Guid)row.team_id,
-                        team_name  = (string?)row.team_name,
-                        logo_url   = (string?)row.logo_url,
+                        team_id = (Guid)row.team_id,
+                        team_name = (string?)row.team_name,
+                        logo_url = (string?)row.logo_url,
                         seed_order = Convert.ToInt32(row.seed_order),
-                        assigned_at= (DateTime?)row.assigned_at,
+                        assigned_at = (DateTime?)row.assigned_at,
                     });
                 }
             }
@@ -148,9 +148,9 @@ public static partial class BRGroupEndpoints
         // ── POST /api/stages/{stageId}/br/groups ────────────────────────────
         // Create groups for a stage. Deletes existing groups first (fresh setup).
         app.MapPost("/api/stages/{stageId}/br/groups", async (
-            Guid                stageId,
+            Guid stageId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -164,8 +164,8 @@ public static partial class BRGroupEndpoints
                 return Results.Forbid();
 
             var groupCount = body.TryGetProperty("groupCount", out var gc) && gc.TryGetInt32(out var gcv) ? gcv : 0;
-            var lobbySize  = body.TryGetProperty("lobbySize", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 20;
-            var force      = body.TryGetProperty("force", out var fp) && fp.ValueKind == JsonValueKind.True;
+            var lobbySize = body.TryGetProperty("lobbySize", out var ls) && ls.TryGetInt32(out var lsv) ? lsv : 20;
+            var force = body.TryGetProperty("force", out var fp) && fp.ValueKind == JsonValueKind.True;
 
             if (groupCount <= 0 || groupCount > 128)
                 return Results.BadRequest(new { error = "groupCount must be between 1 and 128." });
@@ -224,9 +224,9 @@ public static partial class BRGroupEndpoints
         // ── DELETE /api/stages/{stageId}/br/groups/{groupId} ────────────────
         // Delete a single group. FK CASCADE handles teams/rounds/results.
         app.MapDelete("/api/stages/{stageId}/br/groups/{groupId}", async (
-            Guid              stageId,
-            Guid              groupId,
-            HttpContext        ctx,
+            Guid stageId,
+            Guid groupId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -287,9 +287,9 @@ public static partial class BRGroupEndpoints
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/teams ─────────────
         // List teams/participants in a group with details.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/teams", async (
-            Guid              stageId,
-            Guid              groupId,
-            HttpContext        ctx,
+            Guid stageId,
+            Guid groupId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -331,9 +331,9 @@ public static partial class BRGroupEndpoints
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/participants ───────
         // Public lightweight roster for player-facing "view your group" screens.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/participants", async (
-            Guid              stageId,
-            Guid              groupId,
-            HttpContext        ctx,
+            Guid stageId,
+            Guid groupId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -372,9 +372,9 @@ public static partial class BRGroupEndpoints
         // ── POST /api/stages/{stageId}/br/groups/assign ─────────────────────
         // Auto-distribute registered teams/participants into groups.
         app.MapPost("/api/stages/{stageId}/br/groups/assign", async (
-            Guid                stageId,
+            Guid stageId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -530,9 +530,9 @@ public static partial class BRGroupEndpoints
         // Repair legacy BR stages that have no backing group. Single-lobby BR
         // is still group-backed internally so rounds/results use one path.
         app.MapPost("/api/stages/{stageId}/br/bootstrap", async (
-            Guid                              stageId,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
+            Guid stageId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             BattleRoyaleStageBootstrapService brBootstrap) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -570,12 +570,12 @@ public static partial class BRGroupEndpoints
         // ── POST /api/stages/{stageId}/br/lobbies/generate ──────────────────
         // Create lobbies and materialize games after groups are seeded.
         app.MapPost("/api/stages/{stageId}/br/lobbies/generate", async (
-            Guid                              stageId,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            GameCatalogService               catalog,
+            Guid stageId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            GameCatalogService catalog,
             BattleRoyaleStageBootstrapService brBootstrap,
-            CancellationToken                ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -632,10 +632,10 @@ public static partial class BRGroupEndpoints
         // ── PUT /api/stages/{stageId}/br/groups/{groupId}/teams ─────────────
         // Manual team assignment — replace all teams in this group.
         app.MapPut("/api/stages/{stageId}/br/groups/{groupId}/teams", async (
-            Guid                stageId,
-            Guid                groupId,
+            Guid stageId,
+            Guid groupId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -786,9 +786,9 @@ public static partial class BRGroupEndpoints
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/lobbies ────────────
         // List rounds for a group. Public endpoint — lobby_code stripped for unauthenticated/non-staff.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/lobbies", async (
-            Guid              stageId,
-            Guid              groupId,
-            HttpContext        ctx,
+            Guid stageId,
+            Guid groupId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -872,20 +872,20 @@ public static partial class BRGroupEndpoints
                 var isActive = (d["status"] as string) == "active";
                 return new
                 {
-                    id           = d["id"],
+                    id = d["id"],
                     wave_number = d["wave_number"],
-                    lobby_index  = d["lobby_index"],
-                    group_ids    = d["group_ids"],
+                    lobby_index = d["lobby_index"],
+                    group_ids = d["group_ids"],
                     // Only participants see the code, and only for the live round
-                    lobby_code   = (isParticipant && isActive) ? d["lobby_code"] : (object?)null,
-                    status       = d["status"],
+                    lobby_code = (isParticipant && isActive) ? d["lobby_code"] : (object?)null,
+                    status = d["status"],
                     scheduled_at = d["scheduled_at"],
-                    started_at   = d["started_at"],
+                    started_at = d["started_at"],
                     completed_at = d["completed_at"],
-                    created_at   = d["created_at"],
+                    created_at = d["created_at"],
                     queue_timer_minutes = d["queue_timer_minutes"],
-                    queue_started_at    = d["queue_started_at"],
-                    map          = roundsHasMapColumn && d.TryGetValue("map", out var mapVal) ? mapVal : null,
+                    queue_started_at = d["queue_started_at"],
+                    map = roundsHasMapColumn && d.TryGetValue("map", out var mapVal) ? mapVal : null,
                     result_count = d["result_count"],
                     evidence_count = d["evidence_count"],
                     pending_evidence_count = d["pending_evidence_count"],
@@ -897,14 +897,14 @@ public static partial class BRGroupEndpoints
         // ── POST /api/stages/{stageId}/br/groups/{groupId}/lobbies ───────────
         // Create a new round for a group. Auto-increments wave_number.
         app.MapPost("/api/stages/{stageId}/br/groups/{groupId}/lobbies", async (
-            Guid                stageId,
-            Guid                groupId,
+            Guid stageId,
+            Guid groupId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   catalog,
-            IHubContext<BRHub>   brHub,
-            CancellationToken    ct) =>
+            GameCatalogService catalog,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -916,7 +916,7 @@ public static partial class BRGroupEndpoints
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            var lobbyCode   = body.TryGetProperty("lobbyCode", out var lc) ? lc.GetString()?.Trim() : null;
+            var lobbyCode = body.TryGetProperty("lobbyCode", out var lc) ? lc.GetString()?.Trim() : null;
             var scheduledAt = body.TryGetProperty("scheduledAt", out var sa) ? sa.GetString() : null;
             string? mapValue = null;
             if (body.TryGetProperty("map", out var mapProp) && mapProp.ValueKind != JsonValueKind.Null)
@@ -1199,15 +1199,15 @@ public static partial class BRGroupEndpoints
         // ── PATCH /api/br/lobbies/{lobbyId} ──────────────────────────────────
         // Update a round (lobby code, status, schedule).
         app.MapPatch("/api/br/lobbies/{lobbyId}", async (
-            Guid                lobbyId,
+            Guid lobbyId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   catalog,
+            GameCatalogService catalog,
             IHubContext<NotificationHub> notifHub,
-            IHubContext<BRHub>   brHub,
+            IHubContext<BRHub> brHub,
             BrScheduleNotificationService scheduleNotify,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1725,10 +1725,10 @@ public static partial class BRGroupEndpoints
 
                         if (roundMeta is null) return;
 
-                        Guid   groupIdForNotif  = roundMeta.group_id;
-                        int    waveNumber      = Convert.ToInt32(roundMeta.wave_number);
-                        string groupName        = (string)roundMeta.group_name;
-                        string tournamentSlug   = (string)roundMeta.tournament_slug;
+                        Guid groupIdForNotif = roundMeta.group_id;
+                        int waveNumber = Convert.ToInt32(roundMeta.wave_number);
+                        string groupName = (string)roundMeta.group_name;
+                        string tournamentSlug = (string)roundMeta.tournament_slug;
 
                         // Get all participant user IDs in the group
                         var userIds = (await notifConn.QueryAsync<string>(
@@ -1756,13 +1756,13 @@ public static partial class BRGroupEndpoints
 
                         if (userIds.Count == 0) return;
 
-                        var title   = $"Round {waveNumber} is live — {groupName}";
+                        var title = $"Round {waveNumber} is live — {groupName}";
                         var lobbyCodeForNotif = roundMeta.lobby_code as string;
                         var message = !string.IsNullOrWhiteSpace(lobbyCodeForNotif)
                             ? $"Group '{groupName}' Round {waveNumber} is live. Lobby code: {lobbyCodeForNotif.Trim()}. Open Match Room to join."
                             : $"Group '{groupName}' Round {waveNumber} is live. Open Match Room — the organizer will share the lobby code shortly.";
-                        var link    = $"/tournaments/{tournamentSlug}/br-game-room";
-                        var type    = "br_round_active";
+                        var link = $"/tournaments/{tournamentSlug}/br-game-room";
+                        var type = "br_round_active";
 
                         // Bulk insert notifications
                         await notifConn.ExecuteAsync(
@@ -1804,12 +1804,12 @@ public static partial class BRGroupEndpoints
         // Clear all result/evidence state for a round and move it back to
         // pending without deleting the round itself.
         app.MapPost("/api/br/lobbies/{lobbyId}/reset", async (
-            Guid                lobbyId,
-            HttpContext          ctx,
+            Guid lobbyId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   catalog,
-            IHubContext<BRHub>   brHub,
-            CancellationToken    ct) =>
+            GameCatalogService catalog,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1935,10 +1935,10 @@ public static partial class BRGroupEndpoints
         // ── GET /api/br/lobbies/{lobbyId}/results ────────────────────────────
         // Get results for a round.
         app.MapGet("/api/br/lobbies/{lobbyId}/results", async (
-            Guid              lobbyId,
+            Guid lobbyId,
             [FromQuery] Guid? gameId,
-            [FromQuery] int?  gameNumber,
-            HttpContext        ctx,
+            [FromQuery] int? gameNumber,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1993,11 +1993,11 @@ public static partial class BRGroupEndpoints
         // Staff see all submissions. Players only see their own submission for
         // the active round in their assigned group.
         app.MapGet("/api/br/lobbies/{lobbyId}/evidence", async (
-            Guid                lobbyId,
-            [FromQuery] int?    gameNumber,
-            HttpContext          ctx,
+            Guid lobbyId,
+            [FromQuery] int? gameNumber,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            IHostEnvironment     env) =>
+            IHostEnvironment env) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2063,14 +2063,14 @@ public static partial class BRGroupEndpoints
         // Stores evidence against the relational round so organizer review and
         // multi-group BR stay aligned.
         app.MapPut("/api/br/lobbies/{lobbyId}/evidence", async (
-            Guid                lobbyId,
+            Guid lobbyId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            IConfiguration       config,
-            IHubContext<BRHub>   brHub,
-            IWebHostEnvironment  env,
-            CancellationToken    ct) =>
+            IConfiguration config,
+            IHubContext<BRHub> brHub,
+            IWebHostEnvironment env,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2288,15 +2288,15 @@ public static partial class BRGroupEndpoints
         // ── PATCH /api/br/lobbies/{lobbyId}/evidence/{entityId} ───────────────
         // Approve reported stats into results, or reopen a submission.
         app.MapPatch("/api/br/lobbies/{lobbyId}/evidence/{entityId}", async (
-            Guid                lobbyId,
-            Guid                entityId,
-            [FromQuery] int?    gameNumber,
+            Guid lobbyId,
+            Guid entityId,
+            [FromQuery] int? gameNumber,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   catalog,
-            IHubContext<BRHub>   brHub,
-            CancellationToken    ct) =>
+            GameCatalogService catalog,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2702,13 +2702,13 @@ public static partial class BRGroupEndpoints
         // ── PUT /api/br/lobbies/{lobbyId}/results ────────────────────────────
         // Bulk submit/update results for a round (idempotent upsert).
         app.MapPut("/api/br/lobbies/{lobbyId}/results", async (
-            Guid                lobbyId,
+            Guid lobbyId,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            GameCatalogService   catalog,
-            IHubContext<BRHub>   brHub,
-            CancellationToken    ct) =>
+            GameCatalogService catalog,
+            IHubContext<BRHub> brHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3102,9 +3102,9 @@ public static partial class BRGroupEndpoints
         // ── GET /api/stages/{stageId}/br/groups/{groupId}/leaderboard ───────
         // Aggregate leaderboard from all round results in a group. Public endpoint.
         app.MapGet("/api/stages/{stageId}/br/groups/{groupId}/leaderboard", async (
-            Guid              stageId,
-            Guid              groupId,
-            HttpContext        ctx,
+            Guid stageId,
+            Guid groupId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -3137,8 +3137,8 @@ public static partial class BRGroupEndpoints
         // tournament: which stage, which group, round counts, and the active round
         // (including lobby code, but only for active rounds).
         app.MapGet("/api/tournaments/{tournamentId}/br/player-context", async (
-            Guid              tournamentId,
-            HttpContext        ctx,
+            Guid tournamentId,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3157,14 +3157,14 @@ public static partial class BRGroupEndpoints
 
                 return Results.Ok(new
                 {
-                    stageId          = (string?)null,
-                    stageName        = (string?)null,
-                    groupId          = (string?)null,
-                    groupName        = (string?)null,
+                    stageId = (string?)null,
+                    stageName = (string?)null,
+                    groupId = (string?)null,
+                    groupName = (string?)null,
                     gamesModelActive = false,
-                    totalRounds      = 0,
-                    completedRounds  = 0,
-                    activeRound      = (object?)null,
+                    totalRounds = 0,
+                    completedRounds = 0,
+                    activeRound = (object?)null,
                     assignmentHint,
                 });
             }
@@ -3216,10 +3216,10 @@ public static partial class BRGroupEndpoints
                     """,
                     new { lobbyIds })).ToList();
 
-            int totalRounds     = rounds.Count;
+            int totalRounds = rounds.Count;
             int completedRounds = rounds.Count(r => (string)r.status == "completed");
-            int totalGames      = games.Count;
-            int completedGames  = games.Count(g => (string)g.status == "completed");
+            int totalGames = games.Count;
+            int completedGames = games.Count(g => (string)g.status == "completed");
 
             static DateTimeOffset? ReadRoundTimestamp(dynamic round, string key)
             {
@@ -3618,10 +3618,10 @@ public static partial class BRGroupEndpoints
 
         // Preview or execute advancement of top teams from each group to next stage.
         app.MapPost("/api/stages/{stageId}/br/advance", async (
-            Guid                stageId,
-            [FromQuery] bool    preview,
+            Guid stageId,
+            [FromQuery] bool preview,
             [FromBody] JsonElement body,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3829,26 +3829,26 @@ public static partial class BRGroupEndpoints
 
             var qualifiedTeams = qualifiedRows.Select(r => new
             {
-                team_id            = (Guid)r.entity_id,
-                raw_team_id        = (Guid?)r.team_id,
+                team_id = (Guid)r.entity_id,
+                raw_team_id = (Guid?)r.team_id,
                 raw_participant_id = (Guid?)r.participant_id,
-                team_name          = (string)r.team_name,
-                logo_url           = (string?)r.logo_url,
-                from_group         = ((IDictionary<string, object>)r).TryGetValue("group_name", out var fromGroupVal) && fromGroupVal is not null
+                team_name = (string)r.team_name,
+                logo_url = (string?)r.logo_url,
+                from_group = ((IDictionary<string, object>)r).TryGetValue("group_name", out var fromGroupVal) && fromGroupVal is not null
                     ? fromGroupVal.ToString()
                     : (string?)null,
-                total_points       = (long)r.total_points,
-                total_kills        = (long)r.total_kills,
-                wins               = (long)r.wins,
+                total_points = (long)r.total_points,
+                total_kills = (long)r.total_kills,
+                wins = (long)r.wins,
             }).ToList();
 
             if (preview)
             {
                 return Results.Ok(new
                 {
-                    stage_name      = (string)stage.name,
+                    stage_name = (string)stage.name,
                     advancement_mode = advancementMode.ToString(),
-                    groups_count    = groups.Count,
+                    groups_count = groups.Count,
                     teams_per_group = teamsPerGroup,
                     total_qualified = qualifiedTeams.Count,
                     qualified_teams = qualifiedTeams.Select(qt => new
@@ -4004,11 +4004,11 @@ public static partial class BRGroupEndpoints
 
                 return Results.Ok(new
                 {
-                    advanced        = qualifiedTeams.Count,
-                    from_stage      = (string)stage.name,
-                    to_stage        = (string)nextStage.name,
-                    groups_created  = createdGroupIds.Count,
-                    group_ids       = createdGroupIds.Select(id => id.ToString()).ToList(),
+                    advanced = qualifiedTeams.Count,
+                    from_stage = (string)stage.name,
+                    to_stage = (string)nextStage.name,
+                    groups_created = createdGroupIds.Count,
+                    group_ids = createdGroupIds.Select(id => id.ToString()).ToList(),
                 });
             }
             catch
@@ -4527,16 +4527,16 @@ public static partial class BRGroupEndpoints
         string? lobbyCode = null,
         int? queueTimerMinutes = null,
         string? queueStartedAt = null) => new
-    {
-        stageId = stageId.ToString(),
-        groupId = groupId.ToString(),
-        lobbyId = lobbyId.ToString(),
-        waveNumber,
-        status,
-        lobbyCode,
-        queueTimerMinutes,
-        queueStartedAt,
-    };
+        {
+            stageId = stageId.ToString(),
+            groupId = groupId.ToString(),
+            lobbyId = lobbyId.ToString(),
+            waveNumber,
+            status,
+            lobbyCode,
+            queueTimerMinutes,
+            queueStartedAt,
+        };
 
     private static object BuildLeaderboardEvent(Guid stageId, Guid groupId) => new
     {

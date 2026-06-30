@@ -83,14 +83,14 @@ public static class AdminEndpoints
         // Replaces: manage-users Edge Function
         // Actions: "delete-user", "update-role", "assign_role", "revoke_role"
         app.MapPost("/api/admin/users/{userId}/action", async (
-            Guid                     userId,
+            Guid userId,
             [FromBody] ManageUserRequest req,
-            IDbConnectionFactory     db,
-            ISupabaseAdminClient     supabase,
-            AuditService             audit,
-            HybridCache              cache,
-            HttpContext              ctx,
-            CancellationToken        ct) =>
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            AuditService audit,
+            HybridCache cache,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -136,9 +136,9 @@ public static class AdminEndpoints
         // ── POST /api/admin/users/cleanup ─────────────────────────────────────
         // Deletes profiles with no matching auth.users entry (orphaned rows).
         app.MapPost("/api/admin/users/cleanup", async (
-            IDbConnectionFactory     db,
-            HttpContext              ctx,
-            CancellationToken        ct) =>
+            IDbConnectionFactory db,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -159,10 +159,10 @@ public static class AdminEndpoints
         // ── GET /api/sponsors ─────────────────────────────────────────────────
         // Returns active sponsors (optionally filtered by placement).
         app.MapGet("/api/sponsors", async (
-            bool?                active,
-            string?              placement,
+            bool? active,
+            string? placement,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var sponsors = await conn.QueryAsync<dynamic>(
@@ -183,9 +183,9 @@ public static class AdminEndpoints
 
         // ── GET /api/sponsors/{id}/stats ──────────────────────────────────────
         app.MapGet("/api/sponsors/{id}/stats", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -216,12 +216,12 @@ public static class AdminEndpoints
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,
-            IDbConnectionFactory     db,
-            ISupabaseAdminClient     supabase,
-            IEmailService            email,
-            IConfiguration           config,
-            HttpContext              ctx,
-            CancellationToken        ct) =>
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            IEmailService email,
+            IConfiguration config,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -249,7 +249,7 @@ public static class AdminEndpoints
 
             if (existingUser is not null)
             {
-                isNewUser     = false;
+                isNewUser = false;
                 sponsorUserId = existingUser.Id;
 
                 // Link existing user to sponsor
@@ -282,7 +282,7 @@ public static class AdminEndpoints
                     """, new { userId = Guid.Parse(sponsorUserId), sponsorId });
 
                 // Generate recovery link for password setup
-                var link    = await supabase.GenerateRecoveryLinkAsync(req.Email, ct);
+                var link = await supabase.GenerateRecoveryLinkAsync(req.Email, ct);
                 var setupUrl = $"{partnerUrl}/set-password?token_hash={link.TokenHash}&type=recovery";
 
                 await email.SendAsync(req.Email, EmailType.PartnerInvite, new
@@ -310,21 +310,21 @@ public static class AdminEndpoints
         // ── GET /api/admin/users ─────────────────────────────────────────────
         // Paginated user list with search for admin dashboard
         app.MapGet("/api/admin/users", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      limit       = 20,
-            [FromQuery] int      offset      = 0,
-            [FromQuery] string?  search      = null,
-            [FromQuery] string?  status      = null,
-            [FromQuery] string?  role        = null,
-            [FromQuery] string?  country     = null,
-            [FromQuery] string?  joined_from = null,
-            [FromQuery] string?  joined_to   = null,
-            [FromQuery] string?  verified    = null,
-            [FromQuery] string?  has_team    = null,
-            [FromQuery] string?  sort_by     = null,
-            [FromQuery] string?  sort_dir    = null,
-            CancellationToken    ct = default) =>
+            [FromQuery] int limit = 20,
+            [FromQuery] int offset = 0,
+            [FromQuery] string? search = null,
+            [FromQuery] string? status = null,
+            [FromQuery] string? role = null,
+            [FromQuery] string? country = null,
+            [FromQuery] string? joined_from = null,
+            [FromQuery] string? joined_to = null,
+            [FromQuery] string? verified = null,
+            [FromQuery] string? has_team = null,
+            [FromQuery] string? sort_by = null,
+            [FromQuery] string? sort_dir = null,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -419,12 +419,22 @@ public static class AdminEndpoints
                 }
             }
 
-            var enriched = users.Select(u => {
+            var enriched = users.Select(u =>
+            {
                 var uid = (Guid)u.id;
-                return new {
-                    u.id, u.username, u.email, u.full_name,
-                    u.avatar_url, u.is_suspended, u.created_at,
-                    u.country_code, u.date_of_birth, u.is_verified, u.updated_at,
+                return new
+                {
+                    u.id,
+                    u.username,
+                    u.email,
+                    u.full_name,
+                    u.avatar_url,
+                    u.is_suspended,
+                    u.created_at,
+                    u.country_code,
+                    u.date_of_birth,
+                    u.is_verified,
+                    u.updated_at,
                     roles = rolesMap.ContainsKey(uid) ? rolesMap[uid].ToArray() : Array.Empty<string>()
                 };
             });
@@ -451,9 +461,9 @@ public static class AdminEndpoints
         // Accepts sponsor_id, event_type (impression|click), page_url
         app.MapPost("/api/sponsors/track", async (
             [FromBody] SponsorTrackRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             if (req.EventType is not ("impression" or "click"))
                 return Results.BadRequest(new { error = "Event type must be 'impression' or 'click'." });
@@ -522,7 +532,7 @@ public static class AdminEndpoints
                 {
                     sponsorId,
                     eventType = req.EventType,
-                    pageUrl   = req.PageUrl,
+                    pageUrl = req.PageUrl,
                     visitorId,
                     metadata,
                     tournamentId,
@@ -535,7 +545,7 @@ public static class AdminEndpoints
         // Dashboard summary stats
         app.MapGet("/api/admin/stats", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleAsync<dynamic>(
@@ -549,7 +559,8 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM venues WHERE status = 'pending_review' AND deleted_at IS NULL) AS pending_venues,
                     (SELECT COUNT(*) FROM licenses WHERE status = 'pending') AS pending_licenses
                 """);
-            return Results.Ok(new {
+            return Results.Ok(new
+            {
                 totalUsers = (long)row.total_users,
                 activeVenues = (long)row.active_venues,
                 activeTournaments = (long)row.active_tournaments,
@@ -567,7 +578,7 @@ public static class AdminEndpoints
         // Replaces 8 parallel supabase count queries
         app.MapGet("/api/admin/analytics", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var stats = await conn.QuerySingleAsync<dynamic>(
@@ -589,7 +600,7 @@ public static class AdminEndpoints
         // Replaces supabase.rpc('get_system_stats') + fallback count queries
         app.MapGet("/api/admin/system-stats", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var stats = await conn.QuerySingleAsync<dynamic>(
@@ -607,7 +618,7 @@ public static class AdminEndpoints
         // Enhanced stats with growth metrics and pending action counts
         app.MapGet("/api/admin/dashboard-stats", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleAsync<dynamic>(
@@ -650,8 +661,8 @@ public static class AdminEndpoints
 
             // Cast dynamic fields to compute growth percentages
             var dict = (IDictionary<string, object>)row;
-            var signupsThisWeek     = Convert.ToDecimal(dict["signups_this_week"]);
-            var signupsLastWeek     = Convert.ToDecimal(dict["signups_last_week"]);
+            var signupsThisWeek = Convert.ToDecimal(dict["signups_this_week"]);
+            var signupsLastWeek = Convert.ToDecimal(dict["signups_last_week"]);
             var tournamentsThisWeek = Convert.ToDecimal(dict["tournaments_this_week"]);
             var tournamentsLastWeek = Convert.ToDecimal(dict["tournaments_last_week"]);
 
@@ -664,26 +675,26 @@ public static class AdminEndpoints
 
             return Results.Ok(new
             {
-                totalUsers                = dict["total_users"],
-                totalTournaments          = dict["total_tournaments"],
-                totalVenues               = dict["total_venues"],
-                totalPrizePool            = dict["total_prize_pool"],
-                signupsToday              = dict["signups_today"],
-                tournamentsCreatedToday   = dict["tournaments_created_today"],
-                signupsThisWeek           = dict["signups_this_week"],
-                tournamentsThisWeek       = dict["tournaments_this_week"],
-                signupsLastWeek           = dict["signups_last_week"],
-                tournamentsLastWeek       = dict["tournaments_last_week"],
-                activeTournaments         = dict["active_tournaments"],
-                activeUsers24h            = dict["active_users_24h"],
-                pendingVerifications      = dict["pending_verifications"],
-                pendingVenues             = dict["pending_venues"],
-                pendingLicenses           = dict["pending_licenses"],
-                pendingDisputes           = dict["pending_disputes"],
-                completedTournaments      = dict["completed_tournaments"],
-                totalBookings             = dict["total_bookings"],
-                signupsGrowth             = signupsGrowth,
-                tournamentsGrowth         = tournamentsGrowth
+                totalUsers = dict["total_users"],
+                totalTournaments = dict["total_tournaments"],
+                totalVenues = dict["total_venues"],
+                totalPrizePool = dict["total_prize_pool"],
+                signupsToday = dict["signups_today"],
+                tournamentsCreatedToday = dict["tournaments_created_today"],
+                signupsThisWeek = dict["signups_this_week"],
+                tournamentsThisWeek = dict["tournaments_this_week"],
+                signupsLastWeek = dict["signups_last_week"],
+                tournamentsLastWeek = dict["tournaments_last_week"],
+                activeTournaments = dict["active_tournaments"],
+                activeUsers24h = dict["active_users_24h"],
+                pendingVerifications = dict["pending_verifications"],
+                pendingVenues = dict["pending_venues"],
+                pendingLicenses = dict["pending_licenses"],
+                pendingDisputes = dict["pending_disputes"],
+                completedTournaments = dict["completed_tournaments"],
+                totalBookings = dict["total_bookings"],
+                signupsGrowth = signupsGrowth,
+                tournamentsGrowth = tournamentsGrowth
             });
         }).RequireAuthorization("Admin");
 
@@ -692,7 +703,7 @@ public static class AdminEndpoints
         app.MapGet("/api/admin/activity-feed", async (
             [FromQuery] int limit,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var clampedLimit = Math.Clamp(limit <= 0 ? 20 : limit, 1, 50);
             using var conn = db.CreateConnection();
@@ -716,7 +727,7 @@ public static class AdminEndpoints
         app.MapGet("/api/admin/trends", async (
             [FromQuery] int days,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var clampedDays = Math.Clamp(days <= 0 ? 30 : days, 7, 90);
             using var conn = db.CreateConnection();
@@ -750,10 +761,10 @@ public static class AdminEndpoints
 
         // ── CRUD: Sponsors ──────────────────────────────────────────────────────
         app.MapPost("/api/sponsors", async (
-            [FromBody] object    payload,
-            HttpContext          ctx,
+            [FromBody] object payload,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -777,22 +788,22 @@ public static class AdminEndpoints
                 """,
                 new
                 {
-                    name           = j.TryGetProperty("name", out var n) ? n.GetString() : null,
-                    tagline        = j.TryGetProperty("tagline", out var tl) ? tl.GetString() : null,
-                    description    = j.TryGetProperty("description", out var d) ? d.GetString() : null,
-                    websiteUrl     = j.TryGetProperty("website_url", out var wu) ? wu.GetString() : null,
-                    logoUrl        = j.TryGetProperty("logo_url", out var lu) ? lu.GetString() : null,
+                    name = j.TryGetProperty("name", out var n) ? n.GetString() : null,
+                    tagline = j.TryGetProperty("tagline", out var tl) ? tl.GetString() : null,
+                    description = j.TryGetProperty("description", out var d) ? d.GetString() : null,
+                    websiteUrl = j.TryGetProperty("website_url", out var wu) ? wu.GetString() : null,
+                    logoUrl = j.TryGetProperty("logo_url", out var lu) ? lu.GetString() : null,
                     bannerImageUrl = j.TryGetProperty("banner_image_url", out var bi) ? bi.GetString() : null,
-                    accentColor    = j.TryGetProperty("accent_color", out var ac) ? ac.GetString() : "#8b5cf6",
-                    tier           = j.TryGetProperty("tier", out var ti) ? ti.GetString() : "standard",
-                    placement      = j.TryGetProperty("placement", out var pl)
+                    accentColor = j.TryGetProperty("accent_color", out var ac) ? ac.GetString() : "#8b5cf6",
+                    tier = j.TryGetProperty("tier", out var ti) ? ti.GetString() : "standard",
+                    placement = j.TryGetProperty("placement", out var pl)
                         ? "{" + string.Join(",", pl.EnumerateArray().Select(e => e.GetString())) + "}"
                         : "{banner}",
-                    ctaText        = j.TryGetProperty("cta_text", out var ct2) ? ct2.GetString() : "Learn More",
-                    discountText   = j.TryGetProperty("discount_text", out var dt) ? dt.GetString() : null,
-                    isActive       = !j.TryGetProperty("is_active", out var ia) || ia.GetBoolean(),
-                    priority       = j.TryGetProperty("priority", out var pr) ? pr.GetInt32() : 0,
-                    galleryImages  = j.TryGetProperty("gallery_images", out var gi)
+                    ctaText = j.TryGetProperty("cta_text", out var ct2) ? ct2.GetString() : "Learn More",
+                    discountText = j.TryGetProperty("discount_text", out var dt) ? dt.GetString() : null,
+                    isActive = !j.TryGetProperty("is_active", out var ia) || ia.GetBoolean(),
+                    priority = j.TryGetProperty("priority", out var pr) ? pr.GetInt32() : 0,
+                    galleryImages = j.TryGetProperty("gallery_images", out var gi)
                         ? "{" + string.Join(",", gi.EnumerateArray().Select(e => e.GetString())) + "}"
                         : "{}",
                 });
@@ -800,11 +811,11 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         app.MapPut("/api/sponsors/{id}", async (
-            Guid                 id,
-            [FromBody] object    payload,
-            HttpContext          ctx,
+            Guid id,
+            [FromBody] object payload,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -836,10 +847,10 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         app.MapDelete("/api/sponsors/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -850,15 +861,15 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/users/{userId}/suspend ──────────────────────────────
         app.MapPost("/api/admin/users/{userId}/suspend", async (
-            Guid                 userId,
+            Guid userId,
             [FromBody] SuspendUserRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
             ISupabaseAdminClient supabase,
-            HybridCache          cache,
-            AuditService         audit,
-            ILogger<Program>     logger,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            AuditService audit,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -919,12 +930,12 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/users/{userId}/unsuspend ────────────────────────────
         app.MapPost("/api/admin/users/{userId}/unsuspend", async (
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -964,13 +975,13 @@ public static class AdminEndpoints
         // ── POST /api/admin/users/bulk-action ─────────────────────────────────
         app.MapPost("/api/admin/users/bulk-action", async (
             [FromBody] BulkUserActionRequest req,
-            HttpContext                      ctx,
-            IDbConnectionFactory             db,
-            ISupabaseAdminClient             supabase,
-            HybridCache                      cache,
-            AuditService                     audit,
-            ILogger<Program>                 logger,
-            CancellationToken                ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            HybridCache cache,
+            AuditService audit,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1126,9 +1137,9 @@ public static class AdminEndpoints
         // Requires authenticated admin or service call.
         app.MapPost("/api/emails", async (
             [FromBody] SendEmailRequest req,
-            IEmailService         email,
-            HttpContext           ctx,
-            CancellationToken     ct) =>
+            IEmailService email,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1160,9 +1171,9 @@ public static class AdminEndpoints
         // ── GET /api/admin/user-roles ──────────────────────────────────────────
         // Returns all user→role assignments
         app.MapGet("/api/admin/user-roles", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1184,9 +1195,9 @@ public static class AdminEndpoints
         // ── POST /api/admin/user-roles ─────────────────────────────────────────
         app.MapPost("/api/admin/user-roles", async (
             [FromBody] AssignRoleRequest req,
-            HttpContext                  ctx,
-            IDbConnectionFactory         db,
-            CancellationToken            ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1205,11 +1216,11 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/user-roles ───────────────────────────────────────
         app.MapDelete("/api/admin/user-roles", async (
-            Guid                 userId,
-            string               role,
-            HttpContext          ctx,
+            Guid userId,
+            string role,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1225,10 +1236,10 @@ public static class AdminEndpoints
         // ── GET /api/admin/admin-user-roles ─────────────────────────────────────
         // Supports optional ?user_id= filter; joins admin_roles for name/key
         app.MapGet("/api/admin/admin-user-roles", async (
-            Guid?                userId,
-            HttpContext          ctx,
+            Guid? userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1266,10 +1277,10 @@ public static class AdminEndpoints
         // ── POST /api/admin/admin-user-roles ─────────────────────────────────────
         app.MapPost("/api/admin/admin-user-roles", async (
             [FromBody] AdminUserRoleAssignRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1291,12 +1302,12 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/admin-user-roles ───────────────────────────────────
         app.MapDelete("/api/admin/admin-user-roles", async (
-            Guid                 userId,
-            Guid                 roleId,
-            HttpContext          ctx,
+            Guid userId,
+            Guid roleId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1322,7 +1333,7 @@ public static class AdminEndpoints
 
             return Results.Ok(new
             {
-                adminRoles  = userCtx.AdminRoles,
+                adminRoles = userCtx.AdminRoles,
                 permissions = userCtx.Permissions,
                 isSuperAdmin = userCtx.IsSuperAdmin,
             });
@@ -1331,10 +1342,10 @@ public static class AdminEndpoints
         // ── GET /api/admin/roles ──────────────────────────────────────────────
         // Returns the admin_roles catalog with permission/user counts. Supports optional ?q= filter.
         app.MapGet("/api/admin/roles", async (
-            string?              q,
-            HttpContext          ctx,
+            string? q,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1361,9 +1372,9 @@ public static class AdminEndpoints
         // ── GET /api/admin/permissions ────────────────────────────────────────
         // Returns all available permissions grouped by resource.
         app.MapGet("/api/admin/permissions", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1386,10 +1397,10 @@ public static class AdminEndpoints
         // ── GET /api/admin/roles/{roleId} ─────────────────────────────────────
         // Returns a single role with its assigned permissions and user count.
         app.MapGet("/api/admin/roles/{roleId}", async (
-            Guid                 roleId,
-            HttpContext          ctx,
+            Guid roleId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1439,10 +1450,10 @@ public static class AdminEndpoints
         // Create a custom admin role with assigned permissions.
         app.MapPost("/api/admin/roles", async (
             [FromBody] CreateAdminRoleRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1533,13 +1544,13 @@ public static class AdminEndpoints
         // ── PUT /api/admin/roles/{roleId} ─────────────────────────────────────
         // Update an existing custom role's name, description, and permissions.
         app.MapPut("/api/admin/roles/{roleId}", async (
-            Guid                              roleId,
-            [FromBody] UpdateAdminRoleRequest  req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            AuditService                     audit,
-            HybridCache                      cache,
-            CancellationToken                ct) =>
+            Guid roleId,
+            [FromBody] UpdateAdminRoleRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            AuditService audit,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var protectedRoleKeys = new HashSet<string> { "super_admin", "ops_admin", "moderator", "finance_admin", "support_admin" };
 
@@ -1651,11 +1662,11 @@ public static class AdminEndpoints
         // ── DELETE /api/admin/roles/{roleId} ──────────────────────────────────
         // Delete a custom admin role. Built-in roles cannot be deleted.
         app.MapDelete("/api/admin/roles/{roleId}", async (
-            Guid                 roleId,
-            HttpContext          ctx,
+            Guid roleId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var protectedRoleKeys = new HashSet<string> { "super_admin", "ops_admin", "moderator", "finance_admin", "support_admin" };
 
@@ -1722,10 +1733,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/users/{userId}/roles ────────────────────────────────
         app.MapGet("/api/admin/users/{userId}/roles", async (
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1742,11 +1753,11 @@ public static class AdminEndpoints
 
         // ── PATCH /api/admin/users/{userId}/roles ──────────────────────────────
         app.MapPatch("/api/admin/users/{userId}/roles", async (
-            Guid                      userId,
+            Guid userId,
             [FromBody] UpdateRoleRequest req,
-            HttpContext               ctx,
-            IDbConnectionFactory      db,
-            CancellationToken         ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1769,12 +1780,12 @@ public static class AdminEndpoints
         // ── PUT /api/admin/users/{userId} ─────────────────────────────────────
         // Updates user's is_admin flag and/or replaces their admin_roles assignments.
         app.MapPut("/api/admin/users/{userId}", async (
-            Guid                            userId,
+            Guid userId,
             [FromBody] AdminUpdateUserRequest req,
-            HttpContext                     ctx,
-            IDbConnectionFactory            db,
-            HybridCache                     cache,
-            CancellationToken               ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1816,9 +1827,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/verified-roles ──────────────────────────────────────
         app.MapGet("/api/admin/verified-roles", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1838,10 +1849,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/users/{userId}/verified-roles ───────────────────────
         app.MapGet("/api/admin/users/{userId}/verified-roles", async (
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1855,21 +1866,21 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/tournaments ─────────────────────────────────────────
         app.MapGet("/api/admin/tournaments", async (
-            [FromQuery] string?  status      = null,
-            [FromQuery] string?  search      = null,
-            [FromQuery] string?  game        = null,
-            [FromQuery] string?  format      = null,
-            [FromQuery] decimal? prize_min   = null,
-            [FromQuery] decimal? prize_max   = null,
-            [FromQuery] string?  date_from   = null,
-            [FromQuery] string?  date_to     = null,
-            [FromQuery] string?  sort_by     = null,
-            [FromQuery] string?  sort_dir    = null,
-            int                  page        = 1,
-            int                  limit       = 50,
-            HttpContext          ctx         = default!,
-            IDbConnectionFactory db          = default!,
-            CancellationToken    ct          = default) =>
+            [FromQuery] string? status = null,
+            [FromQuery] string? search = null,
+            [FromQuery] string? game = null,
+            [FromQuery] string? format = null,
+            [FromQuery] decimal? prize_min = null,
+            [FromQuery] decimal? prize_max = null,
+            [FromQuery] string? date_from = null,
+            [FromQuery] string? date_to = null,
+            [FromQuery] string? sort_by = null,
+            [FromQuery] string? sort_dir = null,
+            int page = 1,
+            int limit = 50,
+            HttpContext ctx = default!,
+            IDbConnectionFactory db = default!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             page = Math.Max(page, 1);
@@ -1937,13 +1948,13 @@ public static class AdminEndpoints
         // ── PUT /api/admin/tournaments/{id} ───────────────────────────────────
         // Updates tournament status and/or is_featured flag from admin panel.
         app.MapPut("/api/admin/tournaments/{id}", async (
-            Guid                                id,
+            Guid id,
             [FromBody] AdminUpdateTournamentRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            AuditService                         audit,
-            OperationsAuthorizationService       opsAuth,
-            CancellationToken                   ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            AuditService audit,
+            OperationsAuthorizationService opsAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2016,9 +2027,9 @@ public static class AdminEndpoints
 
             var actionType = req.Status switch
             {
-                "approved"  => ActionType.Approve,
+                "approved" => ActionType.Approve,
                 "cancelled" => ActionType.Cancel,
-                _ when req.IsFeatured is true  => ActionType.Feature,
+                _ when req.IsFeatured is true => ActionType.Feature,
                 _ when req.IsFeatured is false => ActionType.Unfeature,
                 _ => ActionType.Update
             };
@@ -2051,11 +2062,11 @@ public static class AdminEndpoints
         // ── POST /api/admin/tournaments/bulk-action ───────────────────────────
         app.MapPost("/api/admin/tournaments/bulk-action", async (
             [FromBody] BulkTournamentActionRequest req,
-            HttpContext                            ctx,
-            IDbConnectionFactory                   db,
-            AuditService                           audit,
-            OperationsAuthorizationService         opsAuth,
-            CancellationToken                      ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            AuditService audit,
+            OperationsAuthorizationService opsAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2067,11 +2078,11 @@ public static class AdminEndpoints
 
             var requiredPermission = req.Action switch
             {
-                "approve"   => Permissions.TournamentsApprove,
-                "cancel"    => Permissions.TournamentsCancel,
-                "feature"   => Permissions.TournamentsFeature,
+                "approve" => Permissions.TournamentsApprove,
+                "cancel" => Permissions.TournamentsCancel,
+                "feature" => Permissions.TournamentsFeature,
                 "unfeature" => Permissions.TournamentsUnfeature,
-                _           => Permissions.TournamentsEdit
+                _ => Permissions.TournamentsEdit
             };
 
             foreach (var tournamentId in req.TournamentIds.Distinct())
@@ -2082,9 +2093,9 @@ public static class AdminEndpoints
 
             var sql = req.Action switch
             {
-                "approve"   => "UPDATE tournaments SET status = 'approved'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status IN ('draft', 'pending')",
-                "cancel"    => "UPDATE tournaments SET status = 'cancelled'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status NOT IN ('completed', 'cancelled')",
-                "feature"   => "UPDATE tournaments SET is_featured = true, updated_at = now() WHERE id = ANY(@Ids)",
+                "approve" => "UPDATE tournaments SET status = 'approved'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status IN ('draft', 'pending')",
+                "cancel" => "UPDATE tournaments SET status = 'cancelled'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status NOT IN ('completed', 'cancelled')",
+                "feature" => "UPDATE tournaments SET is_featured = true, updated_at = now() WHERE id = ANY(@Ids)",
                 "unfeature" => "UPDATE tournaments SET is_featured = false, updated_at = now() WHERE id = ANY(@Ids)",
                 _ => (string?)null
             };
@@ -2094,11 +2105,11 @@ public static class AdminEndpoints
             // Map action string to audit ActionType
             var actionType = req.Action switch
             {
-                "approve"   => ActionType.Approve,
-                "cancel"    => ActionType.Cancel,
-                "feature"   => ActionType.Feature,
+                "approve" => ActionType.Approve,
+                "cancel" => ActionType.Cancel,
+                "feature" => ActionType.Feature,
                 "unfeature" => ActionType.Unfeature,
-                _           => ActionType.Update
+                _ => ActionType.Update
             };
 
             using var conn = db.CreateConnection();
@@ -2126,12 +2137,12 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/disputes ────────────────────────────────────────────
         app.MapGet("/api/admin/disputes", async (
-            string?              status,
-            int                  page   = 1,
-            int                  limit  = 50,
-            HttpContext          ctx    = default!,
-            IDbConnectionFactory db     = default!,
-            CancellationToken    ct     = default) =>
+            string? status,
+            int page = 1,
+            int limit = 50,
+            HttpContext ctx = default!,
+            IDbConnectionFactory db = default!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -2154,10 +2165,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/disputes/{disputeId} ────────────────────────────────
         app.MapGet("/api/admin/disputes/{disputeId}", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2188,11 +2199,11 @@ public static class AdminEndpoints
         // ── PATCH /api/admin/disputes/{disputeId} ──────────────────────────────
         // Also mapped as PUT for frontend compatibility
         async Task<IResult> AdminUpdateDispute(
-            Guid                              disputeId,
+            Guid disputeId,
             [FromBody] AdminUpdateDisputeRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct)
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct)
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2215,10 +2226,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/disputes/{disputeId}/comments ──────────────────────
         app.MapGet("/api/admin/disputes/{disputeId}/comments", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2241,12 +2252,12 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/disputes/{disputeId}/comments ──────────────────────
         app.MapPost("/api/admin/disputes/{disputeId}/comments", async (
-            Guid                              disputeId,
+            Guid disputeId,
             [FromBody] AddDisputeCommentRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            IHubContext<MatchHub>             matchHub,
-            CancellationToken                 ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2272,11 +2283,11 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/tournaments/{tournamentId}/bans/{banId} ──────────
         app.MapDelete("/api/admin/tournaments/{tournamentId}/bans/{banId}", async (
-            Guid                 tournamentId,
-            Guid                 banId,
-            HttpContext          ctx,
+            Guid tournamentId,
+            Guid banId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2314,11 +2325,11 @@ public static class AdminEndpoints
 
         // ── PATCH /api/admin/tournaments/{tournamentId}/participants/{pid}/restore ──
         app.MapPatch("/api/admin/tournaments/{tournamentId}/participants/{pid}/restore", async (
-            Guid                 tournamentId,
-            Guid                 pid,
-            HttpContext          ctx,
+            Guid tournamentId,
+            Guid pid,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2341,10 +2352,10 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/disputes/{disputeId}/lift-ban ─────────────────────
         app.MapPost("/api/admin/disputes/{disputeId}/lift-ban", async (
-            Guid                 disputeId,
-            HttpContext          ctx,
+            Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2414,16 +2425,16 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true, banLifted = true, participantRestored = restored });
         }).RequireAuthorization("Admin");
         app.MapGet("/api/admin/audit-logs", async (
-            Guid?                organizationId,
-            [FromQuery] string?  search      = null,
-            [FromQuery] string?  target_type = null,
-            [FromQuery] string?  from        = null,
-            [FromQuery] string?  to          = null,
-            int                  page        = 1,
-            int                  limit       = 50,
-            HttpContext          ctx          = default!,
-            IDbConnectionFactory db           = default!,
-            CancellationToken    ct           = default) =>
+            Guid? organizationId,
+            [FromQuery] string? search = null,
+            [FromQuery] string? target_type = null,
+            [FromQuery] string? from = null,
+            [FromQuery] string? to = null,
+            int page = 1,
+            int limit = 50,
+            HttpContext ctx = default!,
+            IDbConnectionFactory db = default!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -2476,9 +2487,9 @@ public static class AdminEndpoints
         // ── POST /api/admin/audit-logs ─────────────────────────────────────────
         app.MapPost("/api/admin/audit-logs", async (
             [FromBody] CreateAuditLogRequest req,
-            HttpContext                      ctx,
-            IDbConnectionFactory             db,
-            CancellationToken                ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2487,11 +2498,11 @@ public static class AdminEndpoints
 
             var details = new
             {
-                admin_name  = req.AdminName,
+                admin_name = req.AdminName,
                 target_name = req.TargetName,
-                severity    = req.Severity,
-                user_agent  = req.UserAgent,
-                extra       = req.Details,
+                severity = req.Severity,
+                user_agent = req.UserAgent,
+                extra = req.Details,
             };
 
             await conn.ExecuteAsync(
@@ -2501,12 +2512,12 @@ public static class AdminEndpoints
                 """,
                 new
                 {
-                    orgId      = (Guid?)null,
-                    actorId    = userCtx.UserIdGuid,
-                    action     = req.ActionType,
+                    orgId = (Guid?)null,
+                    actorId = userCtx.UserIdGuid,
+                    action = req.ActionType,
                     targetType = req.TargetType,
-                    targetId   = Guid.TryParse(req.TargetId, out var tid) ? tid : (Guid?)null,
-                    details    = System.Text.Json.JsonSerializer.Serialize(details),
+                    targetId = Guid.TryParse(req.TargetId, out var tid) ? tid : (Guid?)null,
+                    details = System.Text.Json.JsonSerializer.Serialize(details),
                 });
 
             return Results.Ok(new { success = true });
@@ -2514,10 +2525,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/system-settings ────────────────────────────────────
         app.MapGet("/api/admin/system-settings", async (
-            string?              category,
-            HttpContext          ctx,
+            string? category,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2540,14 +2551,14 @@ public static class AdminEndpoints
                 bool sensitive = (bool)r.is_sensitive;
                 return new
                 {
-                    key          = (string)r.key,
-                    value        = sensitive && !isSuperAdmin ? "••••••••" : (string)r.value,
-                    category     = (string)r.category,
-                    label        = (string)r.label,
-                    description  = (string)(r.description ?? ""),
-                    data_type    = (string)r.data_type,
+                    key = (string)r.key,
+                    value = sensitive && !isSuperAdmin ? "••••••••" : (string)r.value,
+                    category = (string)r.category,
+                    label = (string)r.label,
+                    description = (string)(r.description ?? ""),
+                    data_type = (string)r.data_type,
                     is_sensitive = sensitive,
-                    updated_at   = r.updated_at,
+                    updated_at = r.updated_at,
                 };
             });
 
@@ -2556,10 +2567,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/system-settings/{key} ─────────────────────────────
         app.MapGet("/api/admin/system-settings/{key}", async (
-            string               key,
-            HttpContext          ctx,
+            string key,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2576,29 +2587,29 @@ public static class AdminEndpoints
 
             if (row is null) return Results.NotFound(new { error = $"Setting '{key}' not found." });
 
-            bool sensitive    = (bool)row.is_sensitive;
+            bool sensitive = (bool)row.is_sensitive;
             bool isSuperAdmin = userCtx.AdminRoles.Contains("super_admin");
 
             return Results.Ok(new
             {
-                key          = (string)row.key,
-                value        = sensitive && !isSuperAdmin ? "••••••••" : (string)row.value,
-                category     = (string)row.category,
-                label        = (string)row.label,
-                description  = (string)(row.description ?? ""),
-                data_type    = (string)row.data_type,
+                key = (string)row.key,
+                value = sensitive && !isSuperAdmin ? "••••••••" : (string)row.value,
+                category = (string)row.category,
+                label = (string)row.label,
+                description = (string)(row.description ?? ""),
+                data_type = (string)row.data_type,
                 is_sensitive = sensitive,
-                updated_at   = row.updated_at,
+                updated_at = row.updated_at,
             });
         }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/system-settings ────────────────────────────────────
         app.MapPut("/api/admin/system-settings", async (
             [FromBody] UpdateSystemSettingsRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2627,7 +2638,7 @@ public static class AdminEndpoints
             {
                 var meta = existing[setting.Key];
                 string dataType = (string)meta.data_type;
-                bool sensitive  = (bool)meta.is_sensitive;
+                bool sensitive = (bool)meta.is_sensitive;
 
                 // Sensitive settings require super_admin
                 if (sensitive && !isSuperAdmin)
@@ -2671,8 +2682,8 @@ public static class AdminEndpoints
 
             foreach (var setting in req.Settings)
             {
-                var meta       = existing[setting.Key];
-                var oldValue   = (string)meta.value;
+                var meta = existing[setting.Key];
+                var oldValue = (string)meta.value;
                 bool sensitive = (bool)meta.is_sensitive;
 
                 await conn.ExecuteAsync(
@@ -2688,7 +2699,7 @@ public static class AdminEndpoints
                 {
                     changes.Add(new
                     {
-                        key       = setting.Key,
+                        key = setting.Key,
                         old_value = sensitive ? "••••••••" : oldValue,
                         new_value = sensitive ? "••••••••" : setting.Value,
                     });
@@ -2716,10 +2727,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/verification-requests ──────────────────────────────
         app.MapGet("/api/admin/verification-requests", async (
-            string?              status,
-            HttpContext          ctx,
+            string? status,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2748,13 +2759,13 @@ public static class AdminEndpoints
 
         // ── PATCH/PUT /api/admin/verification-requests/{requestId} ────────────
         async Task<IResult> AdminUpdateVerificationRequest(
-            Guid                              requestId,
+            Guid requestId,
             [FromBody] UpdateVerificationRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            IEmailService                     email,
-            IConfiguration                    config,
-            CancellationToken                 ct)
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IEmailService email,
+            IConfiguration config,
+            CancellationToken ct)
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2904,11 +2915,11 @@ public static class AdminEndpoints
         // ── POST /api/admin/verified-roles ────────────────────────────────────
         app.MapPost("/api/admin/verified-roles", async (
             [FromBody] CreateVerifiedRoleRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            IEmailService                       email,
-            IConfiguration                      config,
-            CancellationToken                   ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IEmailService email,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -2929,7 +2940,7 @@ public static class AdminEndpoints
             {
                 try
                 {
-                    var issuedAt  = DateTime.UtcNow;
+                    var issuedAt = DateTime.UtcNow;
                     var expiresAt = issuedAt.AddYears(1);
 
                     // Check if license record already exists
@@ -2952,10 +2963,10 @@ public static class AdminEndpoints
                         // Generate new license_id
                         var prefix = req.Role switch
                         {
-                            "organizer"   => "ESP-OR",
+                            "organizer" => "ESP-OR",
                             "venue_owner" => "ESP-VO",
                             "broadcaster" => "ESP-BR",
-                            _             => "ESP-XX"
+                            _ => "ESP-XX"
                         };
                         existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
 
@@ -2978,11 +2989,11 @@ public static class AdminEndpoints
                             EmailType.LicenseApproved,
                             new
                             {
-                                username     = (string?)profile.username ?? "there",
-                                licenseType  = req.Role,
-                                licenseId    = existingLicenseId,
-                                issuedAt     = issuedAt.ToString("MMM dd, yyyy"),
-                                expiresAt    = expiresAt.ToString("MMM dd, yyyy"),
+                                username = (string?)profile.username ?? "there",
+                                licenseType = req.Role,
+                                licenseId = existingLicenseId,
+                                issuedAt = issuedAt.ToString("MMM dd, yyyy"),
+                                expiresAt = expiresAt.ToString("MMM dd, yyyy"),
                                 dashboardUrl = $"{frontendUrl}/verification-status",
                             },
                             ct);
@@ -2997,15 +3008,15 @@ public static class AdminEndpoints
         // ── GET /api/admin/licenses ───────────────────────────────────────────
         // List all licenses with user info, supports ?status=, ?type=, ?q= search
         app.MapGet("/api/admin/licenses", async (
-            string?              status,
-            string?              type,
-            string?              q,
-            int?                 limit,
-            int?                 offset,
-            HttpContext          ctx,
+            string? status,
+            string? type,
+            string? q,
+            int? limit,
+            int? offset,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            ILogger<Program>     logger,
-            CancellationToken    ct) =>
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3017,8 +3028,8 @@ public static class AdminEndpoints
                 var p = new Dapper.DynamicParameters();
 
                 if (!string.IsNullOrWhiteSpace(status)) { where.Add("l.status = @status"); p.Add("status", status); }
-                if (!string.IsNullOrWhiteSpace(type))   { where.Add("l.license_type = @type"); p.Add("type", type); }
-                if (!string.IsNullOrWhiteSpace(q))       { where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)"); p.Add("q", $"%{q}%"); }
+                if (!string.IsNullOrWhiteSpace(type)) { where.Add("l.license_type = @type"); p.Add("type", type); }
+                if (!string.IsNullOrWhiteSpace(q)) { where.Add("(p.username ILIKE @q OR p.email ILIKE @q OR l.license_id ILIKE @q)"); p.Add("q", $"%{q}%"); }
 
                 var lim = Math.Min(limit ?? 50, 200);
                 var off = offset ?? 0;
@@ -3031,8 +3042,8 @@ public static class AdminEndpoints
 
                 var countP = new Dapper.DynamicParameters();
                 if (!string.IsNullOrWhiteSpace(status)) countP.Add("status", status);
-                if (!string.IsNullOrWhiteSpace(type))   countP.Add("type", type);
-                if (!string.IsNullOrWhiteSpace(q))       countP.Add("q", $"%{q}%");
+                if (!string.IsNullOrWhiteSpace(type)) countP.Add("type", type);
+                if (!string.IsNullOrWhiteSpace(q)) countP.Add("q", $"%{q}%");
 
                 var countSql = $"SELECT COUNT(*) FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause}";
                 var total = await conn.ExecuteScalarAsync<int>(countSql, countP);
@@ -3049,10 +3060,10 @@ public static class AdminEndpoints
         // ── GET /api/admin/users/{userId}/detail ──────────────────────────────
         // Full user profile: profile + licenses + roles + verified_roles + orgs
         app.MapGet("/api/admin/users/{userId}/detail", async (
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3142,9 +3153,9 @@ public static class AdminEndpoints
         // Manually assign a license to a user (super admin)
         app.MapPost("/api/admin/licenses", async (
             [FromBody] AdminCreateLicenseRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            CancellationToken                   ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3162,7 +3173,7 @@ public static class AdminEndpoints
                 new { userId = req.UserId, licenseType });
 
             string licenseId;
-            var issuedAt  = DateTime.UtcNow;
+            var issuedAt = DateTime.UtcNow;
             var expiresAt = issuedAt.AddYears(1);
 
             if (existingId is not null)
@@ -3176,10 +3187,10 @@ public static class AdminEndpoints
             {
                 var prefix = licenseType switch
                 {
-                    "organizer"   => "ESP-OR",
+                    "organizer" => "ESP-OR",
                     "venue_owner" => "ESP-VO",
                     "broadcaster" => "ESP-BR",
-                    _             => "ESP-XX"
+                    _ => "ESP-XX"
                 };
                 licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
 
@@ -3217,12 +3228,12 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/licenses/{userId}/{licenseType}/revoke ─────────────
         app.MapPut("/api/admin/licenses/{userId}/{licenseType}/revoke", async (
-            Guid                 userId,
-            string               licenseType,
-            HttpContext          ctx,
+            Guid userId,
+            string licenseType,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3268,12 +3279,12 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/licenses/{userId}/{licenseType}/reinstate ──────────
         app.MapPut("/api/admin/licenses/{userId}/{licenseType}/reinstate", async (
-            Guid                 userId,
-            string               licenseType,
-            HttpContext          ctx,
+            Guid userId,
+            string licenseType,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3331,9 +3342,9 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/licenses/backfill ─────────────────────────────────
         app.MapPost("/api/admin/licenses/backfill", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3347,10 +3358,10 @@ public static class AdminEndpoints
             var syncsVerifiedRoles = licenseType is "organizer" or "venue_owner";
             var prefix = licenseType switch
             {
-                "organizer"   => "ESP-OR",
+                "organizer" => "ESP-OR",
                 "venue_owner" => "ESP-VO",
                 "broadcaster" => "ESP-BR",
-                _             => "ESP-XX"
+                _ => "ESP-XX"
             };
 
             using var conn = db.CreateConnection();
@@ -3371,7 +3382,7 @@ public static class AdminEndpoints
                 new { licenseType });
 
             var userIds = unlicensed.ToList();
-            var issuedAt  = DateTime.UtcNow;
+            var issuedAt = DateTime.UtcNow;
             var expiresAt = issuedAt.AddYears(1);
             var issued = 0;
 
@@ -3425,10 +3436,10 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/verification-requests/{requestId} ───────────────
         app.MapDelete("/api/admin/verification-requests/{requestId}", async (
-            Guid                 requestId,
-            HttpContext          ctx,
+            Guid requestId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3445,10 +3456,10 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/licenses/{licenseId} ────────────────────────────
         app.MapDelete("/api/admin/licenses/{licenseId}", async (
-            Guid                 licenseId,
-            HttpContext          ctx,
+            Guid licenseId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3465,9 +3476,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/company-profiles ───────────────────────────────────
         app.MapGet("/api/admin/company-profiles", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3487,10 +3498,10 @@ public static class AdminEndpoints
 
         // ── GET /api/users/{userId}/role ───────────────────────────────────────
         app.MapGet("/api/users/{userId}/role", async (
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3508,11 +3519,11 @@ public static class AdminEndpoints
 
         // ── PUT /api/users/{userId}/role ───────────────────────────────────────
         app.MapPut("/api/users/{userId}/role", async (
-            Guid                      userId,
+            Guid userId,
             [FromBody] SetRoleRequest req,
-            HttpContext               ctx,
-            IDbConnectionFactory      db,
-            CancellationToken         ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3530,12 +3541,12 @@ public static class AdminEndpoints
 
         // ── GET /api/sponsors/applications ────────────────────────────────────
         app.MapGet("/api/sponsors/applications", async (
-            string?              status,
-            int                  page  = 1,
-            int                  limit = 50,
-            HttpContext          ctx   = default!,
-            IDbConnectionFactory db    = default!,
-            CancellationToken    ct    = default) =>
+            string? status,
+            int page = 1,
+            int limit = 50,
+            HttpContext ctx = default!,
+            IDbConnectionFactory db = default!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3556,10 +3567,10 @@ public static class AdminEndpoints
 
         // ── GET /api/sponsors/applications/{id} ───────────────────────────────
         app.MapGet("/api/sponsors/applications/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3572,11 +3583,11 @@ public static class AdminEndpoints
 
         // ── PATCH /api/sponsors/applications/{id} ─────────────────────────────
         app.MapPatch("/api/sponsors/applications/{id}", async (
-            Guid                                  id,
-            [FromBody] UpdateApplicationRequest   req,
-            HttpContext                           ctx,
-            IDbConnectionFactory                  db,
-            CancellationToken                     ct) =>
+            Guid id,
+            [FromBody] UpdateApplicationRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3597,13 +3608,13 @@ public static class AdminEndpoints
         // ── POST /api/sponsors/applications/{id}/approve ──────────────────────
         // One-click approval: creates sponsor from application + links user account
         app.MapPost("/api/sponsors/applications/{id}/approve", async (
-            Guid                    id,
-            HttpContext             ctx,
-            IDbConnectionFactory    db,
-            ISupabaseAdminClient    supabase,
-            IEmailService           email,
-            IConfiguration          config,
-            CancellationToken       ct) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            IEmailService email,
+            IConfiguration config,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3621,11 +3632,11 @@ public static class AdminEndpoints
             if (status == "approved")
                 return Results.BadRequest(new { error = "Application already approved." });
 
-            var companyName     = dict["company_name"]?.ToString() ?? "Unknown";
-            var companyWebsite  = dict["company_website"]?.ToString() ?? "";
-            var contactEmail    = dict["contact_email"]?.ToString();
+            var companyName = dict["company_name"]?.ToString() ?? "Unknown";
+            var companyWebsite = dict["company_website"]?.ToString() ?? "";
+            var contactEmail = dict["contact_email"]?.ToString();
             var partnershipTier = dict["partnership_tier"]?.ToString() ?? "diamond";
-            var message         = dict["message"]?.ToString();
+            var message = dict["message"]?.ToString();
 
             if (string.IsNullOrWhiteSpace(contactEmail))
                 return Results.BadRequest(new { error = "Application has no contact email." });
@@ -3663,7 +3674,7 @@ public static class AdminEndpoints
                     await email.SendAsync(contactEmail, EmailType.PartnerWelcome, new
                     {
                         sponsorName = companyName,
-                        portalUrl   = partnerUrl,
+                        portalUrl = partnerUrl,
                     }, ct);
                 }
                 catch { /* Email is best-effort */ }
@@ -3706,7 +3717,7 @@ public static class AdminEndpoints
 
             return Results.Ok(new
             {
-                success    = true,
+                success = true,
                 sponsorId,
                 isNewUser,
                 userId,
@@ -3721,14 +3732,14 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/teams — paginated list with search + stats ────────
         app.MapGet("/api/admin/teams", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct,
-            string?  search    = null,
-            string?  game      = null,
-            string?  team_kind = null,
-            int      limit     = 20,
-            int      offset    = 0) =>
+            CancellationToken ct,
+            string? search = null,
+            string? game = null,
+            string? team_kind = null,
+            int limit = 20,
+            int offset = 0) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3811,10 +3822,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/teams/{id} — full detail ─────────────────────────
         app.MapGet("/api/admin/teams/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3889,10 +3900,10 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/teams/{id} — disband team ─────────────────────
         app.MapDelete("/api/admin/teams/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3910,9 +3921,9 @@ public static class AdminEndpoints
                 await conn.ExecuteAsync("DELETE FROM team_roster_members WHERE roster_id IN (SELECT id FROM team_rosters WHERE team_id = @id)", new { id }, tx);
                 await conn.ExecuteAsync("DELETE FROM team_rosters WHERE team_id = @id", new { id }, tx);
                 await conn.ExecuteAsync("DELETE FROM team_invitations WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id",     new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id", new { id }, tx);
                 await conn.ExecuteAsync("DELETE FROM tournament_participants WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id",                 new { id }, tx);
+                await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id", new { id }, tx);
                 tx.Commit();
             }
             catch { tx.Rollback(); throw; }
@@ -3922,11 +3933,11 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/teams/{id}/members/{userId} — remove member ───
         app.MapDelete("/api/admin/teams/{id}/members/{userId}", async (
-            Guid                 id,
-            Guid                 userId,
-            HttpContext          ctx,
+            Guid id,
+            Guid userId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3951,11 +3962,11 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/teams/{id}/transfer-captain ─────────────────────
         app.MapPost("/api/admin/teams/{id}/transfer-captain", async (
-            Guid                              id,
+            Guid id,
             [FromBody] AdminTransferCaptainReq req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -3997,12 +4008,12 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/teams/{id} — edit team details ───────────────────
         app.MapPut("/api/admin/teams/{id}", async (
-            Guid                          id,
-            [FromBody] AdminEditTeamReq   req,
-            HttpContext                    ctx,
-            IDbConnectionFactory          db,
-            AuditService                  audit,
-            CancellationToken             ct) =>
+            Guid id,
+            [FromBody] AdminEditTeamReq req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4079,19 +4090,19 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/export/users ──────────────────────────────────────
         app.MapGet("/api/admin/export/users", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  search      = null,
-            [FromQuery] string?  status      = null,
-            [FromQuery] string?  role        = null,
-            [FromQuery] string?  country     = null,
-            [FromQuery] string?  joined_from = null,
-            [FromQuery] string?  joined_to   = null,
-            [FromQuery] string?  verified    = null,
-            [FromQuery] string?  has_team    = null,
-            [FromQuery] string?  sort_by     = null,
-            [FromQuery] string?  sort_dir    = null,
-            CancellationToken    ct          = default) =>
+            [FromQuery] string? search = null,
+            [FromQuery] string? status = null,
+            [FromQuery] string? role = null,
+            [FromQuery] string? country = null,
+            [FromQuery] string? joined_from = null,
+            [FromQuery] string? joined_to = null,
+            [FromQuery] string? verified = null,
+            [FromQuery] string? has_team = null,
+            [FromQuery] string? sort_by = null,
+            [FromQuery] string? sort_dir = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4200,19 +4211,19 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/export/tournaments ────────────────────────────────
         app.MapGet("/api/admin/export/tournaments", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  search    = null,
-            [FromQuery] string?  status    = null,
-            [FromQuery] string?  game      = null,
-            [FromQuery] string?  format    = null,
+            [FromQuery] string? search = null,
+            [FromQuery] string? status = null,
+            [FromQuery] string? game = null,
+            [FromQuery] string? format = null,
             [FromQuery] decimal? prize_min = null,
             [FromQuery] decimal? prize_max = null,
-            [FromQuery] string?  date_from = null,
-            [FromQuery] string?  date_to   = null,
-            [FromQuery] string?  sort_by   = null,
-            [FromQuery] string?  sort_dir  = null,
-            CancellationToken    ct        = default) =>
+            [FromQuery] string? date_from = null,
+            [FromQuery] string? date_to = null,
+            [FromQuery] string? sort_by = null,
+            [FromQuery] string? sort_dir = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4309,13 +4320,13 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/export/audit-logs ─────────────────────────────────
         app.MapGet("/api/admin/export/audit-logs", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  search      = null,
-            [FromQuery] string?  target_type = null,
-            [FromQuery] string?  from        = null,
-            [FromQuery] string?  to          = null,
-            CancellationToken    ct          = default) =>
+            [FromQuery] string? search = null,
+            [FromQuery] string? target_type = null,
+            [FromQuery] string? from = null,
+            [FromQuery] string? to = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4386,10 +4397,10 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/export/disputes ───────────────────────────────────
         app.MapGet("/api/admin/export/disputes", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  status = null,
-            CancellationToken    ct     = default) =>
+            [FromQuery] string? status = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4446,13 +4457,13 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/moderation-queue ──────────────────────────────────────
         app.MapGet("/api/admin/moderation-queue", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  status       = null,
+            [FromQuery] string? status = null,
             [FromQuery(Name = "content_type")] string? contentType = null,
-            [FromQuery] int      page         = 1,
-            [FromQuery] int      limit        = 20,
-            CancellationToken    ct           = default) =>
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 20,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4514,9 +4525,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/moderation-queue/stats ────────────────────────────────
         app.MapGet("/api/admin/moderation-queue/stats", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4536,21 +4547,21 @@ public static class AdminEndpoints
 
             return Results.Ok(new
             {
-                pending  = (long)row.pending,
+                pending = (long)row.pending,
                 approved = (long)row.approved,
                 rejected = (long)row.rejected,
-                total    = (long)row.total
+                total = (long)row.total
             });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/moderation-queue/{id}/review ─────────────────────────
         app.MapPost("/api/admin/moderation-queue/{id}/review", async (
-            Guid                 id,
+            Guid id,
             [FromBody] ModerationReviewRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct = default) =>
+            AuditService audit,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4589,7 +4600,7 @@ public static class AdminEndpoints
                 id,
                 newStatus,
                 reviewedBy = userCtx.UserIdGuid,
-                notes      = req.Notes ?? ""
+                notes = req.Notes ?? ""
             }, cancellationToken: ct));
 
             if (rowsAffected == 0)
@@ -4599,8 +4610,8 @@ public static class AdminEndpoints
             if (newStatus == "rejected")
             {
                 var contentType = (string)item.content_type;
-                var contentId   = (Guid)item.content_id;
-                var fieldName   = (string)item.field_name;
+                var contentId = (Guid)item.content_id;
+                var fieldName = (string)item.field_name;
 
                 switch (contentType)
                 {
@@ -4657,11 +4668,11 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/moderation-queue/{id} ──────────────────────────────
         app.MapDelete("/api/admin/moderation-queue/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct = default) =>
+            AuditService audit,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4698,10 +4709,10 @@ public static class AdminEndpoints
         // Public-facing endpoint: any authenticated user can report content
         app.MapPost("/api/report-content", async (
             [FromBody] ReportContentRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AdminAlertService    alerts,
-            CancellationToken    ct = default) =>
+            AdminAlertService alerts,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4719,11 +4730,11 @@ public static class AdminEndpoints
             var fieldName = req.FieldName ?? "";
             var validFields = contentType switch
             {
-                "tournament"     => new[] { "name", "description" },
-                "team"           => new[] { "name", "description" },
-                "profile"        => new[] { "bio", "username" },
+                "tournament" => new[] { "name", "description" },
+                "team" => new[] { "name", "description" },
+                "profile" => new[] { "bio", "username" },
                 "match_evidence" => new[] { "" },
-                _                => Array.Empty<string>()
+                _ => Array.Empty<string>()
             };
             if (!validFields.Contains(fieldName))
                 return Results.BadRequest(new { error = $"Invalid field_name '{fieldName}' for content type '{contentType}'" });
@@ -4788,11 +4799,11 @@ public static class AdminEndpoints
                 """, new
             {
                 contentType,
-                contentId   = req.ContentId,
+                contentId = req.ContentId,
                 fieldName,
                 contentText,
-                reportedBy  = userCtx.UserIdGuid,
-                reason      = req.Reason ?? ""
+                reportedBy = userCtx.UserIdGuid,
+                reason = req.Reason ?? ""
             }, cancellationToken: ct));
 
             // Generate admin alert
@@ -4809,13 +4820,13 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/entity-history/{targetType}/{targetId} ────────────────
         app.MapGet("/api/admin/entity-history/{targetType}/{targetId}", async (
-            string               targetType,
-            Guid                 targetId,
-            HttpContext          ctx,
+            string targetType,
+            Guid targetId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      page  = 1,
-            [FromQuery] int      limit = 20,
-            CancellationToken    ct    = default) =>
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 20,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4877,12 +4888,12 @@ public static class AdminEndpoints
         // Also query staff_audit_log for legacy entries
         // ── GET /api/admin/entity-history-legacy/{targetType}/{targetId} ──────────
         app.MapGet("/api/admin/entity-history-legacy/{targetType}/{targetId}", async (
-            string               targetType,
-            Guid                 targetId,
-            HttpContext          ctx,
+            string targetType,
+            Guid targetId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      limit = 20,
-            CancellationToken    ct    = default) =>
+            [FromQuery] int limit = 20,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4916,14 +4927,14 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/alerts ────────────────────────────────────────────────
         app.MapGet("/api/admin/alerts", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  status   = null,
-            [FromQuery] string?  severity = null,
-            [FromQuery] string?  type     = null,
-            [FromQuery] int      page     = 1,
-            [FromQuery] int      limit    = 20,
-            CancellationToken    ct       = default) =>
+            [FromQuery] string? status = null,
+            [FromQuery] string? severity = null,
+            [FromQuery] string? type = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 20,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -4986,9 +4997,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/alerts/summary ────────────────────────────────────────
         app.MapGet("/api/admin/alerts/summary", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5012,10 +5023,10 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/alerts/{id}/acknowledge ───────────────────────────────
         app.MapPut("/api/admin/alerts/{id}/acknowledge", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5034,10 +5045,10 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/alerts/{id}/resolve ───────────────────────────────────
         app.MapPut("/api/admin/alerts/{id}/resolve", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5057,10 +5068,10 @@ public static class AdminEndpoints
         // ── POST /api/admin/alerts ───────────────────────────────────────────────
         // Create a manual admin alert (for system announcements, etc.)
         app.MapPost("/api/admin/alerts", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
             [FromBody] CreateAdminAlertRequest req,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5082,23 +5093,24 @@ public static class AdminEndpoints
                 INSERT INTO admin_alerts (type, severity, title, message, data)
                 VALUES (@type, @severity, @title, @message, @data::jsonb)
                 RETURNING id
-                """, new {
-                    type     = req.Type ?? "system_event",
-                    severity = req.Severity ?? "info",
-                    title    = req.Title,
-                    message  = req.Message,
-                    data     = dataJson
-                }, cancellationToken: ct));
+                """, new
+            {
+                type = req.Type ?? "system_event",
+                severity = req.Severity ?? "info",
+                title = req.Title,
+                message = req.Message,
+                data = dataJson
+            }, cancellationToken: ct));
 
             return Results.Ok(new { id, success = true });
         }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/alerts/bulk-acknowledge ───────────────────────────────
         app.MapPut("/api/admin/alerts/bulk-acknowledge", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
             [FromBody] BulkAlertActionRequest req,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5133,20 +5145,20 @@ public static class AdminEndpoints
         // Lists admin users with last recorded login/revoke activity from audit_logs.
         // This is not a live Supabase JWT session registry.
         app.MapGet("/api/admin/sessions/active", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            [FromQuery] int       page   = 1,
-            [FromQuery] int       limit  = 20,
-            [FromQuery] string?   search = null,
-            CancellationToken     ct     = default) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 20,
+            [FromQuery] string? search = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!HasSecurityPermission(userCtx, Permissions.SecurityViewSessions)) return Results.Forbid();
 
             var clampedLimit = Math.Clamp(limit, 1, 100);
-            var clampedPage  = Math.Max(1, page);
-            var offset       = (clampedPage - 1) * clampedLimit;
+            var clampedPage = Math.Max(1, page);
+            var offset = (clampedPage - 1) * clampedLimit;
 
             using var conn = db.CreateConnection();
 
@@ -5217,20 +5229,20 @@ public static class AdminEndpoints
         // ── GET /api/admin/sessions/audit ────────────────────────────────────────
         // Returns recent admin login/logout/session-revoke activity from audit_logs.
         app.MapGet("/api/admin/sessions/audit", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            [FromQuery] int       page   = 1,
-            [FromQuery] int       limit  = 20,
-            [FromQuery] Guid?     userId = null,
-            CancellationToken     ct     = default) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 20,
+            [FromQuery] Guid? userId = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!HasSecurityPermission(userCtx, Permissions.SecurityViewSessions)) return Results.Forbid();
 
             var clampedLimit = Math.Clamp(limit, 1, 100);
-            var clampedPage  = Math.Max(1, page);
-            var offset       = (clampedPage - 1) * clampedLimit;
+            var clampedPage = Math.Max(1, page);
+            var offset = (clampedPage - 1) * clampedLimit;
 
             using var conn = db.CreateConnection();
 
@@ -5295,14 +5307,14 @@ public static class AdminEndpoints
         // Force logout a user by invalidating their Supabase Auth refresh tokens
         // and evicting their cached UserContext.
         app.MapPost("/api/admin/sessions/{userId}/revoke", async (
-            Guid                  userId,
+            Guid userId,
             [FromBody] RevokeSessionRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            ISupabaseAdminClient  supabase,
-            AuditService          audit,
-            HybridCache           cache,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            AuditService audit,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5374,9 +5386,9 @@ public static class AdminEndpoints
         // Returns count of distinct users active in the last 15 minutes,
         // based on audit_logs entries.
         app.MapGet("/api/admin/sessions/online-count", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5403,9 +5415,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/ip-allowlist ────────────────────────────────────────
         app.MapGet("/api/admin/ip-allowlist", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5424,24 +5436,24 @@ public static class AdminEndpoints
 
             return Results.Ok(entries.Select(e => new
             {
-                id                = (Guid)e.id,
-                ipAddress         = (string)e.ip_address,
-                label             = (string)e.label,
-                createdBy         = (Guid?)e.created_by,
-                createdByUsername  = (string?)e.created_by_username,
-                createdAt         = (DateTime)e.created_at,
-                expiresAt         = (DateTime?)e.expires_at,
-                isActive          = (bool)e.is_active
+                id = (Guid)e.id,
+                ipAddress = (string)e.ip_address,
+                label = (string)e.label,
+                createdBy = (Guid?)e.created_by,
+                createdByUsername = (string?)e.created_by_username,
+                createdAt = (DateTime)e.created_at,
+                expiresAt = (DateTime?)e.expires_at,
+                isActive = (bool)e.is_active
             }));
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/ip-allowlist ───────────────────────────────────────
         app.MapPost("/api/admin/ip-allowlist", async (
             [FromBody] AddIpAllowlistRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5453,7 +5465,7 @@ public static class AdminEndpoints
                 return Results.BadRequest(new { error = "Invalid IP address format." });
 
             var ipAddress = req.IpAddress.Trim();
-            var label     = req.Label?.Trim() ?? "";
+            var label = req.Label?.Trim() ?? "";
 
             DateTimeOffset? expiresAt = null;
             if (!string.IsNullOrWhiteSpace(req.ExpiresAt))
@@ -5472,12 +5484,12 @@ public static class AdminEndpoints
                     VALUES (@ipAddress, @label, @createdBy, @expiresAt)
                     RETURNING id, ip_address, label, created_by, created_at, expires_at, is_active
                     """, new
-                    {
-                        ipAddress,
-                        label,
-                        createdBy = userCtx.UserIdGuid,
-                        expiresAt = expiresAt?.UtcDateTime
-                    }, cancellationToken: ct));
+                {
+                    ipAddress,
+                    label,
+                    createdBy = userCtx.UserIdGuid,
+                    expiresAt = expiresAt?.UtcDateTime
+                }, cancellationToken: ct));
 
                 await audit.LogAsync(
                     userCtx.UserIdGuid, userCtx.Email,
@@ -5488,13 +5500,13 @@ public static class AdminEndpoints
 
                 return Results.Created($"/api/admin/ip-allowlist/{entry.id}", new
                 {
-                    id        = (Guid)entry.id,
+                    id = (Guid)entry.id,
                     ipAddress = (string)entry.ip_address,
-                    label     = (string)entry.label,
+                    label = (string)entry.label,
                     createdBy = (Guid?)entry.created_by,
                     createdAt = (DateTime)entry.created_at,
                     expiresAt = (DateTime?)entry.expires_at,
-                    isActive  = (bool)entry.is_active
+                    isActive = (bool)entry.is_active
                 });
             }
             catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
@@ -5505,12 +5517,12 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/ip-allowlist/{id} ──────────────────────────────────
         app.MapPut("/api/admin/ip-allowlist/{id}", async (
-            Guid                          id,
+            Guid id,
             [FromBody] UpdateIpAllowlistRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5594,29 +5606,29 @@ public static class AdminEndpoints
                 new
                 {
                     ip_address = (string)existing.ip_address,
-                    changes    = new { req.Label, req.IsActive, req.ExpiresAt }
+                    changes = new { req.Label, req.IsActive, req.ExpiresAt }
                 },
                 ct: ct);
 
             return Results.Ok(new
             {
-                id                = (Guid)updated!.id,
-                ipAddress         = (string)updated.ip_address,
-                label             = (string)updated.label,
-                createdBy         = (Guid?)updated.created_by,
-                createdAt         = (DateTime)updated.created_at,
-                expiresAt         = (DateTime?)updated.expires_at,
-                isActive          = (bool)updated.is_active
+                id = (Guid)updated!.id,
+                ipAddress = (string)updated.ip_address,
+                label = (string)updated.label,
+                createdBy = (Guid?)updated.created_by,
+                createdAt = (DateTime)updated.created_at,
+                expiresAt = (DateTime?)updated.expires_at,
+                isActive = (bool)updated.is_active
             });
         }).RequireAuthorization("Admin");
 
         // ── DELETE /api/admin/ip-allowlist/{id} ───────────────────────────────
         app.MapDelete("/api/admin/ip-allowlist/{id}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5661,9 +5673,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/ip-allowlist/status ────────────────────────────────
         app.MapGet("/api/admin/ip-allowlist/status", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5685,18 +5697,18 @@ public static class AdminEndpoints
 
             return Results.Ok(new
             {
-                enabled       = string.Equals(enabledValue, "true", StringComparison.OrdinalIgnoreCase),
-                totalEntries  = (long)counts.total,
+                enabled = string.Equals(enabledValue, "true", StringComparison.OrdinalIgnoreCase),
+                totalEntries = (long)counts.total,
                 activeEntries = (long)counts.active
             });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/ip-allowlist/toggle ───────────────────────────────
         app.MapPost("/api/admin/ip-allowlist/toggle", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService         audit,
-            CancellationToken    ct) =>
+            AuditService audit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5711,7 +5723,7 @@ public static class AdminEndpoints
                 transaction: txn, cancellationToken: ct)) ?? "false";
 
             var currentlyEnabled = string.Equals(currentValue, "true", StringComparison.OrdinalIgnoreCase);
-            var newEnabled       = !currentlyEnabled;
+            var newEnabled = !currentlyEnabled;
 
             // Safety checks before enabling
             if (newEnabled)
@@ -5748,10 +5760,10 @@ public static class AdminEndpoints
                 SET value = @newValue, updated_by = @updatedBy, updated_at = NOW()
                 WHERE key = 'security.ip_allowlist_enabled'
                 """, new
-                {
-                    newValue  = newEnabled ? "true" : "false",
-                    updatedBy = userCtx.UserIdGuid
-                }, transaction: txn, cancellationToken: ct));
+            {
+                newValue = newEnabled ? "true" : "false",
+                updatedBy = userCtx.UserIdGuid
+            }, transaction: txn, cancellationToken: ct));
 
             txn.Commit();
 
@@ -5771,9 +5783,9 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/report-schedules ──────────────────────────────────────
         app.MapGet("/api/admin/report-schedules", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5823,10 +5835,10 @@ public static class AdminEndpoints
         // ── POST /api/admin/report-schedules ─────────────────────────────────────
         app.MapPost("/api/admin/report-schedules", async (
             CreateReportScheduleRequest req,
-            HttpContext                 ctx,
-            IDbConnectionFactory        db,
-            AuditService               audit,
-            CancellationToken          ct = default) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            AuditService audit,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5896,17 +5908,17 @@ public static class AdminEndpoints
                 RETURNING id
                 """, new
             {
-                name        = req.Name.Trim(),
-                reportType  = req.ReportType.ToLower(),
-                frequency   = req.Frequency.ToLower(),
-                dayOfWeek   = req.DayOfWeek,
-                dayOfMonth  = req.DayOfMonth,
-                timeOfDay   = timeOfDay.ToString("HH:mm"),
-                recipients  = req.Recipients,
+                name = req.Name.Trim(),
+                reportType = req.ReportType.ToLower(),
+                frequency = req.Frequency.ToLower(),
+                dayOfWeek = req.DayOfWeek,
+                dayOfMonth = req.DayOfMonth,
+                timeOfDay = timeOfDay.ToString("HH:mm"),
+                recipients = req.Recipients,
                 format,
-                filters     = filtersJson,
-                nextRunAt   = nextRun,
-                createdBy   = userCtx.UserIdGuid
+                filters = filtersJson,
+                nextRunAt = nextRun,
+                createdBy = userCtx.UserIdGuid
             }, cancellationToken: ct));
 
             await audit.LogAsync(
@@ -5942,12 +5954,12 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/report-schedules/{id} ─────────────────────────────────
         app.MapPut("/api/admin/report-schedules/{id:guid}", async (
-            Guid                         id,
-            UpdateReportScheduleRequest  req,
-            HttpContext                  ctx,
-            IDbConnectionFactory         db,
-            AuditService                audit,
-            CancellationToken           ct = default) =>
+            Guid id,
+            UpdateReportScheduleRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            AuditService audit,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -5977,8 +5989,8 @@ public static class AdminEndpoints
                     return Results.BadRequest(new { error = $"Invalid email(s): {string.Join(", ", invalidEmails)}." });
             }
 
-            var sets      = new List<string>();
-            var p         = new DynamicParameters();
+            var sets = new List<string>();
+            var p = new DynamicParameters();
             p.Add("id", id);
 
             if (!string.IsNullOrWhiteSpace(req.Name))
@@ -5989,15 +6001,15 @@ public static class AdminEndpoints
                 // When re-activating, recompute next_run_at so the schedule fires on time
                 if (req.IsActive.Value)
                 {
-                    var existDict  = (IDictionary<string, object?>)existing;
-                    var freq       = existDict["frequency"]?.ToString() ?? "daily";
-                    var dowRaw     = existDict["day_of_week"];
-                    var domRaw     = existDict["day_of_month"];
-                    var todRaw     = existDict["time_of_day"]?.ToString() ?? "08:00";
-                    var dow        = dowRaw is not null ? Convert.ToInt32(dowRaw) : (int?)null;
-                    var dom        = domRaw is not null ? Convert.ToInt32(domRaw) : (int?)null;
+                    var existDict = (IDictionary<string, object?>)existing;
+                    var freq = existDict["frequency"]?.ToString() ?? "daily";
+                    var dowRaw = existDict["day_of_week"];
+                    var domRaw = existDict["day_of_month"];
+                    var todRaw = existDict["time_of_day"]?.ToString() ?? "08:00";
+                    var dow = dowRaw is not null ? Convert.ToInt32(dowRaw) : (int?)null;
+                    var dom = domRaw is not null ? Convert.ToInt32(domRaw) : (int?)null;
                     TimeOnly.TryParse(todRaw, out var tod);
-                    var nextRun    = ComputeNextRun(freq, dow, dom, tod);
+                    var nextRun = ComputeNextRun(freq, dow, dom, tod);
                     sets.Add("next_run_at = @nextRunAt"); p.Add("nextRunAt", nextRun);
                 }
             }
@@ -6045,11 +6057,11 @@ public static class AdminEndpoints
 
         // ── DELETE /api/admin/report-schedules/{id} ──────────────────────────────
         app.MapDelete("/api/admin/report-schedules/{id:guid}", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService        audit,
-            CancellationToken   ct = default) =>
+            AuditService audit,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6075,11 +6087,11 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/report-schedules/{id}/run ────────────────────────────
         app.MapPost("/api/admin/report-schedules/{id:guid}/run", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            AuditService        audit,
-            CancellationToken   ct = default) =>
+            AuditService audit,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6110,7 +6122,7 @@ public static class AdminEndpoints
             {
                 var schedDict = (IDictionary<string, object?>)schedule;
                 var reportType = schedDict["report_type"]?.ToString() ?? "users";
-                var format     = schedDict["format"]?.ToString() ?? "json";
+                var format = schedDict["format"]?.ToString() ?? "json";
 
                 // ── Generate report data ─────────────────────────────────────
                 var (payload, rowCount) = await GenerateReportAsync(conn, reportType, ct);
@@ -6124,15 +6136,15 @@ public static class AdminEndpoints
                     var tempJson = JsonSerializer.Serialize(payload);
                     using var doc = JsonDocument.Parse(tempJson);
                     fileContent = ConvertReportToCsv(doc);
-                    mimeType    = "text/csv";
+                    mimeType = "text/csv";
                 }
                 else
                 {
                     fileContent = JsonSerializer.Serialize(payload);
-                    mimeType    = "application/json";
+                    mimeType = "application/json";
                 }
 
-                var bytes   = System.Text.Encoding.UTF8.GetByteCount(fileContent);
+                var bytes = System.Text.Encoding.UTF8.GetByteCount(fileContent);
                 var dataUri = $"data:{mimeType};base64,{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(fileContent))}";
 
                 // Update run log — success
@@ -6196,18 +6208,18 @@ public static class AdminEndpoints
 
         // ── GET /api/admin/report-schedules/{id}/history ─────────────────────────
         app.MapGet("/api/admin/report-schedules/{id:guid}/history", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      page  = 1,
-            [FromQuery] int      limit = 20,
-            CancellationToken    ct    = default) =>
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 20,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.AdminRoles.Any()) return Results.Forbid();
 
-            if (page < 1)  page  = 1;
+            if (page < 1) page = 1;
             if (limit < 1) limit = 20;
             if (limit > 100) limit = 100;
             var offset = (page - 1) * limit;
@@ -6247,19 +6259,19 @@ public static class AdminEndpoints
         // GET /api/admin/gdpr/requests — paginated list with user info
         app.MapGet("/api/admin/gdpr/requests", async (
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct,
-            string?  status      = null,
-            string?  requestType = null,
-            int      page        = 1,
-            int      limit       = 25) =>
+            HttpContext ctx,
+            CancellationToken ct,
+            string? status = null,
+            string? requestType = null,
+            int page = 1,
+            int limit = 25) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
-            if (page  < 1)   page  = 1;
-            if (limit < 1)   limit = 1;
+            if (page < 1) page = 1;
+            if (limit < 1) limit = 1;
             if (limit > 100) limit = 100;
             var offset = (page - 1) * limit;
 
@@ -6277,7 +6289,7 @@ public static class AdminEndpoints
                 conditions.Append(" AND gr.request_type = @requestType");
                 p.Add("requestType", requestType);
             }
-            p.Add("limit",  limit);
+            p.Add("limit", limit);
             p.Add("offset", offset);
 
             var countSql = $"""
@@ -6315,12 +6327,12 @@ public static class AdminEndpoints
 
         // POST /api/admin/gdpr/requests/{id}/process — approve or reject
         app.MapPost("/api/admin/gdpr/requests/{id}/process", async (
-            Guid                      id,
+            Guid id,
             [FromBody] ProcessGdprRequest req,
-            IDbConnectionFactory      db,
-            AuditService              audit,
-            HttpContext               ctx,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            AuditService audit,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6339,8 +6351,8 @@ public static class AdminEndpoints
 
             if (gdprReq is null) return Results.NotFound(new { error = "GDPR request not found." });
 
-            Guid   targetUserId   = (Guid)gdprReq.user_id;
-            string requestType    = (string)gdprReq.request_type;
+            Guid targetUserId = (Guid)gdprReq.user_id;
+            string requestType = (string)gdprReq.request_type;
 
             if (req.Action == "reject")
             {
@@ -6433,17 +6445,17 @@ public static class AdminEndpoints
 
                     var exportPayload = new
                     {
-                        exported_at      = DateTime.UtcNow,
-                        user_id          = targetUserId,
+                        exported_at = DateTime.UtcNow,
+                        user_id = targetUserId,
                         profile,
-                        tournaments      = tournaments.ToList(),
-                        teams            = teams.ToList(),
-                        matches          = matches.ToList(),
-                        consent_records  = consents.ToList()
+                        tournaments = tournaments.ToList(),
+                        teams = teams.ToList(),
+                        matches = matches.ToList(),
+                        consent_records = consents.ToList()
                     };
 
-                    var json    = JsonSerializer.Serialize(exportPayload);
-                    var b64     = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json));
+                    var json = JsonSerializer.Serialize(exportPayload);
+                    var b64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json));
                     var dataUri = $"data:application/json;base64,{b64}";
 
                     await conn.ExecuteAsync(new CommandDefinition("""
@@ -6532,8 +6544,8 @@ public static class AdminEndpoints
         // GET /api/admin/gdpr/stats — compliance dashboard stats
         app.MapGet("/api/admin/gdpr/stats", async (
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct) =>
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6566,20 +6578,20 @@ public static class AdminEndpoints
         // GET /api/admin/gdpr/consent-records — paginated consent audit
         app.MapGet("/api/admin/gdpr/consent-records", async (
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct,
-            Guid?   userId      = null,
+            HttpContext ctx,
+            CancellationToken ct,
+            Guid? userId = null,
             string? consentType = null,
-            bool?   granted     = null,
-            int     page        = 1,
-            int     limit       = 25) =>
+            bool? granted = null,
+            int page = 1,
+            int limit = 25) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
 
-            if (page  < 1)   page  = 1;
-            if (limit < 1)   limit = 1;
+            if (page < 1) page = 1;
+            if (limit < 1) limit = 1;
             if (limit > 100) limit = 100;
             var offset = (page - 1) * limit;
 
@@ -6603,7 +6615,7 @@ public static class AdminEndpoints
                 conditions.Append(" AND cr.granted = @granted");
                 p.Add("granted", granted.Value);
             }
-            p.Add("limit",  limit);
+            p.Add("limit", limit);
             p.Add("offset", offset);
 
             var countSql = $"SELECT COUNT(*) FROM consent_records cr {conditions}";
@@ -6635,9 +6647,9 @@ public static class AdminEndpoints
         // POST /api/gdpr/request — user submits own GDPR request
         app.MapPost("/api/gdpr/request", async (
             [FromBody] SubmitGdprRequest req,
-            IDbConnectionFactory        db,
-            HttpContext                 ctx,
-            CancellationToken           ct) =>
+            IDbConnectionFactory db,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6681,9 +6693,9 @@ public static class AdminEndpoints
         // POST /api/consent — user records a consent decision
         app.MapPost("/api/consent", async (
             [FromBody] RecordConsentRequest req,
-            IDbConnectionFactory           db,
-            HttpContext                    ctx,
-            CancellationToken              ct) =>
+            IDbConnectionFactory db,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6700,7 +6712,7 @@ public static class AdminEndpoints
                      ?? ctx.Connection.RemoteIpAddress?.ToString();
 
             var userAgent = ctx.Request.Headers["User-Agent"].FirstOrDefault();
-            var version   = string.IsNullOrWhiteSpace(req.Version) ? "1.0" : req.Version;
+            var version = string.IsNullOrWhiteSpace(req.Version) ? "1.0" : req.Version;
 
             using var conn = db.CreateConnection();
 
@@ -6711,9 +6723,9 @@ public static class AdminEndpoints
                 """,
                 new
                 {
-                    userId      = userCtx.UserIdGuid,
+                    userId = userCtx.UserIdGuid,
                     consentType = req.ConsentType,
-                    granted     = req.Granted,
+                    granted = req.Granted,
                     ip,
                     userAgent,
                     version
@@ -6731,25 +6743,25 @@ public static class AdminEndpoints
         // ── GET /api/admin/anomalies ──────────────────────────────────────────────
         app.MapGet("/api/admin/anomalies", async (
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct,
-            bool?   isResolved = null,
-            int     page       = 1,
-            int     limit      = 25) =>
+            HttpContext ctx,
+            CancellationToken ct,
+            bool? isResolved = null,
+            int page = 1,
+            int limit = 25) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.AdminRoles.Any()) return Results.Forbid();
 
-            if (page  < 1)   page  = 1;
-            if (limit < 1)   limit = 1;
+            if (page < 1) page = 1;
+            if (limit < 1) limit = 1;
             if (limit > 100) limit = 100;
             var offset = (page - 1) * limit;
 
             using var conn = db.CreateConnection();
 
-            var where  = new System.Text.StringBuilder("WHERE 1=1");
-            var p      = new DynamicParameters();
+            var where = new System.Text.StringBuilder("WHERE 1=1");
+            var p = new DynamicParameters();
 
             if (isResolved.HasValue)
             {
@@ -6757,11 +6769,11 @@ public static class AdminEndpoints
                 p.Add("isResolved", isResolved.Value);
             }
 
-            p.Add("limit",  limit);
+            p.Add("limit", limit);
             p.Add("offset", offset);
 
             var countSql = $"SELECT COUNT(*) FROM anomaly_events ae {where}";
-            var total    = await conn.ExecuteScalarAsync<int>(
+            var total = await conn.ExecuteScalarAsync<int>(
                 new CommandDefinition(countSql, p, cancellationToken: ct));
 
             var sql = $"""
@@ -6820,8 +6832,8 @@ public static class AdminEndpoints
         // ── GET /api/admin/anomalies/rules ────────────────────────────────────────
         app.MapGet("/api/admin/anomalies/rules", async (
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct) =>
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6851,11 +6863,11 @@ public static class AdminEndpoints
 
         // ── PUT /api/admin/anomalies/rules/{id} ───────────────────────────────────
         app.MapPut("/api/admin/anomalies/rules/{id}", async (
-            Guid                    id,
+            Guid id,
             UpdateAnomalyRuleRequest req,
-            IDbConnectionFactory    db,
-            HttpContext              ctx,
-            CancellationToken       ct) =>
+            IDbConnectionFactory db,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6886,14 +6898,14 @@ public static class AdminEndpoints
 
             // Build partial update
             var sets = new List<string>();
-            var dp   = new DynamicParameters();
+            var dp = new DynamicParameters();
             dp.Add("id", id);
 
-            if (req.ThresholdCount.HasValue)  { sets.Add("threshold_count  = @thresholdCount");  dp.Add("thresholdCount",  req.ThresholdCount.Value); }
-            if (req.WindowMinutes.HasValue)    { sets.Add("window_minutes   = @windowMinutes");   dp.Add("windowMinutes",   req.WindowMinutes.Value); }
-            if (req.Severity is not null)      { sets.Add("severity         = @severity");        dp.Add("severity",        req.Severity); }
-            if (req.IsActive.HasValue)         { sets.Add("is_active        = @isActive");        dp.Add("isActive",        req.IsActive.Value); }
-            if (req.CooldownMinutes.HasValue)  { sets.Add("cooldown_minutes = @cooldownMinutes"); dp.Add("cooldownMinutes", req.CooldownMinutes.Value); }
+            if (req.ThresholdCount.HasValue) { sets.Add("threshold_count  = @thresholdCount"); dp.Add("thresholdCount", req.ThresholdCount.Value); }
+            if (req.WindowMinutes.HasValue) { sets.Add("window_minutes   = @windowMinutes"); dp.Add("windowMinutes", req.WindowMinutes.Value); }
+            if (req.Severity is not null) { sets.Add("severity         = @severity"); dp.Add("severity", req.Severity); }
+            if (req.IsActive.HasValue) { sets.Add("is_active        = @isActive"); dp.Add("isActive", req.IsActive.Value); }
+            if (req.CooldownMinutes.HasValue) { sets.Add("cooldown_minutes = @cooldownMinutes"); dp.Add("cooldownMinutes", req.CooldownMinutes.Value); }
 
             if (sets.Count == 0)
                 return Results.BadRequest(new { error = "No fields provided to update" });
@@ -6925,11 +6937,11 @@ public static class AdminEndpoints
 
         // ── POST /api/admin/anomalies/{id}/resolve ────────────────────────────────
         app.MapPost("/api/admin/anomalies/{id}/resolve", async (
-            Guid                   id,
-            ResolveAnomalyRequest  req,
-            IDbConnectionFactory   db,
-            HttpContext             ctx,
-            CancellationToken      ct) =>
+            Guid id,
+            ResolveAnomalyRequest req,
+            IDbConnectionFactory db,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6938,7 +6950,7 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
 
             var resolvedById = userCtx.UserIdGuid;
-            var notes        = req.Notes?.Trim();
+            var notes = req.Notes?.Trim();
 
             var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
                 new CommandDefinition("""
@@ -6973,8 +6985,8 @@ public static class AdminEndpoints
         // ── POST /api/admin/anomalies/scan ────────────────────────────────────────
         app.MapPost("/api/admin/anomalies/scan", async (
             IDbConnectionFactory db,
-            HttpContext           ctx,
-            CancellationToken    ct) =>
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -6996,9 +7008,9 @@ public static class AdminEndpoints
                     ORDER BY metric
                     """, cancellationToken: ct))).ToList();
 
-            var newEvents  = new List<object>();
+            var newEvents = new List<object>();
             var scanErrors = new List<object>();
-            var now        = DateTime.UtcNow;
+            var now = DateTime.UtcNow;
 
             // Check if tournament_disputes table exists (optional metric)
             var disputesExists = await conn.ExecuteScalarAsync<bool>(
@@ -7094,10 +7106,10 @@ public static class AdminEndpoints
                 // Create anomaly event
                 var detailsJson = System.Text.Json.JsonSerializer.Serialize(new
                 {
-                    rule_name    = rule.Metric,
+                    rule_name = rule.Metric,
                     window_start = now.AddMinutes(-rule.WindowMinutes),
-                    window_end   = now,
-                    scanned_by   = userCtx.UserId
+                    window_end = now,
+                    scanned_by = userCtx.UserId
                 });
 
                 var eventId = await conn.ExecuteScalarAsync<Guid>(
@@ -7110,12 +7122,12 @@ public static class AdminEndpoints
                         """,
                         new
                         {
-                            ruleId         = rule.Id,
-                            metric         = rule.Metric,
-                            countObserved  = observed,
+                            ruleId = rule.Id,
+                            metric = rule.Metric,
+                            countObserved = observed,
                             thresholdCount = rule.ThresholdCount,
-                            windowMinutes  = rule.WindowMinutes,
-                            details        = detailsJson
+                            windowMinutes = rule.WindowMinutes,
+                            details = detailsJson
                         },
                         cancellationToken: ct));
 
@@ -7134,37 +7146,37 @@ public static class AdminEndpoints
                         new
                         {
                             severity = rule.Severity,
-                            title    = $"Anomaly detected: {rule.Metric}",
-                            message  = $"{observed} events observed in last {rule.WindowMinutes} minute(s) — threshold is {rule.ThresholdCount}.",
-                            data     = System.Text.Json.JsonSerializer.Serialize(new
+                            title = $"Anomaly detected: {rule.Metric}",
+                            message = $"{observed} events observed in last {rule.WindowMinutes} minute(s) — threshold is {rule.ThresholdCount}.",
+                            data = System.Text.Json.JsonSerializer.Serialize(new
                             {
                                 anomaly_event_id = eventId,
-                                rule_id          = rule.Id,
-                                metric           = rule.Metric,
-                                count_observed   = observed,
-                                threshold_count  = rule.ThresholdCount,
-                                window_minutes   = rule.WindowMinutes
+                                rule_id = rule.Id,
+                                metric = rule.Metric,
+                                count_observed = observed,
+                                threshold_count = rule.ThresholdCount,
+                                window_minutes = rule.WindowMinutes
                             })
                         },
                         cancellationToken: ct));
 
                 newEvents.Add(new
                 {
-                    id             = eventId,
-                    ruleId         = rule.Id,
-                    metric         = rule.Metric,
-                    severity       = rule.Severity,
-                    countObserved  = observed,
+                    id = eventId,
+                    ruleId = rule.Id,
+                    metric = rule.Metric,
+                    severity = rule.Severity,
+                    countObserved = observed,
                     thresholdCount = rule.ThresholdCount,
-                    windowMinutes  = rule.WindowMinutes,
-                    detectedAt     = now
+                    windowMinutes = rule.WindowMinutes,
+                    detectedAt = now
                 });
             }
 
             return Results.Ok(new
             {
-                scannedRules   = rules.Count,
-                detectedCount  = newEvents.Count,
+                scannedRules = rules.Count,
+                detectedCount = newEvents.Count,
                 detectedEvents = newEvents,
                 scanErrors
             });
@@ -7202,8 +7214,8 @@ public static class AdminEndpoints
         // Returns the calling admin's saved dashboard layout, or a default if none exists.
         app.MapGet("/api/admin/dashboard/preferences", async (
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct) =>
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -7228,11 +7240,16 @@ public static class AdminEndpoints
                 };
                 var defaultRefreshIntervals = new Dictionary<string, int>
                 {
-                    ["stats-overview"]      = 30,  ["user-growth"]          = 300,
-                    ["tournament-activity"] = 60,  ["revenue-summary"]      = 300,
-                    ["moderation-queue"]    = 60,  ["anomaly-alerts"]        = 30,
-                    ["online-users"]        = 30,  ["recent-registrations"] = 60,
-                    ["pending-gdpr"]        = 300, ["system-health"]        = 60,
+                    ["stats-overview"] = 30,
+                    ["user-growth"] = 300,
+                    ["tournament-activity"] = 60,
+                    ["revenue-summary"] = 300,
+                    ["moderation-queue"] = 60,
+                    ["anomaly-alerts"] = 30,
+                    ["online-users"] = 30,
+                    ["recent-registrations"] = 60,
+                    ["pending-gdpr"] = 300,
+                    ["system-health"] = 60,
                 };
                 var defaultLayout = widgetIds
                     .Select((id, i) => new DashboardWidgetConfig(id, i, true, defaultRefreshIntervals[id]))
@@ -7259,8 +7276,8 @@ public static class AdminEndpoints
         app.MapPut("/api/admin/dashboard/preferences", async (
             [FromBody] SaveDashboardPreferencesRequest req,
             IDbConnectionFactory db,
-            HttpContext          ctx,
-            CancellationToken    ct) =>
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -7308,7 +7325,8 @@ public static class AdminEndpoints
             return Results.Ok(new { saved = true });
         }).RequireAuthorization("Admin");
 
-    }    private sealed record AdminTransferCaptainReq(string NewCaptainId);
+    }
+    private sealed record AdminTransferCaptainReq(string NewCaptainId);
     private sealed record AdminEditTeamReq(
         string? Name = null,
         string? Tag = null,
@@ -7492,7 +7510,7 @@ public static class AdminEndpoints
     /// </summary>
     private static string ConvertReportToCsv(JsonDocument doc)
     {
-        var sb   = new System.Text.StringBuilder();
+        var sb = new System.Text.StringBuilder();
         var root = doc.RootElement;
 
         if (root.TryGetProperty("rows", out var rowsEl) && rowsEl.ValueKind == JsonValueKind.Array)
@@ -7538,18 +7556,18 @@ public static class AdminEndpoints
         var todayAtTime = now.Date.Add(timeOfDay.ToTimeSpan());
         return frequency.ToLower() switch
         {
-            "daily"   => todayAtTime > now ? todayAtTime : todayAtTime.AddDays(1),
-            "weekly"  => ComputeNextWeekly(now, dayOfWeek ?? 1, timeOfDay),
+            "daily" => todayAtTime > now ? todayAtTime : todayAtTime.AddDays(1),
+            "weekly" => ComputeNextWeekly(now, dayOfWeek ?? 1, timeOfDay),
             "monthly" => ComputeNextMonthly(now, dayOfMonth ?? 1, timeOfDay),
-            _         => now.AddDays(1)
+            _ => now.AddDays(1)
         };
     }
 
     private static DateTime ComputeNextWeekly(DateTime now, int targetDow, TimeOnly timeOfDay)
     {
         var currentDow = (int)now.DayOfWeek; // 0=Sunday
-        var daysUntil  = ((targetDow - currentDow) + 7) % 7;
-        var candidate  = now.Date.AddDays(daysUntil).Add(timeOfDay.ToTimeSpan());
+        var daysUntil = ((targetDow - currentDow) + 7) % 7;
+        var candidate = now.Date.AddDays(daysUntil).Add(timeOfDay.ToTimeSpan());
         // If candidate is in the past (same day, time already passed) advance one week
         if (candidate <= now) candidate = candidate.AddDays(7);
         return candidate;
@@ -7559,15 +7577,15 @@ public static class AdminEndpoints
     {
         // Clamp to valid days in the current month
         var daysInMonth = DateTime.DaysInMonth(now.Year, now.Month);
-        var clampedDay  = Math.Min(targetDay, daysInMonth);
-        var candidate   = new DateTime(now.Year, now.Month, clampedDay)
+        var clampedDay = Math.Min(targetDay, daysInMonth);
+        var candidate = new DateTime(now.Year, now.Month, clampedDay)
                               .Add(timeOfDay.ToTimeSpan());
         if (candidate <= now)
         {
             // Advance to next month
-            var nextMonth   = now.Month == 12 ? 1 : now.Month + 1;
-            var nextYear    = now.Month == 12 ? now.Year + 1 : now.Year;
-            var daysInNext  = DateTime.DaysInMonth(nextYear, nextMonth);
+            var nextMonth = now.Month == 12 ? 1 : now.Month + 1;
+            var nextYear = now.Month == 12 ? now.Year + 1 : now.Year;
+            var daysInNext = DateTime.DaysInMonth(nextYear, nextMonth);
             var clampedNext = Math.Min(targetDay, daysInNext);
             candidate = new DateTime(nextYear, nextMonth, clampedNext)
                             .Add(timeOfDay.ToTimeSpan());
@@ -7581,14 +7599,14 @@ public static class AdminEndpoints
     /// </summary>
     private static async Task<(object Payload, int RowCount)> GenerateReportAsync(
         System.Data.IDbConnection conn,
-        string                    reportType,
-        CancellationToken         ct)
+        string reportType,
+        CancellationToken ct)
     {
         switch (reportType.ToLower())
         {
             case "users":
-            {
-                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                {
+                    var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
                     SELECT
                         p.id,
                         p.full_name,
@@ -7607,26 +7625,26 @@ public static class AdminEndpoints
                     ORDER BY p.created_at DESC
                     LIMIT 1000
                     """, cancellationToken: ct));
-                var list = rows.ToList();
-                return (new { report_type = "users", generated_at = DateTime.UtcNow, rows = list }, list.Count);
-            }
+                    var list = rows.ToList();
+                    return (new { report_type = "users", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+                }
 
             case "tournaments":
-            {
-                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                {
+                    var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
                     SELECT t.id, t.name, t.game, t.status, t.format, t.prize_pool,
                            t.max_teams, t.is_featured, t.start_date, t.created_at
                     FROM tournaments t
                     ORDER BY t.created_at DESC
                     LIMIT 1000
                     """, cancellationToken: ct));
-                var list = rows.ToList();
-                return (new { report_type = "tournaments", generated_at = DateTime.UtcNow, rows = list }, list.Count);
-            }
+                    var list = rows.ToList();
+                    return (new { report_type = "tournaments", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+                }
 
             case "revenue":
-            {
-                var row = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
+                {
+                    var row = await conn.QuerySingleAsync<dynamic>(new CommandDefinition("""
                     SELECT
                         COUNT(*)                                                    AS total_entries,
                         COALESCE(SUM(CASE WHEN amount > 0 THEN amount END), 0)      AS total_revenue,
@@ -7635,12 +7653,12 @@ public static class AdminEndpoints
                         MAX(created_at)                                             AS latest
                     FROM wallet_transactions
                     """, cancellationToken: ct));
-                return (new { report_type = "revenue", generated_at = DateTime.UtcNow, summary = row }, 1);
-            }
+                    return (new { report_type = "revenue", generated_at = DateTime.UtcNow, summary = row }, 1);
+                }
 
             case "activity":
-            {
-                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                {
+                    var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
                     SELECT
                         DATE_TRUNC('day', created_at) AS activity_date,
                         COUNT(*)                       AS event_count,
@@ -7651,22 +7669,22 @@ public static class AdminEndpoints
                     ORDER BY activity_date DESC, event_count DESC
                     LIMIT 5000
                     """, cancellationToken: ct));
-                var list = rows.ToList();
-                return (new { report_type = "activity", generated_at = DateTime.UtcNow, rows = list }, list.Count);
-            }
+                    var list = rows.ToList();
+                    return (new { report_type = "activity", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+                }
 
             case "moderation":
-            {
-                var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
+                {
+                    var rows = await conn.QueryAsync<dynamic>(new CommandDefinition("""
                     SELECT mq.id, mq.content_type, mq.status, mq.auto_flagged,
                            mq.created_at, mq.reviewed_at
                     FROM moderation_queue mq
                     ORDER BY mq.created_at DESC
                     LIMIT 1000
                     """, cancellationToken: ct));
-                var list = rows.ToList();
-                return (new { report_type = "moderation", generated_at = DateTime.UtcNow, rows = list }, list.Count);
-            }
+                    var list = rows.ToList();
+                    return (new { report_type = "moderation", generated_at = DateTime.UtcNow, rows = list }, list.Count);
+                }
 
             default:
                 return (new { report_type = reportType, generated_at = DateTime.UtcNow, rows = Array.Empty<object>() }, 0);
@@ -7724,21 +7742,21 @@ public sealed record UpdateIpAllowlistRequest(string? Label, bool? IsActive, str
 
 // ── Phase 12: Scheduled Reports ───────────────────────────────────────────────
 public sealed record CreateReportScheduleRequest(
-    string   Name,
-    string   ReportType,
-    string   Frequency,
-    int?     DayOfWeek,
-    int?     DayOfMonth,
-    string   TimeOfDay,
+    string Name,
+    string ReportType,
+    string Frequency,
+    int? DayOfWeek,
+    int? DayOfMonth,
+    string TimeOfDay,
     string[] Recipients,
-    string?  Format,
-    object?  Filters);
+    string? Format,
+    object? Filters);
 
 public sealed record UpdateReportScheduleRequest(
-    string?   Name,
-    bool?     IsActive,
+    string? Name,
+    bool? IsActive,
     string[]? Recipients,
-    string?   Format);
+    string? Format);
 
 // ── Phase 13: GDPR / Compliance ───────────────────────────────────────────────
 public sealed record ProcessGdprRequest(string Action, string? Notes);
@@ -7747,21 +7765,21 @@ public sealed record RecordConsentRequest(string ConsentType, bool Granted, stri
 
 // ── Phase 14: Anomaly Detection ───────────────────────────────────────────────
 public sealed record UpdateAnomalyRuleRequest(
-    int?    ThresholdCount,
-    int?    WindowMinutes,
+    int? ThresholdCount,
+    int? WindowMinutes,
     string? Severity,
-    bool?   IsActive,
-    int?    CooldownMinutes);
+    bool? IsActive,
+    int? CooldownMinutes);
 
 public sealed record ResolveAnomalyRequest(string? Notes);
 
 /// <summary>Internal projection used only by the anomaly scan loop.</summary>
 internal sealed record AnomalyRuleRow(
-    Guid      Id,
-    string    Metric,
-    string    Name,
-    int       ThresholdCount,
-    int       WindowMinutes,
-    string    Severity,
-    int       CooldownMinutes,
+    Guid Id,
+    string Metric,
+    string Name,
+    int ThresholdCount,
+    int WindowMinutes,
+    string Severity,
+    int CooldownMinutes,
     DateTime? LastTriggeredAt);

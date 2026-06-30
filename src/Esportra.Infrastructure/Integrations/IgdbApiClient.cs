@@ -28,39 +28,39 @@ public sealed class IgdbApiClient
     // Only add IDs that have been verified against IGDB API response.
     private static readonly Dictionary<string, int> KnownGameIds = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Valorant"]           = 126459,
-        ["Counter-Strike 2"]   = 242408,
-        ["League of Legends"]  = 115,
-        ["Dota 2"]             = 2963,
-        ["Fortnite"]           = 1905,
-        ["Apex Legends"]       = 114795,
-        ["PUBG"]               = 27789,  // PUBG: Battlegrounds
-        ["Rocket League"]      = 11198,
-        ["Tekken 8"]           = 217590,
-        ["EA FC"]              = 308698, // EA Sports FC 25
+        ["Valorant"] = 126459,
+        ["Counter-Strike 2"] = 242408,
+        ["League of Legends"] = 115,
+        ["Dota 2"] = 2963,
+        ["Fortnite"] = 1905,
+        ["Apex Legends"] = 114795,
+        ["PUBG"] = 27789,  // PUBG: Battlegrounds
+        ["Rocket League"] = 11198,
+        ["Tekken 8"] = 217590,
+        ["EA FC"] = 308698, // EA Sports FC 25
     };
 
     // IGDB search overrides — some games need different search terms than our display names
     private static readonly Dictionary<string, string> IgdbSearchNames = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Counter-Strike 2"] = "Counter-Strike 2",
-        ["PUBG"]             = "PUBG: Battlegrounds",
-        ["EA FC"]            = "EA Sports FC 25",
-        ["Tekken 8"]         = "Tekken 8",
+        ["PUBG"] = "PUBG: Battlegrounds",
+        ["EA FC"] = "EA Sports FC 25",
+        ["Tekken 8"] = "Tekken 8",
     };
 
     // Alternate game names that map to the same IGDB IDs
     private static readonly Dictionary<string, string> GameNameAliases = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["CS2"]                          = "Counter-Strike 2",
-        ["CSGO"]                         = "Counter-Strike 2",
+        ["CS2"] = "Counter-Strike 2",
+        ["CSGO"] = "Counter-Strike 2",
         ["Counter-Strike: Global Offensive"] = "Counter-Strike 2",
-        ["LoL"]                          = "League of Legends",
-        ["PUBG: Battlegrounds"]          = "PUBG",
-        ["PlayerUnknown's Battlegrounds"]= "PUBG",
-        ["EA Sports FC"]                 = "EA FC",
-        ["EA Sports FC 25"]              = "EA FC",
-        ["FIFA"]                         = "EA FC",
+        ["LoL"] = "League of Legends",
+        ["PUBG: Battlegrounds"] = "PUBG",
+        ["PlayerUnknown's Battlegrounds"] = "PUBG",
+        ["EA Sports FC"] = "EA FC",
+        ["EA Sports FC 25"] = "EA FC",
+        ["FIFA"] = "EA FC",
     };
 
     /// <summary>Search for a game and return all artwork, screenshot, and video assets.</summary>

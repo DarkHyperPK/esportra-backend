@@ -29,10 +29,10 @@ public sealed class ResendEmailService(
 
         var payload = new
         {
-            from    = _from,
-            to      = new[] { toEmail },
+            from = _from,
+            to = new[] { toEmail },
             subject = subject,
-            html    = html,
+            html = html,
         };
 
         logger.LogInformation("[Email] Sending {Type} to {Email} (from: {From})", type, toEmail, _from);

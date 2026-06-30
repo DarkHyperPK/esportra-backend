@@ -12,13 +12,13 @@ public static class SessionRefundEndpoints
         // ── POST /api/venues/{id}/sessions/{sessionId}/refund ──────────────
         // Owner or manager issues a full or partial session refund.
         app.MapPost("/api/venues/{id}/sessions/{sessionId}/refund", async (
-            Guid                       id,
-            Guid                       sessionId,
-            [FromBody] RefundRequest   req,
-            HttpContext                 ctx,
-            IDbConnectionFactory       db,
-            ILogger<Program>           logger,
-            CancellationToken          ct) =>
+            Guid id,
+            Guid sessionId,
+            [FromBody] RefundRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -115,11 +115,11 @@ public static class SessionRefundEndpoints
         // ── GET /api/venues/{id}/sessions/{sessionId}/refunds ──────────────
         // Get all refunds for a specific session.
         app.MapGet("/api/venues/{id}/sessions/{sessionId}/refunds", async (
-            Guid                 id,
-            Guid                 sessionId,
-            HttpContext           ctx,
+            Guid id,
+            Guid sessionId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -150,15 +150,15 @@ public static class SessionRefundEndpoints
         // ── GET /api/venues/{id}/refunds ───────────────────────────────────
         // Refund history for the entire venue with pagination and filters.
         app.MapGet("/api/venues/{id}/refunds", async (
-            Guid                 id,
-            HttpContext           ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      page = 1,
-            [FromQuery] int      pageSize = 25,
-            [FromQuery] string?  method = null,
-            [FromQuery] string?  from = null,
-            [FromQuery] string?  to = null,
-            CancellationToken    ct = default) =>
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 25,
+            [FromQuery] string? method = null,
+            [FromQuery] string? from = null,
+            [FromQuery] string? to = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -235,14 +235,14 @@ public static class SessionRefundEndpoints
         // ── GET /api/venues/{id}/sessions — list sessions (needed for refund UI) ──
         // Returns recent ended sessions with refund status.
         app.MapGet("/api/venues/{id}/sessions", async (
-            Guid                 id,
-            HttpContext           ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] int      page = 1,
-            [FromQuery] int      pageSize = 25,
-            [FromQuery] string?  search = null,
-            [FromQuery] bool     refundedOnly = false,
-            CancellationToken    ct = default) =>
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 25,
+            [FromQuery] string? search = null,
+            [FromQuery] bool refundedOnly = false,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();

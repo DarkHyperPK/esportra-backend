@@ -23,21 +23,21 @@ public sealed record BulkUserActionRequest(Guid[] UserIds, string Action, string
 public sealed record BulkTournamentActionRequest(Guid[] TournamentIds, string Action);
 
 public sealed record SponsorTrackRequest(
-    string  SponsorId,
-    string  EventType,
+    string SponsorId,
+    string EventType,
     string? PageUrl = null,
     string? TournamentId = null);
 
 public sealed record RevokeSessionRequest(string? Reason = null);
 
 public sealed record CreateAuditLogRequest(
-    string  AdminId,
-    string  AdminName,
-    string  ActionType,
-    string  TargetType,
-    string  TargetId,
-    string  TargetName,
-    string  Severity = "low",
+    string AdminId,
+    string AdminName,
+    string ActionType,
+    string TargetType,
+    string TargetId,
+    string TargetName,
+    string Severity = "low",
     string? UserAgent = null,
     string? IpAddress = null,
-    object? Details   = null);
+    object? Details = null);

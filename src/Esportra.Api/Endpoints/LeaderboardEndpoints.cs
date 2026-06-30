@@ -16,11 +16,11 @@ public static class LeaderboardEndpoints
         // GET /api/leaderboards/teams
         app.MapGet("/api/leaderboards/teams", async (
             IDbConnectionFactory db,
-            [FromQuery] string?  game    = null,
-            [FromQuery] string?  country = null,
-            [FromQuery] int      limit   = 50,
-            [FromQuery] int      offset  = 0,
-            CancellationToken    ct      = default) =>
+            [FromQuery] string? game = null,
+            [FromQuery] string? country = null,
+            [FromQuery] int limit = 50,
+            [FromQuery] int offset = 0,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);

@@ -23,11 +23,11 @@ public static class NotificationEndpoints
     {
         // ── GET /api/notifications ──────────────────────────────────────────
         app.MapGet("/api/notifications", async (
-            int                  limit  = 50,
-            int                  offset = 0,
-            HttpContext          ctx    = null!,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            int limit = 50,
+            int offset = 0,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -75,10 +75,10 @@ public static class NotificationEndpoints
 
         // ── PUT /api/notifications/{id}/read ────────────────────────────────
         app.MapPut("/api/notifications/{id}/read", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -93,9 +93,9 @@ public static class NotificationEndpoints
 
         // ── PUT /api/notifications/read-all ─────────────────────────────────
         app.MapPut("/api/notifications/read-all", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -110,10 +110,10 @@ public static class NotificationEndpoints
 
         // ── DELETE /api/notifications/{id} ──────────────────────────────────
         app.MapDelete("/api/notifications/{id}", async (
-            string               id,
-            HttpContext          ctx,
+            string id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -142,10 +142,10 @@ public static class NotificationEndpoints
         // Create a notification for a specific user (organizer/admin only)
         app.MapPost("/api/notifications", async (
             [FromBody] CreateNotificationRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            IHubContext<NotificationHub>         notifHub,
-            CancellationToken                    ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -178,13 +178,14 @@ public static class NotificationEndpoints
                     VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                     RETURNING id
                     """,
-                    new {
-                        userId  = targetUserId,
-                        type    = req.Type ?? "general",
-                        title   = req.Title ?? "",
+                    new
+                    {
+                        userId = targetUserId,
+                        type = req.Type ?? "general",
+                        title = req.Title ?? "",
                         message = req.Message ?? "",
-                        link    = req.Link,
-                        data    = dataJson
+                        link = req.Link,
+                        data = dataJson
                     });
 
                 // Push real-time notification via SignalR
@@ -204,9 +205,9 @@ public static class NotificationEndpoints
         // ── POST /api/notifications/bulk-delete─────────────────────────────
         app.MapPost("/api/notifications/bulk-delete", async (
             [FromBody] BulkDeleteNotificationsRequest req,
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -214,7 +215,7 @@ public static class NotificationEndpoints
             using var conn = db.CreateConnection();
 
             var syntheticIds = req.Ids.Where(id => id.StartsWith("invite-")).Select(id => Guid.Parse(id["invite-".Length..])).ToArray();
-            var regularIds   = req.Ids.Where(id => !id.StartsWith("invite-")).Select(id => Guid.Parse(id)).ToArray();
+            var regularIds = req.Ids.Where(id => !id.StartsWith("invite-")).Select(id => Guid.Parse(id)).ToArray();
 
             if (syntheticIds.Length > 0)
             {
@@ -236,10 +237,10 @@ public static class NotificationEndpoints
         // ── POST /api/notifications/accept-invite ───────────────────────────
         app.MapPost("/api/notifications/accept-invite", async (
             [FromBody] InviteActionRequest req,
-            HttpContext                    ctx,
-            IDbConnectionFactory          db,
-            IHubContext<NotificationHub>  notifHub,
-            CancellationToken             ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -306,7 +307,8 @@ public static class NotificationEndpoints
                         @msg,
                         @data::jsonb, FALSE)
                 """,
-                new {
+                new
+                {
                     userId = invite.invited_by_user_id,
                     title = $"✅ {acceptedPlayerName} Joined {acceptedTeamName ?? "Your Team"}!",
                     msg = $"{acceptedPlayerName} accepted your invite and is now part of {acceptedTeamName ?? "the team"}. Your roster just got stronger!",
@@ -325,10 +327,10 @@ public static class NotificationEndpoints
         // ── POST /api/notifications/reject-invite ───────────────────────────
         app.MapPost("/api/notifications/reject-invite", async (
             [FromBody] InviteActionRequest req,
-            HttpContext                    ctx,
-            IDbConnectionFactory          db,
-            IHubContext<NotificationHub>  notifHub,
-            CancellationToken             ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -375,7 +377,8 @@ public static class NotificationEndpoints
                         @msg,
                         @data::jsonb, FALSE)
                 """,
-                new {
+                new
+                {
                     userId = invite.invited_by_user_id,
                     title = $"❌ Invite Declined — {rejectedTeamName ?? "Your Team"}",
                     msg = $"{rejectedPlayerName} declined your invite to join {rejectedTeamName ?? "the team"}.",
@@ -397,14 +400,14 @@ public static class NotificationEndpoints
 public sealed record BulkDeleteNotificationsRequest(List<string> Ids);
 
 public sealed record CreateNotificationRequest(
-    string  UserId,
-    string  Type,
-    string  Title,
-    string  Message,
+    string UserId,
+    string Type,
+    string Title,
+    string Message,
     string? Link = null,
     object? Data = null,
-    bool    IsRead = false);
+    bool IsRead = false);
 
 public sealed record InviteActionRequest(
-    string  TeamId,
+    string TeamId,
     string? NotificationId = null);

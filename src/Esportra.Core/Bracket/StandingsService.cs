@@ -50,9 +50,9 @@ public sealed class StandingsService(IDbConnectionFactory db)
                 t1.ScoreDiff += t1Score - t2Score;
                 t2.ScoreDiff += t2Score - t1Score;
 
-                if ((Guid?)m.winner_id == t1Id)      { t1.Wins++; t1.Points += 3; t2.Losses++; }
-                else if ((Guid?)m.winner_id == t2Id)  { t2.Wins++; t2.Points += 3; t1.Losses++; }
-                else                                   { t1.Ties++; t1.Points++; t2.Ties++; t2.Points++; }
+                if ((Guid?)m.winner_id == t1Id) { t1.Wins++; t1.Points += 3; t2.Losses++; }
+                else if ((Guid?)m.winner_id == t2Id) { t2.Wins++; t2.Points += 3; t1.Losses++; }
+                else { t1.Ties++; t1.Points++; t2.Ties++; t2.Points++; }
 
                 map[t1Id] = t1;
                 map[t2Id] = t2;
@@ -104,16 +104,16 @@ public sealed class StandingsService(IDbConnectionFactory db)
             .ThenByDescending(x => x.Stats.ScoreDiff)
             .ThenByDescending(x => x.Stats.Wins)
             .Select((x, idx) => new TeamStanding(
-                TeamId:    x.Id,
-                TeamName:  teamNames.GetValueOrDefault(x.Id, "Unknown"),
-                Played:    x.Stats.Played,
-                Wins:      x.Stats.Wins,
-                Losses:    x.Stats.Losses,
-                Ties:      x.Stats.Ties,
-                Points:    x.Stats.Points,
-                Buchholz:  x.Stats.Buchholz,
+                TeamId: x.Id,
+                TeamName: teamNames.GetValueOrDefault(x.Id, "Unknown"),
+                Played: x.Stats.Played,
+                Wins: x.Stats.Wins,
+                Losses: x.Stats.Losses,
+                Ties: x.Stats.Ties,
+                Points: x.Stats.Points,
+                Buchholz: x.Stats.Buchholz,
                 ScoreDiff: x.Stats.ScoreDiff,
-                Rank:      idx + 1))
+                Rank: idx + 1))
             .ToList();
 
         return sorted;

@@ -380,9 +380,9 @@ public static class StaffAuthHelper
         => userCtx.IsSuperAdmin || userCtx.AdminRoles.Length > 0;
 
     // ── Permission constants (mirror frontend StaffPermission type) ──────────
-    public const string PermBracketEdit       = "bracket:edit";
-    public const string PermScoresUpdate      = "scores:update";
-    public const string PermTeamsManage       = "teams:manage";
+    public const string PermBracketEdit = "bracket:edit";
+    public const string PermScoresUpdate = "scores:update";
+    public const string PermTeamsManage = "teams:manage";
     public const string PermAnnouncementsSend = "announcements:send";
-    public const string PermDisputesAssist    = "disputes:assist";
+    public const string PermDisputesAssist = "disputes:assist";
 }

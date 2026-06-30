@@ -19,13 +19,13 @@ public static class StageEndpoints
         // Batch sync: accepts full stage array, diffs against DB, upserts/deletes.
         // Replaces useTournamentWizard's 3 sequential Supabase calls.
         app.MapPut("/api/tournaments/{tournamentId}/stages", async (
-            Guid                              tournamentId,
-            [FromBody] SyncStagesRequest      req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            TournamentWinnerService           winnerService,
-            TournamentAuthorizationService      tournamentAuth,
-            CancellationToken                 ct) =>
+            Guid tournamentId,
+            [FromBody] SyncStagesRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -95,16 +95,16 @@ public static class StageEndpoints
                         """,
                         new
                         {
-                            id               = stageGuid.Value,
-                            name             = s.Name,
-                            format           = s.Format,
-                            stageOrder       = s.StageOrder,
-                            bestOf           = s.BestOf ?? 1,
-                            capacity         = s.Capacity,
+                            id = stageGuid.Value,
+                            name = s.Name,
+                            format = s.Format,
+                            stageOrder = s.StageOrder,
+                            bestOf = s.BestOf ?? 1,
+                            capacity = s.Capacity,
                             advancementCount = s.AdvancementCount,
-                            config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
-                            startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
-                            endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
+                            config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
+                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
                         }, tx);
                 }
                 else
@@ -119,15 +119,15 @@ public static class StageEndpoints
                         new
                         {
                             tournamentId,
-                            name             = s.Name,
-                            format           = s.Format,
-                            stageOrder       = s.StageOrder,
-                            bestOf           = s.BestOf ?? 1,
-                            capacity         = s.Capacity,
+                            name = s.Name,
+                            format = s.Format,
+                            stageOrder = s.StageOrder,
+                            bestOf = s.BestOf ?? 1,
+                            capacity = s.Capacity,
                             advancementCount = s.AdvancementCount,
-                            config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
-                            startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
-                            endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
+                            config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
+                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
                         }, tx);
                 }
             }
@@ -144,12 +144,12 @@ public static class StageEndpoints
         // ── PUT /api/tournaments/{tournamentId}/map-pools ────────────────────
         // Replace all map pool entries for a tournament.
         app.MapPut("/api/tournaments/{tournamentId}/map-pools", async (
-            Guid                              tournamentId,
-            [FromBody] SyncMapPoolsRequest    req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            ILogger<Program>                  logger,
-            CancellationToken                 ct) =>
+            Guid tournamentId,
+            [FromBody] SyncMapPoolsRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -207,11 +207,11 @@ public static class StageEndpoints
         // ── PATCH /api/stages/{stageId}/order ───────────────────────────────
         // Update a single stage's order. Used during reorder after delete.
         app.MapPatch("/api/stages/{stageId}/order", async (
-            Guid                              stageId,
+            Guid stageId,
             [FromBody] UpdateStageOrderRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -238,12 +238,12 @@ public static class StageEndpoints
         // ── POST /api/tournaments/{tournamentId}/stages/delete ─────────────
         // Delete specific stages by ID. Used by StageManagementTab.
         app.MapPost("/api/tournaments/{tournamentId}/stages/delete", async (
-            Guid                              tournamentId,
-            [FromBody] DeleteStagesRequest    req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            TournamentWinnerService           winnerService,
-            CancellationToken                 ct) =>
+            Guid tournamentId,
+            [FromBody] DeleteStagesRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -280,10 +280,10 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{stageId}/completion-status ─────────────────────
         app.MapGet("/api/stages/{stageId}/completion-status", async (
-            Guid                stageId,
+            Guid stageId,
             IDbConnectionFactory db,
-            StandingsService    standings,
-            CancellationToken   ct) =>
+            StandingsService standings,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -392,11 +392,11 @@ public static class StageEndpoints
 
         // ── POST /api/stages/{stageId}/advance ──────────────────────────────
         app.MapPost("/api/stages/{stageId}/advance", async (
-            Guid                stageId,
+            Guid stageId,
             IDbConnectionFactory db,
-            StandingsService    standings,
+            StandingsService standings,
             TournamentWinnerService winnerService,
-            CancellationToken   ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -531,7 +531,7 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{stageId}/next ──────────────────────────────────
         app.MapGet("/api/stages/{stageId}/next", async (
-            Guid                stageId,
+            Guid stageId,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -550,9 +550,9 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{id} ──────────────────────────────────────────────
         app.MapGet("/api/stages/{id}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -568,9 +568,9 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{id}/participants ─────────────────────────────────
         app.MapGet("/api/stages/{id}/participants", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var participants = await conn.QueryAsync<dynamic>(
@@ -697,8 +697,8 @@ public static class StageEndpoints
 
     private static async Task<object> CheckEliminationCompletion(
         System.Data.IDbConnection conn,
-        List<dynamic>             matches,
-        int                       advancementCount)
+        List<dynamic> matches,
+        int advancementCount)
     {
         var pendingCount = matches.Count(m => (string?)m.status is "pending" or "in_progress");
         int maxRound = matches.Max(m => (int)(m.round_index ?? 0));
@@ -739,12 +739,12 @@ public static class StageEndpoints
 
     private static async Task<object> CheckRoundRobinCompletion(
         System.Data.IDbConnection conn,
-        List<dynamic>             matches,
-        int                       advancementCount,
-        Guid                      stageId,
-        dynamic                   stage,
-        StandingsService          standings,
-        CancellationToken         ct)
+        List<dynamic> matches,
+        int advancementCount,
+        Guid stageId,
+        dynamic stage,
+        StandingsService standings,
+        CancellationToken ct)
     {
         int pendingCount = matches.Count(m => (string?)m.status != "completed");
 

@@ -16,7 +16,7 @@ public sealed class SmtpEmailService(
 {
     public async Task SendAsync(string toEmail, EmailType type, object data, CancellationToken ct = default)
     {
-        var host     = config["Smtp:Host"];
+        var host = config["Smtp:Host"];
         var username = config["Smtp:Username"];
         var password = config["Smtp:Password"];
 
@@ -27,9 +27,9 @@ public sealed class SmtpEmailService(
             return;
         }
 
-        var port      = int.Parse(config["Smtp:Port"] ?? "465");
+        var port = int.Parse(config["Smtp:Port"] ?? "465");
         var fromEmail = config["Smtp:FromEmail"] ?? username;
-        var fromName  = config["Smtp:FromName"] ?? "Esportra";
+        var fromName = config["Smtp:FromName"] ?? "Esportra";
 
         var (subject, html) = BuildTemplate(type, data);
 

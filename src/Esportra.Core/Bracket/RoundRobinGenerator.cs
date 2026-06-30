@@ -8,27 +8,27 @@ public sealed class RoundRobinGenerator : IBracketGenerator
     public BracketGraph Generate(
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
-        Guid?   stageId          = null,
-        int     bestOf           = 1,
-        int?    bracketSize      = null,   // interpreted as number of groups
-        int?    advancementCount = null,
-        BracketConfig? config    = null)
+        Guid? stageId = null,
+        int bestOf = 1,
+        int? bracketSize = null,   // interpreted as number of groups
+        int? advancementCount = null,
+        BracketConfig? config = null)
     {
         var versionId = Guid.NewGuid();
-        var nodes     = new List<BracketNode>();
-        var edges     = new List<BracketEdge>();
+        var nodes = new List<BracketNode>();
+        var edges = new List<BracketEdge>();
 
-        string? dailyStart    = config?.DailyStartTime ?? "20:00";
-        DateTime? startDate   = config?.TournamentStartDate is { } s ? DateTime.Parse(s) : null;
+        string? dailyStart = config?.DailyStartTime ?? "20:00";
+        DateTime? startDate = config?.TournamentStartDate is { } s ? DateTime.Parse(s) : null;
 
         int numGroups = bracketSize ?? 1;
-        var groups    = new List<List<(Guid Id, string Name)>>(numGroups);
+        var groups = new List<List<(Guid Id, string Name)>>(numGroups);
         for (int i = 0; i < numGroups; i++) groups.Add([]);
 
         // Snake seeding distribution
         for (int idx = 0; idx < teams.Count; idx++)
         {
-            int cycle      = idx / numGroups;
+            int cycle = idx / numGroups;
             int groupIndex = cycle % 2 == 0 ? idx % numGroups : numGroups - 1 - (idx % numGroups);
             groups[groupIndex].Add(teams[idx]);
         }
@@ -37,9 +37,9 @@ public sealed class RoundRobinGenerator : IBracketGenerator
 
         for (int gi = 0; gi < numGroups; gi++)
         {
-            string groupId      = $"Group {(char)('A' + gi)}";
-            var    groupTeams   = groups[gi];
-            var    roundMatches = GenerateCircleSchedule(groupTeams);
+            string groupId = $"Group {(char)('A' + gi)}";
+            var groupTeams = groups[gi];
+            var roundMatches = GenerateCircleSchedule(groupTeams);
 
             for (int ri = 0; ri < roundMatches.Count; ri++)
             {
@@ -47,7 +47,7 @@ public sealed class RoundRobinGenerator : IBracketGenerator
                 if (startDate.HasValue)
                 {
                     var roundDate = startDate.Value.AddDays(ri);
-                    var parts     = dailyStart!.Split(':');
+                    var parts = dailyStart!.Split(':');
                     roundDate = roundDate.Date
                         .AddHours(int.Parse(parts[0]))
                         .AddMinutes(int.Parse(parts[1]));
@@ -59,20 +59,20 @@ public sealed class RoundRobinGenerator : IBracketGenerator
                 {
                     var (t1, t2) = round[mi];
                     nodes.Add(new BracketNode(
-                        Id:            Guid.NewGuid(),
-                        VersionId:     versionId,
-                        RoundIndex:    ri,
-                        MatchNumber:   matchCounter++,
-                        BracketType:   "group",
-                        GroupId:       groupId,
-                        RoundNumber:   ri + 1,
-                        Status:        "pending",
-                        Team1Id:       t1.Id,
-                        Team2Id:       t2.Id,
-                        BestOf:        bestOf,
+                        Id: Guid.NewGuid(),
+                        VersionId: versionId,
+                        RoundIndex: ri,
+                        MatchNumber: matchCounter++,
+                        BracketType: "group",
+                        GroupId: groupId,
+                        RoundNumber: ri + 1,
+                        Status: "pending",
+                        Team1Id: t1.Id,
+                        Team2Id: t2.Id,
+                        BestOf: bestOf,
                         ScheduledTime: scheduledTime,
-                        X:             gi * 400,
-                        Y:             ri * 150 + mi * 80));
+                        X: gi * 400,
+                        Y: ri * 150 + mi * 80));
                 }
             }
         }
@@ -96,9 +96,9 @@ public sealed class RoundRobinGenerator : IBracketGenerator
         if (hasBye)
             participants.Add((Guid.Empty, "BYE"));
 
-        int n         = participants.Count;
+        int n = participants.Count;
         int numRounds = n - 1;
-        var circle    = new List<(Guid, string)>(participants);
+        var circle = new List<(Guid, string)>(participants);
 
         for (int round = 0; round < numRounds; round++)
         {

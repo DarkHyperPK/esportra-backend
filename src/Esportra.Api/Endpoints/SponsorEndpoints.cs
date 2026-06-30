@@ -20,99 +20,99 @@ public static class SponsorEndpoints
         // ── GET /api/sponsors/me ─────────────────────────────────────────────
         // Returns sponsor profile + account + stats + daily history for the authenticated partner user.
         app.MapGet("/api/sponsors/me", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             try
             {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+                using var conn = db.CreateConnection();
 
-            // 1. Get linked sponsor account
-            var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
+                // 1. Get linked sponsor account
+                var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
                 SELECT sa.sponsor_id, sa.role, sa.onboarding_meta
                 FROM sponsor_accounts sa
                 WHERE sa.user_id = @userId
                 LIMIT 1
                 """,
-                new { userId = userCtx.UserIdGuid });
+                    new { userId = userCtx.UserIdGuid });
 
-            if (account is null)
-                return Results.NotFound(new { error = "No sponsor account linked to this user." });
+                if (account is null)
+                    return Results.NotFound(new { error = "No sponsor account linked to this user." });
 
-            string sponsorId = account.sponsor_id.ToString();
+                string sponsorId = account.sponsor_id.ToString();
 
-            // 2. Get sponsor details
-            var sponsor = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM sponsors WHERE id = @id",
-                new { id = Guid.Parse(sponsorId) });
+                // 2. Get sponsor details
+                var sponsor = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT * FROM sponsors WHERE id = @id",
+                    new { id = Guid.Parse(sponsorId) });
 
-            if (sponsor is null)
-                return Results.NotFound(new { error = "Sponsor not found." });
+                if (sponsor is null)
+                    return Results.NotFound(new { error = "Sponsor not found." });
 
-            // 3. Get stats (impression + click counts)
-            var impressionCount = await conn.ExecuteScalarAsync<long>(
-                """
+                // 3. Get stats (impression + click counts)
+                var impressionCount = await conn.ExecuteScalarAsync<long>(
+                    """
                 SELECT COUNT(*) FROM sponsor_impressions
                 WHERE sponsor_id = @sponsorId AND event_type = 'impression'
                 """,
-                new { sponsorId = Guid.Parse(sponsorId) });
+                    new { sponsorId = Guid.Parse(sponsorId) });
 
-            var clickCount = await conn.ExecuteScalarAsync<long>(
-                """
+                var clickCount = await conn.ExecuteScalarAsync<long>(
+                    """
                 SELECT COUNT(*) FROM sponsor_impressions
                 WHERE sponsor_id = @sponsorId AND event_type = 'click'
                 """,
-                new { sponsorId = Guid.Parse(sponsorId) });
+                    new { sponsorId = Guid.Parse(sponsorId) });
 
-            // 4. Get daily history (last 90 days)
-            var dailyStats = await conn.QueryAsync<dynamic>(
-                """
+                // 4. Get daily history (last 90 days)
+                var dailyStats = await conn.QueryAsync<dynamic>(
+                    """
                 SELECT stat_date, impressions, clicks, unique_impressions
                 FROM daily_sponsor_stats
                 WHERE sponsor_id = @sponsorId
                 ORDER BY stat_date ASC
                 LIMIT 90
                 """,
-                new { sponsorId = Guid.Parse(sponsorId) });
+                    new { sponsorId = Guid.Parse(sponsorId) });
 
-            var history = dailyStats.Select(r => new
-            {
-                date = r.stat_date is DateOnly d
-                    ? d.ToString("yyyy-MM-dd")
-                    : ((DateTime)r.stat_date).ToString("yyyy-MM-dd"),
-                impressions = (long)r.impressions,
-                uniqueImpressions = (long)r.unique_impressions,
-                clicks = (long)r.clicks,
-            }).ToList();
-
-            var totalUniqueImpressions = history.Sum(h => h.uniqueImpressions);
-
-            return Results.Ok(new
-            {
-                sponsor = MapSponsor(sponsor),
-                account = new
+                var history = dailyStats.Select(r => new
                 {
-                    sponsor_id = sponsorId,
-                    role = (string)account.role,
-                    onboarding_meta = account.onboarding_meta is string json
-                        ? JsonSerializer.Deserialize<object>(json)
-                        : account.onboarding_meta,
-                },
-                stats = new
+                    date = r.stat_date is DateOnly d
+                        ? d.ToString("yyyy-MM-dd")
+                        : ((DateTime)r.stat_date).ToString("yyyy-MM-dd"),
+                    impressions = (long)r.impressions,
+                    uniqueImpressions = (long)r.unique_impressions,
+                    clicks = (long)r.clicks,
+                }).ToList();
+
+                var totalUniqueImpressions = history.Sum(h => h.uniqueImpressions);
+
+                return Results.Ok(new
                 {
-                    impressions = impressionCount,
-                    uniqueImpressions = totalUniqueImpressions,
-                    clicks = clickCount,
-                    ctr = impressionCount > 0 ? Math.Round((double)clickCount / impressionCount * 100, 2) : 0.0,
-                },
-                history,
-            });
+                    sponsor = MapSponsor(sponsor),
+                    account = new
+                    {
+                        sponsor_id = sponsorId,
+                        role = (string)account.role,
+                        onboarding_meta = account.onboarding_meta is string json
+                            ? JsonSerializer.Deserialize<object>(json)
+                            : account.onboarding_meta,
+                    },
+                    stats = new
+                    {
+                        impressions = impressionCount,
+                        uniqueImpressions = totalUniqueImpressions,
+                        clicks = clickCount,
+                        ctr = impressionCount > 0 ? Math.Round((double)clickCount / impressionCount * 100, 2) : 0.0,
+                    },
+                    history,
+                });
             }
             catch (Exception ex)
             {
@@ -126,9 +126,9 @@ public static class SponsorEndpoints
         // Update sponsor profile (name, tagline, description, website_url, cta_text, logo_url, banner, gallery)
         app.MapPut("/api/sponsors/me", async (
             [FromBody] SponsorUpdateRequest req,
-            HttpContext                     ctx,
-            IDbConnectionFactory            db,
-            CancellationToken               ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -174,16 +174,16 @@ public static class SponsorEndpoints
             var p = new DynamicParameters();
             p.Add("id", sponsorId.Value);
 
-            if (req.Name is not null)           { sets.Add("name = @name");                       p.Add("name", req.Name); }
-            if (req.Tagline is not null)         { sets.Add("tagline = @tagline");                 p.Add("tagline", req.Tagline); }
-            if (req.Description is not null)     { sets.Add("description = @description");         p.Add("description", req.Description); }
-            if (req.WebsiteUrl is not null)      { sets.Add("website_url = @websiteUrl");          p.Add("websiteUrl", req.WebsiteUrl); }
-            if (req.CtaText is not null)         { sets.Add("cta_text = @ctaText");               p.Add("ctaText", req.CtaText); }
-            if (req.LogoUrl is not null)         { sets.Add("logo_url = @logoUrl");               p.Add("logoUrl", req.LogoUrl); }
-            if (req.BannerImageUrl is not null)  { sets.Add("banner_image_url = @bannerImageUrl"); p.Add("bannerImageUrl", req.BannerImageUrl); }
-            if (req.GalleryImages is not null)   { sets.Add("gallery_images = @galleryImages");   p.Add("galleryImages", req.GalleryImages); }
-            if (req.DiscountText is not null)    { sets.Add("discount_text = @discountText");     p.Add("discountText", req.DiscountText); }
-            if (req.DetailDeckUrl is not null)   { sets.Add("detail_deck_url = @detailDeckUrl");  p.Add("detailDeckUrl", req.DetailDeckUrl == "" ? (string?)null : req.DetailDeckUrl); }
+            if (req.Name is not null) { sets.Add("name = @name"); p.Add("name", req.Name); }
+            if (req.Tagline is not null) { sets.Add("tagline = @tagline"); p.Add("tagline", req.Tagline); }
+            if (req.Description is not null) { sets.Add("description = @description"); p.Add("description", req.Description); }
+            if (req.WebsiteUrl is not null) { sets.Add("website_url = @websiteUrl"); p.Add("websiteUrl", req.WebsiteUrl); }
+            if (req.CtaText is not null) { sets.Add("cta_text = @ctaText"); p.Add("ctaText", req.CtaText); }
+            if (req.LogoUrl is not null) { sets.Add("logo_url = @logoUrl"); p.Add("logoUrl", req.LogoUrl); }
+            if (req.BannerImageUrl is not null) { sets.Add("banner_image_url = @bannerImageUrl"); p.Add("bannerImageUrl", req.BannerImageUrl); }
+            if (req.GalleryImages is not null) { sets.Add("gallery_images = @galleryImages"); p.Add("galleryImages", req.GalleryImages); }
+            if (req.DiscountText is not null) { sets.Add("discount_text = @discountText"); p.Add("discountText", req.DiscountText); }
+            if (req.DetailDeckUrl is not null) { sets.Add("detail_deck_url = @detailDeckUrl"); p.Add("detailDeckUrl", req.DetailDeckUrl == "" ? (string?)null : req.DetailDeckUrl); }
 
             if (sets.Count == 0)
                 return Results.BadRequest(new { error = "No fields to update." });
@@ -205,9 +205,9 @@ public static class SponsorEndpoints
 
         // ── GET /api/sponsors/me/demographics ────────────────────────────────
         app.MapGet("/api/sponsors/me/demographics", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -267,9 +267,9 @@ public static class SponsorEndpoints
 
         // ── GET /api/sponsors/me/onboarding ──────────────────────────────────
         app.MapGet("/api/sponsors/me/onboarding", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -295,9 +295,9 @@ public static class SponsorEndpoints
         // ── PUT /api/sponsors/me/onboarding/step ─────────────────────────────
         app.MapPut("/api/sponsors/me/onboarding/step", async (
             [FromBody] OnboardingStepRequest req,
-            HttpContext                      ctx,
-            IDbConnectionFactory             db,
-            CancellationToken                ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -350,9 +350,9 @@ public static class SponsorEndpoints
         // ── POST /api/sponsors/me/onboarding/complete ────────────────────────
         app.MapPost("/api/sponsors/me/onboarding/complete", async (
             [FromBody] OnboardingCompleteRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                 db,
-            CancellationToken                    ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -399,10 +399,10 @@ public static class SponsorEndpoints
         // ── GET /api/sponsors/active ─────────────────────────────────────────
         // Public — returns active sponsors, optionally filtered by placement
         app.MapGet("/api/sponsors/active", async (
-            [FromQuery] string?  placement,
+            [FromQuery] string? placement,
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -440,7 +440,7 @@ public static class SponsorEndpoints
         // Admin — returns all sponsors
         app.MapGet("/api/sponsors/all", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -460,8 +460,8 @@ public static class SponsorEndpoints
         // Public — returns platform logo + icon URLs
         app.MapGet("/api/system/branding", async (
             IDbConnectionFactory db,
-            HybridCache          cache,
-            CancellationToken    ct) =>
+            HybridCache cache,
+            CancellationToken ct) =>
         {
             var result = await cache.GetOrCreateAsync("system-branding", async cancel =>
             {

@@ -4,8 +4,8 @@ namespace Esportra.Contracts.Requests;
 
 public sealed record DashboardWidgetConfig(
     string WidgetId,
-    int    Position,
-    bool   Visible,
-    int?   RefreshInterval);
+    int Position,
+    bool Visible,
+    int? RefreshInterval);
 
 public sealed record SaveDashboardPreferencesRequest(DashboardWidgetConfig[] Layout);

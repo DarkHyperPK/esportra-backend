@@ -80,7 +80,7 @@ public sealed class OAuthStateProtector
 }
 
 public sealed record OAuthStatePayload(
-    string   UserId,
-    string   Provider,
-    string?  CodeVerifier,
+    string UserId,
+    string Provider,
+    string? CodeVerifier,
     DateTime CreatedAt);

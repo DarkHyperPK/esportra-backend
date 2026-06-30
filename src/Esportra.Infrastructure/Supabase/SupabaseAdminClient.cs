@@ -17,8 +17,8 @@ public sealed class SupabaseAdminClient(
     IConfiguration config,
     ILogger<SupabaseAdminClient> logger) : ISupabaseAdminClient
 {
-    private readonly string _baseUrl  = config["Supabase:Url"]?.TrimEnd('/') ?? throw new InvalidOperationException("Supabase:Url is required");
-    private readonly string _svcKey   = config["Supabase:ServiceKey"] ?? throw new InvalidOperationException("Supabase:ServiceKey is required");
+    private readonly string _baseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? throw new InvalidOperationException("Supabase:Url is required");
+    private readonly string _svcKey = config["Supabase:ServiceKey"] ?? throw new InvalidOperationException("Supabase:ServiceKey is required");
 
     private HttpRequestMessage BuildRequest(HttpMethod method, string path, object? body = null)
     {
@@ -57,9 +57,9 @@ public sealed class SupabaseAdminClient(
     {
         var req = BuildRequest(HttpMethod.Post, "/generate_link", new
         {
-            type         = "recovery",
-            email        = email,
-            redirect_to  = config["FrontendUrl"]?.TrimEnd('/') ?? "https://esportra.com",
+            type = "recovery",
+            email = email,
+            redirect_to = config["FrontendUrl"]?.TrimEnd('/') ?? "https://esportra.com",
         });
 
         var res = await http.SendAsync(req, ct);
@@ -70,8 +70,8 @@ public sealed class SupabaseAdminClient(
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        var tokenHash  = root.TryGetProperty("hashed_token", out var ht) ? ht.GetString() ?? "" : "";
-        var actionLink = root.TryGetProperty("action_link",  out var al) ? al.GetString() ?? "" : "";
+        var tokenHash = root.TryGetProperty("hashed_token", out var ht) ? ht.GetString() ?? "" : "";
+        var actionLink = root.TryGetProperty("action_link", out var al) ? al.GetString() ?? "" : "";
 
         return new GeneratedLink(tokenHash, actionLink);
     }
@@ -141,9 +141,9 @@ public sealed class SupabaseAdminClient(
     {
         var req = BuildRequest(HttpMethod.Post, "/users", new
         {
-            email          = email,
-            email_confirm  = true,
-            user_metadata  = userMetadata,
+            email = email,
+            email_confirm = true,
+            user_metadata = userMetadata,
         });
 
         var res = await http.SendAsync(req, ct);
@@ -153,7 +153,7 @@ public sealed class SupabaseAdminClient(
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
-        var id   = root.GetProperty("id").GetString()!;
+        var id = root.GetProperty("id").GetString()!;
         var mail = root.TryGetProperty("email", out var em) ? em.GetString() ?? email : email;
         return new SupabaseUser(id, mail);
     }
@@ -180,7 +180,7 @@ public sealed class SupabaseAdminClient(
         {
             foreach (var user in usersEl.Value.EnumerateArray())
             {
-                var id    = user.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                var id = user.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                 var email = user.TryGetProperty("email", out var emEl) ? emEl.GetString() ?? "" : "";
 
                 DateTimeOffset? lastSignIn = null;

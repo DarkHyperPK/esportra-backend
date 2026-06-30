@@ -763,9 +763,9 @@ public static class MatchZyEndpoints
         return (picker, side.ToLowerInvariant()) switch
         {
             ("team1", "ct") => "team1_ct",
-            ("team1", "t")  => "team2_ct", // Team1 chose T side → Team2 starts CT
+            ("team1", "t") => "team2_ct", // Team1 chose T side → Team2 starts CT
             ("team2", "ct") => "team2_ct",
-            ("team2", "t")  => "team1_ct", // Team2 chose T side → Team1 starts CT
+            ("team2", "t") => "team1_ct", // Team2 chose T side → Team1 starts CT
             _ => "knife",
         };
     }
@@ -886,39 +886,39 @@ public static class MatchZyEndpoints
                         steam64Id,
                         team = teamLabel,
                         playerName,
-                        kills          = GetIntStat(stats, "kills"),
-                        deaths         = GetIntStat(stats, "deaths"),
-                        assists        = GetIntStat(stats, "assists"),
-                        flashAssists   = GetIntStat(stats, "flash_assists"),
-                        teamKills      = GetIntStat(stats, "team_kills"),
-                        suicides       = GetIntStat(stats, "suicides"),
-                        damage         = GetIntStat(stats, "damage"),
-                        utilityDamage  = GetIntStat(stats, "utility_damage"),
+                        kills = GetIntStat(stats, "kills"),
+                        deaths = GetIntStat(stats, "deaths"),
+                        assists = GetIntStat(stats, "assists"),
+                        flashAssists = GetIntStat(stats, "flash_assists"),
+                        teamKills = GetIntStat(stats, "team_kills"),
+                        suicides = GetIntStat(stats, "suicides"),
+                        damage = GetIntStat(stats, "damage"),
+                        utilityDamage = GetIntStat(stats, "utility_damage"),
                         enemiesFlashed = GetIntStat(stats, "enemies_flashed"),
                         friendliesFlashed = GetIntStat(stats, "friendlies_flashed"),
-                        knifeKills     = GetIntStat(stats, "knife_kills"),
-                        headshotKills  = GetIntStat(stats, "headshot_kills"),
-                        roundsPlayed   = GetIntStat(stats, "rounds_played"),
-                        bombDefuses    = GetIntStat(stats, "bomb_defuses"),
-                        bombPlants     = GetIntStat(stats, "bomb_plants"),
-                        k1             = GetIntStat(stats, "1k"),
-                        k2             = GetIntStat(stats, "2k"),
-                        k3             = GetIntStat(stats, "3k"),
-                        k4             = GetIntStat(stats, "4k"),
-                        k5             = GetIntStat(stats, "5k"),
-                        v1v1           = GetIntStat(stats, "1v1"),
-                        v1v2           = GetIntStat(stats, "1v2"),
-                        v1v3           = GetIntStat(stats, "1v3"),
-                        v1v4           = GetIntStat(stats, "1v4"),
-                        v1v5           = GetIntStat(stats, "1v5"),
-                        firstKillsT    = GetIntStat(stats, "first_kills_t"),
-                        firstKillsCt   = GetIntStat(stats, "first_kills_ct"),
-                        firstDeathsT   = GetIntStat(stats, "first_deaths_t"),
-                        firstDeathsCt  = GetIntStat(stats, "first_deaths_ct"),
-                        tradeKills     = GetIntStat(stats, "trade_kills"),
-                        kast           = GetIntStat(stats, "kast"),
-                        score          = GetIntStat(stats, "score"),
-                        mvp            = GetIntStat(stats, "mvp"),
+                        knifeKills = GetIntStat(stats, "knife_kills"),
+                        headshotKills = GetIntStat(stats, "headshot_kills"),
+                        roundsPlayed = GetIntStat(stats, "rounds_played"),
+                        bombDefuses = GetIntStat(stats, "bomb_defuses"),
+                        bombPlants = GetIntStat(stats, "bomb_plants"),
+                        k1 = GetIntStat(stats, "1k"),
+                        k2 = GetIntStat(stats, "2k"),
+                        k3 = GetIntStat(stats, "3k"),
+                        k4 = GetIntStat(stats, "4k"),
+                        k5 = GetIntStat(stats, "5k"),
+                        v1v1 = GetIntStat(stats, "1v1"),
+                        v1v2 = GetIntStat(stats, "1v2"),
+                        v1v3 = GetIntStat(stats, "1v3"),
+                        v1v4 = GetIntStat(stats, "1v4"),
+                        v1v5 = GetIntStat(stats, "1v5"),
+                        firstKillsT = GetIntStat(stats, "first_kills_t"),
+                        firstKillsCt = GetIntStat(stats, "first_kills_ct"),
+                        firstDeathsT = GetIntStat(stats, "first_deaths_t"),
+                        firstDeathsCt = GetIntStat(stats, "first_deaths_ct"),
+                        tradeKills = GetIntStat(stats, "trade_kills"),
+                        kast = GetIntStat(stats, "kast"),
+                        score = GetIntStat(stats, "score"),
+                        mvp = GetIntStat(stats, "mvp"),
                     });
             }
 
@@ -969,7 +969,7 @@ public static class MatchZyEndpoints
     private static string[] ParseStringArray(object? arr) => arr switch
     {
         string[] s => s,
-        string s   => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
+        string s => s.Trim('{', '}').Split(',', StringSplitOptions.RemoveEmptyEntries),
         _ => [],
     };
 

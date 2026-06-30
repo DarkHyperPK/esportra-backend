@@ -18,9 +18,9 @@ public static class MessagingEndpoints
     {
         // ── GET /api/conversations ───────────────────────────────────────────
         app.MapGet("/api/conversations", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -96,12 +96,12 @@ public static class MessagingEndpoints
 
         // ── GET /api/conversations/{id}/messages ─────────────────────────────
         app.MapGet("/api/conversations/{id}/messages", async (
-            Guid                  id,
-            HttpContext            ctx,
-            IDbConnectionFactory   db,
-            [FromQuery] int       limit  = 100,
-            [FromQuery] int       offset = 0,
-            CancellationToken     ct     = default) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            [FromQuery] int limit = 100,
+            [FromQuery] int offset = 0,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -136,9 +136,9 @@ public static class MessagingEndpoints
         // ── POST /api/conversations ──────────────────────────────────────────
         app.MapPost("/api/conversations", async (
             [FromBody] CreateConversationRequest req,
-            HttpContext            ctx,
-            IDbConnectionFactory    db,
-            CancellationToken      ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -188,12 +188,12 @@ public static class MessagingEndpoints
 
         // ── POST /api/conversations/{id}/messages ────────────────────────────
         app.MapPost("/api/conversations/{id}/messages", async (
-            Guid                    id,
+            Guid id,
             [FromBody] SendMessageRequest req,
-            HttpContext              ctx,
-            IDbConnectionFactory     db,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             IHubContext<ConversationHub> conversationHub,
-            CancellationToken        ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -214,9 +214,9 @@ public static class MessagingEndpoints
                 """,
                 new
                 {
-                    convId      = id,
-                    senderId    = userCtx.UserIdGuid,
-                    content     = req.Content,
+                    convId = id,
+                    senderId = userCtx.UserIdGuid,
+                    content = req.Content,
                     messageType = req.MessageType ?? "text",
                     attachments = req.Attachments ?? "{}",
                 });
@@ -227,15 +227,15 @@ public static class MessagingEndpoints
 
             // Broadcast to SignalR group
             var messageDto = new ConversationMessageDto(
-                Id:             message.id.ToString(),
+                Id: message.id.ToString(),
                 ConversationId: message.conversation_id.ToString(),
-                SenderId:       message.sender_id.ToString(),
-                Content:        (string)message.content,
-                MessageType:    (string)message.message_type,
-                Attachments:    message.attachments,
-                IsEdited:       (bool)message.is_edited,
-                CreatedAt:      (DateTime)message.created_at,
-                Sender:         sender);
+                SenderId: message.sender_id.ToString(),
+                Content: (string)message.content,
+                MessageType: (string)message.message_type,
+                Attachments: message.attachments,
+                IsEdited: (bool)message.is_edited,
+                CreatedAt: (DateTime)message.created_at,
+                Sender: sender);
 
             await conversationHub.Clients
                 .Group(ConversationHub.ConversationGroup(id.ToString()))
@@ -246,10 +246,10 @@ public static class MessagingEndpoints
 
         // ── PUT /api/conversations/{id}/read ─────────────────────────────────
         app.MapPut("/api/conversations/{id}/read", async (
-            Guid                  id,
-            HttpContext            ctx,
-            IDbConnectionFactory   db,
-            CancellationToken     ct) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -265,10 +265,10 @@ public static class MessagingEndpoints
 
         // ── POST /api/conversations/{id}/join ────────────────────────────────
         app.MapPost("/api/conversations/{id}/join", async (
-            Guid                  id,
-            HttpContext            ctx,
-            IDbConnectionFactory   db,
-            CancellationToken     ct) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -288,10 +288,10 @@ public static class MessagingEndpoints
 
         // ── POST /api/conversations/{id}/leave ───────────────────────────────
         app.MapPost("/api/conversations/{id}/leave", async (
-            Guid                  id,
-            HttpContext            ctx,
-            IDbConnectionFactory   db,
-            CancellationToken     ct) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -307,12 +307,12 @@ public static class MessagingEndpoints
 
         // ── PUT /api/messages/{id} ───────────────────────────────────────────
         app.MapPut("/api/messages/{id}", async (
-            Guid                     id,
+            Guid id,
             [FromBody] EditMessageRequest req,
-            HttpContext               ctx,
-            IDbConnectionFactory      db,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             IHubContext<ConversationHub> conversationHub,
-            CancellationToken        ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -338,10 +338,10 @@ public static class MessagingEndpoints
                 .Group(ConversationHub.ConversationGroup(msg.conversation_id.ToString()))
                 .SendAsync(ConversationHubEvents.MessageEdited, new
                 {
-                    id         = updated.id.ToString(),
-                    content    = (string)updated.content,
-                    is_edited  = (bool)updated.is_edited,
-                    edited_at  = updated.edited_at,
+                    id = updated.id.ToString(),
+                    content = (string)updated.content,
+                    is_edited = (bool)updated.is_edited,
+                    edited_at = updated.edited_at,
                 }, ct);
 
             return Results.Ok(updated);
@@ -349,11 +349,11 @@ public static class MessagingEndpoints
 
         // ── DELETE /api/messages/{id} ────────────────────────────────────────
         app.MapDelete("/api/messages/{id}", async (
-            Guid                  id,
-            HttpContext            ctx,
-            IDbConnectionFactory   db,
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             IHubContext<ConversationHub> conversationHub,
-            CancellationToken     ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
