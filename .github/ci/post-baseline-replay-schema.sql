@@ -418,12 +418,8 @@ CREATE TABLE IF NOT EXISTS public.organization_staff (
 CREATE TABLE IF NOT EXISTS public.staff_tournament_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_staff_id UUID REFERENCES public.organization_staff(id) ON DELETE CASCADE,
-  tournament_id UUID,
-  permissions TEXT[]
+  tournament_id UUID
 );
-
-ALTER TABLE public.staff_tournament_assignments
-  ADD COLUMN IF NOT EXISTS permissions TEXT[];
 
 -- ── Game maps seeds (20260326150000+) ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.game_maps (
@@ -1505,11 +1501,6 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'tournament_registered'
                    AND enumtypid = 'public.notification_type'::regtype) THEN
         ALTER TYPE public.notification_type ADD VALUE 'tournament_registered';
-    END IF;
-
-    IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'match_schedule_changed'
-                   AND enumtypid = 'public.notification_type'::regtype) THEN
-        ALTER TYPE public.notification_type ADD VALUE 'match_schedule_changed';
     END IF;
 END;
 $$;
