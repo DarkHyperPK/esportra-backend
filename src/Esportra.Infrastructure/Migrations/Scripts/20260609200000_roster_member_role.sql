@@ -38,17 +38,6 @@ SET is_starter = (roster_role = 'starter'::public.roster_member_role);
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_team_roster_members_roster_user
     ON public.team_roster_members (roster_id, user_id);
 
-ALTER TABLE public.game_catalog_game_modes
-    ADD COLUMN IF NOT EXISTS max_substitutes INT,
-    ADD COLUMN IF NOT EXISTS allows_coaches BOOLEAN NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS max_coaches INT NOT NULL DEFAULT 2;
-
-UPDATE public.game_catalog_game_modes
-SET max_substitutes = GREATEST(COALESCE(max_roster_size, team_size) - team_size, 0)
-WHERE max_substitutes IS NULL
-  AND max_roster_size IS NOT NULL
-  AND max_roster_size > team_size;
-
 ALTER TABLE public.tournament_participants
     ADD COLUMN IF NOT EXISTS roster_lineup JSONB;
 
