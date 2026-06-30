@@ -3,6 +3,7 @@ name: Build & Deploy — Staging
 on:
   push:
     branches: [staging]
+  workflow_dispatch:
 
 concurrency:
   group: deploy-staging-backend
