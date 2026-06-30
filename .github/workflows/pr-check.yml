@@ -86,7 +86,7 @@ jobs:
           python .github/scripts/generate-replay-journal-seed.py --check
           python .github/scripts/generate-post-baseline-replay-schema.py --check
 
-      - name: Regenerate artifacts on failure (for download)
+      - name: Regenerate artifacts on failure (upload for PR review)
         if: failure() && steps.verify-artifacts.outcome == 'failure'
         run: |
           python .github/scripts/audit-replay-legacy-deps.py
