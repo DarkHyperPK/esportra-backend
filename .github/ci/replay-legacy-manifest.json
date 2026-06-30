@@ -1,14 +1,14 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 176,
+  "postBaselineScriptCount": 174,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
       "operations": [
-        "insert",
         "alter",
         "index",
+        "insert",
         "join"
       ],
       "columnsMentioned": [],
@@ -36,26 +36,20 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
         "name",
-        "permission",
-        "role",
-        "role_id",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "admin_role_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
       "operations": [
-        "insert",
         "delete",
+        "insert",
         "join"
       ],
       "columnsMentioned": [],
@@ -82,25 +76,16 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
-        "group_id",
         "id",
         "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
+        "name"
       ]
     },
     "audit_logs": {
       "firstSeenIn": "20260409100000_audit_logs_target_index.sql",
       "operations": [
-        "index",
         "delete",
+        "index",
         "join"
       ],
       "columnsMentioned": [],
@@ -111,9 +96,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -132,9 +117,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -143,25 +128,18 @@
     "br_lobby_evidence": {
       "firstSeenIn": "20260611120000_br_pro_lobby_model.sql",
       "operations": [
-        "trigger",
         "alter",
         "index",
+        "trigger",
         "update"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
+        "name"
       ]
     },
     "br_lobby_results": {
@@ -173,18 +151,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
-        "group_id",
         "id",
         "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
+        "name"
       ]
     },
     "brkt_match_games": {
@@ -200,6 +169,7 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
         "role_id",
@@ -211,8 +181,8 @@
     "brkt_matches": {
       "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
       "operations": [
-        "join",
         "alter",
+        "join",
         "references"
       ],
       "columnsMentioned": [],
@@ -223,9 +193,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -244,9 +214,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -255,10 +225,10 @@
     "game_maps": {
       "firstSeenIn": "20260326150000_seed_r6s_cod_game_maps.sql",
       "operations": [
-        "insert",
-        "update",
         "delete",
-        "join"
+        "insert",
+        "join",
+        "update"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -271,7 +241,6 @@
         "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -291,12 +260,9 @@
         "key",
         "lobby_id",
         "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "match_map_vetos": {
@@ -307,18 +273,13 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "match_messages": {
@@ -328,42 +289,32 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "match_result_reports": {
       "firstSeenIn": "20260609150000_match_result_reports_upsert_key.sql",
       "operations": [
-        "index",
         "alter",
         "delete",
+        "index",
         "join"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "normalized": {
@@ -373,39 +324,13 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "numbered": {
-      "firstSeenIn": "20260318_002_dispute_reference_number.sql",
-      "operations": [
-        "join"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "of": {
@@ -414,20 +339,7 @@
         "update"
       ],
       "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
+      "onConflictColumns": []
     },
     "on": {
       "firstSeenIn": "20260403210000_add_booking_code_columns.sql",
@@ -442,9 +354,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -463,6 +375,7 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
         "role_id",
@@ -485,9 +398,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -497,8 +410,8 @@
       "firstSeenIn": "20260413230000_organizations.sql",
       "operations": [
         "alter",
-        "references",
-        "join"
+        "join",
+        "references"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -508,12 +421,9 @@
         "key",
         "lobby_id",
         "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "permission_seed": {
@@ -523,27 +433,22 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
         "group_id",
         "id",
         "key",
         "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "profiles": {
       "firstSeenIn": "20260323000000_cleanup_profiles_unused_columns.sql",
       "operations": [
         "alter",
+        "index",
         "join",
         "references",
-        "index",
         "update"
       ],
       "columnsMentioned": [],
@@ -554,6 +459,7 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
         "role_id",
@@ -569,18 +475,9 @@
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
-        "game",
-        "group_id",
         "id",
         "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
+        "name"
       ]
     },
     "service_role": {
@@ -596,9 +493,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -617,9 +514,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -628,9 +525,9 @@
     "sponsor_impressions": {
       "firstSeenIn": "20260321060000_daily_sponsor_stats_trigger.sql",
       "operations": [
-        "trigger",
         "alter",
-        "index"
+        "index",
+        "trigger"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -640,6 +537,7 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
         "role_id",
@@ -662,6 +560,7 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
         "role_id",
@@ -685,6 +584,7 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
         "role_id",
@@ -696,57 +596,8 @@
     "staff_tournament_assignments": {
       "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
       "operations": [
-        "join",
-        "alter"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "team_members": {
-      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
-      "operations": [
-        "join",
         "alter",
-        "delete"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "team_roster_members": {
-      "firstSeenIn": "20260609200000_roster_member_role.sql",
-      "operations": [
-        "alter",
-        "index",
-        "update",
-        "insert",
-        "join",
-        "trigger"
+        "join"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -759,40 +610,15 @@
         "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
       ]
     },
-    "team_rosters": {
-      "firstSeenIn": "20260609200000_roster_member_role.sql",
-      "operations": [
-        "join"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "teams": {
-      "firstSeenIn": "20260402114000_add_virtual_teams_for_solo.sql",
+    "team_members": {
+      "firstSeenIn": "20260325140000_consolidate_staff_tables.sql",
       "operations": [
         "alter",
-        "references",
-        "index",
-        "update",
         "delete",
         "join"
       ],
@@ -804,9 +630,72 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
+        "roster_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "team_roster_members": {
+      "firstSeenIn": "20260609200000_roster_member_role.sql",
+      "operations": [
+        "alter",
+        "index",
+        "insert",
+        "join",
+        "trigger",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "name",
+        "roster_id",
+        "user_id"
+      ]
+    },
+    "team_rosters": {
+      "firstSeenIn": "20260609200000_roster_member_role.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "name",
+        "roster_id",
+        "user_id"
+      ]
+    },
+    "teams": {
+      "firstSeenIn": "20260402114000_add_virtual_teams_for_solo.sql",
+      "operations": [
+        "alter",
+        "delete",
+        "index",
+        "join",
+        "references",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "permission",
+        "role",
         "roster_id",
         "user_id",
         "venue_id"
@@ -825,9 +714,9 @@
         "key",
         "lobby_id",
         "map_name",
+        "name",
         "permission",
         "role",
-        "role_id",
         "roster_id",
         "user_id",
         "venue_id"
@@ -837,104 +726,9 @@
       "firstSeenIn": "20260318_002_dispute_reference_number.sql",
       "operations": [
         "alter",
-        "update",
         "join",
-        "references"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "tournament_participants": {
-      "firstSeenIn": "20260331100000_payment_flow_bucket_and_columns.sql",
-      "operations": [
-        "alter",
-        "index",
         "references",
-        "join",
         "update"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "tournament_stages": {
-      "firstSeenIn": "20260420110000_br_multi_group_tables.sql",
-      "operations": [
-        "references",
-        "alter"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "tournaments": {
-      "firstSeenIn": "20260318000000_standardize_tournament_status_enum.sql",
-      "operations": [
-        "update",
-        "join",
-        "references",
-        "alter",
-        "index"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "user_roles": {
-      "firstSeenIn": "20260328000000_unique_user_roles_verified_roles.sql",
-      "operations": [
-        "index",
-        "insert",
-        "join"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -948,6 +742,97 @@
         "permission",
         "role",
         "role_id",
+        "roster_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "tournament_participants": {
+      "firstSeenIn": "20260331100000_payment_flow_bucket_and_columns.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "permission",
+        "role",
+        "roster_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "tournament_stages": {
+      "firstSeenIn": "20260420110000_br_multi_group_tables.sql",
+      "operations": [
+        "alter",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "roster_id",
+        "user_id"
+      ]
+    },
+    "tournaments": {
+      "firstSeenIn": "20260318000000_standardize_tournament_status_enum.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references",
+        "update"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "user_roles": {
+      "firstSeenIn": "20260328000000_unique_user_roles_verified_roles.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "permission",
+        "role",
         "roster_id",
         "user_id",
         "venue_id"
@@ -966,12 +851,9 @@
         "key",
         "lobby_id",
         "map_name",
-        "permission",
-        "role",
-        "role_id",
+        "name",
         "roster_id",
-        "user_id",
-        "venue_id"
+        "user_id"
       ]
     },
     "venue_bookings": {
@@ -979,55 +861,8 @@
       "operations": [
         "alter",
         "index",
-        "trigger",
-        "references"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "venues": {
-      "firstSeenIn": "20260401100000_venues_currency_column.sql",
-      "operations": [
-        "alter",
         "references",
-        "join",
-        "index"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": [
-        "game",
-        "group_id",
-        "id",
-        "key",
-        "lobby_id",
-        "map_name",
-        "permission",
-        "role",
-        "role_id",
-        "roster_id",
-        "user_id",
-        "venue_id"
-      ]
-    },
-    "verified_roles": {
-      "firstSeenIn": "20260328000000_unique_user_roles_verified_roles.sql",
-      "operations": [
-        "index",
-        "insert",
-        "join"
+        "trigger"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -1040,7 +875,51 @@
         "name",
         "permission",
         "role",
-        "role_id",
+        "roster_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "venues": {
+      "firstSeenIn": "20260401100000_venues_currency_column.sql",
+      "operations": [
+        "alter",
+        "index",
+        "join",
+        "references"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "permission",
+        "role",
+        "roster_id",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "verified_roles": {
+      "firstSeenIn": "20260328000000_unique_user_roles_verified_roles.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "name",
+        "permission",
+        "role",
         "roster_id",
         "user_id",
         "venue_id"
