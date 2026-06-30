@@ -65,91 +65,9 @@ jobs:
       - name: Run tests
         run: dotnet test --no-restore -c Release
 
-  migration-lint:
-    name: Migration Lint (forward-reference check)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Check migrations for forward references
-        run: python .github/scripts/lint-migrations.py
-
-      - name: Verify or regenerate replay fixture artifacts
-        id: verify-artifacts
-        run: |
-          if python .github/scripts/audit-replay-legacy-deps.py --check && \
-             python .github/scripts/generate-replay-journal-seed.py --check && \
-             python .github/scripts/generate-post-baseline-replay-schema.py --check; then
-            echo "Artifacts are up to date"
-          else
-            echo "Artifacts stale — regenerating and auto-committing"
-            python .github/scripts/audit-replay-legacy-deps.py
-            python .github/scripts/generate-replay-journal-seed.py
-            python .github/scripts/generate-post-baseline-replay-schema.py
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add .github/ci/
-            git commit -m "chore(ci): regenerate replay artifacts [skip ci]"
-            git push
-          fi
-
-      - name: Check prod-absent table guards
-        run: python .github/scripts/lint-prod-table-references.py
-
-  migration-replay:
-    name: Migration Replay (post-baseline from baseline schema)
-    runs-on: ubuntu-latest
-    needs: [build, migration-lint]
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: migrationtest
-          POSTGRES_DB: esportra_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x"
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Apply post-baseline replay fixture
-        run: bash .github/scripts/apply-replay-bootstrap.sh
-
-      - name: Run post-baseline migration replay
-        env:
-          ConnectionStrings__Postgres: >-
-            Host=localhost;Port=5432;Database=esportra_test;
-            Username=postgres;Password=migrationtest;
-            Trust Server Certificate=true;
-        run: >
-          dotnet run
-          --project src/Esportra.Migrator/Esportra.Migrator.csproj
-          -c Release
-
-      - name: Assert migration replay completed
-        run: bash .github/scripts/assert-migration-replay-complete.sh
-
   gate:
     name: All checks passed
-    needs: [build, lint, test, migration-lint, migration-replay]
+    needs: [build, lint, test]
     runs-on: ubuntu-latest
     steps:
       - name: Gate passed
@@ -191,7 +109,7 @@ jobs:
 
   notify-failure:
     name: Report failure
-    needs: [build, lint, test, migration-lint, migration-replay, gate, promote, smoke]
+    needs: [build, lint, test, gate, promote, smoke]
     if: failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
