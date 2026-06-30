@@ -31,7 +31,10 @@ public class BrScheduleGeneratorTests
         var manifest = BrScheduleGenerator.GenerateRotatingPairwise(4);
         var rosters = new Dictionary<string, int>
         {
-            ["A"] = 10, ["B"] = 10, ["C"] = 10, ["D"] = 10,
+            ["A"] = 10,
+            ["B"] = 10,
+            ["C"] = 10,
+            ["D"] = 10,
         };
 
         var err = BrScheduleGenerator.ValidateLobbyCapacity(manifest, rosters, maxLobbySize: 16);
@@ -45,7 +48,10 @@ public class BrScheduleGeneratorTests
         var manifest = BrScheduleGenerator.GenerateRotatingPairwise(4);
         var rosters = new Dictionary<string, int>
         {
-            ["A"] = 10, ["B"] = 10, ["C"] = 10, ["D"] = 10,
+            ["A"] = 10,
+            ["B"] = 10,
+            ["C"] = 10,
+            ["D"] = 10,
         };
 
         var err = BrScheduleGenerator.ValidateLobbyCapacity(manifest, rosters, maxLobbySize: 20);
