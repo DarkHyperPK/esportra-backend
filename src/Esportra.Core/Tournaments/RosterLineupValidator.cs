@@ -18,6 +18,13 @@ public static class RosterLineupValidator
 {
     public static void Validate(RosterModeRules mode, IReadOnlyList<RosterLineupMember> members)
     {
+        var coachesAsStarters = members
+            .Where(m => m.TeamMemberRole == "coach" && (m.RosterRole == "starter" || m.IsStarter))
+            .ToList();
+
+        if (coachesAsStarters.Count > 0)
+            throw new InvalidOperationException("Coaches cannot be assigned as starters.");
+
         var normalized = members
             .Select(m => new RosterLineupMember(
                 m.UserId,

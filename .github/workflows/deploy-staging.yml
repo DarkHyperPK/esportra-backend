@@ -29,6 +29,41 @@ jobs:
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
 
+  lint:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Check formatting
+        run: dotnet format --verify-no-changes --verbosity diagnostic
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run tests
+        run: dotnet test --no-restore -c Release
+
   migration-lint:
     name: Migration Lint (forward-reference check)
     runs-on: ubuntu-latest
@@ -97,7 +132,7 @@ jobs:
 
   promote:
     name: Promote to deploy/staging
-    needs: migration-replay
+    needs: [build, lint, test, migration-replay]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,7 +154,7 @@ jobs:
       - name: Wait for Coolify deploy
         run: sleep 120
 
-      - name: API readiness smoke
+      - name: API smoke tests
         env:
           API_URL: ${{ secrets.E2E_STAGING_API_URL }}
         run: |
@@ -127,12 +162,11 @@ jobs:
             echo "::warning title=Smoke skipped::E2E_STAGING_API_URL not set — post-deploy smoke skipped."
             exit 0
           fi
-          bash .github/scripts/api-preflight.sh
-          curl --fail --silent --show-error --max-time 30 "${API_URL}/health/ready"
+          bash .github/scripts/smoke-test.sh "$API_URL"
 
   notify-failure:
     name: Report failure
-    needs: [build, migration-lint, migration-replay, promote, smoke]
+    needs: [build, lint, test, migration-lint, migration-replay, promote, smoke]
     if: failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:

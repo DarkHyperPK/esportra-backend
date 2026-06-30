@@ -22,6 +22,23 @@ jobs:
       - name: Build (Release)
         run: dotnet build --no-restore -c Release
 
+  lint:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Check formatting
+        run: dotnet format --verify-no-changes --verbosity diagnostic
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -38,12 +55,16 @@ jobs:
         run: dotnet restore
 
       - name: Run tests
-        run: dotnet test --no-restore -c Release
+        run: dotnet test --no-restore -c Release --logger "trx;LogFileName=results.trx"
 
-  # ── Phase 5: forward-reference linter ──────────────────────────────────────
-  # Scans all migration scripts in execution order and reports any DDL that
-  # references a table created in a LATER script. Fails before the replay test
-  # so the author gets a fast, actionable error message.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: "**/TestResults/*.trx"
+          retention-days: 7
+
   migration-lint:
     name: Migration Lint (forward-reference check)
     runs-on: ubuntu-latest
@@ -68,9 +89,6 @@ jobs:
         if: github.base_ref == 'main'
         run: python .github/scripts/lint-prod-table-references.py
 
-  # ── Post-baseline replay from baseline schema snapshot ─────────────────────
-  # Applies committed schema state (pre-baseline migrations baked in), seeds DbUp
-  # journal for those scripts, then runs Esportra.Migrator for post-baseline only.
   migration-replay:
     name: Migration Replay (post-baseline from baseline schema)
     runs-on: ubuntu-latest
@@ -119,4 +137,3 @@ jobs:
 
       - name: Assert BR games model schema
         run: bash .github/scripts/assert-br-games-schema.sh
-
