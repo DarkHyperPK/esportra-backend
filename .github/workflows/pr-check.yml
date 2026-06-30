@@ -80,10 +80,25 @@ jobs:
         run: python .github/scripts/lint-migrations.py
 
       - name: Verify replay fixture artifacts are up to date
+        id: verify-artifacts
         run: |
           python .github/scripts/audit-replay-legacy-deps.py --check
           python .github/scripts/generate-replay-journal-seed.py --check
           python .github/scripts/generate-post-baseline-replay-schema.py --check
+
+      - name: Regenerate artifacts on failure (for download)
+        if: failure() && steps.verify-artifacts.outcome == 'failure'
+        run: |
+          python .github/scripts/audit-replay-legacy-deps.py
+          python .github/scripts/generate-replay-journal-seed.py
+          python .github/scripts/generate-post-baseline-replay-schema.py
+
+      - name: Upload regenerated artifacts
+        if: failure() && steps.verify-artifacts.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-ci-artifacts
+          path: .github/ci/
 
       - name: Check prod-absent table guards (main PRs)
         if: github.base_ref == 'main'
