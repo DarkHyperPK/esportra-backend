@@ -136,7 +136,7 @@ public sealed class AuthorizationEnforcementMiddleware
                 """
                 SELECT EXISTS(
                     SELECT 1 FROM verified_roles
-                    WHERE user_id = @userId AND role = @role
+                    WHERE user_id = @userId AND role = @role::app_role
                       AND status = 'approved' AND is_active = TRUE
                 )
                 """,

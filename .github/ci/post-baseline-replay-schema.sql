@@ -456,8 +456,9 @@ ALTER TABLE public.tournaments
 ALTER TABLE public.user_roles
   ADD COLUMN IF NOT EXISTS role TEXT;
 
+-- verified_roles.role uses app_role enum (matches profiles.role)
 ALTER TABLE public.verified_roles
-  ADD COLUMN IF NOT EXISTS role TEXT;
+  ADD COLUMN IF NOT EXISTS role public.app_role;
 
 ALTER TABLE public.tournament_participants
   ADD COLUMN IF NOT EXISTS participant_type TEXT,
