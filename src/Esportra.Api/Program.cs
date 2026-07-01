@@ -13,6 +13,8 @@ using Esportra.Core.Bracket;
 using Esportra.Core.Match;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Email;
+using Hangfire;
+using Hangfire.PostgreSql;
 using Esportra.Infrastructure.Integrations;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -342,12 +344,21 @@ builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>
 builder.Services.AddHttpClient("Discord");
 builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
 
-// ── Background jobs ───────────────────────────────────────────────────────────
+// ── Hangfire (scheduled jobs) ─────────────────────────────────────────────────
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UsePostgreSqlStorage(opts => opts.UseNpgsqlConnection(pgConnStr)));
+builder.Services.AddHangfireServer(opts =>
+{
+    opts.WorkerCount = Environment.ProcessorCount;
+    opts.Queues = ["default", "notifications"];
+});
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+
+// ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
-builder.Services.AddHostedService<CheckinWalkoversJob>();
-builder.Services.AddHostedService<DiscordDmDispatcherJob>();
-builder.Services.AddHostedService<InviteExpiryJob>();
-builder.Services.AddHostedService<PublicVetoCleanupJob>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
@@ -417,6 +428,15 @@ using (var scope = app.Services.CreateScope())
     await catalog.ImportPackagedCatalogAsync();
     await catalog.BackfillActiveCatalogBannerUrlsAsync();
 }
+
+// ── Hangfire recurring jobs + startup recovery ───────────────────────────────
+Hangfire.RecurringJob.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
+    "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+Hangfire.RecurringJob.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
+    "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
+
+Hangfire.BackgroundJob.Enqueue<Esportra.Api.ScheduledJobs.StartupRecoveryJob>(
+    j => j.ExecuteAsync(CancellationToken.None));
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
@@ -508,6 +528,10 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 }).RequireAuthorization("Authenticated");
 
 // ── Phase 1: Edge Function replacements ───────────────────────────────────────
+app.MapHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
+{
+    Authorization = [new Esportra.Api.ScheduledJobs.HangfireDashboardAuthFilter()]
+});
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapOperationsEndpoints();

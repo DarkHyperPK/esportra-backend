@@ -676,6 +676,13 @@ public static class TournamentEndpoints
                 // Invalidate all tournament list cache entries
                 try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
 
+                // Schedule auto-DQ job if check-in deadline is set
+                if ((req.CheckInRequired ?? false) && req.CheckInDeadline.HasValue && (req.AutoRemoveUnchecked ?? false))
+                {
+                    var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+                    await jobScheduler.ScheduleTournamentCheckinDeadlineAsync(tournamentId, req.CheckInDeadline.Value, ct);
+                }
+
                 return Results.Ok(tournament);
             }
             catch (GameCatalogValidationException ex)
@@ -991,6 +998,22 @@ public static class TournamentEndpoints
                     tx.Rollback();
                     throw;
                 }
+            }
+
+            // Reschedule check-in deadline job if relevant fields changed
+            if (updated is not null)
+            {
+                var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+                bool checkInRequired = (bool)(updated.check_in_required ?? false);
+                bool autoRemove = (bool)(updated.auto_remove_unchecked ?? false);
+                DateTime? deadline = updated.check_in_deadline is not null
+                    ? (DateTime)updated.check_in_deadline
+                    : null;
+
+                if (checkInRequired && autoRemove && deadline.HasValue && deadline.Value > DateTime.UtcNow)
+                    await jobScheduler.ScheduleTournamentCheckinDeadlineAsync(id, deadline.Value, ct);
+                else
+                    await jobScheduler.CancelTournamentCheckinDeadlineAsync(id, ct);
             }
 
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }

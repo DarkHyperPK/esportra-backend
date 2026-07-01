@@ -1263,6 +1263,7 @@ public static class MatchSystemEndpoints
                 """,
                 new { ids, times, stageId });
 
+            var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
             foreach (var update in req.Updates)
             {
                 if (!Guid.TryParse(update.MatchId, out var bulkMatchId))
@@ -1273,6 +1274,11 @@ public static class MatchSystemEndpoints
                 var scheduledTime = ParseScheduledTimeUtc(update.ScheduledTime);
                 await scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct);
                 await SyncProposalsAfterOrganizerScheduleAsync(conn, bulkMatchId, scheduledTime);
+
+                if (scheduledTime.HasValue)
+                    await jobScheduler.ScheduleMatchWalkoverAsync(bulkMatchId, scheduledTime.Value, ct: ct);
+                else
+                    await jobScheduler.CancelMatchWalkoverAsync(bulkMatchId, ct);
             }
 
             if (updated > 0)
@@ -1320,6 +1326,13 @@ public static class MatchSystemEndpoints
 
             if (!MatchScheduleNotificationService.ScheduledTimesEqual(previousTime, scheduledTime))
                 await scheduleNotify.DispatchScheduleChangedAsync(matchId, scheduledTime, ct);
+
+            // Schedule/cancel walkover job
+            var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+            if (scheduledTime.HasValue)
+                await jobScheduler.ScheduleMatchWalkoverAsync(matchId, scheduledTime.Value, ct: ct);
+            else
+                await jobScheduler.CancelMatchWalkoverAsync(matchId, ct);
 
             await staffAudit.TryLogMatchActionAsync(
                 conn, userCtx.UserIdGuid, matchId, "match.schedule_update",
@@ -1467,6 +1480,13 @@ public static class MatchSystemEndpoints
                 new { matchId });
 
             await scheduleNotify.DispatchScheduleChangedAsync(matchId, acceptedTime, ct);
+
+            // Schedule walkover job at the agreed time
+            if (acceptedTime.HasValue)
+            {
+                var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+                await jobScheduler.ScheduleMatchWalkoverAsync(matchId, acceptedTime.Value, ct: ct);
+            }
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))

@@ -10,6 +10,7 @@ using Esportra.Contracts.Database;
 using Esportra.Core.Audit;
 using Esportra.Core.Tournaments;
 using Esportra.Api.Services;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -41,17 +42,6 @@ public static class TournamentInvitationEndpoints
                 new { id });
             if (tournament is null) return Results.NotFound();
             if (!await CanManageTournamentAsync(conn, id, userCtx)) return Results.Forbid();
-
-            await conn.ExecuteAsync(
-                """
-                UPDATE public.tournament_invitations
-                SET status = 'expired', updated_at = NOW()
-                WHERE tournament_id = @id
-                  AND status = 'sent'
-                  AND expires_at IS NOT NULL
-                  AND expires_at <= NOW()
-                """,
-                new { id });
 
             var invitations = (await conn.QueryAsync<dynamic>(
                 """
@@ -196,6 +186,7 @@ public static class TournamentInvitationEndpoints
             IEmailService email,
             GameCatalogService catalog,
             IHubContext<NotificationHub> notifHub,
+            JobSchedulingService jobScheduler,
             AuditService audit,
             IConfiguration config,
             CancellationToken ct) =>
@@ -257,6 +248,13 @@ public static class TournamentInvitationEndpoints
                 RETURNING id, tournament_id, email, code, status, expires_at, sent_at, redeemed_at, created_at
                 """,
                 new { id, sendIds, expiryDays }, tx)).AsList();
+
+            // Schedule per-invitation expiry jobs
+            foreach (var invite in updated)
+            {
+                var expiresAt = (DateTime)invite.expires_at;
+                await jobScheduler.ScheduleInvitationExpiryAsync((Guid)invite.id, expiresAt, ct);
+            }
 
             var tournamentName = (string)tournament.name;
             var tournamentGame = (string?)tournament.game;
@@ -367,6 +365,7 @@ public static class TournamentInvitationEndpoints
             Guid inviteId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            JobSchedulingService jobScheduler,
             AuditService audit,
             CancellationToken ct) =>
         {
@@ -399,12 +398,15 @@ public static class TournamentInvitationEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE public.tournament_invitations
-                SET status = 'revoked', updated_at = NOW()
+                SET status = 'revoked', updated_at = NOW(), expiry_job_id = NULL
                 WHERE id = @inviteId
                 """,
                 new { inviteId }, tx);
 
             tx.Commit();
+
+            // Cancel scheduled expiry job (no longer needed)
+            await jobScheduler.CancelInvitationExpiryAsync(inviteId, ct);
 
             await audit.LogCustomAsync(
                 userCtx.UserIdGuid,
@@ -515,6 +517,7 @@ public static class TournamentInvitationEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             GameCatalogService gameCatalog,
+            JobSchedulingService jobScheduler,
             HybridCache cache,
             AuditService audit,
             CancellationToken ct) =>
@@ -820,7 +823,8 @@ public static class TournamentInvitationEndpoints
                         redeemed_team_id = @teamId,
                         redeemed_participant_id = @participantId,
                         redeemed_at = NOW(),
-                        updated_at = NOW()
+                        updated_at = NOW(),
+                        expiry_job_id = NULL
                     WHERE id = @inviteId
                     """,
                     new
@@ -830,6 +834,9 @@ public static class TournamentInvitationEndpoints
                         participantId = redeemedParticipantId,
                         inviteId = (Guid)invite.id,
                     }, tx);
+
+                // Cancel scheduled expiry job (no longer needed)
+                await jobScheduler.CancelInvitationExpiryAsync((Guid)invite.id, ct);
 
                 tx.Commit();
 
@@ -875,6 +882,7 @@ public static class TournamentInvitationEndpoints
             IDbConnectionFactory db,
             IEmailService email,
             GameCatalogService catalog,
+            JobSchedulingService jobScheduler,
             AuditService audit,
             IConfiguration config,
             CancellationToken ct) =>
@@ -918,6 +926,13 @@ public static class TournamentInvitationEndpoints
             if (updated.Count == 0) { tx.Rollback(); return Results.BadRequest(new { error = "No eligible invitations found to resend." }); }
 
             tx.Commit();
+
+            // Reschedule per-invitation expiry jobs with new expiry times
+            foreach (var invite in updated)
+            {
+                var expiresAt = (DateTime)invite.expires_at;
+                await jobScheduler.ScheduleInvitationExpiryAsync((Guid)invite.id, expiresAt, ct);
+            }
 
             var resendGame = (string?)tournament.game ?? "";
             var gameHeaderUrl = await catalog.ResolveEmailBannerUrlAsync(resendGame, ct) ?? "";
