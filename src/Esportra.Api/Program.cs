@@ -345,11 +345,14 @@ builder.Services.AddHttpClient("Discord");
 builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
 
 // ── Hangfire (scheduled jobs) ─────────────────────────────────────────────────
+// Hangfire requires direct Postgres connection (not pooler) for LISTEN/NOTIFY.
+// Falls back to main connection string if no dedicated one is configured.
+var hangfireConnStr = builder.Configuration.GetConnectionString("PostgresHangfire") ?? pgConnStr;
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    .UsePostgreSqlStorage(opts => opts.UseNpgsqlConnection(pgConnStr)));
+    .UsePostgreSqlStorage(opts => opts.UseNpgsqlConnection(hangfireConnStr)));
 builder.Services.AddHangfireServer(opts =>
 {
     opts.WorkerCount = Environment.ProcessorCount;
@@ -430,13 +433,20 @@ using (var scope = app.Services.CreateScope())
 }
 
 // ── Hangfire recurring jobs + startup recovery ───────────────────────────────
-Hangfire.RecurringJob.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
-    "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
-Hangfire.RecurringJob.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
-    "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
+// Use service-based API (not static) to ensure JobStorage is initialized
+using (var scope = app.Services.CreateScope())
+{
+    var recurringJobs = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
+    var backgroundJobs = scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>();
 
-Hangfire.BackgroundJob.Enqueue<Esportra.Api.ScheduledJobs.StartupRecoveryJob>(
-    j => j.ExecuteAsync(CancellationToken.None));
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
+        "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
+        "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
+
+    backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.StartupRecoveryJob>(
+        j => j.ExecuteAsync(CancellationToken.None));
+}
 
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
