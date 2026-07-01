@@ -73,11 +73,12 @@ BEGIN
   END IF;
 END $$;
 
--- ── Organization staff (20260325140000, 20260325150000) ────────────────────
+-- ── Organization staff (20260325140000, 20260325150000, 20260702100000) ────
 CREATE TABLE IF NOT EXISTS public.organization_staff (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID,
   user_id UUID,
+  role TEXT NOT NULL DEFAULT 'staff' CHECK (role IN ('owner', 'admin', 'staff')),
   status TEXT DEFAULT 'pending',
   permissions TEXT[] NOT NULL DEFAULT '{}',
   accepted_at TIMESTAMPTZ,

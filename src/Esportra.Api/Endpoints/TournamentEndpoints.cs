@@ -503,7 +503,7 @@ public static class TournamentEndpoints
                 """
                 SELECT EXISTS(
                     SELECT 1 FROM verified_roles
-                    WHERE user_id = @userId AND role = 'organizer'
+                    WHERE user_id = @userId AND role = 'organizer'::app_role
                       AND status = 'approved' AND is_active = TRUE
                 ) AND EXISTS(
                     SELECT 1 FROM organizations WHERE owner_id = @userId
