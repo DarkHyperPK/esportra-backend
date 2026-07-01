@@ -13,11 +13,13 @@ public sealed class SwissGenerator : IBracketGenerator
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
         Guid? stageId = null,
-        int bestOf = 1,
+        StageRoundConfiguration? roundConfig = null,
         int? bracketSize = null,   // interpreted as total rounds
         int? advancementCount = null,
         BracketConfig? config = null)
     {
+        roundConfig ??= StageRoundConfiguration.PerStage("swiss", 1);
+        int bestOf = roundConfig.DefaultBestOf;
         var versionId = Guid.NewGuid();
         var nodes = new List<BracketNode>();
         var edges = new List<BracketEdge>();

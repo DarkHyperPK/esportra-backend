@@ -357,7 +357,8 @@ public static class PublicToolEndpoints
         IBracketGenerator generator = format == "double_elimination"
             ? new DoubleEliminationGenerator()
             : new SingleEliminationGenerator();
-        var graph = generator.Generate(teams.Select(t => (t.Id, t.Name)).ToList(), Guid.Empty, null, bestOf, size);
+        var roundConfig = StageRoundConfiguration.PerStage(format, bestOf);
+        var graph = generator.Generate(teams.Select(t => (t.Id, t.Name)).ToList(), Guid.Empty, null, roundConfig, size);
         var errors = GraphValidator.Validate(graph);
         if (errors.Count > 0) return ToolResult<PublicBracketPayload>.Fail(string.Join("; ", errors));
         return ToolResult<PublicBracketPayload>.Ok(new PublicBracketPayload(

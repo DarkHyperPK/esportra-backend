@@ -8,6 +8,8 @@ public sealed record GenerateBracketRequest(
     string Format,          // single_elimination | double_elimination | round_robin | swiss
     IReadOnlyList<TeamSeedDto> Teams,
     int BestOf = 1,
+    string? BoMode = "per_stage",
+    Dictionary<string, int>? RoundBoOverrides = null,
     int? BracketSize = null,
     int? AdvancementCount = null,
     string? DailyStartTime = "20:00",
@@ -30,3 +32,5 @@ public sealed record VetoInitRequest(
 public sealed record VetoBanRequest(string MapId);
 public sealed record VetoPickRequest(string MapId);
 public sealed record VetoPickSideRequest(string MapId, string Side);
+
+public sealed record UpdateMatchBestOfRequest(int BestOf);

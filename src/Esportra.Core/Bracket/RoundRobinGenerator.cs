@@ -9,11 +9,13 @@ public sealed class RoundRobinGenerator : IBracketGenerator
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
         Guid? stageId = null,
-        int bestOf = 1,
+        StageRoundConfiguration? roundConfig = null,
         int? bracketSize = null,   // interpreted as number of groups
         int? advancementCount = null,
         BracketConfig? config = null)
     {
+        roundConfig ??= StageRoundConfiguration.PerStage("round_robin", 1);
+        int bestOf = roundConfig.DefaultBestOf;
         var versionId = Guid.NewGuid();
         var nodes = new List<BracketNode>();
         var edges = new List<BracketEdge>();

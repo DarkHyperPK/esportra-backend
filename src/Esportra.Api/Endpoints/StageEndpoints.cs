@@ -79,13 +79,19 @@ public static class StageEndpoints
             {
                 var stageGuid = s.Id is not null && Guid.TryParse(s.Id, out var parsed) ? parsed : (Guid?)null;
 
+                var roundBoOverridesJson = s.RoundBoOverrides is { Count: > 0 }
+                    ? System.Text.Json.JsonSerializer.Serialize(s.RoundBoOverrides)
+                    : null;
+
                 if (stageGuid.HasValue && existingGuids.Contains(stageGuid.Value))
                 {
                     await conn.ExecuteAsync(
                         """
                         UPDATE tournament_stages
                         SET name = @name, format = @format, stage_order = @stageOrder,
-                            best_of = @bestOf, capacity = @capacity,
+                            best_of = @bestOf, bo_mode = @boMode,
+                            round_bo_overrides = CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                            capacity = @capacity,
                             advancement_count = @advancementCount,
                             config = CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE config END,
                             starts_at = @startsAt,
@@ -100,6 +106,8 @@ public static class StageEndpoints
                             format = s.Format,
                             stageOrder = s.StageOrder,
                             bestOf = s.BestOf ?? 1,
+                            boMode = s.BoMode ?? "per_stage",
+                            roundBoOverrides = roundBoOverridesJson,
                             capacity = s.Capacity,
                             advancementCount = s.AdvancementCount,
                             config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
@@ -111,8 +119,10 @@ public static class StageEndpoints
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, capacity, advancement_count, config, starts_at, ends_at)
-                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount,
+                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, bo_mode, round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
+                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @boMode,
+                                CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                                @capacity, @advancementCount,
                                 CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
                                 @startsAt, @endsAt)
                         """,
@@ -123,6 +133,8 @@ public static class StageEndpoints
                             format = s.Format,
                             stageOrder = s.StageOrder,
                             bestOf = s.BestOf ?? 1,
+                            boMode = s.BoMode ?? "per_stage",
+                            roundBoOverrides = roundBoOverridesJson,
                             capacity = s.Capacity,
                             advancementCount = s.AdvancementCount,
                             config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
@@ -584,6 +596,22 @@ public static class StageEndpoints
                 ORDER BY sp.seed ASC NULLS LAST, t.name ASC
                 """, new { id });
             return Results.Ok(participants);
+        });
+
+        // ── GET /api/stages/round-structure ───────────────────────────────────
+        // Returns the list of configurable rounds for a format/size combination.
+        // Used by frontend to render per-round BO configuration UI.
+        app.MapGet("/api/stages/round-structure", (
+            string format,
+            int bracketSize) =>
+        {
+            if (string.IsNullOrWhiteSpace(format))
+                return Results.BadRequest(new { error = "format is required" });
+            if (bracketSize < 2)
+                return Results.BadRequest(new { error = "bracketSize must be at least 2" });
+
+            var rounds = StageRoundConfiguration.GetRoundStructure(format, bracketSize);
+            return Results.Ok(new { format, bracketSize, rounds });
         });
     }
 

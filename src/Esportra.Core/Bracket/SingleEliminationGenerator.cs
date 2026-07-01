@@ -6,11 +6,13 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
         Guid? stageId = null,
-        int bestOf = 1,
+        StageRoundConfiguration? roundConfig = null,
         int? bracketSize = null,
         int? advancementCount = null,
         BracketConfig? config = null)
     {
+        roundConfig ??= StageRoundConfiguration.PerStage("single_elimination", 1);
+
         var versionId = Guid.NewGuid();
         var nodes = new List<BracketNode>();
         var edges = new List<BracketEdge>();
@@ -31,6 +33,9 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
         for (int r = 0; r < numRounds; r++)
         {
             int matchesInRound = P / (int)Math.Pow(2, r + 1);
+            bool isFinal = r == numRounds - 1 && matchesInRound == 1;
+            string bracketType = isFinal ? "final" : "winners";
+
             for (int i = 0; i < matchesInRound; i++)
             {
                 Guid? team1Id = null, team2Id = null;
@@ -40,14 +45,16 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
                     team2Id = seeded.ElementAtOrDefault(i * 2 + 1)?.Id;
                 }
 
+                int matchBestOf = roundConfig.GetBestOf(r, bracketType, numRounds);
+
                 var match = new BracketNode(
                     Id: Guid.NewGuid(),
                     VersionId: versionId,
                     RoundIndex: r,
                     MatchNumber: i + 1,
-                    BracketType: "winners",
+                    BracketType: bracketType,
                     Status: "pending",
-                    BestOf: bestOf,
+                    BestOf: matchBestOf,
                     Team1Id: team1Id,
                     Team2Id: team2Id);
 

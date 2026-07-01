@@ -6,6 +6,8 @@ public sealed record StageDto(
     string Format,
     int StageOrder,
     int? BestOf = 1,
+    string? BoMode = "per_stage",
+    Dictionary<string, int>? RoundBoOverrides = null,
     int? Capacity = null,
     int? AdvancementCount = null,
     System.Text.Json.JsonElement? Config = null,

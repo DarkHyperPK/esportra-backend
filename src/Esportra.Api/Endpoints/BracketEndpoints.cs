@@ -74,8 +74,20 @@ public static class BracketEndpoints
                 SwissGroups: req.SwissGroups,
                 SwissRounds: req.SwissRounds);
 
-            var graph = generator.Generate(teams, req.TournamentId, req.StageId,
-                req.BestOf, req.BracketSize, req.AdvancementCount, config);
+            var roundConfig = new StageRoundConfiguration(
+                req.Format,
+                req.BestOf,
+                req.BoMode ?? "per_stage",
+                req.RoundBoOverrides);
+
+            var graph = generator.Generate(
+                teams,
+                req.TournamentId,
+                req.StageId,
+                roundConfig,
+                req.BracketSize,
+                req.AdvancementCount,
+                config);
 
             var errors = GraphValidator.Validate(graph);
             if (errors.Count > 0)
@@ -831,6 +843,62 @@ public static class BracketEndpoints
 
             return Results.Ok(new { version, nodes, edges });
         });
+
+        // ── PATCH /api/brackets/matches/{matchId}/best-of ────────────────────────
+        // Allow organizers to override BO format on individual matches after bracket generation
+        app.MapPatch("/api/brackets/matches/{matchId}/best-of", async (
+            Guid matchId,
+            [FromBody] UpdateMatchBestOfRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT m.id, m.status, m.best_of, v.tournament_id, v.id AS version_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                WHERE m.id = @matchId
+                """, new { matchId });
+
+            if (match is null) return Results.NotFound(new { error = "Match not found." });
+
+            var tournamentId = (Guid)match.tournament_id;
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            if ((string)match.status == "completed")
+                return Results.BadRequest(new { error = "Cannot change BO format on completed matches." });
+
+            if (req.BestOf is not (1 or 3 or 5))
+                return Results.BadRequest(new { error = "BestOf must be 1, 3, or 5." });
+
+            var vetoInProgress = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM match_map_vetos WHERE match_id = @matchId AND status = 'in_progress')",
+                new { matchId });
+            if (vetoInProgress)
+                return Results.BadRequest(new { error = "Cannot change BO format while veto is in progress." });
+
+            await conn.ExecuteAsync(
+                "UPDATE brkt_matches SET best_of = @bestOf WHERE id = @matchId",
+                new { bestOf = req.BestOf, matchId });
+
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(((Guid)match.version_id).ToString()))
+                .SendAsync(BracketHubEvents.MatchUpdated,
+                    new { matchId, bestOf = req.BestOf },
+                    ct);
+
+            return Results.Ok(new { success = true, matchId, bestOf = req.BestOf });
+        }).RequireAuthorization("Authenticated");
     }
 
     private static async Task ClearTournamentWinnerIfMatchesContainWinnerAsync(

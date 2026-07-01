@@ -6,7 +6,7 @@ public interface IBracketGenerator
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
         Guid? stageId = null,
-        int bestOf = 1,
+        StageRoundConfiguration? roundConfig = null,
         int? bracketSize = null,
         int? advancementCount = null,
         BracketConfig? config = null);

@@ -6,11 +6,13 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
         IReadOnlyList<(Guid Id, string Name)> teams,
         Guid tournamentId,
         Guid? stageId = null,
-        int bestOf = 1,
+        StageRoundConfiguration? roundConfig = null,
         int? bracketSize = null,
         int? advancementCount = null,
         BracketConfig? config = null)
     {
+        roundConfig ??= StageRoundConfiguration.PerStage("double_elimination", 1);
+
         var versionId = Guid.NewGuid();
         var nodes = new List<BracketNode>();
         var edges = new List<BracketEdge>();
@@ -38,11 +40,13 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
                     t2 = seeded.ElementAtOrDefault(i * 2 + 1)?.Id;
                 }
 
+                int matchBestOf = roundConfig.GetBestOf(r, "winners", numUpperRounds);
+
                 var match = new BracketNode(
                     Id: Guid.NewGuid(), VersionId: versionId,
                     RoundIndex: r, MatchNumber: i + 1,
                     BracketType: "winners", Status: "pending",
-                    BestOf: bestOf, Team1Id: t1, Team2Id: t2);
+                    BestOf: matchBestOf, Team1Id: t1, Team2Id: t2);
 
                 nodes.Add(match);
                 matchMap[$"winners-{r}-{i + 1}"] = match;
@@ -55,10 +59,12 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
             int matchesInRound = (int)Math.Pow(2, Math.Floor((numLowerRounds - 1 - r) / 2.0));
             for (int i = 0; i < matchesInRound; i++)
             {
+                int matchBestOf = roundConfig.GetBestOf(r, "losers", numLowerRounds);
+
                 var match = new BracketNode(
                     Id: Guid.NewGuid(), VersionId: versionId,
                     RoundIndex: r, MatchNumber: i + 1,
-                    BracketType: "losers", Status: "pending", BestOf: bestOf);
+                    BracketType: "losers", Status: "pending", BestOf: matchBestOf);
 
                 nodes.Add(match);
                 matchMap[$"losers-{r}-{i + 1}"] = match;
@@ -66,10 +72,12 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
         }
 
         // 3. Grand final node
+        int gfBestOf = roundConfig.GetBestOf(0, "final", 1);
+
         var gf = new BracketNode(
             Id: Guid.NewGuid(), VersionId: versionId,
             RoundIndex: numUpperRounds, MatchNumber: 1,
-            BracketType: "final", Status: "pending", BestOf: bestOf);
+            BracketType: "final", Status: "pending", BestOf: gfBestOf);
 
         nodes.Add(gf);
         matchMap["final-0-1"] = gf;
