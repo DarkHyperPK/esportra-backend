@@ -74,16 +74,33 @@ public static class BracketEndpoints
                 SwissGroups: req.SwissGroups,
                 SwissRounds: req.SwissRounds);
 
-            // Log per-round BO configuration for debugging
+            // Validate per-round BO configuration
             var effectiveBoMode = req.BoMode ?? "per_stage";
-            Console.WriteLine($"[BracketGenerate] Format={req.Format}, BestOf={req.BestOf}, BoMode={effectiveBoMode}");
-            if (req.RoundBoOverrides is { Count: > 0 })
+
+            if (effectiveBoMode == "per_round")
             {
-                Console.WriteLine($"[BracketGenerate] RoundBoOverrides: {string.Join(", ", req.RoundBoOverrides.Select(kv => $"{kv.Key}={kv.Value}"))}");
-            }
-            else
-            {
-                Console.WriteLine("[BracketGenerate] RoundBoOverrides: (none)");
+                if (req.RoundBoOverrides is null || req.RoundBoOverrides.Count == 0)
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "Per-round BO mode requires roundBoOverrides to be specified. " +
+                                "Configure BO values for each round or use 'per_stage' mode."
+                    });
+                }
+
+                // Warn about missing keys (but allow generation)
+                var expectedRounds = StageRoundConfiguration.GetRoundStructure(
+                    req.Format, req.BracketSize ?? teams.Count);
+                var missingKeys = expectedRounds
+                    .Select(r => r.Key)
+                    .Where(k => !req.RoundBoOverrides.ContainsKey(k))
+                    .ToList();
+
+                if (missingKeys.Count > 0)
+                {
+                    Console.WriteLine($"[BracketGenerate] Warning: Missing round overrides for keys: {string.Join(", ", missingKeys)}. " +
+                                      $"Using default BO={req.BestOf} for these rounds.");
+                }
             }
 
             var roundConfig = new StageRoundConfiguration(
@@ -824,6 +841,13 @@ public static class BracketEndpoints
             return Results.Ok(rows);
         });
 
+        // ── GET /api/brackets/debug/round-config ─────────────────────────────
+        // Debug endpoint to inspect per-round BO configuration for a stage
+        app.MapGet("/api/brackets/debug/round-config", async (
+            Guid stageId,
+            IDbConnectionFactory db,
+            CancellationToken ct) => await GetRoundConfigDebugAsync(stageId, db, ct));
+
         // ── GET /api/brackets/versions/{id} ──────────────────────────────────
         // Alias for GET /api/brackets/{versionId} — same data, different URL pattern
         app.MapGet("/api/brackets/versions/{id}", async (
@@ -1043,5 +1067,90 @@ public static class BracketEndpoints
             new { json, versionId });
 
         return uiMatches.Count;
+    }
+
+    /// <summary>
+    /// Debug endpoint to inspect per-round BO configuration for a stage.
+    /// Returns the exact configuration that would be used during bracket generation.
+    /// </summary>
+    public static async Task<IResult> GetRoundConfigDebugAsync(
+        Guid stageId,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+
+        var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            """
+            SELECT format, capacity, best_of, bo_mode, round_bo_overrides
+            FROM tournament_stages
+            WHERE id = @stageId
+            """,
+            new { stageId });
+
+        if (stage is null)
+            return Results.NotFound(new { error = "Stage not found" });
+
+        string format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+        int capacity = (int?)stage.capacity ?? 8;
+        int defaultBestOf = (int?)stage.best_of ?? 1;
+        string boMode = (string?)stage.bo_mode ?? "per_stage";
+
+        Dictionary<string, int>? overrides = null;
+        if (stage.round_bo_overrides is not null)
+        {
+            var jsonStr = stage.round_bo_overrides.ToString();
+            if (!string.IsNullOrWhiteSpace(jsonStr) && jsonStr != "{}")
+            {
+                overrides = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr);
+            }
+        }
+
+        var roundStructure = StageRoundConfiguration.GetRoundStructure(format, capacity);
+
+        var resolvedRounds = roundStructure.Select(r => new
+        {
+            r.Key,
+            r.Label,
+            r.BracketType,
+            ConfiguredBestOf = overrides?.GetValueOrDefault(r.Key),
+            EffectiveBestOf = boMode == "per_round" && overrides?.ContainsKey(r.Key) == true
+                ? overrides[r.Key]
+                : defaultBestOf,
+            HasOverride = overrides?.ContainsKey(r.Key) ?? false
+        }).ToList();
+
+        var warnings = new List<string>();
+        if (boMode == "per_round")
+        {
+            if (overrides is null || overrides.Count == 0)
+            {
+                warnings.Add("Per-round mode enabled but no overrides configured - bracket generation will fail.");
+            }
+            else
+            {
+                var missingKeys = roundStructure
+                    .Select(r => r.Key)
+                    .Where(k => !overrides.ContainsKey(k))
+                    .ToList();
+                if (missingKeys.Count > 0)
+                {
+                    warnings.Add($"Missing overrides for rounds: {string.Join(", ", missingKeys)}. " +
+                                 $"These rounds will use default BO={defaultBestOf}.");
+                }
+            }
+        }
+
+        return Results.Ok(new
+        {
+            stageId,
+            format,
+            capacity,
+            defaultBestOf,
+            boMode,
+            configuredOverrides = overrides,
+            roundStructure = resolvedRounds,
+            warnings
+        });
     }
 }

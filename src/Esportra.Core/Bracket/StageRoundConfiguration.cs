@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace Esportra.Core.Bracket;
 
 /// <summary>
@@ -6,10 +8,22 @@ namespace Esportra.Core.Bracket;
 /// </summary>
 public sealed class StageRoundConfiguration
 {
+    private static ILogger? s_logger;
+
     private readonly string _format;
     private readonly int _defaultBestOf;
     private readonly string _boMode;
     private readonly IReadOnlyDictionary<string, int>? _overrides;
+
+    /// <summary>
+    /// Configures logging for StageRoundConfiguration.
+    /// Call once at application startup.
+    /// </summary>
+    public static void ConfigureLogging(ILoggerFactory loggerFactory)
+    {
+        s_logger = loggerFactory.CreateLogger<StageRoundConfiguration>();
+        s_logger.LogInformation("StageRoundConfiguration logging configured");
+    }
 
     public StageRoundConfiguration(
         string format,
@@ -21,9 +35,31 @@ public sealed class StageRoundConfiguration
         _defaultBestOf = defaultBestOf;
         _boMode = boMode;
         _overrides = roundBoOverrides;
+
+        // Fail loudly if per_round mode but no overrides provided
+        if (_boMode == "per_round" && (_overrides is null || _overrides.Count == 0))
+        {
+            var error = "Per-round BO mode requires at least one round override. " +
+                        "Either provide roundBoOverrides or use 'per_stage' mode.";
+            s_logger?.LogError("StageRoundConfiguration validation failed: {Error}", error);
+            throw new ArgumentException(error, nameof(roundBoOverrides));
+        }
+
+        s_logger?.LogInformation(
+            "Created StageRoundConfiguration: format={Format}, mode={Mode}, defaultBo={DefaultBo}, overrideCount={Count}",
+            _format, _boMode, _defaultBestOf, _overrides?.Count ?? 0);
+
+        if (_overrides is { Count: > 0 })
+        {
+            s_logger?.LogInformation(
+                "Round overrides: {Overrides}",
+                string.Join(", ", _overrides.Select(kv => $"{kv.Key}={kv.Value}")));
+        }
     }
 
     public int DefaultBestOf => _defaultBestOf;
+    public string BoMode => _boMode;
+    public IReadOnlyDictionary<string, int>? Overrides => _overrides;
 
     /// <summary>
     /// Resolves the best-of value for a specific round.
@@ -35,20 +71,30 @@ public sealed class StageRoundConfiguration
     {
         if (_boMode == "per_stage")
         {
-            Console.WriteLine($"[GetBestOf] Mode=per_stage, returning default={_defaultBestOf}");
+            s_logger?.LogDebug(
+                "GetBestOf: per_stage mode, returning default={Default}",
+                _defaultBestOf);
             return _defaultBestOf;
         }
 
-        if (_overrides is null || _overrides.Count == 0)
-        {
-            Console.WriteLine($"[GetBestOf] Mode=per_round but no overrides, returning default={_defaultBestOf}");
-            return _defaultBestOf;
-        }
-
+        // In per_round mode, we validated overrides exist in constructor
         var key = ResolveRoundKey(roundIndex, bracketType, totalRoundsInBracket);
-        var found = _overrides.TryGetValue(key, out var bo);
-        Console.WriteLine($"[GetBestOf] roundIndex={roundIndex}, bracketType={bracketType}, key={key}, found={found}, value={bo}, default={_defaultBestOf}");
-        return found ? bo : _defaultBestOf;
+        var found = _overrides!.TryGetValue(key, out var bo);
+
+        if (found)
+        {
+            s_logger?.LogDebug(
+                "GetBestOf: roundIndex={RoundIndex}, bracketType={BracketType}, key={Key}, found override={Value}",
+                roundIndex, bracketType, key, bo);
+            return bo;
+        }
+        else
+        {
+            s_logger?.LogWarning(
+                "GetBestOf: roundIndex={RoundIndex}, bracketType={BracketType}, key={Key} NOT FOUND in overrides, using default={Default}",
+                roundIndex, bracketType, key, _defaultBestOf);
+            return _defaultBestOf;
+        }
     }
 
     private string ResolveRoundKey(int roundIndex, string bracketType, int totalRounds)

@@ -372,6 +372,10 @@ Console.WriteLine("[STARTUP] Building app...");
 var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
 
+// Configure StageRoundConfiguration logging
+Esportra.Core.Bracket.StageRoundConfiguration.ConfigureLogging(
+    app.Services.GetRequiredService<ILoggerFactory>());
+
 // ── Run database migrations (development/legacy fallback only) ──────────────
 // Dedicated schema upgrades should run through Esportra.Migrator before the API
 // is rolled out. The app only keeps startup migrations for local development

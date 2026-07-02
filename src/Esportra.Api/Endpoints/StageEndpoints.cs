@@ -299,9 +299,9 @@ public static class StageEndpoints
         {
             using var conn = db.CreateConnection();
 
-            // 1. Get stage info
+            // 1. Get stage info (includes BO config for debugging)
             var stage = await conn.QuerySingleOrDefaultAsync(
-                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config FROM tournament_stages WHERE id = @stageId",
+                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config, best_of, bo_mode, round_bo_overrides FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
 
@@ -412,9 +412,9 @@ public static class StageEndpoints
         {
             using var conn = db.CreateConnection();
 
-            // 1. Get stage info
+            // 1. Get stage info (includes BO config for debugging)
             var stage = await conn.QuerySingleOrDefaultAsync(
-                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config FROM tournament_stages WHERE id = @stageId",
+                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config, best_of, bo_mode, round_bo_overrides FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
 
