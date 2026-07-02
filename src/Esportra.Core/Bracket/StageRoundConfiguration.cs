@@ -34,13 +34,21 @@ public sealed class StageRoundConfiguration
     public int GetBestOf(int roundIndex, string bracketType, int totalRoundsInBracket)
     {
         if (_boMode == "per_stage")
+        {
+            Console.WriteLine($"[GetBestOf] Mode=per_stage, returning default={_defaultBestOf}");
             return _defaultBestOf;
+        }
 
         if (_overrides is null || _overrides.Count == 0)
+        {
+            Console.WriteLine($"[GetBestOf] Mode=per_round but no overrides, returning default={_defaultBestOf}");
             return _defaultBestOf;
+        }
 
         var key = ResolveRoundKey(roundIndex, bracketType, totalRoundsInBracket);
-        return _overrides.TryGetValue(key, out var bo) ? bo : _defaultBestOf;
+        var found = _overrides.TryGetValue(key, out var bo);
+        Console.WriteLine($"[GetBestOf] roundIndex={roundIndex}, bracketType={bracketType}, key={key}, found={found}, value={bo}, default={_defaultBestOf}");
+        return found ? bo : _defaultBestOf;
     }
 
     private string ResolveRoundKey(int roundIndex, string bracketType, int totalRounds)

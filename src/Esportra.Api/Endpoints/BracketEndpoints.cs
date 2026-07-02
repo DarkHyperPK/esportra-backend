@@ -74,10 +74,22 @@ public static class BracketEndpoints
                 SwissGroups: req.SwissGroups,
                 SwissRounds: req.SwissRounds);
 
+            // Log per-round BO configuration for debugging
+            var effectiveBoMode = req.BoMode ?? "per_stage";
+            Console.WriteLine($"[BracketGenerate] Format={req.Format}, BestOf={req.BestOf}, BoMode={effectiveBoMode}");
+            if (req.RoundBoOverrides is { Count: > 0 })
+            {
+                Console.WriteLine($"[BracketGenerate] RoundBoOverrides: {string.Join(", ", req.RoundBoOverrides.Select(kv => $"{kv.Key}={kv.Value}"))}");
+            }
+            else
+            {
+                Console.WriteLine("[BracketGenerate] RoundBoOverrides: (none)");
+            }
+
             var roundConfig = new StageRoundConfiguration(
                 req.Format,
                 req.BestOf,
-                req.BoMode ?? "per_stage",
+                effectiveBoMode,
                 req.RoundBoOverrides);
 
             var graph = generator.Generate(
