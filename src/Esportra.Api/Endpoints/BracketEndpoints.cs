@@ -736,7 +736,7 @@ public static class BracketEndpoints
                 SELECT m.*,
                        {BracketTeamResolutionSql.Team1Columns},
                        {BracketTeamResolutionSql.Team2Columns},
-                       ts.best_of AS stage_best_of
+                       COALESCE(m.best_of, ts.best_of) AS stage_best_of
                 FROM brkt_matches m
                 {BracketTeamResolutionSql.Team1Joins}
                 {BracketTeamResolutionSql.Team2Joins}
