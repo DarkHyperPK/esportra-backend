@@ -3068,7 +3068,11 @@ public static class TournamentEndpoints
                     """,
                         new { t1 = t1Score, t2 = t2Score, winner = winnerId, loser = loserId, matchId });
 
-                    // Advance winner/loser through bracket edges
+                    // Advance winner/loser through bracket edges (with seeds)
+                    var sourceMatch = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT team1_id, team2_id, team1_seed, team2_seed FROM brkt_matches WHERE id = @matchId",
+                        new { matchId });
+
                     var advancements = await conn.QueryAsync<dynamic>(
                         "SELECT target_match_id, target_slot, type FROM brkt_advancements WHERE source_match_id = @matchId",
                         new { matchId });
@@ -3076,10 +3080,22 @@ public static class TournamentEndpoints
                     foreach (var adv in advancements)
                     {
                         Guid teamId = (string?)adv.type == "winner" ? winnerId : loserId;
-                        string field = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
+
+                        // Determine the seed of the advancing team
+                        int? teamSeed = null;
+                        if (sourceMatch is not null)
+                        {
+                            if ((Guid?)sourceMatch.team1_id == teamId)
+                                teamSeed = (int?)sourceMatch.team1_seed;
+                            else if ((Guid?)sourceMatch.team2_id == teamId)
+                                teamSeed = (int?)sourceMatch.team2_seed;
+                        }
+
+                        string teamField = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
+                        string seedField = (int)adv.target_slot == 1 ? "team1_seed" : "team2_seed";
                         await conn.ExecuteAsync(
-                            $"UPDATE brkt_matches SET {field} = @teamId WHERE id = @targetId",
-                            new { teamId, targetId = (Guid)adv.target_match_id });
+                            $"UPDATE brkt_matches SET {teamField} = @teamId, {seedField} = @teamSeed WHERE id = @targetId",
+                            new { teamId, teamSeed, targetId = (Guid)adv.target_match_id });
                     }
 
                     // Mark report as accepted, others for this match as rejected
