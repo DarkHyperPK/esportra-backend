@@ -126,6 +126,22 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
         Guid teamId,
         string edgeType)
     {
+        // Fetch source match to get team seeds
+        var sourceMatch = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT team1_id, team2_id, team1_seed, team2_seed FROM public.brkt_matches WHERE id = @sourceMatchId",
+            new { sourceMatchId },
+            tx);
+
+        // Determine the seed of the advancing team
+        int? teamSeed = null;
+        if (sourceMatch is not null)
+        {
+            if ((Guid?)sourceMatch.team1_id == teamId)
+                teamSeed = (int?)sourceMatch.team1_seed;
+            else if ((Guid?)sourceMatch.team2_id == teamId)
+                teamSeed = (int?)sourceMatch.team2_seed;
+        }
+
         var edges = (await conn.QueryAsync(
             """
             SELECT target_match_id, target_slot
@@ -137,10 +153,11 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
 
         foreach (var edge in edges)
         {
-            string col = (int)edge.target_slot == 1 ? "team1_id" : "team2_id";
+            string teamCol = (int)edge.target_slot == 1 ? "team1_id" : "team2_id";
+            string seedCol = (int)edge.target_slot == 1 ? "team1_seed" : "team2_seed";
             await conn.ExecuteAsync(
-                $"UPDATE public.brkt_matches SET {col} = @teamId WHERE id = @targetId",
-                new { teamId, targetId = (Guid)edge.target_match_id },
+                $"UPDATE public.brkt_matches SET {teamCol} = @teamId, {seedCol} = @teamSeed WHERE id = @targetId",
+                new { teamId, teamSeed, targetId = (Guid)edge.target_match_id },
                 tx);
 
             // Check if both teams are now assigned → notify captains
