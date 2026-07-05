@@ -734,6 +734,13 @@ public static class MatchEndpoints
                               AND a.target_match_id = target.id
                               AND a.target_slot = 1
                         ) THEN NULL ELSE target.team1_id END,
+                    team1_seed = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM brkt_advancements a
+                            WHERE a.source_match_id = @matchId
+                              AND a.target_match_id = target.id
+                              AND a.target_slot = 1
+                        ) THEN NULL ELSE target.team1_seed END,
                     team2_id = CASE
                         WHEN EXISTS (
                             SELECT 1 FROM brkt_advancements a
@@ -741,6 +748,13 @@ public static class MatchEndpoints
                               AND a.target_match_id = target.id
                               AND a.target_slot = 2
                         ) THEN NULL ELSE target.team2_id END,
+                    team2_seed = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM brkt_advancements a
+                            WHERE a.source_match_id = @matchId
+                              AND a.target_match_id = target.id
+                              AND a.target_slot = 2
+                        ) THEN NULL ELSE target.team2_seed END,
                     winner_id = NULL,
                     loser_id = NULL,
                     status = 'pending',
