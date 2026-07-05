@@ -518,19 +518,35 @@ public static class BracketEndpoints
 
             var advancements = (await conn.QueryAsync("""
                 SELECT ba.target_match_id, ba.target_slot, ba.type,
-                       bm.winner_id, bm.loser_id
+                       bm.winner_id, bm.loser_id, bm.team1_id, bm.team2_id,
+                       bm.team1_seed, bm.team2_seed
                 FROM public.brkt_advancements ba
                 JOIN public.brkt_matches bm ON bm.id = ba.source_match_id
                 WHERE ba.source_match_id = @matchId
                 """, new { matchId = req.MatchId })).ToList();
 
-            // Resolve team IDs for each advancement
+            // Resolve team IDs and seeds for each advancement
             var updates = advancements
-                .Select(adv => new
+                .Select(adv =>
                 {
-                    TargetMatchId = (Guid)adv.target_match_id,
-                    TargetSlot = (int)adv.target_slot,
-                    TeamId = (Guid?)((string)adv.type == "winner" ? adv.winner_id : adv.loser_id),
+                    bool isWinner = (string)adv.type == "winner";
+                    Guid? teamId = isWinner ? (Guid?)adv.winner_id : (Guid?)adv.loser_id;
+                    int? teamSeed = null;
+                    if (teamId is not null)
+                    {
+                        // Determine which slot the advancing team came from
+                        if ((Guid?)adv.team1_id == teamId)
+                            teamSeed = (int?)adv.team1_seed;
+                        else if ((Guid?)adv.team2_id == teamId)
+                            teamSeed = (int?)adv.team2_seed;
+                    }
+                    return new
+                    {
+                        TargetMatchId = (Guid)adv.target_match_id,
+                        TargetSlot = (int)adv.target_slot,
+                        TeamId = teamId,
+                        TeamSeed = teamSeed,
+                    };
                 })
                 .Where(u => u.TeamId is not null)
                 .ToList();
@@ -542,16 +558,19 @@ public static class BracketEndpoints
                 var targetIds = updates.Select(u => u.TargetMatchId).ToArray();
                 var slots = updates.Select(u => u.TargetSlot).ToArray();
                 var teamIds = updates.Select(u => u.TeamId!.Value).ToArray();
+                var teamSeeds = updates.Select(u => u.TeamSeed).ToArray();
 
                 advanced = await conn.ExecuteAsync("""
                     UPDATE public.brkt_matches m
                     SET team1_id = CASE WHEN u.slot = 1 THEN u.team_id ELSE m.team1_id END,
-                        team2_id = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END
-                    FROM UNNEST(@targetIds::uuid[], @slots::int[], @teamIds::uuid[])
-                         AS u(target_match_id, slot, team_id)
+                        team2_id = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END,
+                        team1_seed = CASE WHEN u.slot = 1 THEN u.team_seed ELSE m.team1_seed END,
+                        team2_seed = CASE WHEN u.slot = 2 THEN u.team_seed ELSE m.team2_seed END
+                    FROM UNNEST(@targetIds::uuid[], @slots::int[], @teamIds::uuid[], @teamSeeds::int[])
+                         AS u(target_match_id, slot, team_id, team_seed)
                     WHERE m.id = u.target_match_id
                     """,
-                    new { targetIds, slots, teamIds });
+                    new { targetIds, slots, teamIds, teamSeeds });
 
                 // Broadcast single update for the entire version
                 await bracketHub.Clients
@@ -1043,8 +1062,8 @@ public static class BracketEndpoints
             id = $"db-{m.id}",
             round = m.round_index,
             matchNumber = m.match_number,
-            team1 = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo },
-            team2 = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo },
+            team1 = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo, seed = (int?)m.team1_seed },
+            team2 = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo, seed = (int?)m.team2_seed },
             winner = m.winner_id,
             team1_score = m.team1_score,
             team2_score = m.team2_score,

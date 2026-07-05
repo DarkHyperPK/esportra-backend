@@ -28,7 +28,9 @@ public sealed record BracketNode(
     int? RoundNumber = null,
     string? ScheduledTime = null,
     double? X = null,
-    double? Y = null);
+    double? Y = null,
+    int? Team1Seed = null,
+    int? Team2Seed = null);
 
 public sealed record BracketEdge(
     Guid Id,

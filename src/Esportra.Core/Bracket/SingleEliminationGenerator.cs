@@ -39,10 +39,15 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
             for (int i = 0; i < matchesInRound; i++)
             {
                 Guid? team1Id = null, team2Id = null;
+                int? team1Seed = null, team2Seed = null;
                 if (r == 0)
                 {
-                    team1Id = seeded.ElementAtOrDefault(i * 2)?.Id;
-                    team2Id = seeded.ElementAtOrDefault(i * 2 + 1)?.Id;
+                    var slot1 = seeded.ElementAtOrDefault(i * 2);
+                    var slot2 = seeded.ElementAtOrDefault(i * 2 + 1);
+                    team1Id = slot1?.Id;
+                    team2Id = slot2?.Id;
+                    team1Seed = slot1?.Seed;
+                    team2Seed = slot2?.Seed;
                 }
 
                 int matchBestOf = roundConfig.GetBestOf(r, bracketType, numRounds);
@@ -56,7 +61,9 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
                     Status: "pending",
                     BestOf: matchBestOf,
                     Team1Id: team1Id,
-                    Team2Id: team2Id);
+                    Team2Id: team2Id,
+                    Team1Seed: team1Seed,
+                    Team2Seed: team2Seed);
 
                 nodes.Add(match);
                 matchMap[$"{r}-{i + 1}"] = match;
@@ -94,13 +101,14 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
     }
 
     // Standard bracket seeding: 1 vs N, 2 vs N-1, etc.
-    private static (Guid Id, string Name)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
+    // Returns (Id, Name, Seed) where Seed is the 1-based seed number
+    private static (Guid Id, string Name, int Seed)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
     {
-        var seeded = new (Guid Id, string Name)?[bracketSize];
+        var seeded = new (Guid Id, string Name, int Seed)?[bracketSize];
         var positions = GetStandardBracketSlots(bracketSize);
 
         for (int i = 0; i < teams.Count; i++)
-            seeded[positions[i]] = teams[i];
+            seeded[positions[i]] = (teams[i].Id, teams[i].Name, i + 1); // seed is 1-based
 
         return seeded;
     }

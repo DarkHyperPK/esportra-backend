@@ -27,7 +27,8 @@ public static class BracketTeamResolutionSql
           WHEN tp1.id IS NOT NULL AND tp1.is_mock = TRUE THEN 'mock'
           WHEN tp1.id IS NOT NULL AND tp1.participant_type = 'solo' THEN 'solo'
           ELSE COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END)
-        END AS team1_kind
+        END AS team1_kind,
+        m.team1_seed
         """;
 
     public const string Team2Columns = """
@@ -37,7 +38,8 @@ public static class BracketTeamResolutionSql
           WHEN tp2.id IS NOT NULL AND tp2.is_mock = TRUE THEN 'mock'
           WHEN tp2.id IS NOT NULL AND tp2.participant_type = 'solo' THEN 'solo'
           ELSE COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END)
-        END AS team2_kind
+        END AS team2_kind,
+        m.team2_seed
         """;
 
     /// <summary>Alias <c>bm</c> for <c>brkt_matches</c> (organizer match detail queries).</summary>
@@ -62,7 +64,8 @@ public static class BracketTeamResolutionSql
           WHEN tp1.id IS NOT NULL AND tp1.is_mock = TRUE THEN 'mock'
           WHEN tp1.id IS NOT NULL AND tp1.participant_type = 'solo' THEN 'solo'
           ELSE COALESCE(t1.team_kind, CASE WHEN COALESCE(t1.is_solo, false) THEN 'solo' ELSE 'team' END)
-        END AS team1_kind
+        END AS team1_kind,
+        bm.team1_seed
         """;
 
     public const string BracketMatchTeam2Columns = """
@@ -72,6 +75,7 @@ public static class BracketTeamResolutionSql
           WHEN tp2.id IS NOT NULL AND tp2.is_mock = TRUE THEN 'mock'
           WHEN tp2.id IS NOT NULL AND tp2.participant_type = 'solo' THEN 'solo'
           ELSE COALESCE(t2.team_kind, CASE WHEN COALESCE(t2.is_solo, false) THEN 'solo' ELSE 'team' END)
-        END AS team2_kind
+        END AS team2_kind,
+        bm.team2_seed
         """;
 }

@@ -45,10 +45,12 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 await conn.ExecuteAsync(@"
                 INSERT INTO public.brkt_matches
                     (id, version_id, round_index, match_number, bracket_type, status,
-                     best_of, team1_id, team2_id, group_id, round_number, scheduled_time)
+                     best_of, team1_id, team2_id, group_id, round_number, scheduled_time,
+                     team1_seed, team2_seed)
                 VALUES
                     (@id, @version_id, @round_index, @match_number, @bracket_type, @status,
-                     @best_of, @team1_id, @team2_id, @group_id, @round_number, @scheduled_time)",
+                     @best_of, @team1_id, @team2_id, @group_id, @round_number, @scheduled_time,
+                     @team1_seed, @team2_seed)",
                     new
                     {
                         id = node.Id,
@@ -65,6 +67,8 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                         scheduled_time = string.IsNullOrEmpty(node.ScheduledTime)
                             ? (DateTime?)null
                             : DateTime.Parse(node.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind),
+                        team1_seed = node.Team1Seed,
+                        team2_seed = node.Team2Seed,
                     }, tx);
 
                 // Store layout coordinates in brkt_layout
@@ -113,7 +117,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
         using var conn = db.CreateConnection();
 
         var matches = (await conn.QueryAsync(
-            "SELECT id, team1_id, team2_id, best_of FROM public.brkt_matches WHERE version_id = @versionId AND status = 'pending'",
+            "SELECT id, team1_id, team2_id, team1_seed, team2_seed, best_of FROM public.brkt_matches WHERE version_id = @versionId AND status = 'pending'",
             new { versionId })).AsList();
 
         int count = 0;
@@ -125,6 +129,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
             if (!(hasT1 ^ hasT2)) continue; // both or neither → skip
 
             Guid winnerId = hasT1 ? (Guid)match.team1_id : (Guid)match.team2_id;
+            int? winnerSeed = hasT1 ? (int?)match.team1_seed : (int?)match.team2_seed;
             int bestOf = (int)(match.best_of ?? 1);
             int winScore = bestOf == 1 ? 13 : (int)Math.Ceiling(bestOf / 2.0);
             int t1Score = hasT1 ? winScore : 0;
@@ -137,8 +142,8 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                  WHERE id = @id",
                 new { winnerId, t1 = t1Score, t2 = t2Score, id = (Guid)match.id });
 
-            // Advance winner along edges
-            await AdvanceTeamAsync(conn, (Guid)match.id, versionId, "winner", winnerId);
+            // Advance winner along edges with their seed
+            await AdvanceTeamAsync(conn, (Guid)match.id, versionId, "winner", winnerId, winnerSeed);
             count++;
         }
 
@@ -200,6 +205,8 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                            SET status = 'pending',
                                team1_id = NULL,
                                team2_id = NULL,
+                               team1_seed = NULL,
+                               team2_seed = NULL,
                                winner_id = NULL,
                                loser_id = NULL,
                                team1_score = NULL,
@@ -349,7 +356,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     // ── Internal: advance a team along edges ─────────────────────────────────
 
     private static async Task AdvanceTeamAsync(System.Data.IDbConnection conn,
-        Guid sourceMatchId, Guid versionId, string edgeType, Guid teamId)
+        Guid sourceMatchId, Guid versionId, string edgeType, Guid teamId, int? teamSeed = null)
     {
         var edges = (await conn.QueryAsync(
             "SELECT target_match_id, target_slot FROM public.brkt_advancements WHERE version_id=@v AND source_match_id=@s AND type=@t",
@@ -357,10 +364,11 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
 
         foreach (var edge in edges)
         {
-            string col = (int)edge.target_slot == 1 ? "team1_id" : "team2_id";
+            string teamCol = (int)edge.target_slot == 1 ? "team1_id" : "team2_id";
+            string seedCol = (int)edge.target_slot == 1 ? "team1_seed" : "team2_seed";
             await conn.ExecuteAsync(
-                $"UPDATE public.brkt_matches SET {col} = @teamId WHERE id = @targetId",
-                new { teamId, targetId = (Guid)edge.target_match_id });
+                $"UPDATE public.brkt_matches SET {teamCol} = @teamId, {seedCol} = @teamSeed WHERE id = @targetId",
+                new { teamId, teamSeed, targetId = (Guid)edge.target_match_id });
         }
     }
 

@@ -27,11 +27,11 @@ public sealed class SwissGenerator : IBracketGenerator
         int swissGroups = config?.SwissGroups ?? 1;
         int matchCounter = 1;
 
-        // Sort by seed index (position in list)
-        var sorted = teams.ToList();
+        // Sort by seed index (position in list) - preserve original seed (1-based)
+        var sorted = teams.Select((t, i) => (t.Id, t.Name, Seed: i + 1)).ToList();
 
         // Split into groups
-        var groups = new List<List<(Guid Id, string Name)>>(swissGroups);
+        var groups = new List<List<(Guid Id, string Name, int Seed)>>(swissGroups);
         for (int i = 0; i < swissGroups; i++) groups.Add([]);
 
         foreach (var (team, idx) in sorted.Select((t, i) => (t, i)))
@@ -50,7 +50,7 @@ public sealed class SwissGenerator : IBracketGenerator
             for (int i = 0; i < topHalf.Count; i++)
             {
                 var t1 = topHalf[i];
-                var t2 = i < bottomHalf.Count ? bottomHalf[i] : ((Guid Id, string Name)?)null;
+                var t2 = i < bottomHalf.Count ? bottomHalf[i] : ((Guid Id, string Name, int Seed)?)null;
 
                 nodes.Add(new BracketNode(
                     Id: Guid.NewGuid(),
@@ -63,7 +63,9 @@ public sealed class SwissGenerator : IBracketGenerator
                     BestOf: bestOf,
                     Team1Id: t1.Id,
                     Team2Id: t2?.Id,
-                    GroupId: groupId));
+                    GroupId: groupId,
+                    Team1Seed: t1.Seed,
+                    Team2Seed: t2?.Seed));
             }
         }
 
@@ -103,9 +105,9 @@ public sealed class SwissNextRoundService(
         if (currentRound >= maxRounds)
             return (false, $"Round limit reached ({maxRounds} rounds).");
 
-        // Fetch match history for rematch avoidance
+        // Fetch match history for rematch avoidance and seed lookup
         var history = (await conn.QueryAsync(
-            "SELECT team1_id, team2_id, group_id FROM public.brkt_matches WHERE version_id = @versionId",
+            "SELECT team1_id, team2_id, team1_seed, team2_seed, group_id FROM public.brkt_matches WHERE version_id = @versionId",
             new { versionId })).AsList();
 
         if (history.Count == 0)
@@ -114,14 +116,27 @@ public sealed class SwissNextRoundService(
         var playedMap = new HashSet<string>();
         var groupMap = new Dictionary<string, HashSet<Guid>>();
         var teamGroupMap = new Dictionary<Guid, string>();
+        var teamSeedMap = new Dictionary<Guid, int>(); // Track original seeds
 
         foreach (var m in history)
         {
             string gid = (string?)m.group_id ?? "default";
             if (!groupMap.ContainsKey(gid)) groupMap[gid] = [];
 
-            if (m.team1_id is Guid t1) { groupMap[gid].Add(t1); teamGroupMap[t1] = gid; }
-            if (m.team2_id is Guid t2) { groupMap[gid].Add(t2); teamGroupMap[t2] = gid; }
+            if (m.team1_id is Guid t1)
+            {
+                groupMap[gid].Add(t1);
+                teamGroupMap[t1] = gid;
+                if (m.team1_seed is int s1 && !teamSeedMap.ContainsKey(t1))
+                    teamSeedMap[t1] = s1;
+            }
+            if (m.team2_id is Guid t2)
+            {
+                groupMap[gid].Add(t2);
+                teamGroupMap[t2] = gid;
+                if (m.team2_seed is int s2 && !teamSeedMap.ContainsKey(t2))
+                    teamSeedMap[t2] = s2;
+            }
 
             if (m.team1_id is not null && m.team2_id is not null)
             {
@@ -212,7 +227,9 @@ public sealed class SwissNextRoundService(
                     team2_id = t2?.TeamId,
                     winner_id = (Guid?)null,
                     best_of = 1,
-                    group_id = groupId == "default" ? null : groupId
+                    group_id = groupId == "default" ? null : groupId,
+                    team1_seed = teamSeedMap.GetValueOrDefault(t1.TeamId),
+                    team2_seed = t2 is not null ? teamSeedMap.GetValueOrDefault(t2.TeamId) : (int?)null
                 });
             }
         }
@@ -222,9 +239,9 @@ public sealed class SwissNextRoundService(
 
         await conn.ExecuteAsync(@"
             INSERT INTO public.brkt_matches
-                (id, version_id, round_index, match_number, bracket_type, round_number, status, team1_id, team2_id, best_of, group_id)
+                (id, version_id, round_index, match_number, bracket_type, round_number, status, team1_id, team2_id, best_of, group_id, team1_seed, team2_seed)
             VALUES
-                (@id, @version_id, @round_index, @match_number, @bracket_type, @round_number, @status, @team1_id, @team2_id, @best_of, @group_id)",
+                (@id, @version_id, @round_index, @match_number, @bracket_type, @round_number, @status, @team1_id, @team2_id, @best_of, @group_id, @team1_seed, @team2_seed)",
             newMatches);
 
         return (true, null);

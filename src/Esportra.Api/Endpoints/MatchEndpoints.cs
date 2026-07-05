@@ -679,6 +679,7 @@ public static class MatchEndpoints
                 """
                 UPDATE brkt_matches
                 SET team1_id = team2_id, team2_id = team1_id,
+                    team1_seed = team2_seed, team2_seed = team1_seed,
                     team1_score = team2_score, team2_score = team1_score
                 WHERE id = @matchId
                 """,
@@ -1108,7 +1109,7 @@ public static class MatchEndpoints
             try
             {
                 var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT bracket_type, round_index, team1_id, team2_id, version_id, match_number, best_of FROM brkt_matches WHERE id = @matchId",
+                    "SELECT bracket_type, round_index, team1_id, team2_id, team1_seed, team2_seed, version_id, match_number, best_of FROM brkt_matches WHERE id = @matchId",
                     new { matchId });
 
                 if (match is not null && (string?)match.bracket_type == "final")
@@ -1137,8 +1138,8 @@ public static class MatchEndpoints
 
                             await conn.ExecuteAsync(
                                 """
-                                INSERT INTO brkt_matches (id, version_id, bracket_type, round_index, match_number, status, team1_id, team2_id, best_of)
-                                VALUES (@resetId, @vid, 'final', @ri, 1, 'pending', @t1, @t2, @bo)
+                                INSERT INTO brkt_matches (id, version_id, bracket_type, round_index, match_number, status, team1_id, team2_id, team1_seed, team2_seed, best_of)
+                                VALUES (@resetId, @vid, 'final', @ri, 1, 'pending', @t1, @t2, @t1Seed, @t2Seed, @bo)
                                 """,
                                 new
                                 {
@@ -1147,6 +1148,8 @@ public static class MatchEndpoints
                                     ri = newRi,
                                     t1 = (Guid?)match.team1_id,
                                     t2 = (Guid?)match.team2_id,
+                                    t1Seed = (int?)match.team1_seed,
+                                    t2Seed = (int?)match.team2_seed,
                                     bo = (int?)match.best_of ?? 1
                                 });
 
