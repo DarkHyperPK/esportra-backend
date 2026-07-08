@@ -97,12 +97,12 @@ CREATE POLICY broadcast_deliveries_user_update ON broadcast_deliveries
     USING (user_id = auth.uid())
     WITH CHECK (user_id = auth.uid());
 
--- Add permissions
-INSERT INTO admin_permissions (id, key, name, description, category)
+-- Add permissions (base columns for prod/staging compat)
+INSERT INTO admin_permissions (name, description, resource, action)
 VALUES
-    (gen_random_uuid(), 'broadcasts:view', 'View Broadcasts', 'View broadcast messages and stats', 'operations'),
-    (gen_random_uuid(), 'broadcasts:create', 'Create Broadcasts', 'Create and schedule broadcast messages', 'operations'),
-    (gen_random_uuid(), 'broadcasts:edit', 'Edit Broadcasts', 'Modify draft broadcasts', 'operations'),
-    (gen_random_uuid(), 'broadcasts:delete', 'Delete Broadcasts', 'Delete draft broadcasts', 'operations'),
-    (gen_random_uuid(), 'broadcasts:send', 'Send Broadcasts', 'Send broadcast messages immediately', 'operations')
-ON CONFLICT (key) DO NOTHING;
+    ('broadcasts:view', 'View broadcast messages and stats', 'broadcasts', 'view'),
+    ('broadcasts:create', 'Create and schedule broadcast messages', 'broadcasts', 'create'),
+    ('broadcasts:edit', 'Modify draft broadcasts', 'broadcasts', 'edit'),
+    ('broadcasts:delete', 'Delete draft broadcasts', 'broadcasts', 'delete'),
+    ('broadcasts:send', 'Send broadcast messages immediately', 'broadcasts', 'send')
+ON CONFLICT (name) DO NOTHING;

@@ -80,14 +80,14 @@ CREATE POLICY ghost_sessions_service ON ghost_sessions FOR ALL TO service_role U
 DROP POLICY IF EXISTS ghost_data_access_log_service ON ghost_data_access_log;
 CREATE POLICY ghost_data_access_log_service ON ghost_data_access_log FOR ALL TO service_role USING (true) WITH CHECK (true);
 
--- Add permissions
-INSERT INTO admin_permissions (id, key, name, description, category)
+-- Add permissions (base columns for prod/staging compat)
+INSERT INTO admin_permissions (name, description, resource, action)
 VALUES
-    (gen_random_uuid(), 'users:impersonate', 'Ghost Mode', 'Impersonate users in read-only mode (requires approval for non-super_admin)', 'users'),
-    (gen_random_uuid(), 'users:impersonate:full', 'Ghost Mode Full Access', 'View unmasked sensitive data during impersonation', 'users'),
-    (gen_random_uuid(), 'users:impersonate:approve', 'Approve Ghost Requests', 'Approve or deny ghost mode requests from other admins', 'users'),
-    (gen_random_uuid(), 'ghost:audit', 'View Ghost Audit', 'View ghost session history and data access logs', 'security')
-ON CONFLICT (key) DO NOTHING;
+    ('users:impersonate', 'Impersonate users in read-only mode', 'users', 'impersonate'),
+    ('users:impersonate:full', 'View unmasked sensitive data during impersonation', 'users', 'impersonate_full'),
+    ('users:impersonate:approve', 'Approve or deny ghost mode requests', 'users', 'impersonate_approve'),
+    ('ghost:audit', 'View ghost session history and data access logs', 'ghost', 'audit')
+ON CONFLICT (name) DO NOTHING;
 
 -- Auto-expire pending approvals after 24 hours
 CREATE OR REPLACE FUNCTION expire_ghost_approvals()

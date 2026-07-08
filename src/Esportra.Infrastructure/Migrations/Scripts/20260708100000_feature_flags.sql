@@ -66,11 +66,11 @@ CREATE POLICY feature_flag_overrides_service ON feature_flag_overrides FOR ALL T
 DROP POLICY IF EXISTS feature_flags_read ON feature_flags;
 CREATE POLICY feature_flags_read ON feature_flags FOR SELECT TO authenticated USING (is_enabled = true);
 
--- Add permissions for feature flag management
-INSERT INTO admin_permissions (id, key, name, description, category)
+-- Add permissions for feature flag management (base columns for prod/staging compat)
+INSERT INTO admin_permissions (name, description, resource, action)
 VALUES
-    (gen_random_uuid(), 'feature_flags:view', 'View Feature Flags', 'View feature flags and their configuration', 'system'),
-    (gen_random_uuid(), 'feature_flags:create', 'Create Feature Flags', 'Create new feature flags', 'system'),
-    (gen_random_uuid(), 'feature_flags:edit', 'Edit Feature Flags', 'Modify existing feature flags and rules', 'system'),
-    (gen_random_uuid(), 'feature_flags:delete', 'Delete Feature Flags', 'Delete feature flags', 'system')
-ON CONFLICT (key) DO NOTHING;
+    ('feature_flags:view', 'View feature flags and their configuration', 'feature_flags', 'view'),
+    ('feature_flags:create', 'Create new feature flags', 'feature_flags', 'create'),
+    ('feature_flags:edit', 'Modify existing feature flags and rules', 'feature_flags', 'edit'),
+    ('feature_flags:delete', 'Delete feature flags', 'feature_flags', 'delete')
+ON CONFLICT (name) DO NOTHING;
