@@ -62,6 +62,18 @@ public static class Permissions
     public const string FeatureFlagsToggle = "feature_flags:toggle";
     public const string FeatureFlagsAudit = "feature_flags:audit";
 
+    // Broadcasts
+    public const string BroadcastsView = "broadcasts:view";
+    public const string BroadcastsCreate = "broadcasts:create";
+    public const string BroadcastsEdit = "broadcasts:edit";
+    public const string BroadcastsDelete = "broadcasts:delete";
+    public const string BroadcastsSend = "broadcasts:send";
+
+    // Ghost Mode (uses users:impersonate namespace)
+    public const string GhostAudit = "ghost:audit";
+    public const string UsersImpersonateFull = "users:impersonate:full";
+    public const string UsersImpersonateApprove = "users:impersonate:approve";
+
     // Tournaments
     public const string TournamentsView = "tournaments:view";
     public const string TournamentsCreate = "tournaments:create";
@@ -244,9 +256,10 @@ public static class Permissions
     public const string PaymentsExport = "payments:export";
     public const string PaymentsAudit = "payments:audit";
 
-    // Analytics
+    // Analytics & Dashboard
     public const string AnalyticsView = "analytics:view";
     public const string AnalyticsExport = "analytics:export";
+    public const string DashboardView = "dashboard:view";
 
     // System
     public const string SystemSettings = "system:settings";

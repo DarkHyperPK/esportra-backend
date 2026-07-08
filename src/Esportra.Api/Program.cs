@@ -548,6 +548,9 @@ app.MapHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 });
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapFeatureFlagEndpoints();
+app.MapBroadcastEndpoints();
+app.MapGhostModeEndpoints();
 app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();
 app.MapSteamAccountEndpoints();
@@ -610,6 +613,7 @@ app.MapHub<NotificationHub>("/hubs/notifications").RequireCors("EsportraPolicy")
 app.MapHub<LiveHub>("/hubs/live").RequireCors("EsportraPolicy");
 app.MapHub<VenueSyncHub>("/hubs/venue-sync").RequireCors("EsportraPolicy");
 app.MapHub<BRHub>("/hubs/br").RequireCors("EsportraPolicy");
+app.MapHub<AdminHub>("/hubs/admin").RequireCors("EsportraPolicy");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();

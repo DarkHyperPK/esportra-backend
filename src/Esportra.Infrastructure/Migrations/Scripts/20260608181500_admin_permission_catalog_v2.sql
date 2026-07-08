@@ -52,6 +52,11 @@ WITH permission_seed(name, sort_order) AS (
     ('feature_flags:view', 700), ('feature_flags:create', 701), ('feature_flags:edit', 702),
     ('feature_flags:delete', 703), ('feature_flags:toggle', 704), ('feature_flags:audit', 705),
 
+    ('broadcasts:view', 710), ('broadcasts:create', 711), ('broadcasts:edit', 712),
+    ('broadcasts:delete', 713), ('broadcasts:send', 714),
+
+    ('ghost:audit', 720), ('users:impersonate:full', 721), ('users:impersonate:approve', 722),
+
     ('tournaments:view', 800), ('tournaments:create', 801), ('tournaments:edit', 802),
     ('tournaments:approve', 803), ('tournaments:reject', 804), ('tournaments:feature', 805),
     ('tournaments:unfeature', 806), ('tournaments:cancel', 807), ('tournaments:delete', 808),
@@ -133,7 +138,7 @@ WITH permission_seed(name, sort_order) AS (
     ('payments:view', 2800), ('payments:refund', 2801), ('payments:reconcile', 2802),
     ('payments:export', 2803), ('payments:audit', 2804),
 
-    ('analytics:view', 2900), ('analytics:export', 2901),
+    ('analytics:view', 2900), ('analytics:export', 2901), ('dashboard:view', 2902),
 
     ('system:settings', 3000), ('system:audit', 3001), ('system:billing', 3002),
     ('system:config_view', 3003), ('system:config_edit', 3004), ('system:kill-switch', 3005),
@@ -265,7 +270,7 @@ VALUES
     ('ops_admin','verification:approve'), ('ops_admin','verification:reject'), ('ops_admin','verification:export'),
     ('ops_admin','moderation:view'), ('ops_admin','moderation:approve'), ('ops_admin','moderation:reject'),
     ('ops_admin','moderation:dismiss'), ('ops_admin','content:moderate'), ('ops_admin','content:delete'),
-    ('ops_admin','analytics:view'), ('ops_admin','analytics:export'), ('ops_admin','alerts:view'),
+    ('ops_admin','analytics:view'), ('ops_admin','analytics:export'), ('ops_admin','dashboard:view'), ('ops_admin','alerts:view'),
     ('ops_admin','alerts:acknowledge'), ('ops_admin','alerts:resolve'), ('ops_admin','alerts:bulk_acknowledge'),
     ('ops_admin','reports:view'), ('ops_admin','reports:create'), ('ops_admin','reports:edit'),
     ('ops_admin','reports:run'), ('ops_admin','reports:export'), ('ops_admin','games:view'),
@@ -281,10 +286,10 @@ VALUES
     ('moderator','disputes:escalate'), ('moderator','disputes:lift_ban'), ('moderator','moderation:view'),
     ('moderator','moderation:approve'), ('moderator','moderation:reject'), ('moderator','moderation:dismiss'),
     ('moderator','content:moderate'), ('moderator','content:delete'), ('moderator','verification:view'),
-    ('moderator','verification:reject'), ('moderator','alerts:view'), ('moderator','alerts:acknowledge'),
+    ('moderator','verification:reject'), ('moderator','dashboard:view'), ('moderator','alerts:view'), ('moderator','alerts:acknowledge'),
 
     -- finance_admin
-    ('finance_admin','analytics:view'), ('finance_admin','analytics:export'), ('finance_admin','system:billing'),
+    ('finance_admin','analytics:view'), ('finance_admin','analytics:export'), ('finance_admin','dashboard:view'), ('finance_admin','system:billing'),
     ('finance_admin','payments:view'), ('finance_admin','payments:refund'), ('finance_admin','payments:reconcile'),
     ('finance_admin','payments:export'), ('finance_admin','wallets:view'), ('finance_admin','wallets:adjust'),
     ('finance_admin','loyalty:view'), ('finance_admin','loyalty:adjust'), ('finance_admin','pos:view'),
