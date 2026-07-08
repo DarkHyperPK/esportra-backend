@@ -35,8 +35,8 @@ CREATE POLICY disputes_admin_all ON public.disputes
     FOR ALL TO authenticated
     USING (
         EXISTS (
-            SELECT 1 FROM public.admin_users au
-            WHERE au.user_id = auth.uid()
+            SELECT 1 FROM public.profiles p
+            WHERE p.id = auth.uid() AND p.is_admin = true
         )
     );
 
@@ -76,8 +76,8 @@ CREATE POLICY admin_session_audit_admin_read ON public.admin_session_audit
     FOR SELECT TO authenticated
     USING (
         EXISTS (
-            SELECT 1 FROM public.admin_users au
-            WHERE au.user_id = auth.uid()
+            SELECT 1 FROM public.profiles p
+            WHERE p.id = auth.uid() AND p.is_admin = true
         )
     );
 
