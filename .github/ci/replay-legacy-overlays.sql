@@ -120,7 +120,8 @@ ALTER TABLE public.sponsor_impressions
   ADD COLUMN IF NOT EXISTS tournament_id UUID;
 
 ALTER TABLE public.tournaments
-  ADD COLUMN IF NOT EXISTS game TEXT;
+  ADD COLUMN IF NOT EXISTS game TEXT,
+  ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'::jsonb;
 
 ALTER TABLE public.user_roles
   ADD COLUMN IF NOT EXISTS role TEXT;
