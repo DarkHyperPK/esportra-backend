@@ -7479,43 +7479,32 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Helper to safely count from tables that may not exist
-            async Task<int> SafeCount(string sql)
-            {
-                try { return await conn.ExecuteScalarAsync<int>(sql); }
-                catch { return 0; }
-            }
+            // Pending counts with stale detection (3+ days)
+            var pendingCounts = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS verifications,
+                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days') AS verifications_stale,
+                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress')) AS disputes,
+                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress') AND priority = 'high') AS disputes_high_priority,
+                    (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active') AS alerts,
+                    (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical') AS alerts_critical,
+                    (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending') AS moderation,
+                    (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending' AND created_at >= NOW() - INTERVAL '1 day') AS moderation_today,
+                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending') AS gdpr,
+                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
+                """);
 
-            // Pending counts with stale detection - each query is safe individually
-            var pendingCounts = new
-            {
-                verifications = await SafeCount("SELECT COUNT(*) FROM verification_requests WHERE status = 'pending'"),
-                verifications_stale = await SafeCount("SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days'"),
-                disputes = await SafeCount("SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress')"),
-                disputes_high_priority = await SafeCount("SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress') AND priority = 'high'"),
-                alerts = await SafeCount("SELECT COUNT(*) FROM admin_alerts WHERE status = 'active'"),
-                alerts_critical = await SafeCount("SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical'"),
-                moderation = await SafeCount("SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending'"),
-                moderation_today = await SafeCount("SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending' AND created_at >= NOW() - INTERVAL '1 day'"),
-                gdpr = await SafeCount("SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending'"),
-                gdpr_due_soon = await SafeCount("SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '20 days'")
-            };
-
-            // Quick stats - profiles and tournaments always exist
-            var usersTotal = await SafeCount("SELECT COUNT(*) FROM profiles");
-            var usersGrowth = await SafeCount("SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days'");
-            var tournamentsTotal = await SafeCount("SELECT COUNT(*) FROM tournaments");
-            var tournamentsGrowth = await SafeCount("SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days'");
-            var activeNow = await SafeCount("SELECT COUNT(DISTINCT user_id) FROM admin_session_audit WHERE created_at >= NOW() - INTERVAL '15 minutes'");
-
-            var stats = new
-            {
-                users_total = usersTotal,
-                users_growth = usersGrowth,
-                tournaments_total = tournamentsTotal,
-                tournaments_growth = tournamentsGrowth,
-                active_now = activeNow
-            };
+            // Quick stats
+            var stats = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM profiles) AS users_total,
+                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS users_growth,
+                    (SELECT COUNT(*) FROM tournaments) AS tournaments_total,
+                    (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_growth,
+                    (SELECT COUNT(DISTINCT user_id) FROM admin_session_audit WHERE created_at >= NOW() - INTERVAL '15 minutes') AS active_now
+                """);
 
             // Signups per day for last 7 days
             var signups7d = await conn.QueryAsync<dynamic>(
@@ -7527,21 +7516,16 @@ public static class AdminEndpoints
                 ORDER BY day
                 """);
 
-            // Recent activity from audit logs - safe query
-            IEnumerable<dynamic> recentActivity;
-            try
-            {
-                recentActivity = await conn.QueryAsync<dynamic>(
-                    """
-                    SELECT al.id, al.action_type, al.target_type, al.target_id, al.target_name,
-                           al.created_at, p.username AS actor_name
-                    FROM audit_logs al
-                    LEFT JOIN profiles p ON p.id = al.actor_id
-                    ORDER BY al.created_at DESC
-                    LIMIT 10
-                    """);
-            }
-            catch { recentActivity = []; }
+            // Recent activity from audit logs
+            var recentActivity = await conn.QueryAsync<dynamic>(
+                """
+                SELECT al.id, al.action_type, al.target_type, al.target_id, al.target_name,
+                       al.created_at, p.username AS actor_name
+                FROM audit_logs al
+                LEFT JOIN profiles p ON p.id = al.admin_id
+                ORDER BY al.created_at DESC
+                LIMIT 10
+                """);
 
             // Oldest pending verifications
             var oldestPending = await conn.QueryAsync<dynamic>(
