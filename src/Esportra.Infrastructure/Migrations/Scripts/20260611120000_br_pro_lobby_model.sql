@@ -61,7 +61,7 @@ SELECT
     r.round_number,
     0,
     r.lobby_code,
-    r.map,
+    NULL::TEXT,  -- map column added in later migration (20260622110000)
     r.status,
     r.scheduled_at,
     r.started_at,

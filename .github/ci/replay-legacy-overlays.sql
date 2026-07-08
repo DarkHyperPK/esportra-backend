@@ -166,9 +166,39 @@ CREATE TABLE IF NOT EXISTS public.match_messages (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- ── BR lobby evidence (20260611120000) ─────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.br_lobby_evidence (
+-- ── BR rounds (legacy, dropped by 20260611120000_br_pro_lobby_model) ───────
+CREATE TABLE IF NOT EXISTS public.br_rounds (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id UUID NOT NULL,
+  round_number INTEGER NOT NULL,
+  lobby_code TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  scheduled_at TIMESTAMPTZ,
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  queue_timer_minutes INTEGER,
+  queue_started_at TIMESTAMPTZ
+);
+
+-- ── BR round results (legacy, renamed to br_lobby_results by 20260611120000) ─
+CREATE TABLE IF NOT EXISTS public.br_round_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  round_id UUID NOT NULL,
+  team_id UUID,
+  placement INTEGER NOT NULL,
+  kills INTEGER NOT NULL DEFAULT 0,
+  placement_points INTEGER NOT NULL DEFAULT 0,
+  kill_points INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  participant_id UUID
+);
+
+-- ── BR round evidence (legacy, renamed to br_lobby_evidence by 20260611120000)
+CREATE TABLE IF NOT EXISTS public.br_round_evidence (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  round_id UUID NOT NULL,
   team_id UUID,
   participant_id UUID,
   image_url TEXT NOT NULL,
@@ -180,24 +210,7 @@ CREATE TABLE IF NOT EXISTS public.br_lobby_evidence (
   reviewed_at TIMESTAMPTZ,
   reviewed_by UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  lobby_id UUID,
-  game_id UUID
-);
-
--- ── BR lobby results (20260611140000) ──────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.br_lobby_results (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id UUID,
-  placement INTEGER NOT NULL,
-  kills INTEGER NOT NULL DEFAULT 0,
-  placement_points INTEGER NOT NULL DEFAULT 0,
-  kill_points INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  participant_id UUID,
-  lobby_id UUID,
-  game_id UUID
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 SELECT 'replay legacy overlays applied' AS status;
