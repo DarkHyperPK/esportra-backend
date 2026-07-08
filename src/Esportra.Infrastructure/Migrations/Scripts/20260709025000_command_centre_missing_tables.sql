@@ -65,8 +65,7 @@ CREATE TABLE IF NOT EXISTS public.admin_session_audit (
 
 CREATE INDEX IF NOT EXISTS idx_admin_session_audit_user ON public.admin_session_audit(user_id);
 CREATE INDEX IF NOT EXISTS idx_admin_session_audit_created ON public.admin_session_audit(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_admin_session_audit_recent ON public.admin_session_audit(user_id, created_at DESC)
-    WHERE created_at >= NOW() - INTERVAL '15 minutes';
+CREATE INDEX IF NOT EXISTS idx_admin_session_audit_user_recent ON public.admin_session_audit(user_id, created_at DESC);
 
 -- RLS for admin_session_audit
 ALTER TABLE public.admin_session_audit ENABLE ROW LEVEL SECURITY;
