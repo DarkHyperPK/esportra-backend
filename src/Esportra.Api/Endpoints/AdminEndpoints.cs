@@ -393,7 +393,9 @@ public static class AdminEndpoints
                     p.country_code,
                     p.date_of_birth,
                     p.is_verified,
-                    p.updated_at
+                    p.updated_at,
+                    p.steam_tag,
+                    p.riot_tag
                 FROM profiles p
                 {where}
                 ORDER BY p.{sortColumn} {sortDirection}
@@ -2744,9 +2746,12 @@ public static class AdminEndpoints
                        vr.cnic_front_url, vr.cnic_back_url,
                        vr.verification_notes AS notes,
                        vr.created_at, vr.updated_at,
+                       vr.experience_description, vr.website_url, vr.phone,
+                       vr.date_of_birth, vr.organizer_data, vr.venue_data,
                        p.username  AS profile_username,
                        p.full_name AS profile_full_name,
-                       p.email     AS profile_email
+                       p.email     AS profile_email,
+                       p.avatar_url AS profile_avatar_url
                 FROM verification_requests vr
                 JOIN profiles p ON p.id = vr.user_id
                 WHERE (@status IS NULL OR vr.status = @status)
@@ -3037,7 +3042,20 @@ public static class AdminEndpoints
                 p.Add("off", off);
 
                 var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-                var sql = $"SELECT l.id, l.user_id, l.license_id, l.license_type, l.status, l.issued_at, l.expires_at, l.notes, l.created_at, p.username, p.email, p.avatar_url, p.full_name FROM licenses l JOIN profiles p ON p.id = l.user_id {whereClause} ORDER BY l.created_at DESC LIMIT @lim OFFSET @off";
+                var sql = $"""
+                    SELECT l.id, l.user_id, l.license_id, l.license_type, l.status,
+                           l.issued_at, l.expires_at, l.notes, l.created_at,
+                           p.username, p.email, p.avatar_url, p.full_name,
+                           vr.phone, vr.website_url, vr.business_name, vr.business_type
+                    FROM licenses l
+                    JOIN profiles p ON p.id = l.user_id
+                    LEFT JOIN verification_requests vr ON vr.user_id = l.user_id
+                        AND vr.requested_role::text = l.license_type
+                        AND vr.status = 'approved'
+                    {whereClause}
+                    ORDER BY l.created_at DESC
+                    LIMIT @lim OFFSET @off
+                    """;
                 var rows = await conn.QueryAsync<dynamic>(sql, p);
 
                 var countP = new Dapper.DynamicParameters();
@@ -7323,6 +7341,213 @@ public static class AdminEndpoints
                 cancellationToken: ct));
 
             return Results.Ok(new { saved = true });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/entities/{type}/{id}/preview ───────────────────────
+        // Minimal entity data for slide-over previews in cross-linking system
+        app.MapGet("/api/admin/entities/{type}/{id}/preview", async (
+            string type,
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            // Permission check based on entity type
+            var requiredPermission = type.ToLowerInvariant() switch
+            {
+                "user" => Permissions.UsersView,
+                "verification" => Permissions.UsersView,
+                "license" => Permissions.UsersView,
+                "tournament" => Permissions.TournamentsView,
+                "team" => Permissions.TeamsView,
+                "venue" => Permissions.VenuesView,
+                "dispute" => Permissions.DisputesView,
+                "organization" => Permissions.OrganizationsView,
+                _ => "admin:view"
+            };
+            if (!userCtx.Permissions.Contains(requiredPermission))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            object? preview = type.ToLowerInvariant() switch
+            {
+                "user" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT p.id, p.username, p.full_name, p.email, p.avatar_url,
+                           p.is_suspended, p.is_verified, p.created_at,
+                           (SELECT COUNT(*) FROM tournaments t WHERE t.organizer_id = p.id) AS tournament_count,
+                           (SELECT string_agg(ur.role, ', ') FROM user_roles ur WHERE ur.user_id = p.id AND ur.is_active) AS roles
+                    FROM profiles p
+                    WHERE p.id = @id
+                    """, new { id }),
+
+                "tournament" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT t.id, t.name, t.game, t.status, t.format, t.prize_pool,
+                           t.max_teams, t.start_date, t.is_featured, t.created_at,
+                           p.username AS organizer_name, p.id AS organizer_id
+                    FROM tournaments t
+                    LEFT JOIN profiles p ON p.id = t.organizer_id
+                    WHERE t.id = @id
+                    """, new { id }),
+
+                "team" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT t.id, t.name, t.tag, t.game, t.logo_url, t.created_at,
+                           (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS member_count,
+                           p.username AS captain_name, p.id AS captain_id
+                    FROM teams t
+                    LEFT JOIN profiles p ON p.id = t.captain_id
+                    WHERE t.id = @id
+                    """, new { id }),
+
+                "venue" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT v.id, v.name, v.status, v.city, v.country,
+                           v.total_stations, v.created_at,
+                           p.username AS owner_name, p.id AS owner_id
+                    FROM venues v
+                    LEFT JOIN profiles p ON p.id = v.owner_id
+                    WHERE v.id = @id
+                    """, new { id }),
+
+                "license" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT l.id, l.license_id, l.license_type, l.status,
+                           l.issued_at, l.expires_at,
+                           p.username, p.full_name, p.id AS user_id
+                    FROM licenses l
+                    JOIN profiles p ON p.id = l.user_id
+                    WHERE l.id = @id
+                    """, new { id }),
+
+                "dispute" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT d.id, d.status, d.priority, d.created_at,
+                           t.name AS tournament_name, t.id AS tournament_id,
+                           p.username AS reporter_name, p.id AS reporter_id
+                    FROM disputes d
+                    LEFT JOIN tournaments t ON t.id = d.tournament_id
+                    LEFT JOIN profiles p ON p.id = d.reporter_id
+                    WHERE d.id = @id
+                    """, new { id }),
+
+                "organization" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT o.id, o.name, o.slug, o.logo_url, o.created_at,
+                           (SELECT COUNT(*) FROM organization_members om WHERE om.organization_id = o.id) AS member_count,
+                           p.username AS owner_name, p.id AS owner_id
+                    FROM organizations o
+                    LEFT JOIN profiles p ON p.id = o.owner_id
+                    WHERE o.id = @id
+                    """, new { id }),
+
+                "verification" => await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT vr.id, vr.requested_role, vr.status, vr.created_at,
+                           vr.business_name, vr.first_name, vr.last_name,
+                           p.username, p.id AS user_id
+                    FROM verification_requests vr
+                    JOIN profiles p ON p.id = vr.user_id
+                    WHERE vr.id = @id
+                    """, new { id }),
+
+                _ => null
+            };
+
+            if (preview is null)
+                return Results.NotFound(new { error = $"Entity not found: {type}/{id}" });
+
+            return Results.Ok(new { type, id, preview });
+        }).RequireAuthorization("Admin");
+
+        // ── GET /api/admin/command-centre ──────────────────────────────────────
+        // Aggregated dashboard data for Command Centre
+        app.MapGet("/api/admin/command-centre", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.DashboardView))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            // Pending counts with stale detection (3+ days)
+            var pendingCounts = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS verifications,
+                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days') AS verifications_stale,
+                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress')) AS disputes,
+                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress') AND priority = 'high') AS disputes_high_priority,
+                    (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active') AS alerts,
+                    (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical') AS alerts_critical,
+                    (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending') AS moderation,
+                    (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending' AND created_at >= NOW() - INTERVAL '1 day') AS moderation_today,
+                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending') AS gdpr,
+                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
+                """);
+
+            // Quick stats
+            var stats = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM profiles) AS users_total,
+                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS users_growth,
+                    (SELECT COUNT(*) FROM tournaments) AS tournaments_total,
+                    (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_growth,
+                    (SELECT COUNT(DISTINCT user_id) FROM admin_session_audit WHERE created_at >= NOW() - INTERVAL '15 minutes') AS active_now
+                """);
+
+            // Signups per day for last 7 days
+            var signups7d = await conn.QueryAsync<dynamic>(
+                """
+                SELECT DATE_TRUNC('day', created_at)::date AS day, COUNT(*) AS count
+                FROM profiles
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY DATE_TRUNC('day', created_at)
+                ORDER BY day
+                """);
+
+            // Recent activity from audit logs
+            var recentActivity = await conn.QueryAsync<dynamic>(
+                """
+                SELECT al.id, al.action_type, al.target_type, al.target_id, al.target_name,
+                       al.created_at, p.username AS actor_name
+                FROM audit_logs al
+                LEFT JOIN profiles p ON p.id = al.actor_id
+                ORDER BY al.created_at DESC
+                LIMIT 10
+                """);
+
+            // Oldest pending verifications
+            var oldestPending = await conn.QueryAsync<dynamic>(
+                """
+                SELECT vr.id, vr.requested_role, vr.status, vr.business_name,
+                       vr.first_name, vr.last_name, vr.created_at,
+                       p.username, p.avatar_url
+                FROM verification_requests vr
+                JOIN profiles p ON p.id = vr.user_id
+                WHERE vr.status = 'pending'
+                ORDER BY vr.created_at ASC
+                LIMIT 5
+                """);
+
+            return Results.Ok(new
+            {
+                pending_counts = pendingCounts,
+                stats,
+                signups_7d = signups7d,
+                recent_activity = recentActivity,
+                oldest_pending = oldestPending
+            });
         }).RequireAuthorization("Admin");
 
     }

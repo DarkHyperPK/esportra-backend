@@ -45,27 +45,46 @@ public sealed class AdminHub : Hub
         var userId = Context.UserIdentifier;
         if (userId is null) return;
 
-        using var conn = _db.CreateConnection();
-        var counts = await GetPendingCounts(conn);
-
-        await Clients.Caller.SendAsync(AdminHubEvents.PendingCountsUpdated, counts);
+        try
+        {
+            using var conn = _db.CreateConnection();
+            var counts = await GetPendingCounts(conn);
+            await Clients.Caller.SendAsync(AdminHubEvents.PendingCountsUpdated, counts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to refresh admin dashboard counts");
+            await Clients.Caller.SendAsync(AdminHubEvents.PendingCountsUpdated, new PendingCounts(0, 0, 0, 0));
+        }
     }
 
     private static async Task<PendingCounts> GetPendingCounts(System.Data.IDbConnection conn)
     {
-        var verifications = await conn.ExecuteScalarAsync<int>(
+        var verifications = await SafeCount(conn,
             "SELECT COUNT(*) FROM verification_requests WHERE status = 'pending'");
 
-        var disputes = await conn.ExecuteScalarAsync<int>(
+        var disputes = await SafeCount(conn,
             "SELECT COUNT(*) FROM disputes WHERE status = 'open'");
 
-        var ghostApprovals = await conn.ExecuteScalarAsync<int>(
+        var ghostApprovals = await SafeCount(conn,
             "SELECT COUNT(*) FROM ghost_approvals WHERE status = 'pending'");
 
-        var alerts = await conn.ExecuteScalarAsync<int>(
+        var alerts = await SafeCount(conn,
             "SELECT COUNT(*) FROM admin_alerts WHERE resolved_at IS NULL");
 
         return new PendingCounts(verifications, disputes, ghostApprovals, alerts);
+    }
+
+    private static async Task<int> SafeCount(System.Data.IDbConnection conn, string sql)
+    {
+        try
+        {
+            return await conn.ExecuteScalarAsync<int>(sql);
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     public const string DashboardGroup = "admin:dashboard";
