@@ -65,9 +65,57 @@ jobs:
       - name: Run tests
         run: dotnet test --no-restore -c Release
 
+  migration-replay:
+    name: Migration Replay
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: migrationtest
+          POSTGRES_DB: esportra_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Apply replay fixture
+        run: bash .github/scripts/apply-replay-bootstrap.sh
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: migrationtest
+          PGDATABASE: esportra_test
+
+      - name: Run migrations
+        run: dotnet run --project src/Esportra.Migrator -c Release
+        env:
+          ConnectionStrings__Postgres: "Host=localhost;Port=5432;Database=esportra_test;Username=postgres;Password=migrationtest"
+
+      - name: Assert migrations complete
+        run: bash .github/scripts/assert-migration-replay-complete.sh
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: migrationtest
+          PGDATABASE: esportra_test
+
   gate:
     name: All checks passed
-    needs: [build, lint, test]
+    needs: [build, lint, test, migration-replay]
     runs-on: ubuntu-latest
     steps:
       - name: Gate passed
@@ -109,7 +157,7 @@ jobs:
 
   notify-failure:
     name: Report failure
-    needs: [build, lint, test, gate, promote, smoke]
+    needs: [build, lint, test, migration-replay, gate, promote, smoke]
     if: failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
