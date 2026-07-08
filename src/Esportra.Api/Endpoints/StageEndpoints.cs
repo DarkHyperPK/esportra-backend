@@ -255,23 +255,18 @@ public static class StageEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             TournamentWinnerService winnerService,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(
+                    userCtx, tournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
-
-            // Verify ownership
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
-                new { tournamentId, userId = userCtx.UserIdGuid }, tx);
-            if (!isOwner)
-            {
-                tx.Rollback();
-                return Results.Forbid();
-            }
 
             if (req.DeleteIds is not { Length: > 0 })
             {
