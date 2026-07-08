@@ -153,4 +153,51 @@ ALTER TABLE public.audit_logs
   ADD COLUMN IF NOT EXISTS admin_id UUID,
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
+-- ── Match messages (20260609160000) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.match_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  match_id UUID NOT NULL,
+  sender_id UUID NOT NULL,
+  sender_name TEXT,
+  team_id UUID,
+  content TEXT NOT NULL,
+  message_type TEXT DEFAULT 'text',
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── BR lobby evidence (20260611120000) ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.br_lobby_evidence (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID,
+  participant_id UUID,
+  image_url TEXT NOT NULL,
+  submitted_by UUID NOT NULL,
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  placement INTEGER,
+  kills INTEGER,
+  reviewed BOOLEAN NOT NULL DEFAULT false,
+  reviewed_at TIMESTAMPTZ,
+  reviewed_by UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  lobby_id UUID,
+  game_id UUID
+);
+
+-- ── BR lobby results (20260611140000) ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.br_lobby_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID,
+  placement INTEGER NOT NULL,
+  kills INTEGER NOT NULL DEFAULT 0,
+  placement_points INTEGER NOT NULL DEFAULT 0,
+  kill_points INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  participant_id UUID,
+  lobby_id UUID,
+  game_id UUID
+);
+
 SELECT 'replay legacy overlays applied' AS status;
