@@ -7492,7 +7492,7 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending') AS moderation,
                     (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending' AND created_at >= NOW() - INTERVAL '1 day') AS moderation_today,
                     (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending') AS gdpr,
-                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
+                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND requested_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
                 """);
 
             // Quick stats
