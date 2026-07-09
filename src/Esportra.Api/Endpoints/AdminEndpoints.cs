@@ -4851,7 +4851,7 @@ public static class AdminEndpoints
             if (!userCtx.AdminRoles.Any()) return Results.Forbid();
 
             var allowedTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "User", "Tournament", "Team", "Venue", "Dispute", "Match", "Sponsor", "Payment", "System" };
+                { "User", "Tournament", "Team", "Venue", "Dispute", "Match", "Sponsor", "Payment", "System", "Organization" };
             if (!allowedTypes.Contains(targetType))
                 return Results.BadRequest(new { error = "Invalid target type" });
 
@@ -4880,7 +4880,7 @@ public static class AdminEndpoints
                        target_id, target_name, details, severity, created_at
                 FROM (
                     SELECT id, admin_id, admin_name, action_type, target_type,
-                           target_id::text AS target_id, target_name, details, severity, created_at
+                           target_id::text AS target_id, target_name, metadata AS details, severity, created_at
                     FROM audit_logs
                     WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                     UNION ALL
