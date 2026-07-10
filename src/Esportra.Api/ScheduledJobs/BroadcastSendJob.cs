@@ -18,87 +18,111 @@ public sealed class BroadcastSendJob(
     public async Task ExecuteAsync(Guid broadcastId, CancellationToken ct)
     {
         using var conn = db.CreateConnection();
-
-        var broadcast = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT * FROM broadcasts WHERE id = @broadcastId AND status = 'sending'",
-            new { broadcastId });
-
-        if (broadcast is null)
-        {
-            logger.LogWarning("Broadcast {BroadcastId} not found or not in 'sending' status", broadcastId);
-            return;
-        }
-
-        var userIds = await GetTargetUserIds(conn, broadcast);
-        var totalRecipients = userIds.Count;
         var deliveredCount = 0;
+        var totalRecipients = 0;
 
-        logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients", (object)broadcastId, (object)totalRecipients);
-
-        // Process in batches
-        foreach (var batch in userIds.Chunk(BatchSize))
+        try
         {
-            foreach (var userId in batch)
+            var broadcast = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM broadcasts WHERE id = @broadcastId AND status = 'sending'",
+                new { broadcastId });
+
+            if (broadcast is null)
             {
-                try
-                {
-                    // Insert delivery record
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, delivered_at)
-                        VALUES (@broadcastId, @userId, 'in_app', 'delivered', NOW())
-                        ON CONFLICT (broadcast_id, user_id, channel) DO NOTHING
-                        """,
-                        new { broadcastId, userId });
-
-                    // Push via SignalR if user is connected
-                    await hubContext.Clients.User(userId.ToString()).SendAsync(
-                        "BroadcastReceived",
-                        new
-                        {
-                            id = broadcastId,
-                            title = (string)broadcast.title,
-                            content = (string)broadcast.content,
-                            broadcast_type = (string)broadcast.broadcast_type,
-                            priority = (string)broadcast.priority,
-                            created_at = DateTime.UtcNow
-                        },
-                        ct);
-
-                    deliveredCount++;
-                }
-                catch (Exception ex)
-                {
-                    logger.LogDebug(ex, "Failed to deliver broadcast {BroadcastId} to user {UserId}",
-                        (object)broadcastId, (object)userId);
-                }
+                logger.LogWarning("Broadcast {BroadcastId} not found or not in 'sending' status", broadcastId);
+                return;
             }
 
-            // Update progress periodically
+            var userIds = await GetTargetUserIds(conn, broadcast);
+            totalRecipients = userIds.Count;
+
+            logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients", (object)broadcastId, (object)totalRecipients);
+
+            // Process in batches
+            foreach (var batch in userIds.Chunk(BatchSize))
+            {
+                if (ct.IsCancellationRequested) break;
+
+                foreach (var userId in batch)
+                {
+                    try
+                    {
+                        // Insert delivery record
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, delivered_at)
+                            VALUES (@broadcastId, @userId, 'in_app', 'delivered', NOW())
+                            ON CONFLICT (broadcast_id, user_id, channel) DO NOTHING
+                            """,
+                            new { broadcastId, userId });
+
+                        // Push via SignalR if user is connected
+                        await hubContext.Clients.User(userId.ToString()).SendAsync(
+                            "BroadcastReceived",
+                            new
+                            {
+                                id = broadcastId,
+                                title = (string)broadcast.title,
+                                content = (string)broadcast.content,
+                                broadcast_type = (string)broadcast.broadcast_type,
+                                priority = (string)broadcast.priority,
+                                created_at = DateTime.UtcNow
+                            },
+                            ct);
+
+                        deliveredCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug(ex, "Failed to deliver broadcast {BroadcastId} to user {UserId}",
+                            (object)broadcastId, (object)userId);
+                    }
+                }
+
+                // Update progress periodically
+                await conn.ExecuteAsync(
+                    "UPDATE broadcasts SET delivered_count = @count, updated_at = NOW() WHERE id = @broadcastId",
+                    new { broadcastId, count = deliveredCount });
+
+                // Small delay between batches to avoid overwhelming SignalR
+                if (!ct.IsCancellationRequested)
+                    await Task.Delay(100, ct);
+            }
+
+            // Mark as sent
             await conn.ExecuteAsync(
-                "UPDATE broadcasts SET delivered_count = @count, updated_at = NOW() WHERE id = @broadcastId",
-                new { broadcastId, count = deliveredCount });
+                """
+                UPDATE broadcasts
+                SET status = 'sent',
+                    sent_at = NOW(),
+                    total_recipients = @totalRecipients,
+                    delivered_count = @deliveredCount,
+                    updated_at = NOW()
+                WHERE id = @broadcastId
+                """,
+                new { broadcastId, totalRecipients, deliveredCount });
 
-            // Small delay between batches to avoid overwhelming SignalR
-            if (!ct.IsCancellationRequested)
-                await Task.Delay(100, ct);
+            logger.LogInformation("Completed broadcast {BroadcastId}: {Delivered}/{Total} delivered",
+                (object)broadcastId, (object)deliveredCount, (object)totalRecipients);
         }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Broadcast {BroadcastId} failed after delivering {Delivered} messages", broadcastId, deliveredCount);
 
-        // Mark as sent
-        await conn.ExecuteAsync(
-            """
-            UPDATE broadcasts
-            SET status = 'sent',
-                sent_at = NOW(),
-                total_recipients = @totalRecipients,
-                delivered_count = @deliveredCount,
-                updated_at = NOW()
-            WHERE id = @broadcastId
-            """,
-            new { broadcastId, totalRecipients, deliveredCount });
+            // Mark broadcast as failed so it doesn't stay stuck in "sending"
+            await conn.ExecuteAsync(
+                """
+                UPDATE broadcasts
+                SET status = 'failed',
+                    total_recipients = @totalRecipients,
+                    delivered_count = @deliveredCount,
+                    updated_at = NOW()
+                WHERE id = @broadcastId AND status = 'sending'
+                """,
+                new { broadcastId, totalRecipients, deliveredCount });
 
-        logger.LogInformation("Completed broadcast {BroadcastId}: {Delivered}/{Total} delivered",
-            (object)broadcastId, (object)deliveredCount, (object)totalRecipients);
+            throw; // Re-throw so Hangfire knows the job failed
+        }
     }
 
     private static async Task<List<Guid>> GetTargetUserIds(System.Data.IDbConnection conn, dynamic broadcast)
