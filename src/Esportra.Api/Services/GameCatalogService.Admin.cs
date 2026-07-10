@@ -41,9 +41,11 @@ public sealed partial class GameCatalogService
         {
             // Unique violation - another request created the draft concurrently
             tx.Rollback();
-            var draft = await GetDraftVersionAsync(conn)
+            // Use fresh connection after rollback to read the draft created by the other request
+            using var freshConn = db.CreateConnection();
+            var draft = await GetDraftVersionAsync(freshConn)
                 ?? throw new InvalidOperationException("Draft creation race but no draft found.");
-            return await BuildCatalogResponseForVersionAsync(conn, draft);
+            return await BuildCatalogResponseForVersionAsync(freshConn, draft);
         }
         catch
         {
