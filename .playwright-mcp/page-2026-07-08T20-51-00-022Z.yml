@@ -1,0 +1,141 @@
+- generic:
+  - generic:
+    - list
+    - generic:
+      - generic:
+        - main:
+          - generic:
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - generic:
+                  - img
+                - generic:
+                  - paragraph: Admin
+                  - paragraph: super admin
+              - link:
+                - /url: /
+                - text: Home
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - img
+                - text: Command Centre
+              - link:
+                - /url: /admin/users
+                - img
+                - text: All Users
+              - link:
+                - /url: /admin/users/verifications
+                - img
+                - text: Verifications
+              - link:
+                - /url: /admin/users/licenses
+                - img
+                - text: Licenses
+              - link:
+                - /url: /admin/users/sessions
+                - img
+                - text: Sessions
+              - link:
+                - /url: /admin/content/tournaments
+                - img
+                - text: Tournaments
+              - link:
+                - /url: /admin/content/teams
+                - img
+                - text: Teams
+              - link:
+                - /url: /admin/content/venues
+                - img
+                - text: Venues
+              - link:
+                - /url: /admin/content/games
+                - img
+                - text: Games
+              - link:
+                - /url: /admin/content/moderation
+                - img
+                - text: Moderation
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - heading [level=1]: Session Management
+                      - paragraph: Monitor active sessions and audit authentication activity
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic: Online Now
+                    - paragraph: "1"
+                  - generic:
+                    - generic:
+                      - img
+                      - generic: Total Users
+                    - paragraph: "2"
+                - generic:
+                  - tablist:
+                    - tab [selected]:
+                      - img
+                      - text: Active Sessions
+                    - tab:
+                      - img
+                      - text: Session Audit
+                  - tabpanel:
+                    - generic:
+                      - generic:
+                        - img
+                        - textbox:
+                          - /placeholder: Search by email or username…
+                      - generic:
+                        - generic:
+                          - generic:
+                            - generic:
+                              - generic: M
+                            - generic:
+                              - generic:
+                                - paragraph: SystemOptiX
+                                - generic: You
+                              - paragraph: paradox1632000@gmail.com
+                          - generic:
+                            - generic:
+                              - img
+                              - text: super admin
+                          - generic:
+                            - img
+                            - generic: Never
+                        - generic:
+                          - generic:
+                            - generic:
+                              - generic:
+                                - paragraph: player61
+                              - paragraph: player6@gmail.com
+                          - generic:
+                            - generic:
+                              - img
+                              - text: ops admin
+                          - generic:
+                            - img
+                            - generic: Never
+                          - button:
+                            - img
+                            - text: Revoke
+  - alertdialog "Force Logout User" [ref=f13e151]:
+    - generic [ref=f13e152]:
+      - heading "Force Logout User" [level=2] [ref=f13e153]:
+        - img [ref=f13e154]
+        - text: Force Logout User
+      - paragraph [ref=f13e157]: Are you sure you want to force logout player61? Their active session will be immediately terminated.
+    - generic [ref=f13e158]:
+      - text: Reason (optional)
+      - textbox "Reason (optional)" [ref=f13e159]:
+        - /placeholder: Why are you revoking this session?
+    - generic [ref=f13e160]:
+      - button "Cancel" [active] [ref=f13e161] [cursor=pointer]
+      - button "Revoke Session" [ref=f13e162] [cursor=pointer]:
+        - img
+        - text: Revoke Session

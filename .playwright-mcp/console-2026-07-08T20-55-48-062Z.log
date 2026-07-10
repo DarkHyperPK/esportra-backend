@@ -1,0 +1,11 @@
+[  128972ms] [ERROR] 404 Error: User attempted to access non-existent route: /organizer/tournament/test-check-in/manage @ https://frontend-staging.esportra.com/assets/vendor-react-BYANAaby.js:55
+[  131568ms] [ERROR] 404 Error: User attempted to access non-existent route: /organizer/tournament/valorant/manage @ https://frontend-staging.esportra.com/assets/vendor-react-BYANAaby.js:55
+[  136120ms] [ERROR] 404 Error: User attempted to access non-existent route: /organizer/tournament/lol/manage @ https://frontend-staging.esportra.com/assets/vendor-react-BYANAaby.js:55
+[  138821ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  139977ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  143956ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  145114ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  205297ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  206452ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  266629ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  267789ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0

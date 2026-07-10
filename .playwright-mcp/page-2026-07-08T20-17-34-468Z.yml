@@ -1,0 +1,217 @@
+- generic [ref=f3e7]:
+  - region "Notifications (F8)":
+    - list
+  - main [ref=f3e726]:
+    - generic [ref=f3e727]:
+      - generic [ref=f3e728]:
+        - link "Admin super admin" [ref=f3e729] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e731]
+          - generic [ref=f3e733]:
+            - paragraph [ref=f3e734]: Admin
+            - paragraph [ref=f3e735]: super admin
+        - link "Home" [ref=f3e736] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f3e737]:
+        - link "Command Centre" [ref=f3e738] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e739]
+          - text: Command Centre
+        - link "All Users" [ref=f3e744] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f3e745]
+          - text: All Users
+        - link "Verifications" [ref=f3e750] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f3e751]
+          - text: Verifications
+        - link "Licenses" [ref=f3e754] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f3e755]
+          - text: Licenses
+        - link "Sessions" [ref=f3e759] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f3e760]
+          - text: Sessions
+        - link "Tournaments" [ref=f3e762] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f3e763]
+          - text: Tournaments
+        - link "Teams" [ref=f3e769] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f3e770]
+          - text: Teams
+        - link "Venues" [ref=f3e774] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f3e775]
+          - text: Venues
+        - link "Games" [ref=f3e778] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f3e779]
+          - text: Games
+        - link "Moderation" [ref=f3e781] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f3e782]
+          - text: Moderation
+    - generic [ref=f3e785]:
+      - generic [ref=f3e786]:
+        - generic [ref=f3e787]:
+          - link "Back" [ref=f3e788] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - button "Back" [ref=f3e789]:
+              - img
+              - text: Back
+          - generic [ref=f3e790]:
+            - img [ref=f3e792]
+            - generic [ref=f3e794]:
+              - heading "Verification Requests" [level=1] [ref=f3e795]
+              - paragraph [ref=f3e796]: Review incoming organizer and venue applications
+        - generic [ref=f3e797]:
+          - button "Refresh" [ref=f3e798] [cursor=pointer]:
+            - img
+            - text: Refresh
+          - button "Export" [ref=f3e799] [cursor=pointer]:
+            - img
+            - text: Export
+      - generic [ref=f3e800]:
+        - generic [ref=f3e801]:
+          - img [ref=f3e803]
+          - paragraph [ref=f3e806]: "6"
+          - paragraph [ref=f3e807]: Total Requests
+        - generic [ref=f3e808]:
+          - img [ref=f3e810]
+          - paragraph [ref=f3e813]: "1"
+          - paragraph [ref=f3e814]: Pending
+        - generic [ref=f3e815]:
+          - img [ref=f3e817]
+          - paragraph [ref=f3e820]: "0"
+          - paragraph [ref=f3e821]: Approved
+        - generic [ref=f3e822]:
+          - img [ref=f3e824]
+          - paragraph [ref=f3e828]: "5"
+          - paragraph [ref=f3e829]: Rejected
+      - generic [ref=f3e830]:
+        - generic [ref=f3e831]:
+          - img [ref=f3e832]
+          - textbox "Search by name, role, or business..." [ref=f3e835]
+        - generic [ref=f3e836]:
+          - button "All" [ref=f3e837] [cursor=pointer]
+          - button "pending" [ref=f3e838] [cursor=pointer]
+          - button "approved" [ref=f3e839] [cursor=pointer]
+          - button "rejected" [ref=f3e840] [cursor=pointer]
+      - table [ref=f3e843]:
+        - rowgroup [ref=f3e844]:
+          - row "Applicant Role Business Status Submitted Actions" [ref=f3e845]:
+            - columnheader "Applicant" [ref=f3e846]
+            - columnheader "Role" [ref=f3e847]
+            - columnheader "Business" [ref=f3e848]
+            - columnheader "Status" [ref=f3e849]
+            - columnheader "Submitted" [ref=f3e850]
+            - columnheader "Actions" [ref=f3e851]
+        - rowgroup [ref=f3e852]:
+          - row "player16 16 @player16 organizer asdasd gaming_community pending 08/07/2026" [ref=f3e853]:
+            - cell "player16 16 @player16" [ref=f3e854]:
+              - generic [ref=f3e855]:
+                - img [ref=f3e857]
+                - generic [ref=f3e860]:
+                  - paragraph [ref=f3e861]: player16 16
+                  - paragraph [ref=f3e862]: "@player16"
+            - cell "organizer" [ref=f3e863]:
+              - generic [ref=f3e864]: organizer
+            - cell "asdasd gaming_community" [ref=f3e865]:
+              - generic [ref=f3e866]:
+                - generic [ref=f3e867]: asdasd
+                - generic [ref=f3e868]: gaming_community
+            - cell "pending" [ref=f3e869]:
+              - generic [ref=f3e870]: pending
+            - cell "08/07/2026" [ref=f3e871]
+            - cell [ref=f3e872]:
+              - button [ref=f3e873] [cursor=pointer]:
+                - img
+          - row "asd as @player7 organizer asda tournament_organizer rejected 18/04/2026" [ref=f3e874]:
+            - cell "asd as @player7" [ref=f3e875]:
+              - generic [ref=f3e876]:
+                - img [ref=f3e878]
+                - generic [ref=f3e881]:
+                  - paragraph [ref=f3e882]: asd as
+                  - paragraph [ref=f3e883]: "@player7"
+            - cell "organizer" [ref=f3e884]:
+              - generic [ref=f3e885]: organizer
+            - cell "asda tournament_organizer" [ref=f3e886]:
+              - generic [ref=f3e887]:
+                - generic [ref=f3e888]: asda
+                - generic [ref=f3e889]: tournament_organizer
+            - cell "rejected" [ref=f3e890]:
+              - generic [ref=f3e891]: rejected
+            - cell "18/04/2026" [ref=f3e892]
+            - cell [ref=f3e893]:
+              - button [ref=f3e894] [cursor=pointer]:
+                - img
+          - row "Mudassir Mudassir @TENZZZ venue owner gaming_zone rejected 18/10/2025" [ref=f3e895]:
+            - cell "Mudassir Mudassir @TENZZZ" [ref=f3e896]:
+              - generic [ref=f3e897]:
+                - img [ref=f3e899]
+                - generic [ref=f3e902]:
+                  - paragraph [ref=f3e903]: Mudassir Mudassir
+                  - paragraph [ref=f3e904]: "@TENZZZ"
+            - cell "venue owner" [ref=f3e905]:
+              - generic [ref=f3e906]: venue owner
+            - cell "gaming_zone" [ref=f3e907]:
+              - generic [ref=f3e909]: gaming_zone
+            - cell "rejected" [ref=f3e910]:
+              - generic [ref=f3e911]: rejected
+            - cell "18/10/2025" [ref=f3e912]
+            - cell [ref=f3e913]:
+              - button [ref=f3e914] [cursor=pointer]:
+                - img
+          - row "Mudassir Siddiqui @TENZZZ organizer optix rejected 15/10/2025" [ref=f3e915]:
+            - cell "Mudassir Siddiqui @TENZZZ" [ref=f3e916]:
+              - generic [ref=f3e917]:
+                - img [ref=f3e919]
+                - generic [ref=f3e922]:
+                  - paragraph [ref=f3e923]: Mudassir Siddiqui
+                  - paragraph [ref=f3e924]: "@TENZZZ"
+            - cell "organizer" [ref=f3e925]:
+              - generic [ref=f3e926]: organizer
+            - cell "optix" [ref=f3e927]:
+              - generic [ref=f3e929]: optix
+            - cell "rejected" [ref=f3e930]:
+              - generic [ref=f3e931]: rejected
+            - cell "15/10/2025" [ref=f3e932]
+            - cell [ref=f3e933]:
+              - button [ref=f3e934] [cursor=pointer]:
+                - img
+          - row "Mudassir Mudassir @TENZZZ organizer Mudassir rejected 15/10/2025" [ref=f3e935]:
+            - cell "Mudassir Mudassir @TENZZZ" [ref=f3e936]:
+              - generic [ref=f3e937]:
+                - img [ref=f3e939]
+                - generic [ref=f3e942]:
+                  - paragraph [ref=f3e943]: Mudassir Mudassir
+                  - paragraph [ref=f3e944]: "@TENZZZ"
+            - cell "organizer" [ref=f3e945]:
+              - generic [ref=f3e946]: organizer
+            - cell "Mudassir" [ref=f3e947]:
+              - generic [ref=f3e949]: Mudassir
+            - cell "rejected" [ref=f3e950]:
+              - generic [ref=f3e951]: rejected
+            - cell "15/10/2025" [ref=f3e952]
+            - cell [ref=f3e953]:
+              - button [ref=f3e954] [cursor=pointer]:
+                - img
+          - row "Mudassir Mudassir @TENZZZ organizer Mudassir rejected 15/10/2025" [ref=f3e955]:
+            - cell "Mudassir Mudassir @TENZZZ" [ref=f3e956]:
+              - generic [ref=f3e957]:
+                - img [ref=f3e959]
+                - generic [ref=f3e962]:
+                  - paragraph [ref=f3e963]: Mudassir Mudassir
+                  - paragraph [ref=f3e964]: "@TENZZZ"
+            - cell "organizer" [ref=f3e965]:
+              - generic [ref=f3e966]: organizer
+            - cell "Mudassir" [ref=f3e967]:
+              - generic [ref=f3e969]: Mudassir
+            - cell "rejected" [ref=f3e970]:
+              - generic [ref=f3e971]: rejected
+            - cell "15/10/2025" [ref=f3e972]
+            - cell [ref=f3e973]:
+              - button [ref=f3e974] [cursor=pointer]:
+                - img

@@ -1,0 +1,140 @@
+- generic [ref=f5e7]:
+  - region "Notifications (F8)":
+    - list
+  - main [ref=f5e81]:
+    - generic [ref=f5e82]:
+      - generic [ref=f5e83]:
+        - link "Admin super admin" [ref=f5e84] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f5e86]
+          - generic [ref=f5e88]:
+            - paragraph [ref=f5e89]: Admin
+            - paragraph [ref=f5e90]: super admin
+        - link "Home" [ref=f5e91] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f5e92]:
+        - link "Command Centre" [ref=f5e93] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f5e94]
+          - text: Command Centre
+        - link "All Users" [ref=f5e99] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f5e100]
+          - text: All Users
+        - link "Verifications" [ref=f5e105] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f5e106]
+          - text: Verifications
+        - link "Licenses" [ref=f5e109] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f5e110]
+          - text: Licenses
+        - link "Sessions" [ref=f5e114] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f5e115]
+          - text: Sessions
+        - link "Tournaments" [ref=f5e117] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f5e118]
+          - text: Tournaments
+        - link "Teams" [ref=f5e124] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f5e125]
+          - text: Teams
+        - link "Venues" [ref=f5e129] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f5e130]
+          - text: Venues
+        - link "Games" [ref=f5e133] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f5e134]
+          - text: Games
+        - link "Moderation" [ref=f5e136] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f5e137]
+          - text: Moderation
+    - generic [ref=f5e140]:
+      - generic [ref=f5e141]:
+        - generic [ref=f5e142]:
+          - link "Back" [ref=f5e143] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - button "Back" [ref=f5e144]:
+              - img
+              - text: Back
+          - generic [ref=f5e145]:
+            - img [ref=f5e147]
+            - generic [ref=f5e150]:
+              - heading "Venue Management" [level=1] [ref=f5e151]
+              - paragraph [ref=f5e152]: Manage and verify gaming venues
+        - generic [ref=f5e153]:
+          - button "Refresh" [ref=f5e154] [cursor=pointer]:
+            - img
+            - text: Refresh
+          - button "Export" [ref=f5e155] [cursor=pointer]:
+            - img
+            - text: Export
+      - generic [ref=f5e156]:
+        - generic [ref=f5e157]:
+          - img [ref=f5e159]
+          - paragraph [ref=f5e162]: "2"
+          - paragraph [ref=f5e163]: Total Venues
+        - generic [ref=f5e164]:
+          - img [ref=f5e166]
+          - paragraph [ref=f5e169]: "2"
+          - paragraph [ref=f5e170]: Verified
+        - generic [ref=f5e171]:
+          - img [ref=f5e173]
+          - paragraph [ref=f5e176]: "0"
+          - paragraph [ref=f5e177]: Pending
+        - generic [ref=f5e178]:
+          - img [ref=f5e180]
+          - paragraph [ref=f5e182]: "0"
+          - paragraph [ref=f5e183]: Total Capacity
+      - generic [ref=f5e184]:
+        - generic [ref=f5e185]:
+          - img [ref=f5e186]
+          - textbox "Search venues..." [ref=f5e189]
+        - generic [ref=f5e190]:
+          - button "All" [ref=f5e191] [cursor=pointer]
+          - button "verified" [ref=f5e192] [cursor=pointer]
+          - button "unverified" [ref=f5e193] [cursor=pointer]
+      - table [ref=f5e196]:
+        - rowgroup [ref=f5e197]:
+          - row "Venue Location Capacity Status Created Actions" [ref=f5e198]:
+            - columnheader "Venue" [ref=f5e199]
+            - columnheader "Location" [ref=f5e200]
+            - columnheader "Capacity" [ref=f5e201]
+            - columnheader "Status" [ref=f5e202]
+            - columnheader "Created" [ref=f5e203]
+            - columnheader "Actions" [ref=f5e204]
+        - rowgroup [ref=f5e205]:
+          - row "test venue cdcf0ca4... Hyderabad City Taluka - Verified 01/04/2026" [ref=f5e206]:
+            - cell "test venue cdcf0ca4..." [ref=f5e207]:
+              - generic [ref=f5e208]:
+                - img [ref=f5e210]
+                - generic [ref=f5e213]:
+                  - paragraph [ref=f5e214]: test venue
+                  - paragraph [ref=f5e215]: cdcf0ca4...
+            - cell "Hyderabad City Taluka" [ref=f5e216]
+            - cell "-" [ref=f5e217]
+            - cell "Verified" [ref=f5e218]:
+              - generic [ref=f5e219]: Verified
+            - cell "01/04/2026" [ref=f5e220]
+            - cell [ref=f5e221]:
+              - button [ref=f5e222] [cursor=pointer]:
+                - img
+          - row "Mudassir Siddiqui 69489794... Hyderabad - Verified 03/03/2026" [ref=f5e223]:
+            - cell "Mudassir Siddiqui 69489794..." [ref=f5e224]:
+              - generic [ref=f5e225]:
+                - img [ref=f5e227]
+                - generic [ref=f5e230]:
+                  - paragraph [ref=f5e231]: Mudassir Siddiqui
+                  - paragraph [ref=f5e232]: 69489794...
+            - cell "Hyderabad" [ref=f5e233]
+            - cell "-" [ref=f5e234]
+            - cell "Verified" [ref=f5e235]:
+              - generic [ref=f5e236]: Verified
+            - cell "03/03/2026" [ref=f5e237]
+            - cell [ref=f5e238]:
+              - button [ref=f5e239] [cursor=pointer]:
+                - img

@@ -1,0 +1,15 @@
+- generic [ref=f16e7]:
+  - region "Notifications (F8)":
+    - list
+  - navigation [ref=f16e703]:
+    - generic [ref=f16e704]:
+      - link "Esportra" [ref=f16e705] [cursor=pointer]:
+        - /url: /
+        - img "Esportra" [ref=f16e706]
+      - button "Open navigation menu" [ref=f16e708] [cursor=pointer]
+  - generic [ref=f16e715]:
+    - heading "404" [level=1] [ref=f16e716]
+    - paragraph [ref=f16e717]: Oops! Page not found
+    - link "Return to Home" [ref=f16e718] [cursor=pointer]:
+      - /url: /
+      - generic [ref=f16e719]: Return to Home

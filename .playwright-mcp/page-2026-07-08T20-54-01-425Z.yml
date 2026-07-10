@@ -1,0 +1,586 @@
+- generic:
+  - generic:
+    - list
+    - generic:
+      - generic:
+        - main:
+          - generic:
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - generic:
+                  - img
+                - generic:
+                  - paragraph: Admin
+                  - paragraph: super admin
+              - link:
+                - /url: /
+                - text: Home
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - img
+                - text: Command Centre
+              - link:
+                - /url: /admin/users
+                - img
+                - text: All Users
+              - link:
+                - /url: /admin/users/verifications
+                - img
+                - text: Verifications
+              - link:
+                - /url: /admin/users/licenses
+                - img
+                - text: Licenses
+              - link:
+                - /url: /admin/users/sessions
+                - img
+                - text: Sessions
+              - link:
+                - /url: /admin/content/tournaments
+                - img
+                - text: Tournaments
+              - link:
+                - /url: /admin/content/teams
+                - img
+                - text: Teams
+              - link:
+                - /url: /admin/content/venues
+                - img
+                - text: Venues
+              - link:
+                - /url: /admin/content/games
+                - img
+                - text: Games
+              - link:
+                - /url: /admin/content/moderation
+                - img
+                - text: Moderation
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - link:
+                    - /url: /admin/dashboard
+                    - button:
+                      - img
+                      - text: Back
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - heading [level=1]: Tournament Management
+                      - paragraph: Oversee and manage platform tournaments
+                - generic:
+                  - button:
+                    - img
+                    - text: Refresh
+                  - button:
+                    - img
+                    - text: Export
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "23"
+                  - paragraph: Total Tournaments
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "7"
+                  - paragraph: Active
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "5"
+                  - paragraph: Upcoming
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "11"
+                  - paragraph: Completed
+              - generic:
+                - generic:
+                  - img
+                  - textbox:
+                    - /placeholder: Search tournaments...
+                - generic:
+                  - button: All Status
+                  - button: registration
+                  - button: ongoing
+                  - button: completed
+                  - button: cancelled
+              - generic:
+                - button:
+                  - img
+                  - text: Advanced Filters
+                  - img
+              - generic:
+                - generic:
+                  - table:
+                    - rowgroup:
+                      - row:
+                        - columnheader:
+                          - checkbox
+                        - columnheader: Tournament
+                        - columnheader: Game
+                        - columnheader: Status
+                        - columnheader: Prize Pool
+                        - columnheader: Teams
+                        - columnheader: Start Date
+                        - columnheader: Actions
+                    - rowgroup:
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: test check in
+                              - paragraph: a9b4bda0...
+                        - cell: Valorant
+                        - cell:
+                          - generic: ongoing
+                        - cell: $0
+                        - cell: "4"
+                        - cell: 08/07/2026
+                        - cell:
+                          - button [expanded]:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Valorant
+                              - paragraph: 25c4faab...
+                        - cell: Valorant
+                        - cell:
+                          - generic: draft
+                        - cell: $0
+                        - cell: "32"
+                        - cell: 03/07/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse 1782824556924
+                              - paragraph: 82a95912...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse EU 1782824555076
+                              - paragraph: 5bf51456...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse 1782824553382
+                              - paragraph: 4d677dcb...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse 1782824551864
+                              - paragraph: 4c19d8bb...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse Newer 1782824549809
+                              - paragraph: 5c4b94a4...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse Older 1782824549808
+                              - paragraph: 9d18da08...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: E2E Browse 1782824548075
+                              - paragraph: 4f7b5dd4...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 30/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Val test teams
+                              - paragraph: 7053d4cc...
+                        - cell: Valorant
+                        - cell:
+                          - generic: draft
+                        - cell: $0
+                        - cell: "1024"
+                        - cell: 27/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: LOL
+                              - paragraph: f94ac2a1...
+                        - cell: League of Legends
+                        - cell:
+                          - generic: ongoing
+                        - cell: $10,000
+                        - cell: "8"
+                        - cell: 18/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: APEX test
+                              - paragraph: 5d469fa1...
+                        - cell: Apex Legends
+                        - cell:
+                          - generic: ongoing
+                        - cell: $0
+                        - cell: "8"
+                        - cell: 15/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: solo prize
+                              - paragraph: acef4477...
+                        - cell: Valorant
+                        - cell:
+                          - generic: ongoing
+                        - cell: $123,123
+                        - cell: "4"
+                        - cell: 16/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: test with prize solo
+                              - paragraph: 3bb41542...
+                        - cell: Valorant
+                        - cell:
+                          - generic: ongoing
+                        - cell: $123,123
+                        - cell: "4"
+                        - cell: 16/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Valo test with prize money
+                              - paragraph: 559aa4c4...
+                        - cell: Valorant
+                        - cell:
+                          - generic: ongoing
+                        - cell: $200,000
+                        - cell: "4"
+                        - cell: 16/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: PUBG test solo
+                              - paragraph: 5fd1b08a...
+                        - cell: PUBG
+                        - cell:
+                          - generic: ongoing
+                        - cell: $0
+                        - cell: "20"
+                        - cell: 13/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Fortnite duo
+                              - paragraph: 7522bbfe...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "60"
+                        - cell: 13/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: TESTPUBG
+                              - paragraph: bbebad2b...
+                        - cell: PUBG
+                        - cell:
+                          - generic: draft
+                        - cell: $0
+                        - cell: "40"
+                        - cell: 12/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: FN test
+                              - paragraph: c3d3232a...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: draft
+                        - cell: $0
+                        - cell: "150"
+                        - cell: 12/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: BR test
+                              - paragraph: a6cf387b...
+                        - cell: Fortnite
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "20"
+                        - cell: 12/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Test
+                              - paragraph: 4d17fcb8...
+                        - cell: Valorant
+                        - cell:
+                          - generic: draft
+                        - cell: $0
+                        - cell: "16"
+                        - cell: 11/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Val Team tournament test
+                              - paragraph: 7c30f109...
+                        - cell: Valorant
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "4"
+                        - cell: 10/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Valorant Skirmish 1v1
+                              - paragraph: a9a9f8e2...
+                        - cell: Valorant
+                        - cell:
+                          - generic: completed
+                        - cell: $0
+                        - cell: "4"
+                        - cell: 11/06/2026
+                        - cell:
+                          - button:
+                            - img
+  - menu [active] [ref=f16e677]:
+    - menuitem "View Details" [ref=f16e678]:
+      - img [ref=f16e679]
+      - text: View Details
+    - menuitem "Manage Tournament" [ref=f16e682]:
+      - img [ref=f16e683]
+      - text: Manage Tournament
+    - menuitem "Start Tournament" [ref=f16e686]:
+      - img [ref=f16e687]
+      - text: Start Tournament
+    - menuitem "Mark Completed" [ref=f16e689]:
+      - img [ref=f16e690]
+      - text: Mark Completed
+    - menuitem "Cancel" [ref=f16e693]:
+      - img [ref=f16e694]
+      - text: Cancel

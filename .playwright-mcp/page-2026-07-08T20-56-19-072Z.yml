@@ -1,0 +1,155 @@
+- generic [ref=f20e7]:
+  - region "Notifications (F8)":
+    - list
+  - navigation [ref=f20e14]:
+    - generic [ref=f20e15]:
+      - link "Esportra" [ref=f20e16] [cursor=pointer]:
+        - /url: /
+        - img "Esportra" [ref=f20e17]
+      - button "Open navigation menu" [ref=f20e19] [cursor=pointer]
+  - generic [ref=f20e25]:
+    - main [ref=f20e26]:
+      - generic [ref=f20e27]:
+        - generic [ref=f20e28]:
+          - generic [ref=f20e33]:
+            - generic [ref=f20e34]:
+              - generic [ref=f20e35]: Online Event
+              - generic [ref=f20e36]: Valorant
+            - heading "test check in" [level=1] [ref=f20e37]
+            - generic [ref=f20e38]:
+              - generic [ref=f20e39]:
+                - img [ref=f20e40]
+                - text: 08/07/2026
+              - generic [ref=f20e42]:
+                - img [ref=f20e43]
+                - text: Online
+          - generic [ref=f20e47]:
+            - button "Make Private" [ref=f20e48] [cursor=pointer]:
+              - generic [ref=f20e49]:
+                - img [ref=f20e50]
+                - text: Make Private
+            - button "Mark as Finished" [ref=f20e55] [cursor=pointer]:
+              - generic [ref=f20e56]:
+                - img [ref=f20e57]
+                - text: Mark as Finished
+            - button "Edit Tournament" [ref=f20e60] [cursor=pointer]:
+              - generic [ref=f20e61]:
+                - img [ref=f20e62]
+                - text: Edit Tournament
+            - button "View Page" [ref=f20e64] [cursor=pointer]:
+              - generic [ref=f20e65]:
+                - img [ref=f20e66]
+                - text: View Page
+        - generic [ref=f20e70]:
+          - generic [ref=f20e71]:
+            - generic [ref=f20e72]: Prize Pool
+            - generic [ref=f20e73]:
+              - generic [ref=f20e74]: $
+              - text: "0"
+          - generic [ref=f20e75]:
+            - generic [ref=f20e76]: Participants
+            - generic [ref=f20e77]:
+              - text: "0"
+              - generic [ref=f20e78]: /4
+          - generic [ref=f20e79]:
+            - generic [ref=f20e80]: Registration
+            - generic [ref=f20e82]: Closed
+      - generic [ref=f20e83]:
+        - tablist [ref=f20e86]:
+          - tab "overview" [ref=f20e87] [cursor=pointer]:
+            - generic [ref=f20e88]: overview
+          - tab "participants" [ref=f20e89] [cursor=pointer]:
+            - generic [ref=f20e90]: participants
+          - tab "stages" [active] [selected] [ref=f20e91] [cursor=pointer]:
+            - generic [ref=f20e92]: stages
+          - button "Brackets" [ref=f20e93] [cursor=pointer]:
+            - generic [ref=f20e94]: Brackets
+          - tab "schedule" [ref=f20e95] [cursor=pointer]:
+            - generic [ref=f20e96]: schedule
+          - tab "bans" [ref=f20e97] [cursor=pointer]:
+            - generic [ref=f20e98]: bans
+          - tab "disputes" [ref=f20e99] [cursor=pointer]:
+            - generic [ref=f20e100]: disputes
+          - tab "announcements" [ref=f20e101] [cursor=pointer]:
+            - generic [ref=f20e102]: announcements
+          - tab "staff" [ref=f20e103] [cursor=pointer]:
+            - generic [ref=f20e104]: staff
+          - tab "settings" [ref=f20e105] [cursor=pointer]:
+            - generic [ref=f20e106]: settings
+        - tabpanel "stages" [ref=f20e195]:
+          - generic [ref=f20e197]:
+            - generic [ref=f20e198]:
+              - generic [ref=f20e199]:
+                - heading "Tournament Stages" [level=3] [ref=f20e200]
+                - paragraph [ref=f20e201]: Manage the different phases of your tournament.
+              - button "Create Tournament Stages" [ref=f20e203] [cursor=pointer]:
+                - img
+                - text: Create Tournament Stages
+            - generic [ref=f20e205]:
+              - img [ref=f20e206]
+              - paragraph [ref=f20e210]: No stages defined yet. Add your first stage to get started.
+    - contentinfo [ref=f20e137]:
+      - generic [ref=f20e138]:
+        - generic [ref=f20e139]:
+          - generic [ref=f20e140]:
+            - link "eSPORTRA" [ref=f20e141] [cursor=pointer]:
+              - /url: /
+              - img "eSPORTRA" [ref=f20e142]
+            - paragraph [ref=f20e143]: Elevating the digital arena. We're building the infrastructure for the next generation of competitive excellence.
+            - generic [ref=f20e144]:
+              - link [ref=f20e145] [cursor=pointer]:
+                - /url: "#"
+                - img [ref=f20e146]
+              - link [ref=f20e148] [cursor=pointer]:
+                - /url: "#"
+                - img [ref=f20e149]
+              - link [ref=f20e152] [cursor=pointer]:
+                - /url: "#"
+                - img [ref=f20e153]
+              - link [ref=f20e155] [cursor=pointer]:
+                - /url: "#"
+                - img [ref=f20e156]
+              - link "Discord" [ref=f20e159] [cursor=pointer]:
+                - /url: https://discord.gg/ZMBvC5vjRF
+                - img [ref=f20e160]
+          - generic [ref=f20e162]:
+            - heading "Resources" [level=4] [ref=f20e163]
+            - list [ref=f20e164]:
+              - listitem [ref=f20e165]:
+                - link "Tournaments" [ref=f20e166] [cursor=pointer]:
+                  - /url: /tournaments
+              - listitem [ref=f20e167]:
+                - link "Venues" [ref=f20e168] [cursor=pointer]:
+                  - /url: /venues
+              - listitem [ref=f20e169]:
+                - link "Help Centre" [ref=f20e170] [cursor=pointer]:
+                  - /url: /help
+              - listitem [ref=f20e171]:
+                - link "Be a Partner" [ref=f20e172] [cursor=pointer]:
+                  - /url: /be-a-partner
+              - listitem [ref=f20e173]:
+                - link "FAQ" [ref=f20e174] [cursor=pointer]:
+                  - /url: /about/faq
+          - generic [ref=f20e175]:
+            - heading "Company" [level=4] [ref=f20e176]
+            - list [ref=f20e177]:
+              - listitem [ref=f20e178]:
+                - link "About" [ref=f20e179] [cursor=pointer]:
+                  - /url: /about
+              - listitem [ref=f20e180]:
+                - link "Privacy" [ref=f20e181] [cursor=pointer]:
+                  - /url: /privacy
+              - listitem [ref=f20e182]:
+                - link "Contact" [ref=f20e183] [cursor=pointer]:
+                  - /url: /contact
+              - listitem [ref=f20e184]:
+                - link "Terms" [ref=f20e185] [cursor=pointer]:
+                  - /url: /terms
+              - listitem [ref=f20e186]:
+                - link "Refund Policy" [ref=f20e187] [cursor=pointer]:
+                  - /url: /refund-policy
+        - generic [ref=f20e188]:
+          - paragraph [ref=f20e189]: © 2026 eSPORTRA. All rights reserved.
+          - generic [ref=f20e190]:
+            - generic [ref=f20e191]: Esports. Elevated.
+            - generic [ref=f20e194]: Protocol Active

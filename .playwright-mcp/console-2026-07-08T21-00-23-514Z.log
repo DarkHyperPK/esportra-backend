@@ -1,0 +1,23 @@
+[     787ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[    1945ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[    5923ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[    7079ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[   67265ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[   68430ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  128620ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  129775ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  189959ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  191113ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  251293ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  252450ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  312630ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  313786ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  373969ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  375124ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  435305ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  436466ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://api-staging.esportra.com/api/admin/command-centre:0
+[  494327ms] [ERROR] Access to fetch at 'https://api-staging.esportra.com/hubs/notifications/negotiate?negotiateVersion=1' from origin 'https://frontend-staging.esportra.com' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://frontend-staging.esportra.com/admin/dashboard:0
+[  494327ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://api-staging.esportra.com/hubs/notifications/negotiate?negotiateVersion=1:0
+[  494330ms] [ERROR] Access to fetch at 'https://api-staging.esportra.com/hubs/admin/negotiate?negotiateVersion=1' from origin 'https://frontend-staging.esportra.com' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://frontend-staging.esportra.com/admin/dashboard:0
+[  494330ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://api-staging.esportra.com/hubs/admin/negotiate?negotiateVersion=1:0
+[ 1049927ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://frontend-staging.esportra.com/assets/UserManagement-BK72t3Ni.js:0

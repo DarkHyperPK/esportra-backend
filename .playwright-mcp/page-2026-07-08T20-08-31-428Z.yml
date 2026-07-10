@@ -1,0 +1,20 @@
+- generic [active]:
+  - generic:
+    - region "Notifications (F8)":
+      - list [ref=e82]:
+        - status [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: Welcome back!
+            - generic [ref=e86]: You have successfully signed in.
+          - button [ref=e87] [cursor=pointer]:
+            - img [ref=e88]
+    - navigation [ref=e14]:
+      - generic [ref=e15]:
+        - link "Esportra" [ref=e16] [cursor=pointer]:
+          - /url: /
+          - img "Esportra" [ref=e17]
+        - button "Open navigation menu" [ref=e19] [cursor=pointer]
+    - generic [ref=e92]:
+      - img "Esportra" [ref=e95]
+      - generic [ref=e96]: LOADING
+  - status [ref=e97]: Notification Welcome back!You have successfully signed in.

@@ -37,11 +37,11 @@ public sealed partial class GameCatalogService
                 ?? throw new InvalidOperationException("Failed to create catalog draft.");
             return await BuildCatalogResponseForVersionAsync(conn, draft);
         }
-        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505"
+            && ex.ConstraintName == "ux_game_catalog_versions_single_draft")
         {
-            // Unique violation - another request created the draft concurrently
+            // Another request created the draft concurrently - read it instead
             tx.Rollback();
-            // Use fresh connection after rollback to read the draft created by the other request
             using var freshConn = db.CreateConnection();
             var draft = await GetDraftVersionAsync(freshConn)
                 ?? throw new InvalidOperationException("Draft creation race but no draft found.");
@@ -457,22 +457,24 @@ public sealed partial class GameCatalogService
 
         if (active is null)
         {
-            // No active catalog exists - create an empty draft
+            // No active catalog exists - create an empty draft with unique hash
             await conn.ExecuteAsync(
                 """
                 INSERT INTO public.game_catalog_versions
                     (catalog_version, schema_version, content_hash, status, is_active, source, created_by)
                 VALUES
-                    (@catalogVersion, 1, 'empty', 'draft', FALSE, 'admin', @adminUserId)
+                    (@catalogVersion, 1, @contentHash, 'draft', FALSE, 'admin', @adminUserId)
                 """,
                 new
                 {
                     catalogVersion = $"{DateTime.UtcNow:yyyy.MM.dd}-draft",
+                    contentHash = $"draft-{Guid.NewGuid():N}",
                     adminUserId,
                 }, tx);
             return;
         }
 
+        // Clone from active - use unique hash to avoid content_hash constraint collision
         await conn.ExecuteAsync(
             """
             INSERT INTO public.game_catalog_versions
@@ -484,7 +486,7 @@ public sealed partial class GameCatalogService
             {
                 catalogVersion = $"{active.CatalogVersion}-draft",
                 schemaVersion = active.SchemaVersion,
-                contentHash = active.ContentHash,
+                contentHash = $"{active.ContentHash}-draft-{Guid.NewGuid():N}",
                 adminUserId,
             }, tx);
 
