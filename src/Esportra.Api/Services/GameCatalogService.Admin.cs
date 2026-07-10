@@ -441,6 +441,11 @@ public sealed partial class GameCatalogService
         Guid adminUserId,
         CancellationToken ct)
     {
+        var existingDraft = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT id FROM public.game_catalog_versions WHERE status = 'draft' LIMIT 1", transaction: tx);
+        if (existingDraft.HasValue)
+            throw new GameCatalogValidationException("A catalog draft already exists.");
+
         var active = await conn.QuerySingleOrDefaultAsync<CatalogVersionRow>(
             """
             SELECT id AS Id, catalog_version AS CatalogVersion, schema_version AS SchemaVersion,
@@ -451,20 +456,29 @@ public sealed partial class GameCatalogService
             """, transaction: tx);
 
         if (active is null)
-            throw new GameCatalogValidationException("No active catalog exists to clone.");
+        {
+            // No active catalog exists - create an empty draft
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.game_catalog_versions
+                    (catalog_version, schema_version, content_hash, status, is_active, source, created_by)
+                VALUES
+                    (@catalogVersion, 1, 'empty', 'draft', FALSE, 'admin', @adminUserId)
+                """,
+                new
+                {
+                    catalogVersion = $"{DateTime.UtcNow:yyyy.MM.dd}-draft",
+                    adminUserId,
+                }, tx);
+            return;
+        }
 
-        var existingDraft = await conn.QuerySingleOrDefaultAsync<Guid?>(
-            "SELECT id FROM public.game_catalog_versions WHERE status = 'draft' LIMIT 1", transaction: tx);
-        if (existingDraft.HasValue)
-            throw new GameCatalogValidationException("A catalog draft already exists.");
-
-        var draftId = await conn.QuerySingleAsync<Guid>(
+        await conn.ExecuteAsync(
             """
             INSERT INTO public.game_catalog_versions
                 (catalog_version, schema_version, content_hash, status, is_active, source, created_by)
             VALUES
                 (@catalogVersion, @schemaVersion, @contentHash, 'draft', FALSE, 'admin', @adminUserId)
-            RETURNING id
             """,
             new
             {
@@ -473,6 +487,9 @@ public sealed partial class GameCatalogService
                 contentHash = active.ContentHash,
                 adminUserId,
             }, tx);
+
+        var draftId = await conn.QuerySingleAsync<Guid>(
+            "SELECT id FROM public.game_catalog_versions WHERE status = 'draft' LIMIT 1", transaction: tx);
 
         await CloneVersionRowsAsync(conn, tx, active.Id, draftId);
     }

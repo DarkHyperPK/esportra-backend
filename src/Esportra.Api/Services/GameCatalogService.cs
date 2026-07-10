@@ -1112,15 +1112,17 @@ public sealed record GameCatalogGameResponse(
     IReadOnlyList<GameCatalogService.ModeRow> Modes,
     IReadOnlyList<GameCatalogService.StructureRow> TournamentStructures);
 
-public sealed record GameCatalogVersionSummary(
-    Guid Id,
-    string CatalogVersion,
-    int SchemaVersion,
-    string ContentHash,
-    string Status,
-    string Source,
-    bool IsActive,
-    DateTimeOffset? ImportedAt,
-    DateTimeOffset? PublishedAt,
-    Guid? CreatedBy,
-    Guid? PublishedBy);
+public sealed class GameCatalogVersionSummary
+{
+    public Guid Id { get; set; }
+    public string CatalogVersion { get; set; } = string.Empty;
+    public int SchemaVersion { get; set; }
+    public string ContentHash { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public DateTimeOffset? ImportedAt { get; set; }
+    public DateTimeOffset? PublishedAt { get; set; }
+    public Guid? CreatedBy { get; set; }
+    public Guid? PublishedBy { get; set; }
+}
