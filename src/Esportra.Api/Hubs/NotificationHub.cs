@@ -89,4 +89,7 @@ public static class NotificationHubEvents
 
     /// <summary>Tournament status changed for a tournament the user is in.</summary>
     public const string TournamentUpdate = "TournamentUpdate";
+
+    /// <summary>Admin revoked user's session - client must log out immediately.</summary>
+    public const string ForceLogout = "ForceLogout";
 }

@@ -10,14 +10,46 @@ public sealed partial class GameCatalogService
     public async Task<GameCatalogResponse> GetOrCreateDraftAsync(Guid adminUserId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
-        var draft = await GetDraftVersionAsync(conn);
-        if (draft is not null)
-            return await BuildCatalogResponseForVersionAsync(conn, draft);
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            // Check for existing draft with FOR UPDATE lock to prevent race condition
+            var draft = await conn.QuerySingleOrDefaultAsync<CatalogVersionRow>(
+                """
+                SELECT id AS Id, catalog_version AS CatalogVersion, schema_version AS SchemaVersion,
+                       content_hash AS ContentHash, status AS Status, source AS Source
+                FROM public.game_catalog_versions
+                WHERE status = 'draft'
+                LIMIT 1
+                FOR UPDATE
+                """, transaction: tx);
 
-        await CreateDraftFromActiveAsync(conn, adminUserId, ct);
-        draft = await GetDraftVersionAsync(conn)
-            ?? throw new InvalidOperationException("Failed to create catalog draft.");
-        return await BuildCatalogResponseForVersionAsync(conn, draft);
+            if (draft is not null)
+            {
+                tx.Commit();
+                return await BuildCatalogResponseForVersionAsync(conn, draft);
+            }
+
+            await CreateDraftFromActiveInternalAsync(conn, tx, adminUserId, ct);
+            tx.Commit();
+
+            draft = await GetDraftVersionAsync(conn)
+                ?? throw new InvalidOperationException("Failed to create catalog draft.");
+            return await BuildCatalogResponseForVersionAsync(conn, draft);
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+        {
+            // Unique violation - another request created the draft concurrently
+            tx.Rollback();
+            var draft = await GetDraftVersionAsync(conn)
+                ?? throw new InvalidOperationException("Draft creation race but no draft found.");
+            return await BuildCatalogResponseForVersionAsync(conn, draft);
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
     }
 
     public async Task<GameCatalogResponse> ResetDraftFromActiveAsync(Guid adminUserId, CancellationToken ct = default)

@@ -4880,7 +4880,7 @@ public static class AdminEndpoints
                        target_id, target_name, details, severity, created_at
                 FROM (
                     SELECT id, admin_id, admin_name, action_type, target_type,
-                           target_id::text AS target_id, target_name, metadata AS details, severity, created_at
+                           target_id::text AS target_id, target_name, details, severity, created_at
                     FROM audit_logs
                     WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                     UNION ALL
@@ -5322,8 +5322,8 @@ public static class AdminEndpoints
         }).RequireAuthorization(Permissions.SecurityViewSessions);
 
         // ── POST /api/admin/sessions/{userId}/revoke ─────────────────────────────
-        // Force logout a user by invalidating their Supabase Auth refresh tokens
-        // and evicting their cached UserContext.
+        // Force logout a user by invalidating their Supabase Auth refresh tokens,
+        // evicting their cached UserContext, and broadcasting ForceLogout via SignalR.
         app.MapPost("/api/admin/sessions/{userId}/revoke", async (
             Guid userId,
             [FromBody] RevokeSessionRequest req,
@@ -5332,6 +5332,7 @@ public static class AdminEndpoints
             ISupabaseAdminClient supabase,
             AuditService audit,
             HybridCache cache,
+            IHubContext<NotificationHub> notificationHub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -5378,6 +5379,20 @@ public static class AdminEndpoints
                 var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
                     .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
                 logger.LogWarning(ex, "Cache eviction failed for {UserId} — session will expire naturally", userId);
+            }
+
+            // Broadcast ForceLogout via SignalR to immediately log out the user's browser
+            try
+            {
+                await notificationHub.Clients
+                    .Group(NotificationHub.UserGroup(userId.ToString()))
+                    .SendAsync(NotificationHubEvents.ForceLogout, new { reason = req.Reason }, ct);
+            }
+            catch (Exception ex)
+            {
+                var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
+                logger.LogWarning(ex, "Failed to broadcast ForceLogout to {UserId}", userId);
             }
 
             // Audit the session revocation

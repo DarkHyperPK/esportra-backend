@@ -556,6 +556,7 @@ app.MapIntegrationEndpoints();
 app.MapSteamAccountEndpoints();
 app.MapGameEndpoints();
 app.MapGameCatalogAdminEndpoints();
+app.MapGameMapAdminEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
