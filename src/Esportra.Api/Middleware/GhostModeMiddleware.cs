@@ -79,6 +79,10 @@ public sealed class GhostModeMiddleware(
                     return;
                 }
 
+                // Save the original admin context before overwriting
+                var adminContext = context.Items["UserContext"] as UserContext;
+                context.Items["AdminUserContext"] = adminContext;
+
                 var targetUserContext = new UserContext
                 {
                     UserId = session.TargetUserId.ToString(),
@@ -91,9 +95,9 @@ public sealed class GhostModeMiddleware(
                 context.Items["UserContext"] = targetUserContext;
                 context.Items["OriginalAdminId"] = session.AdminId;
 
-                logger.LogDebug(
-                    "[GhostMode] Admin {AdminId} viewing as {TargetUserId} on {Path}",
-                    session.AdminId, session.TargetUserId, context.Request.Path);
+                logger.LogInformation(
+                    "[GhostMode] Admin {AdminId} viewing as {TargetUserId} on {Path}, UserContext.UserId={CtxUserId}",
+                    session.AdminId, session.TargetUserId, context.Request.Path, targetUserContext.UserId);
             }
         }
 
