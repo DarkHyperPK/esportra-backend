@@ -129,19 +129,31 @@ public sealed class BroadcastSendJob(
     {
         string targetType = broadcast.target_type;
 
-        return targetType switch
+        if (targetType == "all")
         {
-            "all" => (await conn.QueryAsync<Guid>(
-                "SELECT id FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList(),
+            return (await conn.QueryAsync<Guid>(
+                "SELECT id FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList();
+        }
 
-            "users" when broadcast.target_user_ids is Guid[] ids =>
-                ids.ToList(),
+        if (targetType == "users" && broadcast.target_user_ids is not null)
+        {
+            // Handle UUID[] from PostgreSQL - Npgsql may return different array types
+            var rawIds = broadcast.target_user_ids;
+            if (rawIds is Guid[] guidArray)
+                return guidArray.ToList();
+            if (rawIds is IEnumerable<Guid> guidEnumerable)
+                return guidEnumerable.ToList();
+            if (rawIds is IEnumerable<object> objEnumerable)
+                return objEnumerable.Select(x => x is Guid g ? g : Guid.Parse(x.ToString()!)).ToList();
+            return new List<Guid>();
+        }
 
-            "segment" when broadcast.target_segment is not null =>
-                await GetSegmentUserIds(conn, (string)broadcast.target_segment),
+        if (targetType == "segment" && broadcast.target_segment is not null)
+        {
+            return await GetSegmentUserIds(conn, (string)broadcast.target_segment);
+        }
 
-            _ => new List<Guid>()
-        };
+        return new List<Guid>();
     }
 
     private static async Task<List<Guid>> GetSegmentUserIds(System.Data.IDbConnection conn, string segmentJson)
