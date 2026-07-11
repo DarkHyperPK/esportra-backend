@@ -30,6 +30,7 @@ DROP POLICY IF EXISTS "revoked_sessions_admin_select" ON public.revoked_sessions
 DROP POLICY IF EXISTS "revoked_sessions_service_role_all" ON public.revoked_sessions;
 
 -- Only admins can view revoked sessions (uses admin_user_roles + admin_roles pattern)
+-- Note: No is_active check - row existence in admin_user_roles means role is active
 CREATE POLICY "revoked_sessions_admin_select" ON public.revoked_sessions
     FOR SELECT
     TO authenticated
@@ -39,7 +40,6 @@ CREATE POLICY "revoked_sessions_admin_select" ON public.revoked_sessions
             JOIN public.admin_roles ar ON ar.id = aur.role_id
             WHERE aur.user_id = auth.uid()
             AND ar.name IN ('super_admin', 'ops_admin', 'support_admin')
-            AND aur.is_active = true
         )
     );
 
