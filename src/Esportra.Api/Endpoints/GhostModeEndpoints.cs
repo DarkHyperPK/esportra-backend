@@ -261,7 +261,7 @@ public static class GhostModeEndpoints
                      admin_ip, admin_user_agent, expires_at)
                 VALUES
                     (@adminId, @targetUserId, @approvalId, @tokenHash, @reason,
-                     @adminIp, @adminUserAgent, @expiresAt)
+                     NULLIF(@adminIp, '')::inet, @adminUserAgent, @expiresAt)
                 RETURNING id
                 """,
                 new
@@ -271,7 +271,7 @@ public static class GhostModeEndpoints
                     approvalId,
                     tokenHash,
                     reason = req.Reason,
-                    adminIp = ctx.Connection.RemoteIpAddress?.ToString(),
+                    adminIp = ctx.Connection.RemoteIpAddress?.ToString() ?? "",
                     adminUserAgent = ctx.Request.Headers.UserAgent.ToString(),
                     expiresAt
                 });
