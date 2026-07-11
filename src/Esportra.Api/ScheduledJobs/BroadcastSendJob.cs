@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
@@ -15,6 +16,16 @@ public sealed class BroadcastSendJob(
 {
     private const int BatchSize = 500;
 
+    private sealed record BroadcastRow(
+        Guid Id,
+        string Title,
+        string Content,
+        string BroadcastType,
+        string Priority,
+        string TargetType,
+        Guid[]? TargetUserIds,
+        string? TargetSegment);
+
     public async Task ExecuteAsync(Guid broadcastId, CancellationToken ct)
     {
         using var conn = db.CreateConnection();
@@ -23,8 +34,15 @@ public sealed class BroadcastSendJob(
 
         try
         {
-            var broadcast = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM broadcasts WHERE id = @broadcastId AND status = 'sending'",
+            var broadcast = await conn.QuerySingleOrDefaultAsync<BroadcastRow>(
+                """
+                SELECT id AS Id, title AS Title, content AS Content,
+                       broadcast_type AS BroadcastType, priority AS Priority,
+                       target_type AS TargetType, target_user_ids AS TargetUserIds,
+                       target_segment AS TargetSegment
+                FROM broadcasts
+                WHERE id = @broadcastId AND status = 'sending'
+                """,
                 new { broadcastId });
 
             if (broadcast is null)
@@ -33,12 +51,12 @@ public sealed class BroadcastSendJob(
                 return;
             }
 
-            var userIds = await GetTargetUserIds(conn, broadcast);
+            List<Guid> userIds = await GetTargetUserIds(conn, broadcast);
             totalRecipients = userIds.Count;
 
-            logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients", (object)broadcastId, (object)totalRecipients);
+            logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients",
+                broadcastId, totalRecipients);
 
-            // Process in batches
             foreach (var batch in userIds.Chunk(BatchSize))
             {
                 if (ct.IsCancellationRequested) break;
@@ -47,7 +65,6 @@ public sealed class BroadcastSendJob(
                 {
                     try
                     {
-                        // Insert delivery record
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, delivered_at)
@@ -56,16 +73,15 @@ public sealed class BroadcastSendJob(
                             """,
                             new { broadcastId, userId });
 
-                        // Push via SignalR if user is connected
                         await hubContext.Clients.User(userId.ToString()).SendAsync(
                             "BroadcastReceived",
                             new
                             {
                                 id = broadcastId,
-                                title = (string)broadcast.title,
-                                content = (string)broadcast.content,
-                                broadcast_type = (string)broadcast.broadcast_type,
-                                priority = (string)broadcast.priority,
+                                title = broadcast.Title,
+                                content = broadcast.Content,
+                                broadcast_type = broadcast.BroadcastType,
+                                priority = broadcast.Priority,
                                 created_at = DateTime.UtcNow
                             },
                             ct);
@@ -75,21 +91,18 @@ public sealed class BroadcastSendJob(
                     catch (Exception ex)
                     {
                         logger.LogDebug(ex, "Failed to deliver broadcast {BroadcastId} to user {UserId}",
-                            (object)broadcastId, (object)userId);
+                            broadcastId, userId);
                     }
                 }
 
-                // Update progress periodically
                 await conn.ExecuteAsync(
                     "UPDATE broadcasts SET delivered_count = @count, updated_at = NOW() WHERE id = @broadcastId",
                     new { broadcastId, count = deliveredCount });
 
-                // Small delay between batches to avoid overwhelming SignalR
                 if (!ct.IsCancellationRequested)
                     await Task.Delay(100, ct);
             }
 
-            // Mark as sent
             await conn.ExecuteAsync(
                 """
                 UPDATE broadcasts
@@ -103,13 +116,13 @@ public sealed class BroadcastSendJob(
                 new { broadcastId, totalRecipients, deliveredCount });
 
             logger.LogInformation("Completed broadcast {BroadcastId}: {Delivered}/{Total} delivered",
-                (object)broadcastId, (object)deliveredCount, (object)totalRecipients);
+                broadcastId, deliveredCount, totalRecipients);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Broadcast {BroadcastId} failed after delivering {Delivered} messages", broadcastId, deliveredCount);
+            logger.LogError(ex, "Broadcast {BroadcastId} failed after delivering {Delivered} messages",
+                broadcastId, deliveredCount);
 
-            // Mark broadcast as failed so it doesn't stay stuck in "sending"
             await conn.ExecuteAsync(
                 """
                 UPDATE broadcasts
@@ -121,42 +134,27 @@ public sealed class BroadcastSendJob(
                 """,
                 new { broadcastId, totalRecipients, deliveredCount });
 
-            throw; // Re-throw so Hangfire knows the job failed
+            throw;
         }
     }
 
-    private static async Task<List<Guid>> GetTargetUserIds(System.Data.IDbConnection conn, dynamic broadcast)
+    private static async Task<List<Guid>> GetTargetUserIds(IDbConnection conn, BroadcastRow broadcast)
     {
-        string targetType = broadcast.target_type;
-
-        if (targetType == "all")
+        return broadcast.TargetType switch
         {
-            return (await conn.QueryAsync<Guid>(
-                "SELECT id FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList();
-        }
+            "all" => (await conn.QueryAsync<Guid>(
+                "SELECT id FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList(),
 
-        if (targetType == "users" && broadcast.target_user_ids is not null)
-        {
-            // Handle UUID[] from PostgreSQL - Npgsql may return different array types
-            var rawIds = broadcast.target_user_ids;
-            if (rawIds is Guid[] guidArray)
-                return guidArray.ToList();
-            if (rawIds is IEnumerable<Guid> guidEnumerable)
-                return guidEnumerable.ToList();
-            if (rawIds is IEnumerable<object> objEnumerable)
-                return objEnumerable.Select(x => x is Guid g ? g : Guid.Parse(x.ToString()!)).ToList();
-            return new List<Guid>();
-        }
+            "users" when broadcast.TargetUserIds is { Length: > 0 } ids => ids.ToList(),
 
-        if (targetType == "segment" && broadcast.target_segment is not null)
-        {
-            return await GetSegmentUserIds(conn, (string)broadcast.target_segment);
-        }
+            "segment" when broadcast.TargetSegment is not null =>
+                await GetSegmentUserIds(conn, broadcast.TargetSegment),
 
-        return new List<Guid>();
+            _ => []
+        };
     }
 
-    private static async Task<List<Guid>> GetSegmentUserIds(System.Data.IDbConnection conn, string segmentJson)
+    private static async Task<List<Guid>> GetSegmentUserIds(IDbConnection conn, string segmentJson)
     {
         var segment = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(segmentJson);
         if (segment is null || segment.Count == 0)

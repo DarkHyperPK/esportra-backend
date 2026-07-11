@@ -527,6 +527,7 @@ app.Use(async (ctx, next) =>
 });
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
+app.UseSessionRevocation(); // Block revoked sessions via server-side blacklist
 app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
 app.UseGhostMode();        // Validate and audit short-lived impersonation tokens
 app.UseAdminMutationAudit(); // Pre-audit destructive admin mutations before endpoint execution

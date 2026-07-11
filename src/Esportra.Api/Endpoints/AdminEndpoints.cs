@@ -5381,6 +5381,27 @@ public static class AdminEndpoints
                 logger.LogWarning(ex, "Cache eviction failed for {UserId} — session will expire naturally", userId);
             }
 
+            // Insert into revoked_sessions table for server-side session blacklisting
+            try
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO revoked_sessions (user_id, revoked_by, reason, expires_at)
+                    VALUES (@userId, @adminId, @reason, NOW() + INTERVAL '2 hours')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { userId, adminId = userCtx.UserIdGuid, reason = req.Reason });
+
+                // Evict the revocation cache so middleware picks up the new revocation
+                await cache.RemoveAsync($"session-revoked:{userId}");
+            }
+            catch (Exception ex)
+            {
+                var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("Esportra.Api.Endpoints.AdminEndpoints");
+                logger.LogWarning(ex, "Failed to insert revoked_sessions record for {UserId}", userId);
+            }
+
             // Broadcast ForceLogout via SignalR to immediately log out the user's browser
             try
             {
