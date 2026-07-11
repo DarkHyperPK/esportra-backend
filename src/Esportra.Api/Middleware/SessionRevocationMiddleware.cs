@@ -24,14 +24,22 @@ public sealed class SessionRevocationMiddleware(RequestDelegate next, HybridCach
             $"session-revoked:{userId}",
             async cancel =>
             {
-                using var conn = db.CreateConnection();
-                var count = await conn.ExecuteScalarAsync<int>(
-                    """
-                    SELECT COUNT(*) FROM revoked_sessions
-                    WHERE user_id = @userId AND expires_at > NOW()
-                    """,
-                    new { userId });
-                return count > 0;
+                try
+                {
+                    using var conn = db.CreateConnection();
+                    var count = await conn.ExecuteScalarAsync<int>(
+                        """
+                        SELECT COUNT(*) FROM revoked_sessions
+                        WHERE user_id = @userId::uuid AND expires_at > NOW()
+                        """,
+                        new { userId });
+                    return count > 0;
+                }
+                catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P01")
+                {
+                    // Table doesn't exist yet - not revoked
+                    return false;
+                }
             },
             new HybridCacheEntryOptions { Expiration = CacheDuration });
 

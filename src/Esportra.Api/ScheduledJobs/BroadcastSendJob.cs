@@ -165,7 +165,14 @@ public sealed class BroadcastSendJob(
 
         if (segment.TryGetValue("role", out var role))
         {
-            conditions.Add("EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = p.id AND ur.role = @role AND ur.is_active)");
+            // Use admin_user_roles + admin_roles pattern (row existence = active)
+            conditions.Add("""
+                EXISTS (
+                    SELECT 1 FROM admin_user_roles aur
+                    JOIN admin_roles ar ON ar.id = aur.role_id
+                    WHERE aur.user_id = p.id AND ar.name = @role
+                )
+                """);
             p.Add("role", role.GetString());
         }
 

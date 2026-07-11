@@ -417,7 +417,7 @@ public static class GhostModeEndpoints
             var sessions = await conn.QueryAsync<dynamic>(
                 $"""
                 SELECT gs.id, gs.admin_id, gs.target_user_id, gs.reason,
-                       gs.admin_ip, gs.started_at, gs.ended_at, gs.expires_at,
+                       gs.admin_ip::text AS admin_ip, gs.started_at, gs.ended_at, gs.expires_at,
                        gs.pages_viewed, gs.fields_unmasked,
                        admin.username AS admin_name,
                        target.username AS target_name
