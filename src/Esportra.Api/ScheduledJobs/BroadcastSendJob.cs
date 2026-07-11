@@ -36,10 +36,8 @@ public sealed class BroadcastSendJob(
         {
             var broadcast = await conn.QuerySingleOrDefaultAsync<BroadcastRow>(
                 """
-                SELECT id AS Id, title AS Title, content AS Content,
-                       broadcast_type AS BroadcastType, priority AS Priority,
-                       target_type AS TargetType, target_user_ids AS TargetUserIds,
-                       target_segment AS TargetSegment
+                SELECT id, title, content, broadcast_type, priority,
+                       target_type, target_user_ids, target_segment
                 FROM broadcasts
                 WHERE id = @broadcastId AND status = 'sending'
                 """,
