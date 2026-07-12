@@ -177,20 +177,26 @@ public sealed class BroadcastSendJob(
                     await Task.Delay(100, ct);
             }
 
+            var finalStatus = (deliveredCount == 0 && totalRecipients > 0) ? "failed" : "sent";
+
             await conn.ExecuteAsync(
                 """
                 UPDATE broadcasts
-                SET status = 'sent',
+                SET status = @finalStatus,
                     sent_at = NOW(),
                     total_recipients = @totalRecipients,
                     delivered_count = @deliveredCount,
                     updated_at = NOW()
                 WHERE id = @broadcastId
                 """,
-                new { broadcastId, totalRecipients, deliveredCount });
+                new { broadcastId, totalRecipients, deliveredCount, finalStatus });
 
-            logger.LogInformation("Completed broadcast {BroadcastId}: {Delivered}/{Total} delivered",
-                broadcastId, deliveredCount, totalRecipients);
+            if (finalStatus == "failed")
+                logger.LogWarning("Broadcast {BroadcastId} reached 0/{Total} deliveries — marked as failed",
+                    broadcastId, totalRecipients);
+            else
+                logger.LogInformation("Completed broadcast {BroadcastId}: {Delivered}/{Total} delivered",
+                    broadcastId, deliveredCount, totalRecipients);
         }
         catch (Exception ex)
         {
