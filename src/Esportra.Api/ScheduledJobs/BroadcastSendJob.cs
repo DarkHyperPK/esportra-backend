@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Infrastructure.Database;
+using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.SignalR;
 
@@ -12,6 +13,7 @@ namespace Esportra.Api.ScheduledJobs;
 public sealed class BroadcastSendJob(
     IDbConnectionFactory db,
     IHubContext<NotificationHub> hubContext,
+    IEmailService emailService,
     ILogger<BroadcastSendJob> logger)
 {
     private const int BatchSize = 500;
@@ -24,7 +26,10 @@ public sealed class BroadcastSendJob(
         string Priority,
         string TargetType,
         Guid[]? TargetUserIds,
-        string? TargetSegment);
+        string? TargetSegment,
+        string[]? Channels);
+
+    private sealed record TargetUser(Guid Id, string? Email);
 
     public async Task ExecuteAsync(Guid broadcastId, CancellationToken ct)
     {
@@ -37,7 +42,7 @@ public sealed class BroadcastSendJob(
             var broadcast = await conn.QuerySingleOrDefaultAsync<BroadcastRow>(
                 """
                 SELECT id, title, content, broadcast_type, priority,
-                       target_type, target_user_ids, target_segment
+                       target_type, target_user_ids, target_segment, channels
                 FROM broadcasts
                 WHERE id = @broadcastId AND status = 'sending'
                 """,
@@ -49,47 +54,116 @@ public sealed class BroadcastSendJob(
                 return;
             }
 
-            List<Guid> userIds = await GetTargetUserIds(conn, broadcast);
-            totalRecipients = userIds.Count;
+            var channels = broadcast.Channels ?? ["in_app"];
+            var sendEmail = channels.Contains("email", StringComparer.OrdinalIgnoreCase);
 
-            logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients",
-                broadcastId, totalRecipients);
+            List<TargetUser> users = await GetTargetUsers(conn, broadcast, sendEmail);
+            totalRecipients = users.Count;
 
-            foreach (var batch in userIds.Chunk(BatchSize))
+            logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients (channels: {Channels})",
+                broadcastId, totalRecipients, string.Join(",", channels));
+
+            var notifLink = $"/notifications?broadcast={broadcastId}";
+            var notifData = JsonSerializer.Serialize(new
+            {
+                broadcast_id = broadcastId,
+                broadcast_type = broadcast.BroadcastType,
+                priority = broadcast.Priority
+            });
+
+            foreach (var batch in users.Chunk(BatchSize))
             {
                 if (ct.IsCancellationRequested) break;
 
-                foreach (var userId in batch)
+                foreach (var user in batch)
                 {
                     try
                     {
+                        // 1. Insert into notifications table (user-facing notification list)
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                            VALUES (@userId, 'broadcast', @title, @message, @link, @data::jsonb, FALSE)
+                            ON CONFLICT DO NOTHING
+                            """,
+                            new
+                            {
+                                userId = user.Id,
+                                title = broadcast.Title,
+                                message = broadcast.Content,
+                                link = notifLink,
+                                data = notifData
+                            });
+
+                        // 2. Insert into broadcast_deliveries (admin tracking/stats)
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, delivered_at)
                             VALUES (@broadcastId, @userId, 'in_app', 'delivered', NOW())
                             ON CONFLICT (broadcast_id, user_id, channel) DO NOTHING
                             """,
-                            new { broadcastId, userId });
+                            new { broadcastId, userId = user.Id });
 
-                        await hubContext.Clients.User(userId.ToString()).SendAsync(
-                            "BroadcastReceived",
-                            new
+                        // 3. Push real-time via SignalR using the correct event and group
+                        await hubContext.Clients
+                            .Group(NotificationHub.UserGroup(user.Id.ToString()))
+                            .SendAsync(NotificationHubEvents.NewNotification,
+                                new
+                                {
+                                    type = "broadcast",
+                                    title = broadcast.Title,
+                                    message = broadcast.Content,
+                                    link = notifLink,
+                                    data = new
+                                    {
+                                        broadcast_id = broadcastId,
+                                        broadcast_type = broadcast.BroadcastType,
+                                        priority = broadcast.Priority
+                                    }
+                                }, ct);
+
+                        // 4. Optional email delivery
+                        if (sendEmail && !string.IsNullOrWhiteSpace(user.Email))
+                        {
+                            try
                             {
-                                id = broadcastId,
-                                title = broadcast.Title,
-                                content = broadcast.Content,
-                                broadcast_type = broadcast.BroadcastType,
-                                priority = broadcast.Priority,
-                                created_at = DateTime.UtcNow
-                            },
-                            ct);
+                                await emailService.SendAsync(user.Email, EmailType.Broadcast, new
+                                {
+                                    title = broadcast.Title,
+                                    content = broadcast.Content,
+                                    broadcastType = broadcast.BroadcastType,
+                                    priority = broadcast.Priority
+                                }, ct);
+
+                                await conn.ExecuteAsync(
+                                    """
+                                    INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, delivered_at)
+                                    VALUES (@broadcastId, @userId, 'email', 'delivered', NOW())
+                                    ON CONFLICT (broadcast_id, user_id, channel) DO NOTHING
+                                    """,
+                                    new { broadcastId, userId = user.Id });
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogDebug(ex, "Email delivery failed for broadcast {BroadcastId} to {Email}",
+                                    broadcastId, user.Email);
+
+                                await conn.ExecuteAsync(
+                                    """
+                                    INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, error_message, delivered_at)
+                                    VALUES (@broadcastId, @userId, 'email', 'failed', @error, NOW())
+                                    ON CONFLICT (broadcast_id, user_id, channel) DO NOTHING
+                                    """,
+                                    new { broadcastId, userId = user.Id, error = ex.Message });
+                            }
+                        }
 
                         deliveredCount++;
                     }
                     catch (Exception ex)
                     {
                         logger.LogDebug(ex, "Failed to deliver broadcast {BroadcastId} to user {UserId}",
-                            broadcastId, userId);
+                            broadcastId, user.Id);
                     }
                 }
 
@@ -136,34 +210,43 @@ public sealed class BroadcastSendJob(
         }
     }
 
-    private static async Task<List<Guid>> GetTargetUserIds(IDbConnection conn, BroadcastRow broadcast)
+    private static async Task<List<TargetUser>> GetTargetUsers(
+        IDbConnection conn, BroadcastRow broadcast, bool needEmail)
     {
+        var selectFields = needEmail ? "id, email" : "id, NULL::text AS email";
+
         return broadcast.TargetType switch
         {
-            "all" => (await conn.QueryAsync<Guid>(
-                "SELECT id FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList(),
+            "all" => (await conn.QueryAsync<TargetUser>(
+                $"SELECT {selectFields} FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList(),
 
-            "users" when broadcast.TargetUserIds is { Length: > 0 } ids => ids.ToList(),
+            "users" when broadcast.TargetUserIds is { Length: > 0 } ids =>
+                needEmail
+                    ? (await conn.QueryAsync<TargetUser>(
+                        "SELECT id, email FROM profiles WHERE id = ANY(@ids)",
+                        new { ids })).ToList()
+                    : ids.Select(id => new TargetUser(id, null)).ToList(),
 
             "segment" when broadcast.TargetSegment is not null =>
-                await GetSegmentUserIds(conn, broadcast.TargetSegment),
+                await GetSegmentUsers(conn, broadcast.TargetSegment, selectFields),
 
             _ => []
         };
     }
 
-    private static async Task<List<Guid>> GetSegmentUserIds(IDbConnection conn, string segmentJson)
+    private static async Task<List<TargetUser>> GetSegmentUsers(
+        IDbConnection conn, string segmentJson, string selectFields)
     {
         var segment = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(segmentJson);
         if (segment is null || segment.Count == 0)
-            return (await conn.QueryAsync<Guid>("SELECT id FROM profiles LIMIT 50000")).ToList();
+            return (await conn.QueryAsync<TargetUser>(
+                $"SELECT {selectFields} FROM profiles p LIMIT 50000")).ToList();
 
         var conditions = new List<string>();
         var p = new DynamicParameters();
 
         if (segment.TryGetValue("role", out var role))
         {
-            // Use admin_user_roles + admin_roles pattern (row existence = active)
             conditions.Add("""
                 EXISTS (
                     SELECT 1 FROM admin_user_roles aur
@@ -188,7 +271,7 @@ public sealed class BroadcastSendJob(
         }
 
         var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
-        return (await conn.QueryAsync<Guid>(
-            $"SELECT p.id FROM profiles p {where} LIMIT 50000", p)).ToList();
+        return (await conn.QueryAsync<TargetUser>(
+            $"SELECT {selectFields} FROM profiles p {where} LIMIT 50000", p)).ToList();
     }
 }

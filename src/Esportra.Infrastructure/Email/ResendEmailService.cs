@@ -126,6 +126,11 @@ public sealed class ResendEmailService(
                     Get("code"), Get("tournamentUrl"), Get("expiryDate"),
                     Get("gameHeaderUrl")),
 
+            EmailType.Broadcast =>
+                EmailTemplates.Broadcast(
+                    Get("title"), Get("content"),
+                    Get("broadcastType", "announcement"), Get("priority", "normal")),
+
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
     }

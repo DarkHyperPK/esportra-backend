@@ -406,4 +406,59 @@ public static class EmailTemplates
             "broadcaster" => "Broadcaster",
             _ => licenseType
         };
+
+    // ── Broadcast Template ───────────────────────────────────────────────────
+
+    public static (string Subject, string Html) Broadcast(
+        string title, string content, string broadcastType = "announcement", string priority = "normal")
+    {
+        var (headerHtml, accentColor, icon) = GetBroadcastTypeStyle(broadcastType);
+        var priorityBadge = GetPriorityBadge(priority);
+        var subject = broadcastType switch
+        {
+            "maintenance" => $"⚠️ {E(title)}",
+            "system" => $"🛡️ {E(title)}",
+            "urgent" when priority is "urgent" or "high" => $"🚨 {E(title)}",
+            _ => E(title)
+        };
+
+        var body = new StringBuilder();
+        body.Append(headerHtml);
+        if (!string.IsNullOrEmpty(priorityBadge))
+            body.Append(priorityBadge);
+        body.Append(H1(E(title)));
+        body.Append($"""<p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#d1d5db;">{content}</p>""");
+        body.Append(Divider());
+        body.Append($"""<p style="margin:0;font-size:12px;color:#6b7280;">This broadcast was sent to you by the Esportra team.</p>""");
+
+        return (subject, Wrap($"Esportra: {E(title)}", E(title), body.ToString()));
+    }
+
+    private static (string HeaderHtml, string AccentColor, string Icon) GetBroadcastTypeStyle(string broadcastType) =>
+        broadcastType switch
+        {
+            "maintenance" => (
+                """<div style="background:linear-gradient(135deg,#d97706,#b45309);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🔧</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Scheduled Maintenance</span></div>""",
+                "#d97706", "🔧"),
+            "promotion" => (
+                """<div style="background:linear-gradient(135deg,#7c3aed,#5b21b6);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🎉</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Special Offer</span></div>""",
+                "#7c3aed", "🎉"),
+            "tournament" => (
+                """<div style="background:linear-gradient(135deg,#e11d48,#be123c);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🏆</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Tournament Update</span></div>""",
+                "#e11d48", "🏆"),
+            "system" => (
+                """<div style="background:linear-gradient(135deg,#dc2626,#991b1b);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🛡️</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">System Alert</span></div>""",
+                "#dc2626", "🛡️"),
+            _ => (
+                """<div style="background:linear-gradient(135deg,#e11d48,#be123c);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">📢</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Announcement</span></div>""",
+                "#e11d48", "📢")
+        };
+
+    private static string GetPriorityBadge(string priority) =>
+        priority switch
+        {
+            "urgent" => """<div style="margin-bottom:12px;"><span style="background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:4px;text-transform:uppercase;letter-spacing:1px;">Urgent</span></div>""",
+            "high" => """<div style="margin-bottom:12px;"><span style="background:#d97706;color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:4px;text-transform:uppercase;letter-spacing:1px;">High Priority</span></div>""",
+            _ => ""
+        };
 }
