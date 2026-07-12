@@ -18,6 +18,8 @@ public sealed class BroadcastSendJob(
 {
     private const int BatchSize = 500;
 
+    // Dapper cannot deserialize PostgreSQL array columns (UUID[], TEXT[]) into C# arrays
+    // without custom type handlers. Use string? and cast to text in SQL, then parse manually.
     private sealed record BroadcastRow(
         Guid Id,
         string Title,
@@ -25,9 +27,9 @@ public sealed class BroadcastSendJob(
         string BroadcastType,
         string Priority,
         string TargetType,
-        Guid[]? TargetUserIds,
+        string? TargetUserIds,
         string? TargetSegment,
-        string[]? Channels);
+        string? Channels);
 
     private sealed record TargetUser(Guid Id, string? Email);
 
@@ -42,7 +44,8 @@ public sealed class BroadcastSendJob(
             var broadcast = await conn.QuerySingleOrDefaultAsync<BroadcastRow>(
                 """
                 SELECT id, title, content, broadcast_type, priority,
-                       target_type, target_user_ids, target_segment, channels
+                       target_type, target_user_ids::text, target_segment,
+                       channels::text
                 FROM broadcasts
                 WHERE id = @broadcastId AND status = 'sending'
                 """,
@@ -54,10 +57,13 @@ public sealed class BroadcastSendJob(
                 return;
             }
 
-            var channels = broadcast.Channels ?? ["in_app"];
+            var channels = ParseTextArray(broadcast.Channels) ?? ["in_app"];
             var sendEmail = channels.Contains("email", StringComparer.OrdinalIgnoreCase);
 
-            List<TargetUser> users = await GetTargetUsers(conn, broadcast, sendEmail);
+            var targetUserIds = ParseGuidArray(broadcast.TargetUserIds);
+
+            List<TargetUser> users = await GetTargetUsers(conn, broadcast.TargetType,
+                targetUserIds, broadcast.TargetSegment, sendEmail);
             totalRecipients = users.Count;
 
             logger.LogInformation("Starting broadcast {BroadcastId} to {Count} recipients (channels: {Channels})",
@@ -79,7 +85,6 @@ public sealed class BroadcastSendJob(
                 {
                     try
                     {
-                        // 1. Insert into notifications table (user-facing notification list)
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
@@ -95,7 +100,6 @@ public sealed class BroadcastSendJob(
                                 data = notifData
                             });
 
-                        // 2. Insert into broadcast_deliveries (admin tracking/stats)
                         await conn.ExecuteAsync(
                             """
                             INSERT INTO broadcast_deliveries (broadcast_id, user_id, channel, status, delivered_at)
@@ -104,7 +108,6 @@ public sealed class BroadcastSendJob(
                             """,
                             new { broadcastId, userId = user.Id });
 
-                        // 3. Push real-time via SignalR using the correct event and group
                         await hubContext.Clients
                             .Group(NotificationHub.UserGroup(user.Id.ToString()))
                             .SendAsync(NotificationHubEvents.NewNotification,
@@ -122,7 +125,6 @@ public sealed class BroadcastSendJob(
                                     }
                                 }, ct);
 
-                        // 4. Optional email delivery
                         if (sendEmail && !string.IsNullOrWhiteSpace(user.Email))
                         {
                             try
@@ -211,24 +213,25 @@ public sealed class BroadcastSendJob(
     }
 
     private static async Task<List<TargetUser>> GetTargetUsers(
-        IDbConnection conn, BroadcastRow broadcast, bool needEmail)
+        IDbConnection conn, string targetType, Guid[]? targetUserIds,
+        string? targetSegment, bool needEmail)
     {
         var selectFields = needEmail ? "id, email" : "id, NULL::text AS email";
 
-        return broadcast.TargetType switch
+        return targetType switch
         {
             "all" => (await conn.QueryAsync<TargetUser>(
                 $"SELECT {selectFields} FROM profiles WHERE id IS NOT NULL LIMIT 50000")).ToList(),
 
-            "users" when broadcast.TargetUserIds is { Length: > 0 } ids =>
+            "users" when targetUserIds is { Length: > 0 } ids =>
                 needEmail
                     ? (await conn.QueryAsync<TargetUser>(
                         "SELECT id, email FROM profiles WHERE id = ANY(@ids)",
                         new { ids })).ToList()
                     : ids.Select(id => new TargetUser(id, null)).ToList(),
 
-            "segment" when broadcast.TargetSegment is not null =>
-                await GetSegmentUsers(conn, broadcast.TargetSegment, selectFields),
+            "segment" when targetSegment is not null =>
+                await GetSegmentUsers(conn, targetSegment, selectFields),
 
             _ => []
         };
@@ -273,5 +276,26 @@ public sealed class BroadcastSendJob(
         var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
         return (await conn.QueryAsync<TargetUser>(
             $"SELECT {selectFields} FROM profiles p {where} LIMIT 50000", p)).ToList();
+    }
+
+    private static string[]? ParseTextArray(string? pgArray)
+    {
+        if (string.IsNullOrWhiteSpace(pgArray)) return null;
+        var trimmed = pgArray.Trim('{', '}');
+        if (string.IsNullOrEmpty(trimmed)) return [];
+        return trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim('"'))
+            .ToArray();
+    }
+
+    private static Guid[]? ParseGuidArray(string? pgArray)
+    {
+        var strings = ParseTextArray(pgArray);
+        if (strings is null) return null;
+        return strings
+            .Select(s => Guid.TryParse(s, out var g) ? g : (Guid?)null)
+            .Where(g => g.HasValue)
+            .Select(g => g!.Value)
+            .ToArray();
     }
 }
