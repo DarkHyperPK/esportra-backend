@@ -373,7 +373,7 @@ public static class AdminRoles
                 Permissions.VerificationView, Permissions.VerificationApprove, Permissions.VerificationReject, Permissions.VerificationExport,
                 Permissions.ModerationView, Permissions.ModerationApprove, Permissions.ModerationReject, Permissions.ModerationDismiss,
                 Permissions.ContentModerate, Permissions.ContentDelete,
-                Permissions.AnalyticsView, Permissions.AnalyticsExport,
+                Permissions.AnalyticsView, Permissions.AnalyticsExport, Permissions.DashboardView,
                 Permissions.AlertsView, Permissions.AlertsAcknowledge, Permissions.AlertsResolve, Permissions.AlertsBulkAcknowledge,
                 Permissions.ReportsView, Permissions.ReportsCreate, Permissions.ReportsEdit, Permissions.ReportsRun, Permissions.ReportsExport,
                 Permissions.GamesView, Permissions.GamesEdit, Permissions.GamesPublish, Permissions.GamesResetDraft,
@@ -390,7 +390,7 @@ public static class AdminRoles
                 Permissions.ModerationView, Permissions.ModerationApprove, Permissions.ModerationReject, Permissions.ModerationDismiss,
                 Permissions.ContentModerate, Permissions.ContentDelete,
                 Permissions.VerificationView, Permissions.VerificationReject,
-                Permissions.AlertsView, Permissions.AlertsAcknowledge,
+                Permissions.DashboardView, Permissions.AlertsView, Permissions.AlertsAcknowledge,
             ],
             [FinanceAdmin] =
             [
@@ -406,7 +406,7 @@ public static class AdminRoles
                 Permissions.LicensesReinstate, Permissions.LicensesExport,
                 Permissions.ReportsView, Permissions.ReportsCreate, Permissions.ReportsEdit,
                 Permissions.ReportsRun, Permissions.ReportsExport,
-                Permissions.SystemAudit, Permissions.AuditView,
+                Permissions.DashboardView, Permissions.SystemAudit, Permissions.AuditView,
             ],
             [SupportAdmin] =
             [
@@ -419,7 +419,7 @@ public static class AdminRoles
                 Permissions.TeamsView, Permissions.OrganizationsView,
                 Permissions.VerificationView, Permissions.LicensesView,
                 Permissions.SecurityView, Permissions.SecurityViewSessions,
-                Permissions.AlertsView, Permissions.AlertsAcknowledge,
+                Permissions.DashboardView, Permissions.AlertsView, Permissions.AlertsAcknowledge,
             ],
             [SuperAdmin] = typeof(Permissions)
                 .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
