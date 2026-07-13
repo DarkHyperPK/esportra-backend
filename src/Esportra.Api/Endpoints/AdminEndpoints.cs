@@ -79,6 +79,50 @@ public static class AdminEndpoints
 
     public static void MapAdminEndpoints(this WebApplication app)
     {
+        app.MapPost("/api/admin/mfa/cleanup", async (
+            HttpContext context,
+            IHostEnvironment environment,
+            ISupabaseAdminClient supabase,
+            MfaFactorCleanupService mfaCleanup,
+            AccountSecurityService accountSecurity,
+            CancellationToken cancellationToken) =>
+        {
+            var userContext = context.Items["UserContext"] as UserContext;
+            if (userContext is null) return Results.Unauthorized();
+            if (!environment.IsStaging() || !userContext.IsSuperAdmin) return Results.NotFound();
+
+            var deletedFactors = 0;
+            var affectedUsers = 0;
+            var page = 1;
+
+            while (true)
+            {
+                var result = await supabase.ListUsersAsync(page, 100, cancellationToken);
+                foreach (var user in result.Users)
+                {
+                    var factors = await mfaCleanup.ListFactorIdsAsync(user.Id, cancellationToken);
+                    if (factors.Count == 0) continue;
+
+                    foreach (var factor in factors)
+                    {
+                        await mfaCleanup.DeleteFactorAsync(user.Id, factor, cancellationToken);
+                        deletedFactors++;
+                    }
+
+                    if (Guid.TryParse(user.Id, out var userId))
+                    {
+                        await accountSecurity.RevokeAllAsync(userId, "mfa_cleanup", cancellationToken);
+                    }
+                    await supabase.LogoutUserAsync(user.Id, cancellationToken);
+                    affectedUsers++;
+                }
+
+                if (result.Users.Count < 100) break;
+                page++;
+            }
+
+            return Results.Ok(new { deletedFactors, affectedUsers });
+        }).RequireAuthorization("Admin");
         // ── POST /api/admin/users/{userId}/action ─────────────────────────────
         // Replaces: manage-users Edge Function
         // Actions: "delete-user", "update-role", "assign_role", "revoke_role"

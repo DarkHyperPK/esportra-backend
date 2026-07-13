@@ -288,6 +288,7 @@ builder.Services.AddHttpClient<SupabaseAdminClient>();
 builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
 builder.Services.AddHttpClient<SupabasePublicAuthClient>();
 builder.Services.AddScoped<ISupabasePublicAuthClient, SupabasePublicAuthClient>();
+builder.Services.AddHttpClient<MfaFactorCleanupService>();
 builder.Services.AddScoped<PasswordRecoveryService>();
 builder.Services.AddScoped<AccountSecurityService>();
 builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()

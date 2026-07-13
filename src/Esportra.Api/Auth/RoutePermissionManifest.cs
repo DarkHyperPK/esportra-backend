@@ -295,6 +295,7 @@ public static class RoutePermissionManifest
         Adm("DELETE","/api/admin/admin-user-roles", [Permissions.AdminUsersRevokeRole]),
 
         // Admin sessions / security
+        Adm("POST", "/api/admin/mfa/cleanup", [Permissions.SecurityRevokeSessions]),
         Adm("GET",  "/api/admin/sessions/{*}", [Permissions.SecurityViewSessions]),
         Adm("POST", "/api/admin/sessions/{*}", [Permissions.SecurityRevokeSessions]),
 
