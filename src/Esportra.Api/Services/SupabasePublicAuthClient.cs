@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Esportra.Api.Auth;
 using Microsoft.Extensions.Options;
@@ -17,8 +18,8 @@ public sealed class SupabasePublicAuthClient(
 {
     private readonly string _supabaseUrl = configuration["Supabase:Url"]?.TrimEnd('/')
         ?? throw new InvalidOperationException("Supabase:Url is required.");
-    private readonly string _anonKey = configuration["Supabase:AnonKey"]
-        ?? throw new InvalidOperationException("Supabase:AnonKey is required.");
+    private readonly string _serviceKey = configuration["Supabase:ServiceKey"]
+        ?? throw new InvalidOperationException("Supabase:ServiceKey is required.");
 
     public async Task RequestPasswordRecoveryAsync(
         string email,
@@ -33,7 +34,8 @@ public sealed class SupabasePublicAuthClient(
         {
             Content = JsonContent.Create(new { email, redirect_to = redirectTo }),
         };
-        request.Headers.Add("apikey", _anonKey);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _serviceKey);
+        request.Headers.Add("apikey", _serviceKey);
 
         using var response = await http.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
