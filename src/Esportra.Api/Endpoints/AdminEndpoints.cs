@@ -122,8 +122,8 @@ public static class AdminEndpoints
             var actionResult = req.Action switch
             {
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
-                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, ct),
-                "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, ct),
+                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ct),
+                "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, userCtx, ct),
                 _ => Results.BadRequest(new { error = $"Unknown action: {req.Action}" })
             };
 
@@ -131,7 +131,7 @@ public static class AdminEndpoints
                 await EvictUserContextAsync(cache, userId, ctx, ct);
 
             return actionResult;
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/users/cleanup ─────────────────────────────────────
         // Deletes profiles with no matching auth.users entry (orphaned rows).
@@ -770,6 +770,8 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.SponsorsCreate))
+                return Results.Forbid();
             using var conn = db.CreateConnection();
             var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
             var j = System.Text.Json.JsonDocument.Parse(json).RootElement;
@@ -821,6 +823,8 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.SponsorsEdit))
+                return Results.Forbid();
             using var conn = db.CreateConnection();
             var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
             await conn.ExecuteAsync(
@@ -859,7 +863,7 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization(Permissions.RbacDeleteRole);
+        }).RequireAuthorization(Permissions.SponsorsDelete);
 
         // ── POST /api/admin/users/{userId}/suspend ──────────────────────────────
         app.MapPost("/api/admin/users/{userId}/suspend", async (
@@ -1286,11 +1290,10 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.IsSuperAdmin &&
-                !userCtx.Permissions.Contains(Permissions.AdminUsersAssignRole, StringComparer.OrdinalIgnoreCase))
-                return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+
             await conn.ExecuteAsync(
                 """
                 INSERT INTO admin_user_roles (user_id, role_id)
@@ -1313,11 +1316,10 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.IsSuperAdmin &&
-                !userCtx.Permissions.Contains(Permissions.AdminUsersRevokeRole, StringComparer.OrdinalIgnoreCase))
-                return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+
             await conn.ExecuteAsync(
                 "DELETE FROM admin_user_roles WHERE user_id = @userId AND role_id = @roleId",
                 new { userId, roleId });
@@ -1459,9 +1461,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.IsSuperAdmin &&
-                !userCtx.Permissions.Contains(Permissions.RbacCreateRole, StringComparer.OrdinalIgnoreCase))
-                return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             // Validate key format: lowercase, alphanumeric + underscores, 3-50 chars
             if (string.IsNullOrWhiteSpace(req.Key) || req.Key.Length < 3 || req.Key.Length > 50
@@ -1558,9 +1558,7 @@ public static class AdminEndpoints
 
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.IsSuperAdmin &&
-                !userCtx.Permissions.Contains(Permissions.RbacEditRole, StringComparer.OrdinalIgnoreCase))
-                return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             if (string.IsNullOrWhiteSpace(req.Name))
                 return Results.BadRequest(new { error = "Name is required." });
@@ -1584,9 +1582,7 @@ public static class AdminEndpoints
 
             if (existingRole is null) return Results.NotFound(new { error = "Role not found." });
 
-            // Check if protected
-            if (protectedRoleKeys.Contains((string)existingRole.key))
-                return Results.Json(new { error = "Built-in roles cannot be modified." }, statusCode: 403);
+            var isBuiltIn = protectedRoleKeys.Contains((string)existingRole.key);
 
             // Validate all permissionIds exist
             var existingCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
@@ -1608,14 +1604,17 @@ public static class AdminEndpoints
 
             try
             {
-                await conn.ExecuteAsync(new CommandDefinition(
-                    """
-                    UPDATE admin_roles SET name = @Name, description = @Description
-                    WHERE id = @roleId
-                    """,
-                    new { req.Name, Description = req.Description ?? "", roleId },
-                    transaction: txn,
-                    cancellationToken: ct));
+                if (!isBuiltIn)
+                {
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        """
+                        UPDATE admin_roles SET name = @Name, description = @Description
+                        WHERE id = @roleId
+                        """,
+                        new { req.Name, Description = req.Description ?? "", roleId },
+                        transaction: txn,
+                        cancellationToken: ct));
+                }
 
                 await conn.ExecuteAsync(new CommandDefinition(
                     "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
@@ -1674,9 +1673,7 @@ public static class AdminEndpoints
 
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.IsSuperAdmin &&
-                !userCtx.Permissions.Contains(Permissions.RbacDeleteRole, StringComparer.OrdinalIgnoreCase))
-                return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -1780,7 +1777,8 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
         // ── PUT /api/admin/users/{userId} ─────────────────────────────────────
-        // Updates user's is_admin flag and/or replaces their admin_roles assignments.
+        // Replaces admin_roles assignments. Super_admin only — use dedicated
+        // POST/DELETE /api/admin/admin-user-roles for granular role changes.
         app.MapPut("/api/admin/users/{userId}", async (
             Guid userId,
             [FromBody] AdminUpdateUserRequest req,
@@ -1791,7 +1789,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             using var txn = conn.BeginTransaction();
@@ -3761,7 +3759,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.TeamsView)) return Results.Forbid();
 
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -3847,7 +3845,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.TeamsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -3925,7 +3923,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.TeamsDisband)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -3959,7 +3957,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.TeamsRemoveMember)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -3988,7 +3986,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.TeamsTransferCaptain)) return Results.Forbid();
 
             if (!Guid.TryParse(req.NewCaptainId, out var newCaptainId))
                 return Results.BadRequest(new { error = "Invalid user ID." });
@@ -4035,7 +4033,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.TeamsEdit)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -7688,10 +7686,14 @@ public static class AdminEndpoints
         return Results.Ok(new { success = true, role });
     }
 
+    private static readonly HashSet<string> SuperAdminOnlyRoles =
+        new(StringComparer.OrdinalIgnoreCase) { "super_admin" };
+
     private static async Task<IResult> AssignRoleToUserAsync(
         Guid userId,
         ManageUserRequest req,
         System.Data.IDbConnection conn,
+        UserContext callerCtx,
         CancellationToken ct)
     {
         var role = req.RoleKey ?? req.Role;
@@ -7702,6 +7704,11 @@ public static class AdminEndpoints
 
         if (isAdmin)
         {
+            if (SuperAdminOnlyRoles.Contains(role) && !callerCtx.IsSuperAdmin)
+                return Results.Json(
+                    new { error = "Only super_admin can assign this role." },
+                    statusCode: 403);
+
             // Resolve admin role id from admin_roles table by key
             var roleId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT id FROM admin_roles WHERE key = @role LIMIT 1", new { role });
@@ -7734,6 +7741,7 @@ public static class AdminEndpoints
         Guid userId,
         ManageUserRequest req,
         System.Data.IDbConnection conn,
+        UserContext callerCtx,
         CancellationToken ct)
     {
         var role = req.RoleKey ?? req.Role;
@@ -7744,6 +7752,11 @@ public static class AdminEndpoints
 
         if (isAdmin)
         {
+            if (SuperAdminOnlyRoles.Contains(role) && !callerCtx.IsSuperAdmin)
+                return Results.Json(
+                    new { error = "Only super_admin can revoke this role." },
+                    statusCode: 403);
+
             var roleId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT id FROM admin_roles WHERE key = @role LIMIT 1", new { role });
             if (roleId is not null)
