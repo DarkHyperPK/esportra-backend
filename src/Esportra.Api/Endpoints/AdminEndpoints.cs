@@ -1582,8 +1582,6 @@ public static class AdminEndpoints
 
             if (existingRole is null) return Results.NotFound(new { error = "Role not found." });
 
-            var isBuiltIn = protectedRoleKeys.Contains((string)existingRole.key);
-
             // Validate all permissionIds exist
             var existingCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
                 "SELECT COUNT(*) FROM admin_permissions WHERE id = ANY(@Ids)",
@@ -1604,17 +1602,14 @@ public static class AdminEndpoints
 
             try
             {
-                if (!isBuiltIn)
-                {
-                    await conn.ExecuteAsync(new CommandDefinition(
-                        """
-                        UPDATE admin_roles SET name = @Name, description = @Description
-                        WHERE id = @roleId
-                        """,
-                        new { req.Name, Description = req.Description ?? "", roleId },
-                        transaction: txn,
-                        cancellationToken: ct));
-                }
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    UPDATE admin_roles SET name = @Name, description = @Description
+                    WHERE id = @roleId
+                    """,
+                    new { req.Name, Description = req.Description ?? "", roleId },
+                    transaction: txn,
+                    cancellationToken: ct));
 
                 await conn.ExecuteAsync(new CommandDefinition(
                     "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
@@ -1683,9 +1678,6 @@ public static class AdminEndpoints
                 cancellationToken: ct));
 
             if (existingRole is null) return Results.NotFound(new { error = "Role not found." });
-
-            if (protectedRoleKeys.Contains((string)existingRole.key))
-                return Results.Json(new { error = "Built-in roles cannot be deleted." }, statusCode: 403);
 
             // Check if any users are assigned
             var assignedCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
