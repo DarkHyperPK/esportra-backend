@@ -1,59 +1,108 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
-using Esportra.Contracts.Requests;
-using Esportra.Infrastructure.Supabase;
-using Microsoft.AspNetCore.Mvc;
+using Esportra.Api.Auth;
+using Esportra.Api.Middleware;
+using Esportra.Api.Services;
+using Esportra.Contracts.Auth;
+using Esportra.Api.Hubs;
+using Esportra.Api.ScheduledJobs;
+using Hangfire;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
-/// <summary>
-/// Replaces: set-password Edge Function. Password reset is now handled by GoTrue directly.
-/// </summary>
 public static class AuthEndpoints
 {
     public static void MapAuthEndpoints(this WebApplication app)
     {
-        // ── POST /api/auth/set-password ───────────────────────────────────────
-        // Replaces: set-password Edge Function
-        // Two paths: token_hash (stateless recovery) OR existing JWT session.
-        app.MapPost("/api/auth/set-password", async (
-            [FromBody] SetPasswordRequest req,
-            HttpContext ctx,
-            ISupabaseAdminClient supabase,
-            CancellationToken ct) =>
+        app.MapPost("/api/auth/recovery", RequestRecoveryAsync)
+            .WithMetadata(new RateLimitPolicyMetadata("auth"));
+
+        app.MapPost("/api/auth/password-reset-completed", CompletePasswordResetAsync)
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("auth"));
+
+        app.MapPost("/api/auth/set-password", () => Results.Json(
+            new { error = "This password reset flow is no longer supported." },
+            statusCode: StatusCodes.Status410Gone));
+    }
+
+    internal static async Task<IResult> CompletePasswordResetAsync(
+        HttpContext context,
+        AccountSecurityService accountSecurity,
+        IHubContext<NotificationHub> notificationHub,
+        CancellationToken cancellationToken)
+    {
+        var userIdClaim = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.User.FindFirstValue("sub");
+        if (!Guid.TryParse(userIdClaim, out var userId))
         {
-            if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 8)
-                return Results.BadRequest(new { error = "Password must be at least 8 characters." });
+            return Results.Unauthorized();
+        }
 
-            string? userId;
-            string? userEmail;
+        var state = await accountSecurity.RevokeAllAsync(
+            userId,
+            "password_reset",
+            cancellationToken);
 
-            // Path 1: token_hash recovery (stateless — no existing session)
-            if (!string.IsNullOrWhiteSpace(req.TokenHash))
-            {
-                var user = await supabase.VerifyOtpAsync(
-                    req.TokenHash, req.Type ?? "recovery", ct);
+        try
+        {
+            await notificationHub.Clients
+                .Group(NotificationHub.UserGroup(userId.ToString()))
+                .SendAsync(
+                    NotificationHubEvents.ForceLogout,
+                    new { reason = "password_reset" },
+                    cancellationToken);
+        }
+        catch
+        {
+            // Epoch revocation is authoritative; realtime notification is best effort.
+        }
 
-                if (user is null)
-                    return Results.BadRequest(new { error = "Invalid or expired recovery token." });
-
-                userId = user.Id;
-                userEmail = user.Email;
-            }
-            else
-            {
-                // Path 2: existing authenticated session (GoTrue PASSWORD_RECOVERY flow)
-                userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
-                      ?? ctx.User.FindFirstValue("sub");
-
-                if (string.IsNullOrWhiteSpace(userId))
-                    return Results.Unauthorized();
-
-                userEmail = ctx.User.FindFirstValue(ClaimTypes.Email)
-                         ?? ctx.User.FindFirstValue("email");
-            }
-
-            await supabase.SetPasswordAsync(userId!, req.Password, ct);
-            return Results.Ok(new { success = true, email = userEmail });
+        return Results.Ok(new
+        {
+            completed = true,
+            revocationVersion = state.RevocationVersion,
         });
+    }
+
+    internal static async Task<IResult> RequestRecoveryAsync(
+        PasswordRecoveryRequest request,
+        PasswordRecoveryService passwordRecovery,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        if (!TryParseRequest(request, out var email, out var portal))
+        {
+            return Results.BadRequest(new { error = "Invalid recovery request." });
+        }
+
+        try
+        {
+            await passwordRecovery.RequestAsync(email, portal, cancellationToken);
+        }
+        catch
+        {
+            // Preserve the generic response for provider failures.
+        }
+        return Results.Json(
+            new PasswordRecoveryResponse(PasswordRecoveryService.GenericMessage),
+            statusCode: StatusCodes.Status202Accepted,
+            contentType: "application/json");
+    }
+
+    private static bool TryParseRequest(
+        PasswordRecoveryRequest request,
+        out string email,
+        out RecoveryPortal portal)
+    {
+        email = request.Email?.Trim() ?? string.Empty;
+        portal = default;
+
+        return email.Length is > 0 and <= 254
+            && new EmailAddressAttribute().IsValid(email)
+            && Enum.TryParse(request.Portal, ignoreCase: true, out portal)
+            && Enum.IsDefined(portal);
     }
 }

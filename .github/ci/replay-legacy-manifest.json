@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 186,
+  "postBaselineScriptCount": 192,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -69,14 +69,6 @@
         "user_id",
         "venue_id"
       ]
-    },
-    "admin_users": {
-      "firstSeenIn": "20260709025000_command_centre_missing_tables.sql",
-      "operations": [
-        "join"
-      ],
-      "columnsMentioned": [],
-      "onConflictColumns": []
     },
     "anon": {
       "firstSeenIn": "20260621001000_lock_tournament_winner_rpcs.sql",

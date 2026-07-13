@@ -1,86 +1,88 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using Dapper;
-using Esportra.Infrastructure.Database;
-using Microsoft.Extensions.Caching.Hybrid;
+using Esportra.Api.Services;
 
 namespace Esportra.Api.Middleware;
 
-public sealed class SessionRevocationMiddleware(RequestDelegate next, HybridCache cache, ILogger<SessionRevocationMiddleware> logger)
+public sealed class SessionRevocationMiddleware(RequestDelegate next, ILogger<SessionRevocationMiddleware> logger)
 {
-    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
-
-    public async Task InvokeAsync(HttpContext ctx, IDbConnectionFactory db)
+    public async Task InvokeAsync(HttpContext context, AccountSecurityService accountSecurity)
     {
-        var userIdClaim = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? ctx.User.FindFirstValue("sub");
-
-        if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))
+        if (context.User.Identity?.IsAuthenticated != true)
         {
-            await next(ctx);
+            await next(context);
             return;
         }
 
-        // Get JWT issued-at time — sessions issued AFTER revocation are valid
-        var iatClaim = ctx.User.FindFirstValue(JwtRegisteredClaimNames.Iat)
-            ?? ctx.User.FindFirstValue("iat");
+        var userIdClaim = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.User.FindFirstValue("sub");
+        var issuedAtClaim = context.User.FindFirstValue(JwtRegisteredClaimNames.Iat)
+            ?? context.User.FindFirstValue("iat");
 
-        DateTimeOffset? tokenIssuedAt = null;
-        if (long.TryParse(iatClaim, out var iatUnix))
+        if (!Guid.TryParse(userIdClaim, out var userId)
+            || !long.TryParse(issuedAtClaim, out var issuedAt)
+            || issuedAt < 0)
         {
-            tokenIssuedAt = DateTimeOffset.FromUnixTimeSeconds(iatUnix);
+            await WriteRejectionAsync(context, "Invalid session", "INVALID_SESSION");
+            return;
         }
 
-        var isRevoked = await cache.GetOrCreateAsync(
-            $"session-revoked:{userId}:{iatClaim ?? "none"}",
-            async cancel =>
-            {
-                try
-                {
-                    using var conn = db.CreateConnection();
-
-                    // Check if there's a revocation that applies to this token
-                    // Token is revoked if: revoked_at > token_issued_at (or token has no iat)
-                    var count = await conn.ExecuteScalarAsync<int>(
-                        """
-                        SELECT COUNT(*) FROM revoked_sessions
-                        WHERE user_id = @userId::uuid
-                          AND expires_at > NOW()
-                          AND (@tokenIssuedAt IS NULL OR revoked_at > @tokenIssuedAt)
-                        """,
-                        new { userId, tokenIssuedAt = tokenIssuedAt?.UtcDateTime });
-                    return count > 0;
-                }
-                catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P01")
-                {
-                    // Table doesn't exist yet - not revoked
-                    return false;
-                }
-            },
-            new HybridCacheEntryOptions { Expiration = CacheDuration });
-
-        if (isRevoked)
+        AccountSecurityState state;
+        try
         {
-            logger.LogInformation("Blocked request from revoked session for user {UserId} (token issued {IssuedAt})",
-                userId, tokenIssuedAt);
-            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            ctx.Response.ContentType = "application/json";
-            await ctx.Response.WriteAsJsonAsync(new
+            state = await accountSecurity.GetAsync(userId, context.RequestAborted);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Account security lookup failed for user {UserId}", userId);
+            await WriteRejectionAsync(context, "Session validation unavailable", "SESSION_VALIDATION_FAILED");
+            return;
+        }
+
+        if (!AccountSecurityService.IsTokenValid(issuedAt, state.SessionsValidAfter))
+        {
+            logger.LogInformation(
+                "Blocked revoked session for user {UserId}, version {Version}",
+                userId,
+                state.RevocationVersion);
+            await WriteRejectionAsync(context, "Session has been revoked", "SESSION_REVOKED");
+            return;
+        }
+
+        var lifecycleCode = state.AccountStatus switch
+        {
+            "active" => null,
+            "suspended" => "account_suspended",
+            "deletion_pending" => "deletion_pending",
+            "deleted" => "account_deleted",
+            _ => "account_state_invalid",
+        };
+
+        if (lifecycleCode is not null)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsJsonAsync(new
             {
-                error = "Session has been revoked",
-                code = "SESSION_REVOKED"
+                error = "Account access is restricted",
+                code = lifecycleCode,
             });
             return;
         }
 
-        await next(ctx);
+        await next(context);
+    }
+
+    private static async Task WriteRejectionAsync(HttpContext context, string error, string code)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { error, code });
     }
 }
 
 public static class SessionRevocationMiddlewareExtensions
 {
     public static IApplicationBuilder UseSessionRevocation(this IApplicationBuilder app)
-    {
-        return app.UseMiddleware<SessionRevocationMiddleware>();
-    }
+        => app.UseMiddleware<SessionRevocationMiddleware>();
 }

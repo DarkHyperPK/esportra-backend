@@ -476,7 +476,8 @@ ALTER TABLE public.teams
 
 ALTER TABLE public.profiles
   ADD COLUMN IF NOT EXISTS username TEXT,
-  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT,
+  ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT false;
 
 ALTER TABLE public.audit_logs
   ADD COLUMN IF NOT EXISTS target_type TEXT,

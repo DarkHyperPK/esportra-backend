@@ -22,9 +22,9 @@ public static class RoutePermissionManifest
         P("GET",  "/health/live"),
         P("GET",  "/health/ready"),
 
-        // Auth flows (login, signup, password reset)
-        P("POST", "/api/auth/{*}"),
-        P("GET",  "/api/auth/{*}"),
+        // Auth recovery initiation and legacy compatibility tombstone
+        P("POST", "/api/auth/recovery"),
+        P("POST", "/api/auth/set-password"),
 
         // Public reads — tournaments
         P("GET",  "/api/tournaments"),
@@ -88,6 +88,7 @@ public static class RoutePermissionManifest
         // ══════════════════════════════════════════════════════════════════════
 
         // User profile management
+        A("POST", "/api/auth/password-reset-completed"),
         A("GET",  "/api/profiles/me"),
         A("PUT",  "/api/profiles/{*}"),
         A("GET",  "/api/me/roles"),

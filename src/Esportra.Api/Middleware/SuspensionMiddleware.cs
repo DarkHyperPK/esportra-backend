@@ -19,6 +19,7 @@ public sealed class SuspensionMiddleware(
     private static readonly string[] AllowlistedExactPaths =
     [
         "/api/profiles/me",
+        "/api/auth/password-reset-completed",
     ];
 
     private static readonly string[] AllowlistedPrefixes =

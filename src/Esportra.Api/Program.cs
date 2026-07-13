@@ -286,6 +286,17 @@ builder.Services.AddScoped<IEmailService, ResendEmailService>();
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
 builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
+builder.Services.AddHttpClient<SupabasePublicAuthClient>();
+builder.Services.AddScoped<ISupabasePublicAuthClient, SupabasePublicAuthClient>();
+builder.Services.AddScoped<PasswordRecoveryService>();
+builder.Services.AddScoped<AccountSecurityService>();
+builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
+    .Bind(builder.Configuration.GetSection(Esportra.Api.Auth.RecoveryOptions.SectionName))
+    .Validate(options => Uri.TryCreate(options.MainRedirectUrl, UriKind.Absolute, out _),
+        "Recovery:MainRedirectUrl must be an absolute URL")
+    .Validate(options => Uri.TryCreate(options.PartnerRedirectUrl, UriKind.Absolute, out _),
+        "Recovery:PartnerRedirectUrl must be an absolute URL")
+    .ValidateOnStart();
 
 // ── External API clients ──────────────────────────────────────────────────────
 builder.Services.AddHttpClient<RiotApiClient>();
@@ -356,7 +367,7 @@ builder.Services.AddHangfire(config => config
 builder.Services.AddHangfireServer(opts =>
 {
     opts.WorkerCount = Environment.ProcessorCount;
-    opts.Queues = ["default", "notifications"];
+    opts.Queues = ["default", "notifications", "recovery"];
 });
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
 
