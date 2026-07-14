@@ -79,6 +79,34 @@ public static class AdminEndpoints
 
     public static void MapAdminEndpoints(this WebApplication app)
     {
+        app.MapPost("/api/admin/sponsors/{sponsorId}/invitations", async (
+            Guid sponsorId,
+            [FromBody] CreatePartnerSponsorInvitationRequest request,
+            HttpContext context,
+            PartnerSponsorOnboardingService invitations,
+            CancellationToken cancellationToken) =>
+        {
+            var userContext = context.Items["UserContext"] as UserContext;
+            if (userContext is null) return Results.Unauthorized();
+            if (!userContext.Permissions.Contains(Permissions.SponsorsCreate)) return Results.Forbid();
+            if (string.IsNullOrWhiteSpace(request.Email)
+                || request.Email.Length > 254
+                || !System.Net.Mail.MailAddress.TryCreate(request.Email.Trim(), out _))
+                return Results.BadRequest(new { error = "A valid email address is required." });
+
+            var invitation = await invitations.CreateInvitationAsync(
+                sponsorId,
+                request.Email,
+                request.Role,
+                userContext.UserIdGuid,
+                cancellationToken);
+            return invitation is null
+                ? Results.BadRequest(new { error = "Unable to create invitation." })
+                : !invitation.WasDelivered
+                    ? Results.Json(new { error = "Invitation delivery failed. Please retry." }, statusCode: 502)
+                : Results.Ok(new { invitation.InvitationId, invitation.RequiresPasswordSetup });
+        }).RequireAuthorization(Permissions.SponsorsCreate);
+
         app.MapPost("/api/admin/mfa/cleanup", async (
             HttpContext context,
             IHostEnvironment environment,
@@ -123,6 +151,7 @@ public static class AdminEndpoints
 
             return Results.Ok(new { deletedFactors, affectedUsers });
         }).RequireAuthorization("Admin");
+
         // ── POST /api/admin/users/{userId}/action ─────────────────────────────
         // Replaces: manage-users Edge Function
         // Actions: "delete-user", "update-role", "assign_role", "revoke_role"
@@ -260,10 +289,7 @@ public static class AdminEndpoints
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,
-            IDbConnectionFactory db,
-            ISupabaseAdminClient supabase,
-            IEmailService email,
-            IConfiguration config,
+            PartnerSponsorOnboardingService invitations,
             HttpContext ctx,
             CancellationToken ct) =>
         {
@@ -275,79 +301,15 @@ public static class AdminEndpoints
             if (!Guid.TryParse(req.SponsorId, out var sponsorId))
                 return Results.BadRequest(new { error = "Invalid SponsorId." });
 
-            using var conn = db.CreateConnection();
-
-            // Get sponsor name
-            var sponsorName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM public.sponsors WHERE id = @id", new { id = sponsorId });
-
-            if (sponsorName is null)
-                return Results.NotFound(new { error = "Sponsor not found." });
-
-            var partnerUrl = config["PartnerUrl"] ?? "https://partner.esportra.com";
-
-            // Check if user already exists
-            var existingUser = await supabase.GetUserByEmailAsync(req.Email, ct);
-            bool isNewUser;
-            string sponsorUserId;
-
-            if (existingUser is not null)
-            {
-                isNewUser = false;
-                sponsorUserId = existingUser.Id;
-
-                // Link existing user to sponsor
-                await conn.ExecuteAsync("""
-                    INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-                    VALUES (@userId, @sponsorId, 'owner', '{}')
-                    ON CONFLICT (user_id, sponsor_id) DO NOTHING
-                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId });
-
-                // Send portal access email
-                await email.SendAsync(req.Email, EmailType.PartnerWelcome, new
-                {
-                    sponsorName,
-                    portalUrl = partnerUrl,
-                }, ct);
-            }
-            else
-            {
-                isNewUser = true;
-
-                // Create new user
-                var newUser = await supabase.CreateUserAsync(req.Email,
-                    new { sponsor_id = sponsorId.ToString() }, ct);
-                sponsorUserId = newUser.Id;
-
-                await conn.ExecuteAsync("""
-                    INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-                    VALUES (@userId, @sponsorId, 'owner', '{}')
-                    ON CONFLICT DO NOTHING
-                    """, new { userId = Guid.Parse(sponsorUserId), sponsorId });
-
-                // Generate recovery link for password setup
-                var link = await supabase.GenerateRecoveryLinkAsync(req.Email, ct);
-                var setupUrl = $"{partnerUrl}/set-password?token_hash={link.TokenHash}&type=recovery";
-
-                await email.SendAsync(req.Email, EmailType.PartnerInvite, new
-                {
-                    sponsorName,
-                    setupUrl,
-                }, ct);
-            }
-
-            // Mark partner application as approved if provided
-            if (!string.IsNullOrWhiteSpace(req.ApplicationId))
-            {
-                if (Guid.TryParse(req.ApplicationId, out var appId))
-                {
-                    await conn.ExecuteAsync(
-                        "UPDATE public.partner_applications SET status = 'approved' WHERE id = @id",
-                        new { id = appId });
-                }
-            }
-
-            return Results.Ok(new { success = true, isNewUser, userId = sponsorUserId });
+            var invitation = await invitations.CreateInvitationAsync(
+                sponsorId,
+                req.Email,
+                "owner",
+                userCtx.UserIdGuid,
+                ct);
+            return invitation is null
+                ? Results.BadRequest(new { error = "Unable to create invitation." })
+                : Results.Ok(new { success = true, invitation.InvitationId, invitation.RequiresPasswordSetup });
 
         }).RequireAuthorization(Permissions.SponsorsCreate);
 
@@ -2008,7 +1970,7 @@ public static class AdminEndpoints
             if (req.IsFeatured is true)
                 requiredPermissions.Add(Permissions.TournamentsFeature);
             if (req.IsFeatured is false)
-                requiredPermissions.Add(Permissions.TournamentsUnfeature);
+                requiredPermissions.Add(Permissions.TournamentsFeature);
 
             if (requiredPermissions.Count == 0)
                 requiredPermissions.Add(Permissions.TournamentsEdit);
@@ -2117,7 +2079,7 @@ public static class AdminEndpoints
                 "approve" => Permissions.TournamentsApprove,
                 "cancel" => Permissions.TournamentsCancel,
                 "feature" => Permissions.TournamentsFeature,
-                "unfeature" => Permissions.TournamentsUnfeature,
+                "unfeature" => Permissions.TournamentsFeature,
                 _ => Permissions.TournamentsEdit
             };
 
@@ -3663,9 +3625,7 @@ public static class AdminEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
-            ISupabaseAdminClient supabase,
-            IEmailService email,
-            IConfiguration config,
+            PartnerSponsorOnboardingService invitations,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3702,67 +3662,24 @@ public static class AdminEndpoints
                 """,
                 new { name = companyName, website = companyWebsite, tier = partnershipTier, description = message });
 
-            // 3. Link user account
-            var partnerUrl = config["PartnerUrl"] ?? "https://partner.esportra.com";
-            var existingUser = await supabase.GetUserByEmailAsync(contactEmail, ct);
-            bool isNewUser;
-            string userId;
-
-            if (existingUser is not null)
+            var invitation = await invitations.CreateInvitationAsync(
+                sponsorId,
+                contactEmail,
+                "owner",
+                userCtx.UserIdGuid,
+                ct);
+            if (invitation is null)
             {
-                isNewUser = false;
-                userId = existingUser.Id;
-
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-                    VALUES (@userId, @sponsorId, 'owner', '{"completed":false,"current_step":0,"steps":{}}')
-                    ON CONFLICT (user_id, sponsor_id) DO NOTHING
-                    """,
-                    new { userId = Guid.Parse(userId), sponsorId });
-
-                try
-                {
-                    await email.SendAsync(contactEmail, EmailType.PartnerWelcome, new
-                    {
-                        sponsorName = companyName,
-                        portalUrl = partnerUrl,
-                    }, ct);
-                }
-                catch { /* Email is best-effort */ }
-            }
-            else
-            {
-                isNewUser = true;
-
-                var newUser = await supabase.CreateUserAsync(contactEmail,
-                    new { sponsor_id = sponsorId.ToString() }, ct);
-                userId = newUser.Id;
-
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-                    VALUES (@userId, @sponsorId, 'owner', '{"completed":false,"current_step":0,"steps":{}}')
-                    ON CONFLICT DO NOTHING
-                    """,
-                    new { userId = Guid.Parse(userId), sponsorId });
-
-                string? setupUrl = null;
-                try
-                {
-                    var link = await supabase.GenerateRecoveryLinkAsync(contactEmail, ct);
-                    setupUrl = $"{partnerUrl}/set-password?token_hash={link.TokenHash}&type=recovery";
-
-                    await email.SendAsync(contactEmail, EmailType.PartnerInvite, new
-                    {
-                        sponsorName = companyName,
-                        setupUrl,
-                    }, ct);
-                }
-                catch { /* Email is best-effort */ }
+                await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @sponsorId", new { sponsorId });
+                return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
             }
 
-            // 4. Mark application as approved
+            if (!invitation.WasDelivered)
+            {
+                await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @sponsorId", new { sponsorId });
+                return Results.Json(new { error = "Invitation delivery failed. Please retry." }, statusCode: 502);
+            }
+
             await conn.ExecuteAsync(
                 "UPDATE partner_applications SET status = 'approved', updated_at = NOW() WHERE id = @id",
                 new { id });
@@ -3771,10 +3688,10 @@ public static class AdminEndpoints
             {
                 success = true,
                 sponsorId,
-                isNewUser,
-                userId,
                 companyName,
                 contactEmail,
+                invitation.InvitationId,
+                invitation.RequiresPasswordSetup,
             });
         }).RequireAuthorization("Admin");
 
