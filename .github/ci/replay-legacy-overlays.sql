@@ -145,7 +145,8 @@ ALTER TABLE public.teams
 
 ALTER TABLE public.profiles
   ADD COLUMN IF NOT EXISTS username TEXT,
-  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT,
+  ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT false;
 
 ALTER TABLE public.audit_logs
   ADD COLUMN IF NOT EXISTS target_type TEXT,
@@ -153,6 +154,27 @@ ALTER TABLE public.audit_logs
   ADD COLUMN IF NOT EXISTS action_type TEXT,
   ADD COLUMN IF NOT EXISTS admin_id UUID,
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+-- ── Partner sponsor onboarding (legacy tables used by 20260714110000) ──────
+ALTER TABLE public.sponsors
+  ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'Legacy sponsor';
+
+CREATE TABLE IF NOT EXISTS public.sponsor_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  sponsor_id UUID NOT NULL REFERENCES public.sponsors(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'owner',
+  onboarding_meta JSONB NOT NULL DEFAULT '{"completed":false,"current_step":0,"steps":{}}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.partner_applications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  status TEXT NOT NULL DEFAULT 'pending',
+  contact_email TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ── Match messages (20260609160000) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.match_messages (

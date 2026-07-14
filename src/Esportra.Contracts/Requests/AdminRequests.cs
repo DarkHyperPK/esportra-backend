@@ -5,8 +5,7 @@ public sealed record ManageUserRequest(string Action, string? Role = null, strin
 
 public sealed record InviteSponsorRequest(
     string Email,
-    string SponsorId,
-    string? ApplicationId = null);
+    string SponsorId);
 
 public sealed record SendEmailRequest(
     string Email,

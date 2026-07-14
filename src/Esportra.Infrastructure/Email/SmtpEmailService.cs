@@ -23,8 +23,7 @@ public sealed class SmtpEmailService(
         if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(username) ||
             string.IsNullOrWhiteSpace(password) || password.StartsWith("REPLACE"))
         {
-            logger.LogWarning("[Email] SMTP not configured — skipping {Type} to {Email}", type, toEmail);
-            return;
+            throw new InvalidOperationException("SMTP email service is not configured.");
         }
 
         var port = int.Parse(config["Smtp:Port"] ?? "465");
@@ -59,6 +58,7 @@ public sealed class SmtpEmailService(
         catch (Exception ex)
         {
             logger.LogError(ex, "[Email] SMTP failed to send {Type} to {Email}", type, toEmail);
+            throw;
         }
     }
 
@@ -93,7 +93,10 @@ public sealed class SmtpEmailService(
                     Get("role"), Get("permissions"), Get("acceptUrl")),
 
             EmailType.PartnerInvite =>
-                EmailTemplates.PartnerInvite(Get("sponsorName"), Get("setupUrl")),
+                EmailTemplates.PartnerInvite(
+                    Get("sponsorName"),
+                    Get("invitationUrl"),
+                    bool.TryParse(Get("isNewUser"), out var isNewUser) && isNewUser),
 
             EmailType.PartnerWelcome =>
                 EmailTemplates.PartnerWelcome(Get("sponsorName"), Get("portalUrl")),

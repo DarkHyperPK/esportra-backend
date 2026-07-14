@@ -291,6 +291,7 @@ builder.Services.AddScoped<ISupabasePublicAuthClient, SupabasePublicAuthClient>(
 builder.Services.AddHttpClient<MfaFactorCleanupService>();
 builder.Services.AddScoped<PasswordRecoveryService>();
 builder.Services.AddScoped<AccountSecurityService>();
+builder.Services.AddScoped<PartnerSponsorOnboardingService>();
 builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
     .Bind(builder.Configuration.GetSection(Esportra.Api.Auth.RecoveryOptions.SectionName))
     .Validate(options => Uri.TryCreate(options.MainRedirectUrl, UriKind.Absolute, out _),

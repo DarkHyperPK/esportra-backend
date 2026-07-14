@@ -309,6 +309,8 @@ public static class AdminEndpoints
                 ct);
             return invitation is null
                 ? Results.BadRequest(new { error = "Unable to create invitation." })
+                : !invitation.WasDelivered
+                    ? Results.Json(new { error = "Invitation delivery failed. Please retry." }, statusCode: 502)
                 : Results.Ok(new { success = true, invitation.InvitationId, invitation.RequiresPasswordSetup });
 
         }).RequireAuthorization(Permissions.SponsorsCreate);
@@ -3630,20 +3632,22 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.Permissions.Contains(Permissions.SponsorsCreate)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
-            // 1. Fetch application
             var app2 = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM partner_applications WHERE id = @id", new { id });
+                """
+                UPDATE partner_applications
+                SET status = 'approved', updated_at = NOW()
+                WHERE id = @id AND status IN ('pending', 'reviewed')
+                RETURNING *
+                """,
+                new { id });
             if (app2 is null)
-                return Results.NotFound(new { error = "Application not found." });
+                return Results.Conflict(new { error = "Application is not available for approval." });
 
             var dict = (IDictionary<string, object?>)app2;
-            var status = dict["status"]?.ToString();
-            if (status == "approved")
-                return Results.BadRequest(new { error = "Application already approved." });
-
             var companyName = dict["company_name"]?.ToString() ?? "Unknown";
             var companyWebsite = dict["company_website"]?.ToString() ?? "";
             var contactEmail = dict["contact_email"]?.ToString();
@@ -3651,7 +3655,12 @@ public static class AdminEndpoints
             var message = dict["message"]?.ToString();
 
             if (string.IsNullOrWhiteSpace(contactEmail))
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE partner_applications SET status = 'pending', updated_at = NOW() WHERE id = @id",
+                    new { id });
                 return Results.BadRequest(new { error = "Application has no contact email." });
+            }
 
             // 2. Create sponsor record
             var sponsorId = await conn.QuerySingleAsync<Guid>(
@@ -3671,18 +3680,16 @@ public static class AdminEndpoints
             if (invitation is null)
             {
                 await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @sponsorId", new { sponsorId });
+                await conn.ExecuteAsync("UPDATE partner_applications SET status = 'pending', updated_at = NOW() WHERE id = @id", new { id });
                 return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
             }
 
             if (!invitation.WasDelivered)
             {
                 await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @sponsorId", new { sponsorId });
+                await conn.ExecuteAsync("UPDATE partner_applications SET status = 'pending', updated_at = NOW() WHERE id = @id", new { id });
                 return Results.Json(new { error = "Invitation delivery failed. Please retry." }, statusCode: 502);
             }
-
-            await conn.ExecuteAsync(
-                "UPDATE partner_applications SET status = 'approved', updated_at = NOW() WHERE id = @id",
-                new { id });
 
             return Results.Ok(new
             {
@@ -3693,7 +3700,7 @@ public static class AdminEndpoints
                 invitation.InvitationId,
                 invitation.RequiresPasswordSetup,
             });
-        }).RequireAuthorization("Admin");
+        }).RequireAuthorization(Permissions.SponsorsCreate);
 
         // ══════════════════════════════════════════════════════════════════════
         // TEAM MANAGEMENT (super_admin only)

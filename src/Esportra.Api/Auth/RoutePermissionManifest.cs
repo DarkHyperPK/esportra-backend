@@ -25,6 +25,7 @@ public static class RoutePermissionManifest
         // Auth recovery initiation and legacy compatibility tombstone
         P("POST", "/api/auth/recovery"),
         P("POST", "/api/auth/set-password"),
+        P("POST", "/api/sponsor-invitations/preview"),
 
         // Public reads — tournaments
         P("GET",  "/api/tournaments"),
@@ -89,6 +90,7 @@ public static class RoutePermissionManifest
 
         // User profile management
         A("POST", "/api/auth/password-reset-completed"),
+        A("POST", "/api/sponsor-invitations/accept"),
         A("GET",  "/api/profiles/me"),
         A("PUT",  "/api/profiles/{*}"),
         A("GET",  "/api/me/roles"),
@@ -295,6 +297,7 @@ public static class RoutePermissionManifest
         Adm("DELETE","/api/admin/admin-user-roles", [Permissions.AdminUsersRevokeRole]),
 
         // Admin sessions / security
+        Adm("POST", "/api/admin/sponsors/{sponsorId}/invitations", [Permissions.SponsorsCreate]),
         Adm("POST", "/api/admin/mfa/cleanup", [Permissions.SecurityRevokeSessions]),
         Adm("GET",  "/api/admin/sessions/{*}", [Permissions.SecurityViewSessions]),
         Adm("POST", "/api/admin/sessions/{*}", [Permissions.SecurityRevokeSessions]),

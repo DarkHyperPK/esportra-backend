@@ -19,9 +19,7 @@ public sealed record OnboardingStepRequest(
     Dictionary<string, object?> StepData,
     int NextStep);
 
-public sealed record OnboardingCompleteRequest(
-    string AgreedAt,
-    string Ip);
+public sealed record OnboardingCompleteRequest(bool AcceptLegalTerms, string TermsVersion);
 
 public sealed record TrackSponsorImpressionRequest(
     [property: JsonPropertyName("sponsor_id")] string SponsorId,

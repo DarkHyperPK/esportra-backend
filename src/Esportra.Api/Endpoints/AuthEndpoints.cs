@@ -8,6 +8,7 @@ using Esportra.Api.Hubs;
 using Esportra.Api.ScheduledJobs;
 using Hangfire;
 using Microsoft.AspNetCore.SignalR;
+using Esportra.Infrastructure.Supabase;
 
 namespace Esportra.Api.Endpoints;
 
@@ -30,6 +31,7 @@ public static class AuthEndpoints
     internal static async Task<IResult> CompletePasswordResetAsync(
         HttpContext context,
         AccountSecurityService accountSecurity,
+        ISupabaseAdminClient supabase,
         IHubContext<NotificationHub> notificationHub,
         CancellationToken cancellationToken)
     {
@@ -39,6 +41,8 @@ public static class AuthEndpoints
         {
             return Results.Unauthorized();
         }
+
+        await supabase.LogoutUserAsync(userId.ToString(), cancellationToken);
 
         var state = await accountSecurity.RevokeAllAsync(
             userId,

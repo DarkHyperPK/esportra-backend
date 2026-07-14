@@ -186,7 +186,7 @@ public sealed class PartnerSponsorOnboardingService(
         email.Length is > 0 and <= 254
         && System.Net.Mail.MailAddress.TryCreate(email.Trim(), out _);
 
-    private static bool IsSupportedRole(string role) => role is "owner" or "viewer";
+    private static bool IsSupportedRole(string role) => role == "owner";
 
     private static bool IsValidToken(string token) =>
         token.Length == 64 && token.All(character => char.IsAsciiHexDigit(character));

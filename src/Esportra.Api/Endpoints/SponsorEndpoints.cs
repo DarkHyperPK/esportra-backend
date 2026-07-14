@@ -1,9 +1,12 @@
 using System.Text.Json;
+using System.Security.Claims;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
 using Esportra.Contracts.Responses;
+using Esportra.Api.Services;
+using Esportra.Api.Middleware;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 
@@ -17,6 +20,39 @@ public static class SponsorEndpoints
 {
     public static void MapSponsorEndpoints(this WebApplication app)
     {
+        app.MapPost("/api/sponsor-invitations/preview", async (
+            [FromBody] PreviewPartnerSponsorInvitationRequest request,
+            PartnerSponsorOnboardingService invitations,
+            CancellationToken cancellationToken) =>
+        {
+            var preview = await invitations.PreviewAsync(request.Token ?? string.Empty, cancellationToken);
+            return preview is null
+                ? Results.NotFound(new { error = "Invitation not found or expired." })
+                : Results.Ok(preview);
+        }).AllowAnonymous()
+          .WithMetadata(new RateLimitPolicyMetadata("strict"));
+
+        app.MapPost("/api/sponsor-invitations/accept", async (
+            [FromBody] AcceptPartnerSponsorInvitationRequest request,
+            HttpContext context,
+            PartnerSponsorOnboardingService invitations,
+            CancellationToken cancellationToken) =>
+        {
+            var userIdValue = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? context.User.FindFirstValue("sub");
+            var email = context.User.FindFirstValue(ClaimTypes.Email)
+                ?? context.User.FindFirstValue("email");
+            if (!Guid.TryParse(userIdValue, out var userId) || string.IsNullOrWhiteSpace(email))
+                return Results.Unauthorized();
+            if (string.IsNullOrWhiteSpace(request.Token))
+                return Results.BadRequest(new { error = "Invalid invitation." });
+
+            var claim = await invitations.ClaimAsync(request.Token, userId, email, cancellationToken);
+            return claim is null
+                ? Results.BadRequest(new { error = "This invitation cannot be accepted." })
+                : Results.Ok(new { accepted = true, claim.SponsorId, claim.Role });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/sponsors/me ─────────────────────────────────────────────
         // Returns sponsor profile + account + stats + daily history for the authenticated partner user.
         app.MapGet("/api/sponsors/me", async (
@@ -305,8 +341,11 @@ public static class SponsorEndpoints
             using var conn = db.CreateConnection();
 
             // Get current meta
+            if (req.StepName is not "branding" || req.NextStep is < 0 or > 1)
+                return Results.BadRequest(new { error = "Invalid onboarding step." });
+
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId LIMIT 1",
+                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (row is null)
@@ -349,7 +388,7 @@ public static class SponsorEndpoints
 
         // ── POST /api/sponsors/me/onboarding/complete ────────────────────────
         app.MapPost("/api/sponsors/me/onboarding/complete", async (
-            [FromBody] OnboardingCompleteRequest req,
+            [FromBody] OnboardingCompleteRequest request,
             HttpContext ctx,
             IDbConnectionFactory db,
             CancellationToken ct) =>
@@ -360,11 +399,14 @@ public static class SponsorEndpoints
             using var conn = db.CreateConnection();
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId LIMIT 1",
+                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (row is null)
                 return Results.NotFound(new { error = "No sponsor account found." });
+
+            if (!request.AcceptLegalTerms || request.TermsVersion != "2026-07")
+                return Results.BadRequest(new { error = "Legal terms must be accepted." });
 
             string currentJson = row.onboarding_meta?.ToString() ?? """{"completed":false,"current_step":0,"steps":{}}""";
             var currentMeta = JsonSerializer.Deserialize<Dictionary<string, object>>(currentJson)
@@ -376,7 +418,15 @@ public static class SponsorEndpoints
                 steps = JsonSerializer.Deserialize<Dictionary<string, object>>(stepsEl.GetRawText())
                         ?? new Dictionary<string, object>();
             }
-            steps["legal"] = new { agreed_at = req.AgreedAt, ip = req.Ip };
+            if (!steps.ContainsKey("branding"))
+                return Results.BadRequest(new { error = "Complete branding before finishing onboarding." });
+            var ipAddress = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            steps["legal"] = new
+            {
+                agreed_at = DateTimeOffset.UtcNow,
+                ip = ipAddress,
+                terms_version = request.TermsVersion,
+            };
 
             currentMeta["completed"] = true;
             currentMeta["current_step"] = 3;

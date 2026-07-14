@@ -239,14 +239,16 @@ public static class EmailTemplates
     );
 
     public static (string Subject, string Html) PartnerInvite(
-        string sponsorName, string setupUrl) =>
+      string sponsorName, string invitationUrl, bool isNewUser) =>
     (
         $"Partner Portal access: {E(sponsorName)}",
-        Wrap("Set up your partner account", "Partner Portal Access", $"""
+        Wrap("Accept your partner portal invitation", "Partner Portal Invitation", $"""
             {H1($"Welcome to the {E(sponsorName)} Partner Portal")}
             {P("You've been invited to manage your sponsor account on Esportra.")}
-            {P("Click below to set up your password and access the portal.")}
-            {Btn(setupUrl, "Set Up Account")}
+          {P(isNewUser
+            ? "Click below to create your account, then accept your sponsor invitation."
+            : "Click below, sign in with this email address, then accept your sponsor invitation.")}
+          {Btn(invitationUrl, "Accept Invitation")}
         """)
     );
 
