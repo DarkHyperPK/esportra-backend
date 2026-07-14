@@ -10,10 +10,7 @@ public static class Permissions
     public const string UsersView = "users:view";
     public const string UsersCreate = "users:create";
     public const string UsersEdit = "users:edit";
-    public const string UsersSuspend = "users:suspend";
-    public const string UsersUnsuspend = "users:unsuspend";
-    public const string UsersBan = "users:ban";
-    public const string UsersUnban = "users:unban";
+    public const string UsersBan = "users:ban"; // covers suspend, unsuspend, ban, unban
     public const string UsersDelete = "users:delete";
     public const string UsersExport = "users:export";
     public const string UsersImpersonate = "users:impersonate";
@@ -78,10 +75,8 @@ public static class Permissions
     public const string TournamentsView = "tournaments:view";
     public const string TournamentsCreate = "tournaments:create";
     public const string TournamentsEdit = "tournaments:edit";
-    public const string TournamentsApprove = "tournaments:approve";
-    public const string TournamentsReject = "tournaments:reject";
-    public const string TournamentsFeature = "tournaments:feature";
-    public const string TournamentsUnfeature = "tournaments:unfeature";
+    public const string TournamentsApprove = "tournaments:approve"; // covers approve + reject
+    public const string TournamentsFeature = "tournaments:feature"; // covers feature + unfeature
     public const string TournamentsCancel = "tournaments:cancel";
     public const string TournamentsDelete = "tournaments:delete";
     public const string TournamentsRestore = "tournaments:restore";
@@ -94,8 +89,7 @@ public static class Permissions
     public const string BracketsEdit = "brackets:edit";
     public const string BracketsRegenerate = "brackets:regenerate";
     public const string BracketsReset = "brackets:reset";
-    public const string BracketsLock = "brackets:lock";
-    public const string BracketsUnlock = "brackets:unlock";
+    public const string BracketsLock = "brackets:lock"; // covers lock + unlock
     public const string BracketsOverride = "brackets:override";
     public const string BracketsAudit = "brackets:audit";
 
@@ -104,14 +98,12 @@ public static class Permissions
     public const string MatchesSchedule = "matches:schedule";
     public const string MatchesReportResult = "matches:report_result";
     public const string MatchesOverrideResult = "matches:override_result";
-    public const string MatchesLock = "matches:lock";
-    public const string MatchesUnlock = "matches:unlock";
+    public const string MatchesLock = "matches:lock"; // covers lock + unlock
     public const string MatchesAudit = "matches:audit";
 
     public const string RegistrationsView = "registrations:view";
     public const string RegistrationsEdit = "registrations:edit";
-    public const string RegistrationsApprove = "registrations:approve";
-    public const string RegistrationsReject = "registrations:reject";
+    public const string RegistrationsApprove = "registrations:approve"; // covers approve + reject
     public const string RegistrationsCancel = "registrations:cancel";
     public const string RegistrationsRefund = "registrations:refund";
     public const string RegistrationsExport = "registrations:export";
@@ -139,10 +131,8 @@ public static class Permissions
     public const string VenuesView = "venues:view";
     public const string VenuesCreate = "venues:create";
     public const string VenuesEdit = "venues:edit";
-    public const string VenuesApprove = "venues:approve";
-    public const string VenuesReject = "venues:reject";
-    public const string VenuesPublish = "venues:publish";
-    public const string VenuesUnpublish = "venues:unpublish";
+    public const string VenuesApprove = "venues:approve"; // covers approve + reject
+    public const string VenuesPublish = "venues:publish"; // covers publish + unpublish
     public const string VenuesDelete = "venues:delete";
     public const string VenuesRestore = "venues:restore";
     public const string VenuesExport = "venues:export";
@@ -151,8 +141,7 @@ public static class Permissions
     public const string VenueStationsView = "venue_stations:view";
     public const string VenueStationsCreate = "venue_stations:create";
     public const string VenueStationsEdit = "venue_stations:edit";
-    public const string VenueStationsLock = "venue_stations:lock";
-    public const string VenueStationsUnlock = "venue_stations:unlock";
+    public const string VenueStationsLock = "venue_stations:lock"; // covers lock + unlock
     public const string VenueStationsDelete = "venue_stations:delete";
     public const string VenueStationsAudit = "venue_stations:audit";
 
@@ -173,8 +162,7 @@ public static class Permissions
     public const string MembersView = "members:view";
     public const string MembersCreate = "members:create";
     public const string MembersEdit = "members:edit";
-    public const string MembersBan = "members:ban";
-    public const string MembersUnban = "members:unban";
+    public const string MembersBan = "members:ban"; // covers ban + unban
     public const string MembersExport = "members:export";
     public const string MembersAudit = "members:audit";
 
@@ -200,7 +188,6 @@ public static class Permissions
     public const string OrganizationsView = "organizations:view";
     public const string OrganizationsCreate = "organizations:create";
     public const string OrganizationsEdit = "organizations:edit";
-    public const string OrganizationsSuspend = "organizations:suspend";
     public const string OrganizationsRestore = "organizations:restore";
     public const string OrganizationsAudit = "organizations:audit";
 
@@ -208,16 +195,14 @@ public static class Permissions
     public const string SponsorsView = "sponsors:view";
     public const string SponsorsCreate = "sponsors:create";
     public const string SponsorsEdit = "sponsors:edit";
-    public const string SponsorsApproveApplication = "sponsors:approve_application";
-    public const string SponsorsRejectApplication = "sponsors:reject_application";
+    public const string SponsorsApproveApplication = "sponsors:approve_application"; // covers approve + reject
     public const string SponsorsDelete = "sponsors:delete";
     public const string SponsorsExport = "sponsors:export";
     public const string SponsorsAudit = "sponsors:audit";
 
     // Verification / licenses
     public const string VerificationView = "verification:view";
-    public const string VerificationApprove = "verification:approve";
-    public const string VerificationReject = "verification:reject";
+    public const string VerificationApprove = "verification:approve"; // covers approve + reject
     public const string VerificationDelete = "verification:delete";
     public const string VerificationExport = "verification:export";
     public const string VerificationAudit = "verification:audit";
@@ -241,8 +226,7 @@ public static class Permissions
 
     public const string WalletsView = "wallets:view";
     public const string WalletsAdjust = "wallets:adjust";
-    public const string WalletsFreeze = "wallets:freeze";
-    public const string WalletsUnfreeze = "wallets:unfreeze";
+    public const string WalletsFreeze = "wallets:freeze"; // covers freeze + unfreeze
     public const string WalletsAudit = "wallets:audit";
 
     public const string LoyaltyView = "loyalty:view";
@@ -306,9 +290,7 @@ public static class Permissions
     public const string ContentDelete = "content:delete";
 
     public const string ModerationView = "moderation:view";
-    public const string ModerationApprove = "moderation:approve";
-    public const string ModerationReject = "moderation:reject";
-    public const string ModerationDismiss = "moderation:dismiss";
+    public const string ModerationApprove = "moderation:approve"; // covers approve, reject, dismiss
     public const string ModerationAudit = "moderation:audit";
 
     public const string NotificationsView = "notifications:view";
@@ -346,32 +328,32 @@ public static class AdminRoles
         {
             [OpsAdmin] =
             [
-                Permissions.UsersView, Permissions.UsersEdit, Permissions.UsersSuspend, Permissions.UsersUnsuspend,
+                Permissions.UsersView, Permissions.UsersEdit, Permissions.UsersBan,
                 Permissions.ProfilesView, Permissions.ProfilesEdit,
                 Permissions.TournamentsView, Permissions.TournamentsCreate, Permissions.TournamentsEdit,
-                Permissions.TournamentsApprove, Permissions.TournamentsReject, Permissions.TournamentsFeature,
-                Permissions.TournamentsUnfeature, Permissions.TournamentsCancel, Permissions.TournamentsExport,
-                Permissions.BracketsView, Permissions.BracketsEdit, Permissions.BracketsLock, Permissions.BracketsUnlock,
+                Permissions.TournamentsApprove, Permissions.TournamentsFeature,
+                Permissions.TournamentsCancel, Permissions.TournamentsExport,
+                Permissions.BracketsView, Permissions.BracketsEdit, Permissions.BracketsLock,
                 Permissions.MatchesView, Permissions.MatchesEdit, Permissions.MatchesSchedule,
                 Permissions.RegistrationsView, Permissions.RegistrationsEdit, Permissions.RegistrationsApprove,
-                Permissions.RegistrationsReject, Permissions.RegistrationsExport,
+                Permissions.RegistrationsExport,
                 Permissions.InvitationsView, Permissions.InvitationsCreate, Permissions.InvitationsRevoke,
                 Permissions.TeamsView, Permissions.TeamsEdit, Permissions.TeamsDisband, Permissions.TeamsTransferCaptain,
                 Permissions.TeamsRemoveMember, Permissions.TeamsExport,
                 Permissions.OrganizationsView, Permissions.OrganizationsEdit,
                 Permissions.DisputesView, Permissions.DisputesComment, Permissions.DisputesResolve,
-                Permissions.DisputesReject, Permissions.DisputesEscalate, Permissions.DisputesExport,
-                Permissions.VenuesView, Permissions.VenuesEdit, Permissions.VenuesApprove, Permissions.VenuesReject,
-                Permissions.VenuesPublish, Permissions.VenuesUnpublish, Permissions.VenuesExport,
+                Permissions.DisputesEscalate, Permissions.DisputesExport,
+                Permissions.VenuesView, Permissions.VenuesEdit, Permissions.VenuesApprove,
+                Permissions.VenuesPublish, Permissions.VenuesExport,
                 Permissions.VenueStationsView, Permissions.VenueStationsCreate, Permissions.VenueStationsEdit,
-                Permissions.VenueStationsLock, Permissions.VenueStationsUnlock,
+                Permissions.VenueStationsLock,
                 Permissions.VenueSessionsView, Permissions.VenueSessionsEdit, Permissions.VenueSessionsEnd,
                 Permissions.VenueSessionsExport,
                 Permissions.VenueStaffView, Permissions.VenueStaffInvite, Permissions.VenueStaffEdit, Permissions.VenueStaffRevoke,
-                Permissions.MembersView, Permissions.MembersEdit, Permissions.MembersBan, Permissions.MembersUnban, Permissions.MembersExport,
+                Permissions.MembersView, Permissions.MembersEdit, Permissions.MembersBan, Permissions.MembersExport,
                 Permissions.BookingsView, Permissions.BookingsEdit, Permissions.BookingsCancel, Permissions.BookingsExport,
-                Permissions.VerificationView, Permissions.VerificationApprove, Permissions.VerificationReject, Permissions.VerificationExport,
-                Permissions.ModerationView, Permissions.ModerationApprove, Permissions.ModerationReject, Permissions.ModerationDismiss,
+                Permissions.VerificationView, Permissions.VerificationApprove, Permissions.VerificationExport,
+                Permissions.ModerationView, Permissions.ModerationApprove,
                 Permissions.ContentModerate, Permissions.ContentDelete,
                 Permissions.AnalyticsView, Permissions.AnalyticsExport, Permissions.DashboardView,
                 Permissions.AlertsView, Permissions.AlertsAcknowledge, Permissions.AlertsResolve, Permissions.AlertsBulkAcknowledge,
@@ -382,14 +364,14 @@ public static class AdminRoles
             ],
             [Moderator] =
             [
-                Permissions.UsersView, Permissions.UsersSuspend, Permissions.UsersUnsuspend, Permissions.UsersBan, Permissions.UsersUnban,
+                Permissions.UsersView, Permissions.UsersBan,
                 Permissions.ProfilesView,
                 Permissions.TournamentsView, Permissions.TeamsView,
                 Permissions.DisputesView, Permissions.DisputesComment, Permissions.DisputesResolve,
-                Permissions.DisputesReject, Permissions.DisputesEscalate, Permissions.DisputesLiftBan,
-                Permissions.ModerationView, Permissions.ModerationApprove, Permissions.ModerationReject, Permissions.ModerationDismiss,
+                Permissions.DisputesEscalate, Permissions.DisputesLiftBan,
+                Permissions.ModerationView, Permissions.ModerationApprove,
                 Permissions.ContentModerate, Permissions.ContentDelete,
-                Permissions.VerificationView, Permissions.VerificationReject,
+                Permissions.VerificationView, Permissions.VerificationApprove,
                 Permissions.DashboardView, Permissions.AlertsView, Permissions.AlertsAcknowledge,
             ],
             [FinanceAdmin] =
@@ -401,7 +383,7 @@ public static class AdminRoles
                 Permissions.LoyaltyView, Permissions.LoyaltyAdjust,
                 Permissions.PosView, Permissions.PosRefund, Permissions.PosExport,
                 Permissions.SponsorsView, Permissions.SponsorsCreate, Permissions.SponsorsEdit,
-                Permissions.SponsorsApproveApplication, Permissions.SponsorsRejectApplication, Permissions.SponsorsExport,
+                Permissions.SponsorsApproveApplication, Permissions.SponsorsExport,
                 Permissions.LicensesView, Permissions.LicensesCreate, Permissions.LicensesRevoke,
                 Permissions.LicensesReinstate, Permissions.LicensesExport,
                 Permissions.ReportsView, Permissions.ReportsCreate, Permissions.ReportsEdit,
