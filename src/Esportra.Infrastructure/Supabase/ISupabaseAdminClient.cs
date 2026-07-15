@@ -16,6 +16,12 @@ public interface ISupabaseAdminClient
 
     Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default);
 
+    /// <summary>
+    /// Generate a magic link token_hash for an existing user.
+    /// Used to establish a session for OAuth-only users during partner onboarding.
+    /// </summary>
+    Task<GeneratedLink> GenerateMagicLinkAsync(string email, string redirectUrl, CancellationToken ct = default);
+
     /// <summary>Look up a user by email (admin API).</summary>
     Task<SupabaseUser?> GetUserByEmailAsync(string email, CancellationToken ct = default);
 
@@ -37,7 +43,7 @@ public interface ISupabaseAdminClient
 }
 
 public sealed record GeneratedLink(string TokenHash, string ActionLink);
-public sealed record SupabaseUser(string Id, string Email);
+public sealed record SupabaseUser(string Id, string Email, bool HasPasswordIdentity);
 
 /// <summary>Full user record from the GoTrue admin list-users endpoint.</summary>
 public sealed record SupabaseAuthUser(

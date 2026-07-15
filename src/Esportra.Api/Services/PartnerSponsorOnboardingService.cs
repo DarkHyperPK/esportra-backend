@@ -33,7 +33,7 @@ public sealed class PartnerSponsorOnboardingService(
         if (!IsValidEmail(email) || !IsSupportedRole(role)) return null;
         var normalizedEmail = NormalizeEmail(email);
         var existingUser = await supabase.GetUserByEmailAsync(normalizedEmail, cancellationToken);
-        var requiresPasswordSetup = existingUser is null;
+        var requiresPasswordSetup = existingUser is null || !existingUser.HasPasswordIdentity;
 
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
@@ -77,8 +77,12 @@ public sealed class PartnerSponsorOnboardingService(
         {
             if (requiresPasswordSetup)
             {
-                var link = await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
-                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}";
+                var isNewUser = existingUser is null;
+                var link = isNewUser
+                    ? await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken)
+                    : await supabase.GenerateMagicLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
+                var otpType = isNewUser ? "invite" : "magiclink";
+                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type={otpType}";
             }
 
             await emailService.SendAsync(normalizedEmail, EmailType.PartnerInvite, new

@@ -58,6 +58,11 @@ public sealed class SupabaseAdminClient(
         return await GenerateLinkAsync("invite", email, redirectUrl, ct);
     }
 
+    public async Task<GeneratedLink> GenerateMagicLinkAsync(string email, string redirectUrl, CancellationToken ct = default)
+    {
+        return await GenerateLinkAsync("magiclink", email, redirectUrl, ct);
+    }
+
     private async Task<GeneratedLink> GenerateLinkAsync(
         string type,
         string email,
@@ -115,7 +120,23 @@ public sealed class SupabaseAdminClient(
                 if (string.Equals(userEmail, email, StringComparison.OrdinalIgnoreCase))
                 {
                     var id = user.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
-                    return id is not null ? new SupabaseUser(id, userEmail ?? "") : null;
+                    if (id is null) return null;
+
+                    var hasPassword = false;
+                    if (user.TryGetProperty("identities", out var identities) && identities.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var identity in identities.EnumerateArray())
+                        {
+                            var provider = identity.TryGetProperty("provider", out var p) ? p.GetString() : null;
+                            if (provider == "email")
+                            {
+                                hasPassword = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    return new SupabaseUser(id, userEmail ?? "", hasPassword);
                 }
             }
 
@@ -142,7 +163,7 @@ public sealed class SupabaseAdminClient(
         var root = doc.RootElement;
         var id = root.GetProperty("id").GetString()!;
         var mail = root.TryGetProperty("email", out var em) ? em.GetString() ?? email : email;
-        return new SupabaseUser(id, mail);
+        return new SupabaseUser(id, mail, true);
     }
 
     public async Task<SupabaseUserListResult> ListUsersAsync(int page = 1, int perPage = 50, CancellationToken ct = default)
