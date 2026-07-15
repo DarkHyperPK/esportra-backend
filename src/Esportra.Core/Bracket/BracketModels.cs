@@ -3,56 +3,58 @@ namespace Esportra.Core.Bracket;
 // ── Bracket Graph Domain Models ────────────────────────────────────────────
 
 public sealed record BracketVersion(
-    Guid   Id,
-    Guid   TournamentId,
-    Guid?  StageId,
-    int    VersionNumber,
+    Guid Id,
+    Guid TournamentId,
+    Guid? StageId,
+    int VersionNumber,
     string Status,           // draft | active | archived
     string CreatedAt);
 
 public sealed record BracketNode(
-    Guid    Id,
-    Guid    VersionId,
-    int     RoundIndex,
-    int     MatchNumber,
-    string  BracketType,     // winners | losers | final | group | swiss_round
-    string  Status,          // pending | in_progress | completed (DB stores "in_progress", not "live")
-    int     BestOf = 1,
-    Guid?   Team1Id = null,
-    Guid?   Team2Id = null,
-    Guid?   WinnerId = null,
-    Guid?   LoserId = null,
-    int?    Team1Score = null,
-    int?    Team2Score = null,
+    Guid Id,
+    Guid VersionId,
+    int RoundIndex,
+    int MatchNumber,
+    string BracketType,     // winners | losers | final | group | swiss_round
+    string Status,          // pending | in_progress | completed (DB stores "in_progress", not "live")
+    int BestOf = 1,
+    Guid? Team1Id = null,
+    Guid? Team2Id = null,
+    Guid? WinnerId = null,
+    Guid? LoserId = null,
+    int? Team1Score = null,
+    int? Team2Score = null,
     string? GroupId = null,
-    int?    RoundNumber = null,
+    int? RoundNumber = null,
     string? ScheduledTime = null,
     double? X = null,
-    double? Y = null);
+    double? Y = null,
+    int? Team1Seed = null,
+    int? Team2Seed = null);
 
 public sealed record BracketEdge(
-    Guid   Id,
-    Guid   VersionId,
-    Guid   SourceMatchId,
-    Guid   TargetMatchId,
+    Guid Id,
+    Guid VersionId,
+    Guid SourceMatchId,
+    Guid TargetMatchId,
     string Type,            // winner | loser
-    int    TargetSlot);     // 1 | 2
+    int TargetSlot);     // 1 | 2
 
 public sealed record BracketGraph(
-    BracketVersion    Version,
+    BracketVersion Version,
     List<BracketNode> Nodes,
     List<BracketEdge> Edges);
 
 // ── Standings ──────────────────────────────────────────────────────────────
 
 public sealed record TeamStanding(
-    Guid   TeamId,
+    Guid TeamId,
     string TeamName,
-    int    Played,
-    int    Wins,
-    int    Losses,
-    int    Ties,
-    int    Points,
-    int    Buchholz,
-    int    ScoreDiff,
-    int    Rank);
+    int Played,
+    int Wins,
+    int Losses,
+    int Ties,
+    int Points,
+    int Buchholz,
+    int ScoreDiff,
+    int Rank);

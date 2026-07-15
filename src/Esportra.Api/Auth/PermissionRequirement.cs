@@ -26,7 +26,8 @@ public sealed class PermissionHandler : AuthorizationHandler<PermissionRequireme
             httpContext.Items.TryGetValue("UserContext", out var obj) &&
             obj is UserContext userCtx)
         {
-            if (userCtx.Permissions.Contains(requirement.Permission))
+            if (userCtx.IsSuperAdmin ||
+                userCtx.Permissions.Contains(requirement.Permission, StringComparer.OrdinalIgnoreCase))
             {
                 context.Succeed(requirement);
             }

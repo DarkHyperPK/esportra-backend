@@ -16,20 +16,19 @@ public sealed class SmtpEmailService(
 {
     public async Task SendAsync(string toEmail, EmailType type, object data, CancellationToken ct = default)
     {
-        var host     = config["Smtp:Host"];
+        var host = config["Smtp:Host"];
         var username = config["Smtp:Username"];
         var password = config["Smtp:Password"];
 
         if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(username) ||
             string.IsNullOrWhiteSpace(password) || password.StartsWith("REPLACE"))
         {
-            logger.LogWarning("[Email] SMTP not configured — skipping {Type} to {Email}", type, toEmail);
-            return;
+            throw new InvalidOperationException("SMTP email service is not configured.");
         }
 
-        var port      = int.Parse(config["Smtp:Port"] ?? "465");
+        var port = int.Parse(config["Smtp:Port"] ?? "465");
         var fromEmail = config["Smtp:FromEmail"] ?? username;
-        var fromName  = config["Smtp:FromName"] ?? "Esportra";
+        var fromName = config["Smtp:FromName"] ?? "Esportra";
 
         var (subject, html) = BuildTemplate(type, data);
 
@@ -59,6 +58,7 @@ public sealed class SmtpEmailService(
         catch (Exception ex)
         {
             logger.LogError(ex, "[Email] SMTP failed to send {Type} to {Email}", type, toEmail);
+            throw;
         }
     }
 
@@ -93,7 +93,10 @@ public sealed class SmtpEmailService(
                     Get("role"), Get("permissions"), Get("acceptUrl")),
 
             EmailType.PartnerInvite =>
-                EmailTemplates.PartnerInvite(Get("sponsorName"), Get("setupUrl")),
+                EmailTemplates.PartnerInvite(
+                    Get("sponsorName"),
+                    Get("invitationUrl"),
+                    bool.TryParse(Get("isNewUser"), out var isNewUser) && isNewUser),
 
             EmailType.PartnerWelcome =>
                 EmailTemplates.PartnerWelcome(Get("sponsorName"), Get("portalUrl")),
@@ -113,6 +116,12 @@ public sealed class SmtpEmailService(
             EmailType.LicenseRejected =>
                 EmailTemplates.LicenseRejected(
                     Get("username"), Get("licenseType"), Get("dashboardUrl")),
+
+            EmailType.TournamentInvite =>
+                EmailTemplates.TournamentInvite(
+                    Get("captainName"), Get("tournamentName"),
+                    Get("code"), Get("tournamentUrl"), Get("expiryDate"),
+                    Get("gameHeaderUrl")),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };

@@ -1,3 +1,4 @@
+using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -8,37 +9,33 @@ namespace Esportra.Api.Hubs;
 /// Groups: bracket:{versionId}, stage:{tournamentId}
 /// </summary>
 [Authorize]
-public sealed class BracketHub : Hub
+public sealed class BracketHub(IDbConnectionFactory db, ILogger<BracketHub> logger) : Hub
 {
-    private readonly ILogger<BracketHub> _logger;
-
-    public BracketHub(ILogger<BracketHub> logger) => _logger = logger;
-
-    // ── Client-callable methods ───────────────────────────────────────────────
-
-    /// <summary>Subscribe to a specific bracket version's live updates.</summary>
     public async Task JoinBracket(string versionId)
     {
+        if (!await HubAuthHelper.EnsureBracketVersionAccessAsync(Context, db, versionId))
+            throw new HubException("You don't have access to this bracket.");
+
         await Groups.AddToGroupAsync(Context.ConnectionId, BracketGroup(versionId));
-        _logger.LogDebug("Client {Conn} joined bracket:{VersionId}", Context.ConnectionId, versionId);
+        logger.LogDebug("Client {Conn} joined bracket:{VersionId}", Context.ConnectionId, versionId);
     }
 
     public async Task LeaveBracket(string versionId) =>
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, BracketGroup(versionId));
 
-    /// <summary>Subscribe to tournament-level stage updates (stage status, bracket versions).</summary>
     public async Task JoinTournament(string tournamentId)
     {
+        if (!await HubAuthHelper.EnsureTournamentSubscriptionAccessAsync(Context, db, tournamentId))
+            throw new HubException("You don't have access to this tournament feed.");
+
         await Groups.AddToGroupAsync(Context.ConnectionId, TournamentGroup(tournamentId));
-        _logger.LogDebug("Client {Conn} joined tournament:{TournamentId}", Context.ConnectionId, tournamentId);
+        logger.LogDebug("Client {Conn} joined tournament:{TournamentId}", Context.ConnectionId, tournamentId);
     }
 
     public async Task LeaveTournament(string tournamentId) =>
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, TournamentGroup(tournamentId));
 
-    // ── Group name helpers (used by IHubContext callers) ──────────────────────
-
-    public static string BracketGroup(string versionId)    => $"bracket:{versionId}";
+    public static string BracketGroup(string versionId) => $"bracket:{versionId}";
     public static string TournamentGroup(string tournamentId) => $"tournament:{tournamentId}";
 }
 

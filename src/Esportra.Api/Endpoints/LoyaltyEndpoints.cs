@@ -16,9 +16,9 @@ public static class LoyaltyEndpoints
     {
         // ── GET /api/loyalty/my — current user's loyalty account ─────────────
         app.MapGet("/api/loyalty/my", async (
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -38,9 +38,9 @@ public static class LoyaltyEndpoints
             {
                 return Results.Ok(new
                 {
-                    total_points    = 0,
+                    total_points = 0,
                     lifetime_points = 0,
-                    current_tier    = "bronze"
+                    current_tier = "bronze"
                 });
             }
 
@@ -49,16 +49,16 @@ public static class LoyaltyEndpoints
 
         // ── GET /api/loyalty/my/transactions — user's loyalty history ────────
         app.MapGet("/api/loyalty/my/transactions", async (
-            int                  limit  = 20,
-            int                  offset = 0,
-            HttpContext          ctx    = null!,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            int limit = 20,
+            int offset = 0,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            limit  = Math.Clamp(limit, 1, 100);
+            limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
 
             using var conn = db.CreateConnection();
@@ -82,9 +82,9 @@ public static class LoyaltyEndpoints
 
         // ── GET /api/venues/{venueId}/loyalty/config — public config ─────────
         app.MapGet("/api/venues/{venueId}/loyalty/config", async (
-            Guid                 venueId,
+            Guid venueId,
             IDbConnectionFactory db = null!,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             using var conn = db.CreateConnection();
 
@@ -102,9 +102,9 @@ public static class LoyaltyEndpoints
             {
                 return Results.Ok(new
                 {
-                    venue_id            = venueId,
-                    points_per_hour     = 10,
-                    bonus_multiplier    = 1.0m,
+                    venue_id = venueId,
+                    points_per_hour = 10,
+                    bonus_multiplier = 1.0m,
                     min_session_minutes = 30,
                     tiers = new[]
                     {
@@ -128,11 +128,11 @@ public static class LoyaltyEndpoints
 
         // ── PUT /api/venues/{venueId}/loyalty/config — owner upserts config ──
         app.MapPut("/api/venues/{venueId}/loyalty/config", async (
-            Guid                               venueId,
-            [FromBody] LoyaltyConfigRequest     req,
-            HttpContext                         ctx,
-            IDbConnectionFactory               db,
-            CancellationToken                  ct) =>
+            Guid venueId,
+            [FromBody] LoyaltyConfigRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -159,7 +159,7 @@ public static class LoyaltyEndpoints
                 return Results.BadRequest(new { error = "minSessionMinutes must be >= 0." });
 
             // Validate tiers JSON structure
-            var tiersJson   = req.Tiers?.GetRawText();
+            var tiersJson = req.Tiers?.GetRawText();
             var rewardsJson = req.Rewards?.GetRawText();
 
             if (tiersJson is not null)
@@ -224,12 +224,12 @@ public static class LoyaltyEndpoints
                 new
                 {
                     venueId,
-                    pointsPerHour     = req.PointsPerHour,
-                    bonusMultiplier   = req.BonusMultiplier,
+                    pointsPerHour = req.PointsPerHour,
+                    bonusMultiplier = req.BonusMultiplier,
                     minSessionMinutes = req.MinSessionMinutes,
-                    tiers             = tiersJson,
-                    rewards           = rewardsJson,
-                    isActive          = req.IsActive
+                    tiers = tiersJson,
+                    rewards = rewardsJson,
+                    isActive = req.IsActive
                 });
 
             return Results.Ok(config);
@@ -237,11 +237,11 @@ public static class LoyaltyEndpoints
 
         // ── POST /api/venues/{venueId}/loyalty/earn — award points ───────────
         app.MapPost("/api/venues/{venueId}/loyalty/earn", async (
-            Guid                            venueId,
-            [FromBody] LoyaltyEarnRequest   req,
-            HttpContext                     ctx,
-            IDbConnectionFactory            db,
-            CancellationToken               ct) =>
+            Guid venueId,
+            [FromBody] LoyaltyEarnRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -313,9 +313,9 @@ public static class LoyaltyEndpoints
                     {
                         accountId,
                         venueId,
-                        points      = req.Points,
+                        points = req.Points,
                         description = req.Description,
-                        sessionId   = string.IsNullOrEmpty(req.SessionId)
+                        sessionId = string.IsNullOrEmpty(req.SessionId)
                                         ? (Guid?)null
                                         : Guid.TryParse(req.SessionId, out var sid) ? sid : (Guid?)null
                     }, tx);
@@ -363,11 +363,11 @@ public static class LoyaltyEndpoints
 
         // ── POST /api/venues/{venueId}/loyalty/redeem — redeem a reward ──────
         app.MapPost("/api/venues/{venueId}/loyalty/redeem", async (
-            Guid                              venueId,
-            [FromBody] LoyaltyRedeemRequest   req,
-            HttpContext                       ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            Guid venueId,
+            [FromBody] LoyaltyRedeemRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -410,10 +410,10 @@ public static class LoyaltyEndpoints
                     if (el.TryGetProperty("id", out var idProp) && idProp.GetString() == req.RewardId)
                     {
                         matchedReward = el;
-                        rewardName    = el.GetProperty("name").GetString() ?? "";
-                        pointsCost    = el.GetProperty("points_cost").GetInt32();
-                        rewardType    = el.GetProperty("type").GetString() ?? "";
-                        rewardValue   = el.GetProperty("value").GetInt32();
+                        rewardName = el.GetProperty("name").GetString() ?? "";
+                        pointsCost = el.GetProperty("points_cost").GetInt32();
+                        rewardType = el.GetProperty("type").GetString() ?? "";
+                        rewardValue = el.GetProperty("value").GetInt32();
                         break;
                     }
                 }
@@ -441,8 +441,8 @@ public static class LoyaltyEndpoints
                 if ((int)account.total_points < pointsCost)
                     return Results.BadRequest(new
                     {
-                        error          = "Insufficient points.",
-                        currentPoints  = (int)account.total_points,
+                        error = "Insufficient points.",
+                        currentPoints = (int)account.total_points,
                         requiredPoints = pointsCost
                     });
 
@@ -469,7 +469,7 @@ public static class LoyaltyEndpoints
                     {
                         accountId,
                         venueId,
-                        points      = -pointsCost,
+                        points = -pointsCost,
                         description = $"Redeemed: {rewardName}"
                     }, tx);
 
@@ -506,10 +506,10 @@ public static class LoyaltyEndpoints
                         {
                             walletId,
                             venueId,
-                            amount      = (decimal)rewardValue,
+                            amount = (decimal)rewardValue,
                             newBalance,
                             description = $"Loyalty reward: {rewardName}",
-                            createdBy   = userCtx.UserIdGuid
+                            createdBy = userCtx.UserIdGuid
                         }, tx);
                 }
 
@@ -528,13 +528,13 @@ public static class LoyaltyEndpoints
                 return Results.Ok(new
                 {
                     account = refreshed,
-                    reward  = new
+                    reward = new
                     {
-                        id          = req.RewardId,
-                        name        = rewardName,
+                        id = req.RewardId,
+                        name = rewardName,
                         points_cost = pointsCost,
-                        type        = rewardType,
-                        value       = rewardValue
+                        type = rewardType,
+                        value = rewardValue
                     }
                 });
             }
@@ -547,9 +547,9 @@ public static class LoyaltyEndpoints
 
         // ── GET /api/venues/{venueId}/loyalty/leaderboard — top 10 ───────────
         app.MapGet("/api/venues/{venueId}/loyalty/leaderboard", async (
-            Guid                 venueId,
+            Guid venueId,
             IDbConnectionFactory db = null!,
-            CancellationToken    ct = default) =>
+            CancellationToken ct = default) =>
         {
             using var conn = db.CreateConnection();
 
@@ -591,10 +591,10 @@ public static class LoyaltyEndpoints
             foreach (var tier in doc.RootElement.EnumerateArray())
             {
                 var minPoints = tier.GetProperty("min_points").GetInt32();
-                var name      = tier.GetProperty("name").GetString();
+                var name = tier.GetProperty("name").GetString();
                 if (lifetimePoints >= minPoints && minPoints > bestMin)
                 {
-                    best    = name;
+                    best = name;
                     bestMin = minPoints;
                 }
             }
@@ -612,16 +612,16 @@ public static class LoyaltyEndpoints
     // ── Request DTOs ────────────────────────────────────────────────────────────
 
     private sealed record LoyaltyConfigRequest(
-        int             PointsPerHour,
-        decimal         BonusMultiplier,
-        int             MinSessionMinutes,
-        JsonElement?    Tiers,
-        JsonElement?    Rewards,
-        bool            IsActive);
+        int PointsPerHour,
+        decimal BonusMultiplier,
+        int MinSessionMinutes,
+        JsonElement? Tiers,
+        JsonElement? Rewards,
+        bool IsActive);
 
     private sealed record LoyaltyEarnRequest(
-        string  UserId,
-        int     Points,
+        string UserId,
+        int Points,
         string? Description,
         string? SessionId);
 

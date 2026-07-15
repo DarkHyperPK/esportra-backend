@@ -39,10 +39,10 @@ public sealed class DiscordNotificationService
         ILogger<DiscordNotificationService> logger)
     {
         _httpFactory = httpFactory;
-        _db          = db;
-        _logger      = logger;
-        _botToken    = config["Discord:BotToken"];
-        _guildId     = config["Discord:GuildId"];
+        _db = db;
+        _logger = logger;
+        _botToken = config["Discord:BotToken"];
+        _guildId = config["Discord:GuildId"];
     }
 
     public bool IsConfigured => !string.IsNullOrEmpty(_botToken) && !string.IsNullOrEmpty(_guildId);
@@ -165,11 +165,11 @@ public sealed class DiscordNotificationService
         // Step 2: Send the message as an embed
         var embed = new DiscordEmbed
         {
-            Title       = title,
+            Title = title,
             Description = message,
-            Color       = GetColorForType(notificationType),
-            Footer      = new DiscordEmbedFooter { Text = "Esportra • esportra.com" },
-            Timestamp   = DateTime.UtcNow.ToString("o")
+            Color = GetColorForType(notificationType),
+            Footer = new DiscordEmbedFooter { Text = "Esportra • esportra.com" },
+            Timestamp = DateTime.UtcNow.ToString("o")
         };
 
         var msgPayload = JsonSerializer.Serialize(new { embeds = new[] { embed } });
@@ -194,16 +194,16 @@ public sealed class DiscordNotificationService
 
     private static int GetColorForType(string type) => type switch
     {
-        "match_ready"              => 0x22C55E, // green
-        "check_in_reminder"        => 0xF59E0B, // amber
-        "result_reported"          => 0x3B82F6, // blue
-        "result_disputed"          => 0xEF4444, // red
-        "dispute_resolved"         => 0x8B5CF6, // purple
-        "tournament_registered"    => 0x22C55E, // green
-        "tournament_announcement"  => 0x3B82F6, // blue
-        "result_accepted"          => 0x22C55E, // green
-        "match_walkover"           => 0xF59E0B, // amber
-        _                          => 0xF43F5E, // rose (brand)
+        "match_ready" => 0x22C55E, // green
+        "check_in_reminder" => 0xF59E0B, // amber
+        "result_reported" => 0x3B82F6, // blue
+        "result_disputed" => 0xEF4444, // red
+        "dispute_resolved" => 0x8B5CF6, // purple
+        "tournament_registered" => 0x22C55E, // green
+        "tournament_announcement" => 0x3B82F6, // blue
+        "result_accepted" => 0x22C55E, // green
+        "match_walkover" => 0xF59E0B, // amber
+        _ => 0xF43F5E, // rose (brand)
     };
 
     // Minimal Discord API DTOs

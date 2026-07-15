@@ -1,0 +1,549 @@
+- generic [ref=f3e7]:
+  - region "Notifications (F8)":
+    - list
+  - main [ref=f3e10]:
+    - generic [ref=f3e11]:
+      - generic [ref=f3e12]:
+        - link "Admin super admin" [ref=f3e13] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e15]
+          - generic [ref=f3e17]:
+            - paragraph [ref=f3e18]: Admin
+            - paragraph [ref=f3e19]: super admin
+        - link "Home" [ref=f3e20] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f3e21]:
+        - link "Command Centre" [ref=f3e22] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e23]
+          - text: Command Centre
+        - link "All Users" [ref=f3e28] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f3e29]
+          - text: All Users
+        - link "Verifications" [ref=f3e34] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f3e35]
+          - text: Verifications
+        - link "Licenses" [ref=f3e38] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f3e39]
+          - text: Licenses
+        - link "Sessions" [ref=f3e43] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f3e44]
+          - text: Sessions
+        - link "Tournaments" [ref=f3e46] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f3e47]
+          - text: Tournaments
+        - link "Teams" [ref=f3e53] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f3e54]
+          - text: Teams
+        - link "Venues" [ref=f3e58] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f3e59]
+          - text: Venues
+        - link "Games" [ref=f3e62] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f3e63]
+          - text: Games
+        - link "Moderation" [ref=f3e65] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f3e66]
+          - text: Moderation
+    - generic [ref=f3e71]:
+      - generic [ref=f3e72]:
+        - generic [ref=f3e73]:
+          - img [ref=f3e75]
+          - generic [ref=f3e80]:
+            - heading "User Management" [level=1] [ref=f3e81]
+            - paragraph [ref=f3e82]: Search, inspect, and act on platform users
+        - generic [ref=f3e83]:
+          - button "Refresh" [ref=f3e84] [cursor=pointer]:
+            - img
+            - text: Refresh
+          - button "Export" [ref=f3e85] [cursor=pointer]:
+            - img
+            - text: Export
+      - generic [ref=f3e86]:
+        - generic [ref=f3e87]:
+          - img [ref=f3e89]
+          - paragraph [ref=f3e94]: "36"
+          - paragraph [ref=f3e95]: Total Users
+        - generic [ref=f3e96]:
+          - img [ref=f3e98]
+          - paragraph [ref=f3e100]: "2"
+          - paragraph [ref=f3e101]: Admins
+        - generic [ref=f3e102]:
+          - img [ref=f3e104]
+          - paragraph [ref=f3e108]: "2"
+          - paragraph [ref=f3e109]: Organizers
+        - generic [ref=f3e110]:
+          - img [ref=f3e112]
+          - paragraph [ref=f3e115]: "2"
+          - paragraph [ref=f3e116]: Venue Owners
+        - generic [ref=f3e117]:
+          - img [ref=f3e119]
+          - paragraph [ref=f3e124]: "28"
+          - paragraph [ref=f3e125]: Casual
+      - generic [ref=f3e126]:
+        - generic [ref=f3e127]:
+          - img [ref=f3e128]
+          - textbox "Search users by name, username, or email..." [ref=f3e131]
+        - generic [ref=f3e132]:
+          - button "All Roles" [ref=f3e133] [cursor=pointer]
+          - button "admin" [ref=f3e134] [cursor=pointer]
+          - button "finance admin" [ref=f3e135] [cursor=pointer]
+          - button "moderator" [ref=f3e136] [cursor=pointer]
+          - button "Mudassir" [ref=f3e137] [cursor=pointer]
+          - button "ops admin" [ref=f3e138] [cursor=pointer]
+          - button "super admin" [ref=f3e139] [cursor=pointer]
+          - button "support admin" [ref=f3e140] [cursor=pointer]
+          - button "organizer" [ref=f3e141] [cursor=pointer]
+          - button "Venue Owner" [ref=f3e142] [cursor=pointer]
+          - button "casual" [ref=f3e143] [cursor=pointer]
+      - button "Advanced Filters" [ref=f3e145] [cursor=pointer]:
+        - img
+        - text: Advanced Filters
+        - img
+      - table [ref=f3e148]:
+        - rowgroup [ref=f3e149]:
+          - row "User Email Regular Roles Admin Roles Joined Actions" [ref=f3e150]:
+            - columnheader [ref=f3e151]:
+              - checkbox [ref=f3e152] [cursor=pointer]
+            - columnheader "User" [ref=f3e153]
+            - columnheader "Email" [ref=f3e154]
+            - columnheader "Regular Roles" [ref=f3e155]
+            - columnheader "Admin Roles" [ref=f3e156]
+            - columnheader "Joined" [ref=f3e157]
+            - columnheader "Actions" [ref=f3e158]
+        - rowgroup [ref=f3e159]:
+          - row "Rayyan Murtaza @badb04652 badb04652@gmail.com casual 10/06/2026" [ref=f3e160]:
+            - cell [ref=f3e161]:
+              - checkbox [ref=f3e162] [cursor=pointer]
+            - cell "Rayyan Murtaza @badb04652" [ref=f3e163]:
+              - generic [ref=f3e166]:
+                - paragraph [ref=f3e168]: Rayyan Murtaza
+                - paragraph [ref=f3e169]: "@badb04652"
+            - cell "badb04652@gmail.com" [ref=f3e170]
+            - cell "casual" [ref=f3e171]:
+              - generic [ref=f3e173]: casual
+            - cell [ref=f3e174]
+            - cell "10/06/2026" [ref=f3e175]
+            - cell [ref=f3e176]:
+              - button [ref=f3e177] [cursor=pointer]:
+                - img
+          - row "player22 @player22 player22@gmail.com casual 07/06/2026" [ref=f3e178]:
+            - cell [ref=f3e179]:
+              - checkbox [ref=f3e180] [cursor=pointer]
+            - cell "player22 @player22" [ref=f3e181]:
+              - generic [ref=f3e182]:
+                - img [ref=f3e184]
+                - generic [ref=f3e189]:
+                  - paragraph [ref=f3e191]: player22
+                  - paragraph [ref=f3e192]: "@player22"
+            - cell "player22@gmail.com" [ref=f3e193]
+            - cell "casual" [ref=f3e194]:
+              - generic [ref=f3e196]: casual
+            - cell [ref=f3e197]
+            - cell "07/06/2026" [ref=f3e198]
+            - cell [ref=f3e199]:
+              - button [ref=f3e200] [cursor=pointer]:
+                - img
+          - row "player21+e2e1780847616676 @player21+e2e1780847616676 player21+e2e1780847616676@gmail.com casual 07/06/2026" [ref=f3e201]:
+            - cell [ref=f3e202]:
+              - checkbox [ref=f3e203] [cursor=pointer]
+            - cell "player21+e2e1780847616676 @player21+e2e1780847616676" [ref=f3e204]:
+              - generic [ref=f3e205]:
+                - img [ref=f3e207]
+                - generic [ref=f3e212]:
+                  - paragraph [ref=f3e214]: player21+e2e1780847616676
+                  - paragraph [ref=f3e215]: "@player21+e2e1780847616676"
+            - cell "player21+e2e1780847616676@gmail.com" [ref=f3e216]
+            - cell "casual" [ref=f3e217]:
+              - generic [ref=f3e219]: casual
+            - cell [ref=f3e220]
+            - cell "07/06/2026" [ref=f3e221]
+            - cell [ref=f3e222]:
+              - button [ref=f3e223] [cursor=pointer]:
+                - img
+          - row "player21+tournament-ui @player21+tournament-ui player21+tournament-ui@gmail.com casual 07/06/2026" [ref=f3e224]:
+            - cell [ref=f3e225]:
+              - checkbox [ref=f3e226] [cursor=pointer]
+            - cell "player21+tournament-ui @player21+tournament-ui" [ref=f3e227]:
+              - generic [ref=f3e228]:
+                - img [ref=f3e230]
+                - generic [ref=f3e235]:
+                  - paragraph [ref=f3e237]: player21+tournament-ui
+                  - paragraph [ref=f3e238]: "@player21+tournament-ui"
+            - cell "player21+tournament-ui@gmail.com" [ref=f3e239]
+            - cell "casual" [ref=f3e240]:
+              - generic [ref=f3e242]: casual
+            - cell [ref=f3e243]
+            - cell "07/06/2026" [ref=f3e244]
+            - cell [ref=f3e245]:
+              - button [ref=f3e246] [cursor=pointer]:
+                - img
+          - row "player21 @player21 player21@gmail.com casual 07/06/2026" [ref=f3e247]:
+            - cell [ref=f3e248]:
+              - checkbox [ref=f3e249] [cursor=pointer]
+            - cell "player21 @player21" [ref=f3e250]:
+              - generic [ref=f3e251]:
+                - img [ref=f3e253]
+                - generic [ref=f3e258]:
+                  - paragraph [ref=f3e260]: player21
+                  - paragraph [ref=f3e261]: "@player21"
+            - cell "player21@gmail.com" [ref=f3e262]
+            - cell "casual" [ref=f3e263]:
+              - generic [ref=f3e265]: casual
+            - cell [ref=f3e266]
+            - cell "07/06/2026" [ref=f3e267]
+            - cell [ref=f3e268]:
+              - button [ref=f3e269] [cursor=pointer]:
+                - img
+          - row "paradox1632000+invite2 @paradox1632000+invite2 paradox1632000+invite2@gmail.com casual 30/03/2026" [ref=f3e270]:
+            - cell [ref=f3e271]:
+              - checkbox [ref=f3e272] [cursor=pointer]
+            - cell "paradox1632000+invite2 @paradox1632000+invite2" [ref=f3e273]:
+              - generic [ref=f3e274]:
+                - img [ref=f3e276]
+                - generic [ref=f3e281]:
+                  - paragraph [ref=f3e283]: paradox1632000+invite2
+                  - paragraph [ref=f3e284]: "@paradox1632000+invite2"
+            - cell "paradox1632000+invite2@gmail.com" [ref=f3e285]
+            - cell "casual" [ref=f3e286]:
+              - generic [ref=f3e288]: casual
+            - cell [ref=f3e289]
+            - cell "30/03/2026" [ref=f3e290]
+            - cell [ref=f3e291]:
+              - button [ref=f3e292] [cursor=pointer]:
+                - img
+          - row "paradox1632000+esportra @paradox1632000+esportra paradox1632000+esportra@gmail.com casual 30/03/2026" [ref=f3e293]:
+            - cell [ref=f3e294]:
+              - checkbox [ref=f3e295] [cursor=pointer]
+            - cell "paradox1632000+esportra @paradox1632000+esportra" [ref=f3e296]:
+              - generic [ref=f3e297]:
+                - img [ref=f3e299]
+                - generic [ref=f3e304]:
+                  - paragraph [ref=f3e306]: paradox1632000+esportra
+                  - paragraph [ref=f3e307]: "@paradox1632000+esportra"
+            - cell "paradox1632000+esportra@gmail.com" [ref=f3e308]
+            - cell "casual" [ref=f3e309]:
+              - generic [ref=f3e311]: casual
+            - cell [ref=f3e312]
+            - cell "30/03/2026" [ref=f3e313]
+            - cell [ref=f3e314]:
+              - button [ref=f3e315] [cursor=pointer]:
+                - img
+          - row "player99 @player99 player99@gmail.com casual 25/03/2026" [ref=f3e316]:
+            - cell [ref=f3e317]:
+              - checkbox [ref=f3e318] [cursor=pointer]
+            - cell "player99 @player99" [ref=f3e319]:
+              - generic [ref=f3e320]:
+                - img [ref=f3e322]
+                - generic [ref=f3e327]:
+                  - paragraph [ref=f3e329]: player99
+                  - paragraph [ref=f3e330]: "@player99"
+            - cell "player99@gmail.com" [ref=f3e331]
+            - cell "casual" [ref=f3e332]:
+              - generic [ref=f3e334]: casual
+            - cell [ref=f3e335]
+            - cell "25/03/2026" [ref=f3e336]
+            - cell [ref=f3e337]:
+              - button [ref=f3e338] [cursor=pointer]:
+                - img
+          - row "player170 @player70 plaeyr70@gmail.com casual 13/03/2026" [ref=f3e339]:
+            - cell [ref=f3e340]:
+              - checkbox [ref=f3e341] [cursor=pointer]
+            - cell "player170 @player70" [ref=f3e342]:
+              - generic [ref=f3e343]:
+                - img [ref=f3e345]
+                - generic [ref=f3e350]:
+                  - paragraph [ref=f3e352]: player170
+                  - paragraph [ref=f3e353]: "@player70"
+            - cell "plaeyr70@gmail.com" [ref=f3e354]
+            - cell "casual" [ref=f3e355]:
+              - generic [ref=f3e357]: casual
+            - cell [ref=f3e358]
+            - cell "13/03/2026" [ref=f3e359]
+            - cell [ref=f3e360]:
+              - button [ref=f3e361] [cursor=pointer]:
+                - img
+          - row "player9 Suspended @player9 player9@gmail.com casual 01/03/2026" [ref=f3e362]:
+            - cell [ref=f3e363]:
+              - checkbox [ref=f3e364] [cursor=pointer]
+            - cell "player9 Suspended @player9" [ref=f3e365]:
+              - generic [ref=f3e366]:
+                - generic [ref=f3e367]:
+                  - img [ref=f3e368]
+                  - img [ref=f3e374]
+                - generic [ref=f3e377]:
+                  - generic [ref=f3e378]:
+                    - paragraph [ref=f3e379]: player9
+                    - generic [ref=f3e380]: Suspended
+                  - paragraph [ref=f3e381]: "@player9"
+            - cell "player9@gmail.com" [ref=f3e382]
+            - cell "casual" [ref=f3e383]:
+              - generic [ref=f3e385]: casual
+            - cell [ref=f3e386]
+            - cell "01/03/2026" [ref=f3e387]
+            - cell [ref=f3e388]:
+              - button [ref=f3e389] [cursor=pointer]:
+                - img
+          - row "_theseesaw @pillow1632000 pillow1632000@yahoo.com casual 27/02/2026" [ref=f3e390]:
+            - cell [ref=f3e391]:
+              - checkbox [ref=f3e392] [cursor=pointer]
+            - cell "_theseesaw @pillow1632000" [ref=f3e393]:
+              - generic [ref=f3e396]:
+                - paragraph [ref=f3e398]: _theseesaw
+                - paragraph [ref=f3e399]: "@pillow1632000"
+            - cell "pillow1632000@yahoo.com" [ref=f3e400]
+            - cell "casual" [ref=f3e401]:
+              - generic [ref=f3e403]: casual
+            - cell [ref=f3e404]
+            - cell "27/02/2026" [ref=f3e405]
+            - cell [ref=f3e406]:
+              - button [ref=f3e407] [cursor=pointer]:
+                - img
+          - row "darkhyperpk21 @darkhyperpk21 darkhyperpk21@gmail.com casual 21/02/2026" [ref=f3e408]:
+            - cell [ref=f3e409]:
+              - checkbox [ref=f3e410] [cursor=pointer]
+            - cell "darkhyperpk21 @darkhyperpk21" [ref=f3e411]:
+              - generic [ref=f3e412]:
+                - img [ref=f3e414]
+                - generic [ref=f3e419]:
+                  - paragraph [ref=f3e421]: darkhyperpk21
+                  - paragraph [ref=f3e422]: "@darkhyperpk21"
+            - cell "darkhyperpk21@gmail.com" [ref=f3e423]
+            - cell "casual" [ref=f3e424]:
+              - generic [ref=f3e426]: casual
+            - cell [ref=f3e427]
+            - cell "21/02/2026" [ref=f3e428]
+            - cell [ref=f3e429]:
+              - button [ref=f3e430] [cursor=pointer]:
+                - img
+          - row "yeboywolfe @yeboywolfe yeboywolfe@gmail.com casual 12/02/2026" [ref=f3e431]:
+            - cell [ref=f3e432]:
+              - checkbox [ref=f3e433] [cursor=pointer]
+            - cell "yeboywolfe @yeboywolfe" [ref=f3e434]:
+              - generic [ref=f3e437]:
+                - paragraph [ref=f3e439]: yeboywolfe
+                - paragraph [ref=f3e440]: "@yeboywolfe"
+            - cell "yeboywolfe@gmail.com" [ref=f3e441]
+            - cell "casual" [ref=f3e442]:
+              - generic [ref=f3e444]: casual
+            - cell [ref=f3e445]
+            - cell "12/02/2026" [ref=f3e446]
+            - cell [ref=f3e447]:
+              - button [ref=f3e448] [cursor=pointer]:
+                - img
+          - row "dash @dash darkhyperpk1632000@gmail.com casual 11/02/2026" [ref=f3e449]:
+            - cell [ref=f3e450]:
+              - checkbox [ref=f3e451] [cursor=pointer]
+            - cell "dash @dash" [ref=f3e452]:
+              - generic [ref=f3e455]:
+                - paragraph [ref=f3e457]: dash
+                - paragraph [ref=f3e458]: "@dash"
+            - cell "darkhyperpk1632000@gmail.com" [ref=f3e459]
+            - cell "casual" [ref=f3e460]:
+              - generic [ref=f3e462]: casual
+            - cell [ref=f3e463]
+            - cell "11/02/2026" [ref=f3e464]
+            - cell [ref=f3e465]:
+              - button [ref=f3e466] [cursor=pointer]:
+                - img
+          - row "player69 @player69 player69@gmail.com casual 06/02/2026" [ref=f3e467]:
+            - cell [ref=f3e468]:
+              - checkbox [ref=f3e469] [cursor=pointer]
+            - cell "player69 @player69" [ref=f3e470]:
+              - generic [ref=f3e471]:
+                - img [ref=f3e473]
+                - generic [ref=f3e478]:
+                  - paragraph [ref=f3e480]: player69
+                  - paragraph [ref=f3e481]: "@player69"
+            - cell "player69@gmail.com" [ref=f3e482]
+            - cell "casual" [ref=f3e483]:
+              - generic [ref=f3e485]: casual
+            - cell [ref=f3e486]
+            - cell "06/02/2026" [ref=f3e487]
+            - cell [ref=f3e488]:
+              - button [ref=f3e489] [cursor=pointer]:
+                - img
+          - row "Mudassir Siddiqui @Player67 player67@gmail.com casual 27/01/2026" [ref=f3e490]:
+            - cell [ref=f3e491]:
+              - checkbox [ref=f3e492] [cursor=pointer]
+            - cell "Mudassir Siddiqui @Player67" [ref=f3e493]:
+              - generic [ref=f3e494]:
+                - img [ref=f3e496]
+                - generic [ref=f3e501]:
+                  - paragraph [ref=f3e503]: Mudassir Siddiqui
+                  - paragraph [ref=f3e504]: "@Player67"
+            - cell "player67@gmail.com" [ref=f3e505]
+            - cell "casual" [ref=f3e506]:
+              - generic [ref=f3e508]: casual
+            - cell [ref=f3e509]
+            - cell "27/01/2026" [ref=f3e510]
+            - cell [ref=f3e511]:
+              - button [ref=f3e512] [cursor=pointer]:
+                - img
+          - row "player20 @player20 player20@gmail.com casual 16/12/2025" [ref=f3e513]:
+            - cell [ref=f3e514]:
+              - checkbox [ref=f3e515] [cursor=pointer]
+            - cell "player20 @player20" [ref=f3e516]:
+              - generic [ref=f3e517]:
+                - img [ref=f3e519]
+                - generic [ref=f3e524]:
+                  - paragraph [ref=f3e526]: player20
+                  - paragraph [ref=f3e527]: "@player20"
+            - cell "player20@gmail.com" [ref=f3e528]
+            - cell "casual" [ref=f3e529]:
+              - generic [ref=f3e531]: casual
+            - cell [ref=f3e532]
+            - cell "16/12/2025" [ref=f3e533]
+            - cell [ref=f3e534]:
+              - button [ref=f3e535] [cursor=pointer]:
+                - img
+          - row "player19 @player19 player19@gmail.com casual 16/12/2025" [ref=f3e536]:
+            - cell [ref=f3e537]:
+              - checkbox [ref=f3e538] [cursor=pointer]
+            - cell "player19 @player19" [ref=f3e539]:
+              - generic [ref=f3e540]:
+                - img [ref=f3e542]
+                - generic [ref=f3e547]:
+                  - paragraph [ref=f3e549]: player19
+                  - paragraph [ref=f3e550]: "@player19"
+            - cell "player19@gmail.com" [ref=f3e551]
+            - cell "casual" [ref=f3e552]:
+              - generic [ref=f3e554]: casual
+            - cell [ref=f3e555]
+            - cell "16/12/2025" [ref=f3e556]
+            - cell [ref=f3e557]:
+              - button [ref=f3e558] [cursor=pointer]:
+                - img
+          - row "player18 @player18 player18@gmail.com casual 16/12/2025" [ref=f3e559]:
+            - cell [ref=f3e560]:
+              - checkbox [ref=f3e561] [cursor=pointer]
+            - cell "player18 @player18" [ref=f3e562]:
+              - generic [ref=f3e563]:
+                - img [ref=f3e565]
+                - generic [ref=f3e570]:
+                  - paragraph [ref=f3e572]: player18
+                  - paragraph [ref=f3e573]: "@player18"
+            - cell "player18@gmail.com" [ref=f3e574]
+            - cell "casual" [ref=f3e575]:
+              - generic [ref=f3e577]: casual
+            - cell [ref=f3e578]
+            - cell "16/12/2025" [ref=f3e579]
+            - cell [ref=f3e580]:
+              - button [ref=f3e581] [cursor=pointer]:
+                - img
+          - row "player17 @player17 player17@gmail.com casual 16/12/2025" [ref=f3e582]:
+            - cell [ref=f3e583]:
+              - checkbox [ref=f3e584] [cursor=pointer]
+            - cell "player17 @player17" [ref=f3e585]:
+              - generic [ref=f3e586]:
+                - img [ref=f3e588]
+                - generic [ref=f3e593]:
+                  - paragraph [ref=f3e595]: player17
+                  - paragraph [ref=f3e596]: "@player17"
+            - cell "player17@gmail.com" [ref=f3e597]
+            - cell "casual" [ref=f3e598]:
+              - generic [ref=f3e600]: casual
+            - cell [ref=f3e601]
+            - cell "16/12/2025" [ref=f3e602]
+            - cell [ref=f3e603]:
+              - button [ref=f3e604] [cursor=pointer]:
+                - img
+          - row "player16 @player16 player16@gmail.com casual 16/12/2025" [ref=f3e605]:
+            - cell [ref=f3e606]:
+              - checkbox [ref=f3e607] [cursor=pointer]
+            - cell "player16 @player16" [ref=f3e608]:
+              - generic [ref=f3e609]:
+                - img [ref=f3e611]
+                - generic [ref=f3e616]:
+                  - paragraph [ref=f3e618]: player16
+                  - paragraph [ref=f3e619]: "@player16"
+            - cell "player16@gmail.com" [ref=f3e620]
+            - cell "casual" [ref=f3e621]:
+              - generic [ref=f3e623]: casual
+            - cell [ref=f3e624]
+            - cell "16/12/2025" [ref=f3e625]
+            - cell [ref=f3e626]:
+              - button [ref=f3e627] [cursor=pointer]:
+                - img
+          - row "player15 @player15 player15@gmail.com casual 16/12/2025" [ref=f3e628]:
+            - cell [ref=f3e629]:
+              - checkbox [ref=f3e630] [cursor=pointer]
+            - cell "player15 @player15" [ref=f3e631]:
+              - generic [ref=f3e632]:
+                - img [ref=f3e634]
+                - generic [ref=f3e639]:
+                  - paragraph [ref=f3e641]: player15
+                  - paragraph [ref=f3e642]: "@player15"
+            - cell "player15@gmail.com" [ref=f3e643]
+            - cell "casual" [ref=f3e644]:
+              - generic [ref=f3e646]: casual
+            - cell [ref=f3e647]
+            - cell "16/12/2025" [ref=f3e648]
+            - cell [ref=f3e649]:
+              - button [ref=f3e650] [cursor=pointer]:
+                - img
+          - row "player14 @player14 player14@gmail.com casual 16/12/2025" [ref=f3e651]:
+            - cell [ref=f3e652]:
+              - checkbox [ref=f3e653] [cursor=pointer]
+            - cell "player14 @player14" [ref=f3e654]:
+              - generic [ref=f3e655]:
+                - img [ref=f3e657]
+                - generic [ref=f3e662]:
+                  - paragraph [ref=f3e664]: player14
+                  - paragraph [ref=f3e665]: "@player14"
+            - cell "player14@gmail.com" [ref=f3e666]
+            - cell "casual" [ref=f3e667]:
+              - generic [ref=f3e669]: casual
+            - cell [ref=f3e670]
+            - cell "16/12/2025" [ref=f3e671]
+            - cell [ref=f3e672]:
+              - button [ref=f3e673] [cursor=pointer]:
+                - img
+          - row "player13 @player13 player13@gmail.com casual 16/12/2025" [ref=f3e674]:
+            - cell [ref=f3e675]:
+              - checkbox [ref=f3e676] [cursor=pointer]
+            - cell "player13 @player13" [ref=f3e677]:
+              - generic [ref=f3e678]:
+                - img [ref=f3e680]
+                - generic [ref=f3e685]:
+                  - paragraph [ref=f3e687]: player13
+                  - paragraph [ref=f3e688]: "@player13"
+            - cell "player13@gmail.com" [ref=f3e689]
+            - cell "casual" [ref=f3e690]:
+              - generic [ref=f3e692]: casual
+            - cell [ref=f3e693]
+            - cell "16/12/2025" [ref=f3e694]
+            - cell [ref=f3e695]:
+              - button [ref=f3e696] [cursor=pointer]:
+                - img
+          - row "player12 @player12 player12@gmail.com casual 16/12/2025" [ref=f3e697]:
+            - cell [ref=f3e698]:
+              - checkbox [ref=f3e699] [cursor=pointer]
+            - cell "player12 @player12" [ref=f3e700]:
+              - generic [ref=f3e701]:
+                - img [ref=f3e703]
+                - generic [ref=f3e708]:
+                  - paragraph [ref=f3e710]: player12
+                  - paragraph [ref=f3e711]: "@player12"
+            - cell "player12@gmail.com" [ref=f3e712]
+            - cell "casual" [ref=f3e713]:
+              - generic [ref=f3e715]: casual
+            - cell [ref=f3e716]
+            - cell "16/12/2025" [ref=f3e717]
+            - cell [ref=f3e718]:
+              - button [ref=f3e719] [cursor=pointer]:
+                - img
+      - generic [ref=f3e720]:
+        - paragraph [ref=f3e721]: Showing 1–25 of 36 users
+        - generic [ref=f3e722]:
+          - button "Previous" [disabled]
+          - generic [ref=f3e723]: Page 1 of 2
+          - button "Next" [ref=f3e724] [cursor=pointer]

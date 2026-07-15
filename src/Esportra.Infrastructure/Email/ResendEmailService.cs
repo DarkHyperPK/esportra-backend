@@ -21,18 +21,17 @@ public sealed class ResendEmailService(
         var apiKey = config["Resend:ApiKey"];
         if (string.IsNullOrWhiteSpace(apiKey) || apiKey.StartsWith("REPLACE"))
         {
-            logger.LogWarning("[Email] Resend API key not configured — skipping {Type} to {Email}", type, toEmail);
-            return;
+            throw new InvalidOperationException("Resend email service is not configured.");
         }
 
         var (subject, html) = BuildTemplate(type, data);
 
         var payload = new
         {
-            from    = _from,
-            to      = new[] { toEmail },
+            from = _from,
+            to = new[] { toEmail },
             subject = subject,
-            html    = html,
+            html = html,
         };
 
         logger.LogInformation("[Email] Sending {Type} to {Email} (from: {From})", type, toEmail, _from);
@@ -50,8 +49,8 @@ public sealed class ResendEmailService(
 
             if (!response.IsSuccessStatusCode)
             {
-                var err = await response.Content.ReadAsStringAsync(cts.Token);
-                logger.LogError("[Email] Resend API error {Status}: {Body}", response.StatusCode, err);
+                logger.LogError("[Email] Resend API error {Status}", response.StatusCode);
+                throw new InvalidOperationException($"Resend email submission failed with status {(int)response.StatusCode}.");
             }
             else
             {
@@ -61,10 +60,12 @@ public sealed class ResendEmailService(
         catch (OperationCanceledException)
         {
             logger.LogWarning("[Email] Resend API timed out for {Type} to {Email}", type, toEmail);
+            throw;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "[Email] Failed to send {Type} to {Email}", type, toEmail);
+            throw;
         }
     }
 
@@ -99,7 +100,10 @@ public sealed class ResendEmailService(
                     Get("role"), Get("permissions"), Get("acceptUrl")),
 
             EmailType.PartnerInvite =>
-                EmailTemplates.PartnerInvite(Get("sponsorName"), Get("setupUrl")),
+                EmailTemplates.PartnerInvite(
+                    Get("sponsorName"),
+                    Get("invitationUrl"),
+                    bool.TryParse(Get("isNewUser"), out var isNewUser) && isNewUser),
 
             EmailType.PartnerWelcome =>
                 EmailTemplates.PartnerWelcome(Get("sponsorName"), Get("portalUrl")),
@@ -119,6 +123,17 @@ public sealed class ResendEmailService(
             EmailType.LicenseRejected =>
                 EmailTemplates.LicenseRejected(
                     Get("username"), Get("licenseType"), Get("dashboardUrl")),
+
+            EmailType.TournamentInvite =>
+                EmailTemplates.TournamentInvite(
+                    Get("captainName"), Get("tournamentName"),
+                    Get("code"), Get("tournamentUrl"), Get("expiryDate"),
+                    Get("gameHeaderUrl")),
+
+            EmailType.Broadcast =>
+                EmailTemplates.Broadcast(
+                    Get("title"), Get("content"),
+                    Get("broadcastType", "announcement"), Get("priority", "normal")),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };

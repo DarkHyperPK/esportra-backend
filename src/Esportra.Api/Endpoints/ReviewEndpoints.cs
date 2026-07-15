@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
@@ -16,20 +16,20 @@ public static class ReviewEndpoints
 
     private static string EntityFilter(string entityType) => entityType switch
     {
-        "venue"      => "r.venue_id = @entityId",
-        "user"       => "r.reviewee_id = @entityId",
+        "venue" => "r.venue_id = @entityId",
+        "user" => "r.reviewee_id = @entityId",
         "tournament" => "r.tournament_id = @entityId",
-        _            => "FALSE"
+        _ => "FALSE"
     };
 
     public static void MapReviewEndpoints(this WebApplication app)
     {
         // ── GET /api/reviews/{entityType}/{entityId} ─────────────────────────
         app.MapGet("/api/reviews/{entityType}/{entityId}", async (
-            string               entityType,
-            Guid                 entityId,
+            string entityType,
+            Guid entityId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             if (!ValidEntityTypes.Contains(entityType))
                 return Results.BadRequest(new { error = "entityType must be venue, user, or tournament" });
@@ -55,20 +55,20 @@ public static class ReviewEndpoints
 
         // ── GET /api/reviews/stats/{entityType}/{entityId} ───────────────────
         app.MapGet("/api/reviews/stats/{entityType}/{entityId}", async (
-            string               entityType,
-            Guid                 entityId,
+            string entityType,
+            Guid entityId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             if (!ValidEntityTypes.Contains(entityType))
                 return Results.BadRequest(new { error = "entityType must be venue, user, or tournament" });
 
             var colFilter = entityType switch
             {
-                "venue"      => "venue_id = @entityId",
-                "user"       => "reviewee_id = @entityId",
+                "venue" => "venue_id = @entityId",
+                "user" => "reviewee_id = @entityId",
                 "tournament" => "tournament_id = @entityId",
-                _            => "FALSE"
+                _ => "FALSE"
             };
 
             using var conn = db.CreateConnection();
@@ -90,15 +90,15 @@ public static class ReviewEndpoints
 
             return Results.Ok(new
             {
-                average_rating  = (decimal)(stats.average_rating ?? 0m),
-                total_reviews   = (long)(stats.total_reviews ?? 0L),
+                average_rating = (decimal)(stats.average_rating ?? 0m),
+                total_reviews = (long)(stats.total_reviews ?? 0L),
                 rating_breakdown = new
                 {
-                    five  = (long)(stats.five_star  ?? 0L),
-                    four  = (long)(stats.four_star  ?? 0L),
+                    five = (long)(stats.five_star ?? 0L),
+                    four = (long)(stats.four_star ?? 0L),
                     three = (long)(stats.three_star ?? 0L),
-                    two   = (long)(stats.two_star   ?? 0L),
-                    one   = (long)(stats.one_star   ?? 0L),
+                    two = (long)(stats.two_star ?? 0L),
+                    one = (long)(stats.one_star ?? 0L),
                 }
             });
         });
@@ -106,9 +106,9 @@ public static class ReviewEndpoints
         // ── GET /api/reviews/mine ────────────────────────────────────────────
         // Returns all reviews by the current user.
         app.MapGet("/api/reviews/mine", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -139,9 +139,9 @@ public static class ReviewEndpoints
         // ── POST /api/reviews ────────────────────────────────────────────────
         app.MapPost("/api/reviews", async (
             [FromBody] CreateReviewRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -154,17 +154,17 @@ public static class ReviewEndpoints
             // Duplicate check
             var colFilter = req.ReviewType switch
             {
-                "venue"      => "venue_id = @entityId",
-                "user"       => "reviewee_id = @entityId",
+                "venue" => "venue_id = @entityId",
+                "user" => "reviewee_id = @entityId",
                 "tournament" => "tournament_id = @entityId",
-                _            => "FALSE"
+                _ => "FALSE"
             };
             Guid? entityId = req.ReviewType switch
             {
-                "venue" when req.VenueId is not null           => Guid.Parse(req.VenueId),
-                "user" when req.RevieweeId is not null         => Guid.Parse(req.RevieweeId),
+                "venue" when req.VenueId is not null => Guid.Parse(req.VenueId),
+                "user" when req.RevieweeId is not null => Guid.Parse(req.RevieweeId),
                 "tournament" when req.TournamentId is not null => Guid.Parse(req.TournamentId),
-                _                                              => null
+                _ => null
             };
 
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -182,14 +182,14 @@ public static class ReviewEndpoints
                 """,
                 new
                 {
-                    reviewerId    = userCtx.UserIdGuid,
-                    revieweeId    = req.RevieweeId is not null ? Guid.Parse(req.RevieweeId) : (Guid?)null,
-                    venueId       = req.VenueId is not null ? Guid.Parse(req.VenueId) : (Guid?)null,
-                    tournamentId  = req.TournamentId is not null ? Guid.Parse(req.TournamentId) : (Guid?)null,
-                    rating        = req.Rating,
-                    title         = req.Title,
-                    comment       = req.Comment,
-                    reviewType    = req.ReviewType,
+                    reviewerId = userCtx.UserIdGuid,
+                    revieweeId = req.RevieweeId is not null ? Guid.Parse(req.RevieweeId) : (Guid?)null,
+                    venueId = req.VenueId is not null ? Guid.Parse(req.VenueId) : (Guid?)null,
+                    tournamentId = req.TournamentId is not null ? Guid.Parse(req.TournamentId) : (Guid?)null,
+                    rating = req.Rating,
+                    title = req.Title,
+                    comment = req.Comment,
+                    reviewType = req.ReviewType,
                 });
 
             return Results.Created($"/api/reviews/{review.id}", review);
@@ -197,11 +197,11 @@ public static class ReviewEndpoints
 
         // ── PUT /api/reviews/{id} ────────────────────────────────────────────
         app.MapPut("/api/reviews/{id}", async (
-            Guid                  id,
+            Guid id,
             [FromBody] UpdateReviewRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -230,10 +230,10 @@ public static class ReviewEndpoints
 
         // ── DELETE /api/reviews/{id} ─────────────────────────────────────────
         app.MapDelete("/api/reviews/{id}", async (
-            Guid                 id,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -252,11 +252,11 @@ public static class ReviewEndpoints
         // ── GET /api/reviews/can-review ───────────────────────────────────────
         // Checks if the current user can review a given entity
         app.MapGet("/api/reviews/can-review", async (
-            string               entityType,
-            Guid                 entityId,
-            HttpContext          ctx,
+            string entityType,
+            Guid entityId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -293,7 +293,7 @@ public static class ReviewEndpoints
 
             return Results.Ok(new
             {
-                canReview   = existing is null && hasInteracted,
+                canReview = existing is null && hasInteracted,
                 alreadyReviewed = existing is not null,
                 hasInteracted,
             });

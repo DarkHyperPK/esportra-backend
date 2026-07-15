@@ -18,11 +18,11 @@ public sealed record RateLimitOptions
 
     public Dictionary<string, RateLimitPolicyConfig> Policies { get; init; } = new()
     {
-        ["default"]  = new() { MaxRequests = 200,  WindowSeconds = 60 },
-        ["relaxed"]  = new() { MaxRequests = 500,  WindowSeconds = 60 },
-        ["strict"]   = new() { MaxRequests = 30,   WindowSeconds = 60 },
-        ["auth"]     = new() { MaxRequests = 10,   WindowSeconds = 60 },
-        ["admin"]    = new() { MaxRequests = 1000, WindowSeconds = 60 },
+        ["default"] = new() { MaxRequests = 200, WindowSeconds = 60 },
+        ["relaxed"] = new() { MaxRequests = 500, WindowSeconds = 60 },
+        ["strict"] = new() { MaxRequests = 30, WindowSeconds = 60 },
+        ["auth"] = new() { MaxRequests = 10, WindowSeconds = 60 },
+        ["admin"] = new() { MaxRequests = 1000, WindowSeconds = 60 },
     };
 
     public HashSet<string> ExemptPaths { get; init; } = ["/health", "/api/analytics/events"];
@@ -34,8 +34,8 @@ public sealed record RateLimitOptions
     /// </summary>
     public Dictionary<string, string> PathPolicies { get; init; } = new()
     {
-        ["/api/admin/"]   = "admin",
-        ["/api/auth/"]    = "auth",
+        ["/api/admin/"] = "admin",
+        ["/api/auth/"] = "auth",
     };
 }
 
@@ -91,8 +91,8 @@ public sealed class RateLimitMiddleware
         IConfiguration config,
         ILogger<RateLimitMiddleware> logger)
     {
-        _next   = next;
-        _redis  = redis;
+        _next = next;
+        _redis = redis;
         _logger = logger;
 
         _options = new RateLimitOptions();
@@ -115,24 +115,24 @@ public sealed class RateLimitMiddleware
             return;
         }
 
-        var policy   = ResolvePolicy(context);
-        var config   = _options.Policies.GetValueOrDefault(policy)
+        var policy = ResolvePolicy(context);
+        var config = _options.Policies.GetValueOrDefault(policy)
                        ?? _options.Policies.GetValueOrDefault("default")
                        ?? new RateLimitPolicyConfig();
         var clientKey = GetClientKey(context);
 
-        var now    = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var bucket = now / config.WindowSeconds;
         var cacheKey = $"rl:{policy}:{clientKey}:{bucket}";
 
         // Seconds remaining until current window resets
-        var windowEnd    = (bucket + 1) * config.WindowSeconds;
-        var retryAfter   = (int)Math.Max(1, windowEnd - now);
+        var windowEnd = (bucket + 1) * config.WindowSeconds;
+        var retryAfter = (int)Math.Max(1, windowEnd - now);
 
         int count;
         try
         {
-            var db     = _redis.GetDatabase();
+            var db = _redis.GetDatabase();
             var result = await db.ScriptEvaluateAsync(_luaScript, new { key = (RedisKey)cacheKey, ttl = config.WindowSeconds });
             count = (int)result;
         }
@@ -146,10 +146,10 @@ public sealed class RateLimitMiddleware
         // Always set rate limit headers
         context.Response.OnStarting(() =>
         {
-            context.Response.Headers["X-RateLimit-Limit"]     = config.MaxRequests.ToString();
-            context.Response.Headers["X-RateLimit-Remaining"]  = Math.Max(0, config.MaxRequests - count).ToString();
-            context.Response.Headers["X-RateLimit-Reset"]      = windowEnd.ToString();
-            context.Response.Headers["X-RateLimit-Policy"]     = policy;
+            context.Response.Headers["X-RateLimit-Limit"] = config.MaxRequests.ToString();
+            context.Response.Headers["X-RateLimit-Remaining"] = Math.Max(0, config.MaxRequests - count).ToString();
+            context.Response.Headers["X-RateLimit-Reset"] = windowEnd.ToString();
+            context.Response.Headers["X-RateLimit-Policy"] = policy;
             return Task.CompletedTask;
         });
 
@@ -201,7 +201,7 @@ public sealed class RateLimitMiddleware
         return context.Request.Method.ToUpperInvariant() switch
         {
             "GET" or "HEAD" or "OPTIONS" => "relaxed",
-            _                            => "default",
+            _ => "default",
         };
     }
 

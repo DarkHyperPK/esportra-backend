@@ -14,14 +14,14 @@ public static class VenueStaffEndpoints
         // ── POST /api/venues/{id}/staff/invite ─────────────────────────────────
         // Owner invites staff: creates Supabase account if needed, sends magic link.
         app.MapPost("/api/venues/{id}/staff/invite", async (
-            Guid                    id,
+            Guid id,
             [FromBody] InviteStaffRequest req,
-            HttpContext              ctx,
-            IDbConnectionFactory    db,
-            ISupabaseAdminClient    supabase,
-            IEmailService           email,
-            ILogger<Program>        logger,
-            CancellationToken       ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            IEmailService email,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -122,10 +122,10 @@ public static class VenueStaffEndpoints
         // ── GET /api/venues/{id}/staff ─────────────────────────────────────────
         // List active staff + pending invites for this venue.
         app.MapGet("/api/venues/{id}/staff", async (
-            Guid                 id,
-            HttpContext           ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -173,12 +173,12 @@ public static class VenueStaffEndpoints
         // ── PUT /api/venues/{id}/staff/{staffId} ──────────────────────────────
         // Owner updates a staff member's role.
         app.MapPut("/api/venues/{id}/staff/{staffId}", async (
-            Guid                          id,
-            Guid                          staffId,
+            Guid id,
+            Guid staffId,
             [FromBody] UpdateStaffRequest req,
-            HttpContext                   ctx,
-            IDbConnectionFactory         db,
-            CancellationToken            ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -211,11 +211,11 @@ public static class VenueStaffEndpoints
         // ── DELETE /api/venues/{id}/staff/{staffId} ───────────────────────────
         // Owner removes a staff member.
         app.MapDelete("/api/venues/{id}/staff/{staffId}", async (
-            Guid                 id,
-            Guid                 staffId,
-            HttpContext           ctx,
+            Guid id,
+            Guid staffId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -245,9 +245,9 @@ public static class VenueStaffEndpoints
         // Staff accepts an invite using the invite token (auto-called on first login).
         app.MapPost("/api/venues/staff/accept", async (
             [FromBody] AcceptInviteRequest req,
-            HttpContext                    ctx,
-            IDbConnectionFactory          db,
-            CancellationToken             ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -321,9 +321,9 @@ public static class VenueStaffEndpoints
         // ── GET /api/venues/staff/my-venues ───────────────────────────────────
         // Staff sees all venues they belong to.
         app.MapGet("/api/venues/staff/my-venues", async (
-            HttpContext           ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -374,14 +374,14 @@ public static class VenueStaffEndpoints
         // ── POST /api/venues/{id}/staff/resend ────────────────────────────────
         // Owner re-sends the invite email for a pending invite.
         app.MapPost("/api/venues/{id}/staff/resend/{inviteId}", async (
-            Guid                    id,
-            Guid                    inviteId,
-            HttpContext              ctx,
-            IDbConnectionFactory    db,
-            ISupabaseAdminClient    supabase,
-            IEmailService           email,
-            ILogger<Program>        logger,
-            CancellationToken       ct) =>
+            Guid id,
+            Guid inviteId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabase,
+            IEmailService email,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();

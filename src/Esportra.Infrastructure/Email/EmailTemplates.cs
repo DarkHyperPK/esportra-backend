@@ -27,7 +27,23 @@ public static class EmailTemplates
 
     // ── Base wrapper ──────────────────────────────────────────────────────────
 
-    private static string Wrap(string preheader, string subject, string body) => $"""
+    private static string DefaultHeaderRow() => $"""
+                <tr>
+                  <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
+                    <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
+                  </td>
+                </tr>
+        """;
+
+    private static string GameHeaderRow(string headerImageUrl) => $"""
+                <tr>
+                  <td style="padding:0;line-height:0;background:#050505;">
+                    <img src="{E(headerImageUrl)}" alt="" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;" />
+                  </td>
+                </tr>
+        """;
+
+    private static string Wrap(string preheader, string subject, string body, string? headerImageUrl = null) => $"""
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -41,11 +57,7 @@ public static class EmailTemplates
             <tr><td align="center" style="padding:32px 16px;">
               <table width="600" cellpadding="0" cellspacing="0" style="background:#111111;border-radius:12px;border:1px solid #1f2937;overflow:hidden;">
                 <!-- Header -->
-                <tr>
-                  <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-                    <img src="{_supabaseUrl}/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;outline:none;" />
-                  </td>
-                </tr>
+                {(string.IsNullOrWhiteSpace(headerImageUrl) ? DefaultHeaderRow() : GameHeaderRow(headerImageUrl))}
                 <!-- Body -->
                 <tr><td style="padding:32px;">{body}</td></tr>
                 <!-- Footer -->
@@ -208,15 +220,35 @@ public static class EmailTemplates
         """)
     );
 
+    public static (string Subject, string Html) TournamentInvite(
+        string captainName, string tournamentName, string code, string tournamentUrl, string expiryDate,
+        string gameHeaderUrl = "") =>
+    (
+        $"You're invited to {E(tournamentName)}",
+        Wrap($"Invitation code for {E(tournamentName)}", "Tournament Invitation", $"""
+            {H1("Tournament Invitation")}
+            {P($"Hi {(string.IsNullOrWhiteSpace(captainName) ? "Captain" : E(captainName))}, you've been invited to join <strong style='color:#f9fafb;'>{E(tournamentName)}</strong>.")}
+            {P("Use the invitation code below to redeem your guaranteed team slot. The code is locked to this email address and can only be redeemed once by a team captain.")}
+            <div style="margin:24px 0;padding:18px;border:1px solid #7c3aed;border-radius:10px;background:#181028;text-align:center;">
+              <div style="font-size:12px;color:#c4b5fd;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">Invite Code</div>
+              <div style="font-family:Consolas,Monaco,monospace;font-size:28px;font-weight:800;letter-spacing:4px;color:#fff;">{E(code)}</div>
+            </div>
+            {(string.IsNullOrWhiteSpace(expiryDate) ? "" : P($"This invitation expires on <strong style='color:#f9fafb;'>{E(expiryDate)}</strong>."))}
+            {Btn(string.IsNullOrWhiteSpace(tournamentUrl) ? _frontendUrl : tournamentUrl, "Join Tournament")}
+        """, string.IsNullOrWhiteSpace(gameHeaderUrl) ? null : gameHeaderUrl)
+    );
+
     public static (string Subject, string Html) PartnerInvite(
-        string sponsorName, string setupUrl) =>
+      string sponsorName, string invitationUrl, bool isNewUser) =>
     (
         $"Partner Portal access: {E(sponsorName)}",
-        Wrap("Set up your partner account", "Partner Portal Access", $"""
+        Wrap("Accept your partner portal invitation", "Partner Portal Invitation", $"""
             {H1($"Welcome to the {E(sponsorName)} Partner Portal")}
             {P("You've been invited to manage your sponsor account on Esportra.")}
-            {P("Click below to set up your password and access the portal.")}
-            {Btn(setupUrl, "Set Up Account")}
+          {P(isNewUser
+            ? "Click below to create your account, then accept your sponsor invitation."
+            : "Click below, sign in with this email address, then accept your sponsor invitation.")}
+          {Btn(invitationUrl, "Accept Invitation")}
         """)
     );
 
@@ -354,26 +386,81 @@ public static class EmailTemplates
 
     private static string GetQuickStartText(string licenseType) => licenseType switch
     {
-        "organizer"   => "Create your first tournament and start building your competitive community. You have access to all bracket formats, scheduling tools, and match management features.",
+        "organizer" => "Create your first tournament and start building your competitive community. You have access to all bracket formats, scheduling tools, and match management features.",
         "venue_owner" => "List your venue and start accepting bookings. Add photos, set your pricing, configure your gaming stations, and go live.",
         "broadcaster" => "Connect your streaming setup and start broadcasting tournaments. You have access to multi-match views and real-time commentary tools.",
-        _             => "Head to your dashboard to explore all the features now available to you."
+        _ => "Head to your dashboard to explore all the features now available to you."
     };
 
     private static (string Url, string Label) GetPrimaryCta(string licenseType, string dashboardUrl) => licenseType switch
     {
-        "organizer"   => ($"{dashboardUrl.Replace("/verification-status", "")}/organizer/tournaments/new", "Create Your First Tournament"),
+        "organizer" => ($"{dashboardUrl.Replace("/verification-status", "")}/organizer/tournaments/new", "Create Your First Tournament"),
         "venue_owner" => ($"{dashboardUrl.Replace("/verification-status", "")}/venues/new", "List Your Venue"),
         "broadcaster" => (dashboardUrl, "Go to Dashboard"),
-        _             => (dashboardUrl, "Go to Dashboard")
+        _ => (dashboardUrl, "Go to Dashboard")
     };
 
     private static string FormatLicenseType(string licenseType) =>
         licenseType switch
         {
-            "organizer"   => "Organizer",
+            "organizer" => "Organizer",
             "venue_owner" => "Venue Owner",
             "broadcaster" => "Broadcaster",
-            _             => licenseType
+            _ => licenseType
+        };
+
+    // ── Broadcast Template ───────────────────────────────────────────────────
+
+    public static (string Subject, string Html) Broadcast(
+        string title, string content, string broadcastType = "announcement", string priority = "normal")
+    {
+        var (headerHtml, accentColor, icon) = GetBroadcastTypeStyle(broadcastType);
+        var priorityBadge = GetPriorityBadge(priority);
+        var subject = broadcastType switch
+        {
+            "maintenance" => $"⚠️ {E(title)}",
+            "system" => $"🛡️ {E(title)}",
+            "urgent" when priority is "urgent" or "high" => $"🚨 {E(title)}",
+            _ => E(title)
+        };
+
+        var body = new StringBuilder();
+        body.Append(headerHtml);
+        if (!string.IsNullOrEmpty(priorityBadge))
+            body.Append(priorityBadge);
+        body.Append(H1(E(title)));
+        body.Append($"""<p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#d1d5db;">{content}</p>""");
+        body.Append(Divider());
+        body.Append($"""<p style="margin:0;font-size:12px;color:#6b7280;">This broadcast was sent to you by the Esportra team.</p>""");
+
+        return (subject, Wrap($"Esportra: {E(title)}", E(title), body.ToString()));
+    }
+
+    private static (string HeaderHtml, string AccentColor, string Icon) GetBroadcastTypeStyle(string broadcastType) =>
+        broadcastType switch
+        {
+            "maintenance" => (
+                """<div style="background:linear-gradient(135deg,#d97706,#b45309);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🔧</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Scheduled Maintenance</span></div>""",
+                "#d97706", "🔧"),
+            "promotion" => (
+                """<div style="background:linear-gradient(135deg,#7c3aed,#5b21b6);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🎉</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Special Offer</span></div>""",
+                "#7c3aed", "🎉"),
+            "tournament" => (
+                """<div style="background:linear-gradient(135deg,#e11d48,#be123c);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🏆</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Tournament Update</span></div>""",
+                "#e11d48", "🏆"),
+            "system" => (
+                """<div style="background:linear-gradient(135deg,#dc2626,#991b1b);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">🛡️</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">System Alert</span></div>""",
+                "#dc2626", "🛡️"),
+            _ => (
+                """<div style="background:linear-gradient(135deg,#e11d48,#be123c);padding:12px 16px;border-radius:8px;margin-bottom:20px;text-align:center;"><span style="font-size:20px;">📢</span><span style="color:#fff;font-weight:600;font-size:14px;margin-left:8px;">Announcement</span></div>""",
+                "#e11d48", "📢")
+        };
+
+    private static string GetPriorityBadge(string priority) =>
+        priority switch
+        {
+            "urgent" => """<div style="margin-bottom:12px;"><span style="background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:4px;text-transform:uppercase;letter-spacing:1px;">Urgent</span></div>""",
+            "high" => """<div style="margin-bottom:12px;"><span style="background:#d97706;color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:4px;text-transform:uppercase;letter-spacing:1px;">High Priority</span></div>""",
+            _ => ""
         };
 }

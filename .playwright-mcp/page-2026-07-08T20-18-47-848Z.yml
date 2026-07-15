@@ -1,0 +1,533 @@
+- generic [ref=f3e7]:
+  - region "Notifications (F8)":
+    - list
+  - main [ref=f3e1399]:
+    - generic [ref=f3e1400]:
+      - generic [ref=f3e1401]:
+        - link "Admin super admin" [ref=f3e1402] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e1404]
+          - generic [ref=f3e1406]:
+            - paragraph [ref=f3e1407]: Admin
+            - paragraph [ref=f3e1408]: super admin
+        - link "Home" [ref=f3e1409] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f3e1410]:
+        - link "Command Centre" [ref=f3e1411] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e1412]
+          - text: Command Centre
+        - link "All Users" [ref=f3e1417] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f3e1418]
+          - text: All Users
+        - link "Verifications" [ref=f3e1423] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f3e1424]
+          - text: Verifications
+        - link "Licenses" [ref=f3e1427] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f3e1428]
+          - text: Licenses
+        - link "Sessions" [ref=f3e1432] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f3e1433]
+          - text: Sessions
+        - link "Tournaments" [ref=f3e1435] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f3e1436]
+          - text: Tournaments
+        - link "Teams" [ref=f3e1442] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f3e1443]
+          - text: Teams
+        - link "Venues" [ref=f3e1447] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f3e1448]
+          - text: Venues
+        - link "Games" [ref=f3e1451] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f3e1452]
+          - text: Games
+        - link "Moderation" [ref=f3e1454] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f3e1455]
+          - text: Moderation
+    - generic [ref=f3e1458]:
+      - generic [ref=f3e1459]:
+        - generic [ref=f3e1460]:
+          - link "Back" [ref=f3e1461] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - button "Back" [ref=f3e1462]:
+              - img
+              - text: Back
+          - generic [ref=f3e1463]:
+            - img [ref=f3e1465]
+            - generic [ref=f3e1471]:
+              - heading "Tournament Management" [level=1] [ref=f3e1472]
+              - paragraph [ref=f3e1473]: Oversee and manage platform tournaments
+        - generic [ref=f3e1474]:
+          - button "Refresh" [ref=f3e1475] [cursor=pointer]:
+            - img
+            - text: Refresh
+          - button "Export" [ref=f3e1476] [cursor=pointer]:
+            - img
+            - text: Export
+      - generic [ref=f3e1477]:
+        - generic [ref=f3e1478]:
+          - img [ref=f3e1480]
+          - paragraph [ref=f3e1486]: "23"
+          - paragraph [ref=f3e1487]: Total Tournaments
+        - generic [ref=f3e1488]:
+          - img [ref=f3e1490]
+          - paragraph [ref=f3e1492]: "7"
+          - paragraph [ref=f3e1493]: Active
+        - generic [ref=f3e1494]:
+          - img [ref=f3e1496]
+          - paragraph [ref=f3e1499]: "5"
+          - paragraph [ref=f3e1500]: Upcoming
+        - generic [ref=f3e1501]:
+          - img [ref=f3e1503]
+          - paragraph [ref=f3e1506]: "11"
+          - paragraph [ref=f3e1507]: Completed
+      - generic [ref=f3e1508]:
+        - generic [ref=f3e1509]:
+          - img [ref=f3e1510]
+          - textbox "Search tournaments..." [ref=f3e1513]
+        - generic [ref=f3e1514]:
+          - button "All Status" [ref=f3e1515] [cursor=pointer]
+          - button "registration" [ref=f3e1516] [cursor=pointer]
+          - button "ongoing" [ref=f3e1517] [cursor=pointer]
+          - button "completed" [ref=f3e1518] [cursor=pointer]
+          - button "cancelled" [ref=f3e1519] [cursor=pointer]
+      - button "Advanced Filters" [ref=f3e1521] [cursor=pointer]:
+        - img
+        - text: Advanced Filters
+        - img
+      - table [ref=f3e1524]:
+        - rowgroup [ref=f3e1525]:
+          - row "Tournament Game Status Prize Pool Teams Start Date Actions" [ref=f3e1526]:
+            - columnheader [ref=f3e1527]:
+              - checkbox [ref=f3e1528] [cursor=pointer]
+            - columnheader "Tournament" [ref=f3e1529]
+            - columnheader "Game" [ref=f3e1530]
+            - columnheader "Status" [ref=f3e1531]
+            - columnheader "Prize Pool" [ref=f3e1532]
+            - columnheader "Teams" [ref=f3e1533]
+            - columnheader "Start Date" [ref=f3e1534]
+            - columnheader "Actions" [ref=f3e1535]
+        - rowgroup [ref=f3e1536]:
+          - row "test check in a9b4bda0... Valorant ongoing $0 4 08/07/2026" [ref=f3e1537]:
+            - cell [ref=f3e1538]:
+              - checkbox [ref=f3e1539] [cursor=pointer]
+            - cell "test check in a9b4bda0..." [ref=f3e1540]:
+              - generic [ref=f3e1541]:
+                - img [ref=f3e1543]
+                - generic [ref=f3e1549]:
+                  - paragraph [ref=f3e1550]: test check in
+                  - paragraph [ref=f3e1551]: a9b4bda0...
+            - cell "Valorant" [ref=f3e1552]
+            - cell "ongoing" [ref=f3e1553]:
+              - generic [ref=f3e1554]: ongoing
+            - cell "$0" [ref=f3e1555]
+            - cell "4" [ref=f3e1556]
+            - cell "08/07/2026" [ref=f3e1557]
+            - cell [ref=f3e1558]:
+              - button [ref=f3e1559] [cursor=pointer]:
+                - img
+          - row "Valorant 25c4faab... Valorant draft $0 32 03/07/2026" [ref=f3e1560]:
+            - cell [ref=f3e1561]:
+              - checkbox [ref=f3e1562] [cursor=pointer]
+            - cell "Valorant 25c4faab..." [ref=f3e1563]:
+              - generic [ref=f3e1564]:
+                - img [ref=f3e1566]
+                - generic [ref=f3e1572]:
+                  - paragraph [ref=f3e1573]: Valorant
+                  - paragraph [ref=f3e1574]: 25c4faab...
+            - cell "Valorant" [ref=f3e1575]
+            - cell "draft" [ref=f3e1576]:
+              - generic [ref=f3e1577]: draft
+            - cell "$0" [ref=f3e1578]
+            - cell "32" [ref=f3e1579]
+            - cell "03/07/2026" [ref=f3e1580]
+            - cell [ref=f3e1581]:
+              - button [ref=f3e1582] [cursor=pointer]:
+                - img
+          - row "E2E Browse 1782824556924 82a95912... Fortnite completed $0 8 30/06/2026" [ref=f3e1583]:
+            - cell [ref=f3e1584]:
+              - checkbox [ref=f3e1585] [cursor=pointer]
+            - cell "E2E Browse 1782824556924 82a95912..." [ref=f3e1586]:
+              - generic [ref=f3e1587]:
+                - img [ref=f3e1589]
+                - generic [ref=f3e1595]:
+                  - paragraph [ref=f3e1596]: E2E Browse 1782824556924
+                  - paragraph [ref=f3e1597]: 82a95912...
+            - cell "Fortnite" [ref=f3e1598]
+            - cell "completed" [ref=f3e1599]:
+              - generic [ref=f3e1600]: completed
+            - cell "$0" [ref=f3e1601]
+            - cell "8" [ref=f3e1602]
+            - cell "30/06/2026" [ref=f3e1603]
+            - cell [ref=f3e1604]:
+              - button [ref=f3e1605] [cursor=pointer]:
+                - img
+          - row "E2E Browse EU 1782824555076 5bf51456... Fortnite completed $0 8 30/06/2026" [ref=f3e1606]:
+            - cell [ref=f3e1607]:
+              - checkbox [ref=f3e1608] [cursor=pointer]
+            - cell "E2E Browse EU 1782824555076 5bf51456..." [ref=f3e1609]:
+              - generic [ref=f3e1610]:
+                - img [ref=f3e1612]
+                - generic [ref=f3e1618]:
+                  - paragraph [ref=f3e1619]: E2E Browse EU 1782824555076
+                  - paragraph [ref=f3e1620]: 5bf51456...
+            - cell "Fortnite" [ref=f3e1621]
+            - cell "completed" [ref=f3e1622]:
+              - generic [ref=f3e1623]: completed
+            - cell "$0" [ref=f3e1624]
+            - cell "8" [ref=f3e1625]
+            - cell "30/06/2026" [ref=f3e1626]
+            - cell [ref=f3e1627]:
+              - button [ref=f3e1628] [cursor=pointer]:
+                - img
+          - row "E2E Browse 1782824553382 4d677dcb... Fortnite completed $0 8 30/06/2026" [ref=f3e1629]:
+            - cell [ref=f3e1630]:
+              - checkbox [ref=f3e1631] [cursor=pointer]
+            - cell "E2E Browse 1782824553382 4d677dcb..." [ref=f3e1632]:
+              - generic [ref=f3e1633]:
+                - img [ref=f3e1635]
+                - generic [ref=f3e1641]:
+                  - paragraph [ref=f3e1642]: E2E Browse 1782824553382
+                  - paragraph [ref=f3e1643]: 4d677dcb...
+            - cell "Fortnite" [ref=f3e1644]
+            - cell "completed" [ref=f3e1645]:
+              - generic [ref=f3e1646]: completed
+            - cell "$0" [ref=f3e1647]
+            - cell "8" [ref=f3e1648]
+            - cell "30/06/2026" [ref=f3e1649]
+            - cell [ref=f3e1650]:
+              - button [ref=f3e1651] [cursor=pointer]:
+                - img
+          - row "E2E Browse 1782824551864 4c19d8bb... Fortnite completed $0 8 30/06/2026" [ref=f3e1652]:
+            - cell [ref=f3e1653]:
+              - checkbox [ref=f3e1654] [cursor=pointer]
+            - cell "E2E Browse 1782824551864 4c19d8bb..." [ref=f3e1655]:
+              - generic [ref=f3e1656]:
+                - img [ref=f3e1658]
+                - generic [ref=f3e1664]:
+                  - paragraph [ref=f3e1665]: E2E Browse 1782824551864
+                  - paragraph [ref=f3e1666]: 4c19d8bb...
+            - cell "Fortnite" [ref=f3e1667]
+            - cell "completed" [ref=f3e1668]:
+              - generic [ref=f3e1669]: completed
+            - cell "$0" [ref=f3e1670]
+            - cell "8" [ref=f3e1671]
+            - cell "30/06/2026" [ref=f3e1672]
+            - cell [ref=f3e1673]:
+              - button [ref=f3e1674] [cursor=pointer]:
+                - img
+          - row "E2E Browse Newer 1782824549809 5c4b94a4... Fortnite completed $0 8 30/06/2026" [ref=f3e1675]:
+            - cell [ref=f3e1676]:
+              - checkbox [ref=f3e1677] [cursor=pointer]
+            - cell "E2E Browse Newer 1782824549809 5c4b94a4..." [ref=f3e1678]:
+              - generic [ref=f3e1679]:
+                - img [ref=f3e1681]
+                - generic [ref=f3e1687]:
+                  - paragraph [ref=f3e1688]: E2E Browse Newer 1782824549809
+                  - paragraph [ref=f3e1689]: 5c4b94a4...
+            - cell "Fortnite" [ref=f3e1690]
+            - cell "completed" [ref=f3e1691]:
+              - generic [ref=f3e1692]: completed
+            - cell "$0" [ref=f3e1693]
+            - cell "8" [ref=f3e1694]
+            - cell "30/06/2026" [ref=f3e1695]
+            - cell [ref=f3e1696]:
+              - button [ref=f3e1697] [cursor=pointer]:
+                - img
+          - row "E2E Browse Older 1782824549808 9d18da08... Fortnite completed $0 8 30/06/2026" [ref=f3e1698]:
+            - cell [ref=f3e1699]:
+              - checkbox [ref=f3e1700] [cursor=pointer]
+            - cell "E2E Browse Older 1782824549808 9d18da08..." [ref=f3e1701]:
+              - generic [ref=f3e1702]:
+                - img [ref=f3e1704]
+                - generic [ref=f3e1710]:
+                  - paragraph [ref=f3e1711]: E2E Browse Older 1782824549808
+                  - paragraph [ref=f3e1712]: 9d18da08...
+            - cell "Fortnite" [ref=f3e1713]
+            - cell "completed" [ref=f3e1714]:
+              - generic [ref=f3e1715]: completed
+            - cell "$0" [ref=f3e1716]
+            - cell "8" [ref=f3e1717]
+            - cell "30/06/2026" [ref=f3e1718]
+            - cell [ref=f3e1719]:
+              - button [ref=f3e1720] [cursor=pointer]:
+                - img
+          - row "E2E Browse 1782824548075 4f7b5dd4... Fortnite completed $0 8 30/06/2026" [ref=f3e1721]:
+            - cell [ref=f3e1722]:
+              - checkbox [ref=f3e1723] [cursor=pointer]
+            - cell "E2E Browse 1782824548075 4f7b5dd4..." [ref=f3e1724]:
+              - generic [ref=f3e1725]:
+                - img [ref=f3e1727]
+                - generic [ref=f3e1733]:
+                  - paragraph [ref=f3e1734]: E2E Browse 1782824548075
+                  - paragraph [ref=f3e1735]: 4f7b5dd4...
+            - cell "Fortnite" [ref=f3e1736]
+            - cell "completed" [ref=f3e1737]:
+              - generic [ref=f3e1738]: completed
+            - cell "$0" [ref=f3e1739]
+            - cell "8" [ref=f3e1740]
+            - cell "30/06/2026" [ref=f3e1741]
+            - cell [ref=f3e1742]:
+              - button [ref=f3e1743] [cursor=pointer]:
+                - img
+          - row "Val test teams 7053d4cc... Valorant draft $0 1024 27/06/2026" [ref=f3e1744]:
+            - cell [ref=f3e1745]:
+              - checkbox [ref=f3e1746] [cursor=pointer]
+            - cell "Val test teams 7053d4cc..." [ref=f3e1747]:
+              - generic [ref=f3e1748]:
+                - img [ref=f3e1750]
+                - generic [ref=f3e1756]:
+                  - paragraph [ref=f3e1757]: Val test teams
+                  - paragraph [ref=f3e1758]: 7053d4cc...
+            - cell "Valorant" [ref=f3e1759]
+            - cell "draft" [ref=f3e1760]:
+              - generic [ref=f3e1761]: draft
+            - cell "$0" [ref=f3e1762]
+            - cell "1024" [ref=f3e1763]
+            - cell "27/06/2026" [ref=f3e1764]
+            - cell [ref=f3e1765]:
+              - button [ref=f3e1766] [cursor=pointer]:
+                - img
+          - row "LOL f94ac2a1... League of Legends ongoing $10,000 8 18/06/2026" [ref=f3e1767]:
+            - cell [ref=f3e1768]:
+              - checkbox [ref=f3e1769] [cursor=pointer]
+            - cell "LOL f94ac2a1..." [ref=f3e1770]:
+              - generic [ref=f3e1771]:
+                - img [ref=f3e1773]
+                - generic [ref=f3e1779]:
+                  - paragraph [ref=f3e1780]: LOL
+                  - paragraph [ref=f3e1781]: f94ac2a1...
+            - cell "League of Legends" [ref=f3e1782]
+            - cell "ongoing" [ref=f3e1783]:
+              - generic [ref=f3e1784]: ongoing
+            - cell "$10,000" [ref=f3e1785]
+            - cell "8" [ref=f3e1786]
+            - cell "18/06/2026" [ref=f3e1787]
+            - cell [ref=f3e1788]:
+              - button [ref=f3e1789] [cursor=pointer]:
+                - img
+          - row "APEX test 5d469fa1... Apex Legends ongoing $0 8 15/06/2026" [ref=f3e1790]:
+            - cell [ref=f3e1791]:
+              - checkbox [ref=f3e1792] [cursor=pointer]
+            - cell "APEX test 5d469fa1..." [ref=f3e1793]:
+              - generic [ref=f3e1794]:
+                - img [ref=f3e1796]
+                - generic [ref=f3e1802]:
+                  - paragraph [ref=f3e1803]: APEX test
+                  - paragraph [ref=f3e1804]: 5d469fa1...
+            - cell "Apex Legends" [ref=f3e1805]
+            - cell "ongoing" [ref=f3e1806]:
+              - generic [ref=f3e1807]: ongoing
+            - cell "$0" [ref=f3e1808]
+            - cell "8" [ref=f3e1809]
+            - cell "15/06/2026" [ref=f3e1810]
+            - cell [ref=f3e1811]:
+              - button [ref=f3e1812] [cursor=pointer]:
+                - img
+          - row "solo prize acef4477... Valorant ongoing $123,123 4 16/06/2026" [ref=f3e1813]:
+            - cell [ref=f3e1814]:
+              - checkbox [ref=f3e1815] [cursor=pointer]
+            - cell "solo prize acef4477..." [ref=f3e1816]:
+              - generic [ref=f3e1817]:
+                - img [ref=f3e1819]
+                - generic [ref=f3e1825]:
+                  - paragraph [ref=f3e1826]: solo prize
+                  - paragraph [ref=f3e1827]: acef4477...
+            - cell "Valorant" [ref=f3e1828]
+            - cell "ongoing" [ref=f3e1829]:
+              - generic [ref=f3e1830]: ongoing
+            - cell "$123,123" [ref=f3e1831]
+            - cell "4" [ref=f3e1832]
+            - cell "16/06/2026" [ref=f3e1833]
+            - cell [ref=f3e1834]:
+              - button [ref=f3e1835] [cursor=pointer]:
+                - img
+          - row "test with prize solo 3bb41542... Valorant ongoing $123,123 4 16/06/2026" [ref=f3e1836]:
+            - cell [ref=f3e1837]:
+              - checkbox [ref=f3e1838] [cursor=pointer]
+            - cell "test with prize solo 3bb41542..." [ref=f3e1839]:
+              - generic [ref=f3e1840]:
+                - img [ref=f3e1842]
+                - generic [ref=f3e1848]:
+                  - paragraph [ref=f3e1849]: test with prize solo
+                  - paragraph [ref=f3e1850]: 3bb41542...
+            - cell "Valorant" [ref=f3e1851]
+            - cell "ongoing" [ref=f3e1852]:
+              - generic [ref=f3e1853]: ongoing
+            - cell "$123,123" [ref=f3e1854]
+            - cell "4" [ref=f3e1855]
+            - cell "16/06/2026" [ref=f3e1856]
+            - cell [ref=f3e1857]:
+              - button [ref=f3e1858] [cursor=pointer]:
+                - img
+          - row "Valo test with prize money 559aa4c4... Valorant ongoing $200,000 4 16/06/2026" [ref=f3e1859]:
+            - cell [ref=f3e1860]:
+              - checkbox [ref=f3e1861] [cursor=pointer]
+            - cell "Valo test with prize money 559aa4c4..." [ref=f3e1862]:
+              - generic [ref=f3e1863]:
+                - img [ref=f3e1865]
+                - generic [ref=f3e1871]:
+                  - paragraph [ref=f3e1872]: Valo test with prize money
+                  - paragraph [ref=f3e1873]: 559aa4c4...
+            - cell "Valorant" [ref=f3e1874]
+            - cell "ongoing" [ref=f3e1875]:
+              - generic [ref=f3e1876]: ongoing
+            - cell "$200,000" [ref=f3e1877]
+            - cell "4" [ref=f3e1878]
+            - cell "16/06/2026" [ref=f3e1879]
+            - cell [ref=f3e1880]:
+              - button [ref=f3e1881] [cursor=pointer]:
+                - img
+          - row "PUBG test solo 5fd1b08a... PUBG ongoing $0 20 13/06/2026" [ref=f3e1882]:
+            - cell [ref=f3e1883]:
+              - checkbox [ref=f3e1884] [cursor=pointer]
+            - cell "PUBG test solo 5fd1b08a..." [ref=f3e1885]:
+              - generic [ref=f3e1886]:
+                - img [ref=f3e1888]
+                - generic [ref=f3e1894]:
+                  - paragraph [ref=f3e1895]: PUBG test solo
+                  - paragraph [ref=f3e1896]: 5fd1b08a...
+            - cell "PUBG" [ref=f3e1897]
+            - cell "ongoing" [ref=f3e1898]:
+              - generic [ref=f3e1899]: ongoing
+            - cell "$0" [ref=f3e1900]
+            - cell "20" [ref=f3e1901]
+            - cell "13/06/2026" [ref=f3e1902]
+            - cell [ref=f3e1903]:
+              - button [ref=f3e1904] [cursor=pointer]:
+                - img
+          - row "Fortnite duo 7522bbfe... Fortnite completed $0 60 13/06/2026" [ref=f3e1905]:
+            - cell [ref=f3e1906]:
+              - checkbox [ref=f3e1907] [cursor=pointer]
+            - cell "Fortnite duo 7522bbfe..." [ref=f3e1908]:
+              - generic [ref=f3e1909]:
+                - img [ref=f3e1911]
+                - generic [ref=f3e1917]:
+                  - paragraph [ref=f3e1918]: Fortnite duo
+                  - paragraph [ref=f3e1919]: 7522bbfe...
+            - cell "Fortnite" [ref=f3e1920]
+            - cell "completed" [ref=f3e1921]:
+              - generic [ref=f3e1922]: completed
+            - cell "$0" [ref=f3e1923]
+            - cell "60" [ref=f3e1924]
+            - cell "13/06/2026" [ref=f3e1925]
+            - cell [ref=f3e1926]:
+              - button [ref=f3e1927] [cursor=pointer]:
+                - img
+          - row "TESTPUBG bbebad2b... PUBG draft $0 40 12/06/2026" [ref=f3e1928]:
+            - cell [ref=f3e1929]:
+              - checkbox [ref=f3e1930] [cursor=pointer]
+            - cell "TESTPUBG bbebad2b..." [ref=f3e1931]:
+              - generic [ref=f3e1932]:
+                - img [ref=f3e1934]
+                - generic [ref=f3e1940]:
+                  - paragraph [ref=f3e1941]: TESTPUBG
+                  - paragraph [ref=f3e1942]: bbebad2b...
+            - cell "PUBG" [ref=f3e1943]
+            - cell "draft" [ref=f3e1944]:
+              - generic [ref=f3e1945]: draft
+            - cell "$0" [ref=f3e1946]
+            - cell "40" [ref=f3e1947]
+            - cell "12/06/2026" [ref=f3e1948]
+            - cell [ref=f3e1949]:
+              - button [ref=f3e1950] [cursor=pointer]:
+                - img
+          - row "FN test c3d3232a... Fortnite draft $0 150 12/06/2026" [ref=f3e1951]:
+            - cell [ref=f3e1952]:
+              - checkbox [ref=f3e1953] [cursor=pointer]
+            - cell "FN test c3d3232a..." [ref=f3e1954]:
+              - generic [ref=f3e1955]:
+                - img [ref=f3e1957]
+                - generic [ref=f3e1963]:
+                  - paragraph [ref=f3e1964]: FN test
+                  - paragraph [ref=f3e1965]: c3d3232a...
+            - cell "Fortnite" [ref=f3e1966]
+            - cell "draft" [ref=f3e1967]:
+              - generic [ref=f3e1968]: draft
+            - cell "$0" [ref=f3e1969]
+            - cell "150" [ref=f3e1970]
+            - cell "12/06/2026" [ref=f3e1971]
+            - cell [ref=f3e1972]:
+              - button [ref=f3e1973] [cursor=pointer]:
+                - img
+          - row "BR test a6cf387b... Fortnite completed $0 20 12/06/2026" [ref=f3e1974]:
+            - cell [ref=f3e1975]:
+              - checkbox [ref=f3e1976] [cursor=pointer]
+            - cell "BR test a6cf387b..." [ref=f3e1977]:
+              - generic [ref=f3e1978]:
+                - img [ref=f3e1980]
+                - generic [ref=f3e1986]:
+                  - paragraph [ref=f3e1987]: BR test
+                  - paragraph [ref=f3e1988]: a6cf387b...
+            - cell "Fortnite" [ref=f3e1989]
+            - cell "completed" [ref=f3e1990]:
+              - generic [ref=f3e1991]: completed
+            - cell "$0" [ref=f3e1992]
+            - cell "20" [ref=f3e1993]
+            - cell "12/06/2026" [ref=f3e1994]
+            - cell [ref=f3e1995]:
+              - button [ref=f3e1996] [cursor=pointer]:
+                - img
+          - row "Test 4d17fcb8... Valorant draft $0 16 11/06/2026" [ref=f3e1997]:
+            - cell [ref=f3e1998]:
+              - checkbox [ref=f3e1999] [cursor=pointer]
+            - cell "Test 4d17fcb8..." [ref=f3e2000]:
+              - generic [ref=f3e2001]:
+                - img [ref=f3e2003]
+                - generic [ref=f3e2009]:
+                  - paragraph [ref=f3e2010]: Test
+                  - paragraph [ref=f3e2011]: 4d17fcb8...
+            - cell "Valorant" [ref=f3e2012]
+            - cell "draft" [ref=f3e2013]:
+              - generic [ref=f3e2014]: draft
+            - cell "$0" [ref=f3e2015]
+            - cell "16" [ref=f3e2016]
+            - cell "11/06/2026" [ref=f3e2017]
+            - cell [ref=f3e2018]:
+              - button [ref=f3e2019] [cursor=pointer]:
+                - img
+          - row "Val Team tournament test 7c30f109... Valorant completed $0 4 10/06/2026" [ref=f3e2020]:
+            - cell [ref=f3e2021]:
+              - checkbox [ref=f3e2022] [cursor=pointer]
+            - cell "Val Team tournament test 7c30f109..." [ref=f3e2023]:
+              - generic [ref=f3e2024]:
+                - img [ref=f3e2026]
+                - generic [ref=f3e2032]:
+                  - paragraph [ref=f3e2033]: Val Team tournament test
+                  - paragraph [ref=f3e2034]: 7c30f109...
+            - cell "Valorant" [ref=f3e2035]
+            - cell "completed" [ref=f3e2036]:
+              - generic [ref=f3e2037]: completed
+            - cell "$0" [ref=f3e2038]
+            - cell "4" [ref=f3e2039]
+            - cell "10/06/2026" [ref=f3e2040]
+            - cell [ref=f3e2041]:
+              - button [ref=f3e2042] [cursor=pointer]:
+                - img
+          - row "Valorant Skirmish 1v1 a9a9f8e2... Valorant completed $0 4 11/06/2026" [ref=f3e2043]:
+            - cell [ref=f3e2044]:
+              - checkbox [ref=f3e2045] [cursor=pointer]
+            - cell "Valorant Skirmish 1v1 a9a9f8e2..." [ref=f3e2046]:
+              - generic [ref=f3e2047]:
+                - img [ref=f3e2049]
+                - generic [ref=f3e2055]:
+                  - paragraph [ref=f3e2056]: Valorant Skirmish 1v1
+                  - paragraph [ref=f3e2057]: a9a9f8e2...
+            - cell "Valorant" [ref=f3e2058]
+            - cell "completed" [ref=f3e2059]:
+              - generic [ref=f3e2060]: completed
+            - cell "$0" [ref=f3e2061]
+            - cell "4" [ref=f3e2062]
+            - cell "11/06/2026" [ref=f3e2063]
+            - cell [ref=f3e2064]:
+              - button [ref=f3e2065] [cursor=pointer]:
+                - img

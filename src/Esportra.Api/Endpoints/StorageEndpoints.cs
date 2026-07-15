@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
@@ -15,7 +16,7 @@ public static class StorageEndpoints
     // Allowed file extensions for uploads
     private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico"
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico"
     };
     private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -36,7 +37,7 @@ public static class StorageEndpoints
         "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
         "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
         "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
-        "system.assets.partners", "system.assets.website", "system.assets.games",
+        "system.assets.partners", "system.assets.website", "system.assets.games", "game-assets",
         "users.documents.kyc", "venue-images", "venues.images", "venues.layouts"
     };
 
@@ -52,7 +53,7 @@ public static class StorageEndpoints
     {
         // ── POST /api/storage/upload ─────────────────────────────────────────
         app.MapPost("/api/storage/upload", async (
-            HttpContext    ctx,
+            HttpContext ctx,
             IHttpClientFactory httpFactory,
             IConfiguration config,
             ILogger<Program> logger) =>
@@ -82,6 +83,10 @@ public static class StorageEndpoints
                 return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg), videos (mp4, mov, webm), and documents (pdf, pptx)." });
 
             var folder = form["folder"].FirstOrDefault() ?? "";
+
+            var uploadAllowed = await ValidateStorageUploadAsync(userCtx, bucket, folder, ctx.RequestServices);
+            if (!uploadAllowed)
+                return Results.Forbid();
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
                 ?? throw new InvalidOperationException("Supabase:Url not configured");
@@ -128,11 +133,11 @@ public static class StorageEndpoints
         // ── POST /api/storage/upload-player-card ─────────────────────────────
         // Uploads to: user.avatars / Player-cards / {teamName} / {filename}
         app.MapPost("/api/storage/upload-player-card", async (
-            HttpContext         ctx,
-            IHttpClientFactory  httpFactory,
-            IConfiguration      config,
+            HttpContext ctx,
+            IHttpClientFactory httpFactory,
+            IConfiguration config,
             IDbConnectionFactory db,
-            ILogger<Program>   logger) =>
+            ILogger<Program> logger) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -146,7 +151,29 @@ public static class StorageEndpoints
             if (string.IsNullOrWhiteSpace(teamIdStr) || !Guid.TryParse(teamIdStr, out var teamId))
                 return Results.BadRequest(new { error = "Form parameter 'teamId' is required." });
 
+            if (file.Length > MaxFileSizeBytes)
+                return Results.BadRequest(new { error = $"File exceeds maximum size of {MaxFileSizeBytes / (1024 * 1024)}MB." });
+
+            var ext = Path.GetExtension(file.FileName);
+            if (string.IsNullOrEmpty(ext) || !AllowedImageExtensions.Contains(ext))
+                return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg)." });
+
             using var conn = db.CreateConnection();
+
+            var isActiveMember = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM team_members
+                    WHERE team_id = @teamId
+                      AND user_id = @userId
+                      AND is_active = true
+                )
+                """,
+                new { teamId, userId = userCtx.UserIdGuid });
+
+            if (!isActiveMember)
+                return Results.Forbid();
+
             var teamName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM teams WHERE id = @teamId", new { teamId });
 
@@ -158,9 +185,9 @@ public static class StorageEndpoints
             var serviceKey = config["Supabase:ServiceKey"]
                 ?? throw new InvalidOperationException("Supabase:ServiceKey not configured");
 
-            var ext = Path.GetExtension(file.FileName);
+            var teamSlug = SanitizeTeamSlug(teamName);
             var uniqueName = $"{userCtx.UserIdGuid}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
-            var storagePath = $"Player-cards/{teamName}/{uniqueName}";
+            var storagePath = $"Player-cards/{teamSlug}/{uniqueName}";
 
             var client = httpFactory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", serviceKey);
@@ -199,16 +226,16 @@ public static class StorageEndpoints
 
         // ── DELETE /api/storage/delete ────────────────────────────────────────
         app.MapDelete("/api/storage/delete", async (
-            HttpContext         ctx,
-            IHttpClientFactory  httpFactory,
-            IConfiguration      config,
-            ILogger<Program>   logger) =>
+            HttpContext ctx,
+            IHttpClientFactory httpFactory,
+            IConfiguration config,
+            ILogger<Program> logger) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             var bucket = ctx.Request.Query["bucket"].FirstOrDefault();
-            var path   = ctx.Request.Query["path"].FirstOrDefault();
+            var path = ctx.Request.Query["path"].FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(path))
                 return Results.BadRequest(new { error = "Please specify the file location." });
@@ -231,7 +258,7 @@ public static class StorageEndpoints
             client.DefaultRequestHeaders.Add("apikey", serviceKey);
 
             var deleteUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{path}";
-            var response  = await client.DeleteAsync(deleteUrl);
+            var response = await client.DeleteAsync(deleteUrl);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -242,5 +269,123 @@ public static class StorageEndpoints
             return Results.Ok(new { deleted = true });
 
         }).RequireAuthorization("Authenticated");
+    }
+
+    private static async Task<bool> ValidateStorageUploadAsync(
+        UserContext userCtx,
+        string bucket,
+        string folder,
+        IServiceProvider services)
+    {
+        var userId = userCtx.UserId.ToString();
+        var normalizedFolder = folder.Replace('\\', '/').Trim('/');
+
+        if (bucket.Equals("tournaments.disputes.evidence", StringComparison.OrdinalIgnoreCase)
+            || bucket.Equals("match-evidence", StringComparison.OrdinalIgnoreCase))
+        {
+            if (userCtx.IsSuperAdmin
+                || userCtx.Permissions.Contains(Permissions.DisputesView, StringComparer.OrdinalIgnoreCase)
+                || userCtx.Permissions.Contains(Permissions.DisputesResolve, StringComparer.OrdinalIgnoreCase))
+                return true;
+
+            if (normalizedFolder.StartsWith("temp/", StringComparison.OrdinalIgnoreCase))
+                return normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
+
+            // Match-result dispute evidence (uploaded before tournament_dispute row exists)
+            if (normalizedFolder.StartsWith("matches/", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2 && Guid.TryParse(parts[1], out var matchId))
+                {
+                    var db = services.GetRequiredService<IDbConnectionFactory>();
+                    using var conn = db.CreateConnection();
+                    return await conn.ExecuteScalarAsync<bool>(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM brkt_matches bm
+                            JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                            WHERE bm.id = @matchId
+                              AND tm.user_id = @userId
+                              AND tm.is_active = true
+                        )
+                        OR EXISTS(
+                            SELECT 1 FROM match_result_reports mrr
+                            WHERE mrr.match_id = @matchId AND mrr.reported_by = @userId
+                        )
+                        """,
+                        new { matchId, userId = userCtx.UserIdGuid });
+                }
+            }
+
+            if (normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var firstSegment = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (firstSegment is not null && Guid.TryParse(firstSegment, out var disputeId))
+            {
+                var db = services.GetRequiredService<IDbConnectionFactory>();
+                using var conn = db.CreateConnection();
+                return await conn.ExecuteScalarAsync<bool>(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM tournament_disputes
+                        WHERE id = @disputeId AND raised_by_user_id = @userId
+                    )
+                    """,
+                    new { disputeId, userId = userCtx.UserIdGuid });
+            }
+
+            return false;
+        }
+
+        if (bucket.Equals("users.documents.kyc", StringComparison.OrdinalIgnoreCase))
+        {
+            return userCtx.IsSuperAdmin
+                || userCtx.Permissions.Contains(Permissions.UsersView, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (bucket.StartsWith("users.", StringComparison.OrdinalIgnoreCase))
+        {
+            if (normalizedFolder.StartsWith("Player-cards/", StringComparison.OrdinalIgnoreCase))
+            {
+                var segments = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length < 2)
+                    return false;
+
+                return await IsActiveMemberOfTeamWithSlugAsync(
+                    userCtx.UserIdGuid,
+                    segments[1],
+                    services);
+            }
+
+            return string.IsNullOrWhiteSpace(normalizedFolder)
+                || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return true;
+    }
+
+    private static string SanitizeTeamSlug(string teamName) =>
+        Regex.Replace(teamName, @"[^a-z0-9]", "_", RegexOptions.IgnoreCase).ToLowerInvariant();
+
+    private static async Task<bool> IsActiveMemberOfTeamWithSlugAsync(
+        Guid userId,
+        string teamSlug,
+        IServiceProvider services)
+    {
+        var db = services.GetRequiredService<IDbConnectionFactory>();
+        using var conn = db.CreateConnection();
+
+        var teams = await conn.QueryAsync<string>(
+            """
+            SELECT t.name
+            FROM teams t
+            JOIN team_members tm ON tm.team_id = t.id
+            WHERE tm.user_id = @userId
+              AND tm.is_active = true
+            """,
+            new { userId });
+
+        return teams.Any(name => SanitizeTeamSlug(name) == teamSlug);
     }
 }

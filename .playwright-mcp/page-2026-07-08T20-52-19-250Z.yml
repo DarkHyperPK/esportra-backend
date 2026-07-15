@@ -1,0 +1,103 @@
+- generic:
+  - generic:
+    - list
+    - generic:
+      - generic:
+        - main:
+          - generic:
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - generic:
+                  - img
+                - generic:
+                  - paragraph: Admin
+                  - paragraph: super admin
+              - link:
+                - /url: /
+                - text: Home
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - img
+                - text: Command Centre
+              - link:
+                - /url: /admin/users
+                - img
+                - text: All Users
+              - link:
+                - /url: /admin/users/verifications
+                - img
+                - text: Verifications
+              - link:
+                - /url: /admin/users/licenses
+                - img
+                - text: Licenses
+              - link:
+                - /url: /admin/users/sessions
+                - img
+                - text: Sessions
+              - link:
+                - /url: /admin/content/tournaments
+                - img
+                - text: Tournaments
+              - link:
+                - /url: /admin/content/teams
+                - img
+                - text: Teams
+              - link:
+                - /url: /admin/content/venues
+                - img
+                - text: Venues
+              - link:
+                - /url: /admin/content/games
+                - img
+                - text: Games
+              - link:
+                - /url: /admin/content/moderation
+                - img
+                - text: Moderation
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - heading [level=1]: Feature Flags
+                  - paragraph: Control feature rollouts with flags, rules, and user overrides
+                - button:
+                  - img
+                  - text: New Flag
+              - generic:
+                - img
+                - textbox:
+                  - /placeholder: Search flags...
+              - generic:
+                - generic: No feature flags configured
+  - dialog "Create Feature Flag" [ref=f14e83]:
+    - heading "Create Feature Flag" [level=2] [ref=f14e85]
+    - generic [ref=f14e86]:
+      - generic [ref=f14e87]:
+        - generic [ref=f14e88]: Key
+        - textbox "feature_new_dashboard" [active] [ref=f14e89]
+        - paragraph [ref=f14e90]: Lowercase with underscores only
+      - generic [ref=f14e91]:
+        - generic [ref=f14e92]: Name
+        - textbox "New Dashboard" [ref=f14e93]
+      - generic [ref=f14e94]:
+        - generic [ref=f14e95]: Description
+        - textbox "What this flag controls..." [ref=f14e96]
+      - generic [ref=f14e97]:
+        - generic [ref=f14e98]: Type
+        - combobox [ref=f14e99] [cursor=pointer]:
+          - generic: Boolean (on/off)
+          - img [ref=f14e100]
+      - generic [ref=f14e102]:
+        - generic [ref=f14e103]: Default Value
+        - combobox [ref=f14e104] [cursor=pointer]:
+          - generic: Enabled (true)
+          - img [ref=f14e105]
+    - generic [ref=f14e107]:
+      - button "Cancel" [ref=f14e108] [cursor=pointer]
+      - button "Create Flag" [disabled]
+    - button "Close" [ref=f14e109] [cursor=pointer]:
+      - img [ref=f14e110]
+      - generic [ref=f14e113]: Close

@@ -1,0 +1,656 @@
+- generic:
+  - generic:
+    - list
+    - generic:
+      - generic:
+        - main:
+          - generic:
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - generic:
+                  - img
+                - generic:
+                  - paragraph: Admin
+                  - paragraph: super admin
+              - link:
+                - /url: /
+                - text: Home
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - img
+                - text: Command Centre
+              - link:
+                - /url: /admin/users
+                - img
+                - text: All Users
+              - link:
+                - /url: /admin/users/verifications
+                - img
+                - text: Verifications
+              - link:
+                - /url: /admin/users/licenses
+                - img
+                - text: Licenses
+              - link:
+                - /url: /admin/users/sessions
+                - img
+                - text: Sessions
+              - link:
+                - /url: /admin/content/tournaments
+                - img
+                - text: Tournaments
+              - link:
+                - /url: /admin/content/teams
+                - img
+                - text: Teams
+              - link:
+                - /url: /admin/content/venues
+                - img
+                - text: Venues
+              - link:
+                - /url: /admin/content/games
+                - img
+                - text: Games
+              - link:
+                - /url: /admin/content/moderation
+                - img
+                - text: Moderation
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - generic:
+                    - heading [level=1]: User Management
+                    - paragraph: Search, inspect, and act on platform users
+                - generic:
+                  - button:
+                    - img
+                    - text: Refresh
+                  - button:
+                    - img
+                    - text: Export
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "36"
+                  - paragraph: Total Users
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "2"
+                  - paragraph: Admins
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "2"
+                  - paragraph: Organizers
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "2"
+                  - paragraph: Venue Owners
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "28"
+                  - paragraph: Casual
+              - generic:
+                - generic:
+                  - img
+                  - textbox:
+                    - /placeholder: Search users by name, username, or email...
+                - generic:
+                  - button: All Roles
+                  - button: admin
+                  - button: finance admin
+                  - button: moderator
+                  - button: Mudassir
+                  - button: ops admin
+                  - button: super admin
+                  - button: support admin
+                  - button: organizer
+                  - button: Venue Owner
+                  - button: casual
+              - generic:
+                - button:
+                  - img
+                  - text: Advanced Filters
+                  - img
+              - generic:
+                - generic:
+                  - table:
+                    - rowgroup:
+                      - row:
+                        - columnheader:
+                          - checkbox
+                        - columnheader: User
+                        - columnheader: Email
+                        - columnheader: Regular Roles
+                        - columnheader: Admin Roles
+                        - columnheader: Joined
+                        - columnheader: Actions
+                    - rowgroup:
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - generic:
+                                - paragraph: Rayyan Murtaza
+                              - paragraph: "@badb04652"
+                        - cell: badb04652@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 10/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player22
+                              - paragraph: "@player22"
+                        - cell: player22@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 07/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player21+e2e1780847616676
+                              - paragraph: "@player21+e2e1780847616676"
+                        - cell: player21+e2e1780847616676@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 07/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player21+tournament-ui
+                              - paragraph: "@player21+tournament-ui"
+                        - cell: player21+tournament-ui@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 07/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player21
+                              - paragraph: "@player21"
+                        - cell: player21@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 07/06/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: paradox1632000+invite2
+                              - paragraph: "@paradox1632000+invite2"
+                        - cell: paradox1632000+invite2@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 30/03/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: paradox1632000+esportra
+                              - paragraph: "@paradox1632000+esportra"
+                        - cell: paradox1632000+esportra@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 30/03/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player99
+                              - paragraph: "@player99"
+                        - cell: player99@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 25/03/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player170
+                              - paragraph: "@player70"
+                        - cell: plaeyr70@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 13/03/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                              - generic:
+                                - img
+                            - generic:
+                              - generic:
+                                - paragraph: player9
+                                - generic: Suspended
+                              - paragraph: "@player9"
+                        - cell: player9@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 01/03/2026
+                        - cell:
+                          - button [expanded]:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - generic:
+                                - paragraph: _theseesaw
+                              - paragraph: "@pillow1632000"
+                        - cell: pillow1632000@yahoo.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 27/02/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: darkhyperpk21
+                              - paragraph: "@darkhyperpk21"
+                        - cell: darkhyperpk21@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 21/02/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - generic:
+                                - paragraph: yeboywolfe
+                              - paragraph: "@yeboywolfe"
+                        - cell: yeboywolfe@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 12/02/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - generic:
+                                - paragraph: dash
+                              - paragraph: "@dash"
+                        - cell: darkhyperpk1632000@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 11/02/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player69
+                              - paragraph: "@player69"
+                        - cell: player69@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 06/02/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: Mudassir Siddiqui
+                              - paragraph: "@Player67"
+                        - cell: player67@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 27/01/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player20
+                              - paragraph: "@player20"
+                        - cell: player20@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player19
+                              - paragraph: "@player19"
+                        - cell: player19@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player18
+                              - paragraph: "@player18"
+                        - cell: player18@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player17
+                              - paragraph: "@player17"
+                        - cell: player17@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player16
+                              - paragraph: "@player16"
+                        - cell: player16@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player15
+                              - paragraph: "@player15"
+                        - cell: player15@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player14
+                              - paragraph: "@player14"
+                        - cell: player14@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player13
+                              - paragraph: "@player13"
+                        - cell: player13@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - checkbox
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - generic:
+                                - paragraph: player12
+                              - paragraph: "@player12"
+                        - cell: player12@gmail.com
+                        - cell:
+                          - generic:
+                            - generic: casual
+                        - cell
+                        - cell: 16/12/2025
+                        - cell:
+                          - button:
+                            - img
+              - generic:
+                - paragraph: Showing 1–25 of 36 users
+                - generic:
+                  - button [disabled]: Previous
+                  - generic: Page 1 of 2
+                  - button: Next
+  - menu [active] [ref=f8e723]:
+    - menuitem "View Details" [ref=f8e725]:
+      - img [ref=f8e726]
+      - text: View Details
+    - menuitem "View Public Profile" [ref=f8e731]:
+      - img [ref=f8e732]
+      - text: View Public Profile
+    - menuitem "Unsuspend User" [ref=f8e736]:
+      - img [ref=f8e737]
+      - text: Unsuspend User
+    - generic [ref=f8e741]:
+      - separator [ref=f8e742]
+      - menuitem "Revoke Session" [ref=f8e743]:
+        - img [ref=f8e744]
+        - text: Revoke Session
+    - menuitem "Enter Ghost Mode" [ref=f8e748]:
+      - img [ref=f8e749]
+      - text: Enter Ghost Mode

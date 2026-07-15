@@ -1,0 +1,114 @@
+- generic [ref=f3e7]:
+  - region "Notifications (F8)":
+    - list
+  - main [ref=f3e1257]:
+    - generic [ref=f3e1258]:
+      - generic [ref=f3e1259]:
+        - link "Admin super admin" [ref=f3e1260] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e1262]
+          - generic [ref=f3e1264]:
+            - paragraph [ref=f3e1265]: Admin
+            - paragraph [ref=f3e1266]: super admin
+        - link "Home" [ref=f3e1267] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f3e1268]:
+        - link "Command Centre" [ref=f3e1269] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e1270]
+          - text: Command Centre
+        - link "All Users" [ref=f3e1275] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f3e1276]
+          - text: All Users
+        - link "Verifications" [ref=f3e1281] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f3e1282]
+          - text: Verifications
+        - link "Licenses" [ref=f3e1285] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f3e1286]
+          - text: Licenses
+        - link "Sessions" [ref=f3e1290] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f3e1291]
+          - text: Sessions
+        - link "Tournaments" [ref=f3e1293] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f3e1294]
+          - text: Tournaments
+        - link "Teams" [ref=f3e1300] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f3e1301]
+          - text: Teams
+        - link "Venues" [ref=f3e1305] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f3e1306]
+          - text: Venues
+        - link "Games" [ref=f3e1309] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f3e1310]
+          - text: Games
+        - link "Moderation" [ref=f3e1312] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f3e1313]
+          - text: Moderation
+    - generic [ref=f3e1317]:
+      - generic [ref=f3e1319]:
+        - img [ref=f3e1321]
+        - generic [ref=f3e1323]:
+          - heading "Session Management" [level=1] [ref=f3e1324]
+          - paragraph [ref=f3e1325]: Monitor active sessions and audit authentication activity
+      - generic [ref=f3e1326]:
+        - generic [ref=f3e1327]:
+          - generic [ref=f3e1332]: Online Now
+          - paragraph [ref=f3e1333]: "0"
+        - generic [ref=f3e1334]:
+          - generic [ref=f3e1335]:
+            - img [ref=f3e1336]
+            - generic [ref=f3e1341]: Total Users
+          - paragraph [ref=f3e1342]: "2"
+      - generic [ref=f3e1343]:
+        - tablist [ref=f3e1344]:
+          - tab "Active Sessions" [selected] [ref=f3e1345] [cursor=pointer]:
+            - img [ref=f3e1346]
+            - text: Active Sessions
+          - tab "Session Audit" [ref=f3e1351] [cursor=pointer]:
+            - img [ref=f3e1352]
+            - text: Session Audit
+        - tabpanel "Active Sessions" [ref=f3e1354]:
+          - generic [ref=f3e1355]:
+            - generic [ref=f3e1356]:
+              - img [ref=f3e1357]
+              - textbox "Search sessions" [ref=f3e1360]:
+                - /placeholder: Search by email or username…
+            - generic [ref=f3e1361]:
+              - generic [ref=f3e1362]:
+                - generic [ref=f3e1363]:
+                  - generic [ref=f3e1365]: M
+                  - generic [ref=f3e1366]:
+                    - generic [ref=f3e1367]:
+                      - paragraph [ref=f3e1368]: SystemOptiX
+                      - generic [ref=f3e1369]: You
+                    - paragraph [ref=f3e1370]: paradox1632000@gmail.com
+                - generic [ref=f3e1372]:
+                  - img [ref=f3e1373]
+                  - text: super admin
+                - generic [ref=f3e1375]:
+                  - img [ref=f3e1376]
+                  - generic [ref=f3e1379]: Never
+              - generic [ref=f3e1380]:
+                - generic [ref=f3e1381]:
+                  - generic [ref=f3e1383]: P
+                  - generic [ref=f3e1384]:
+                    - paragraph [ref=f3e1386]: player61
+                    - paragraph [ref=f3e1387]: player6@gmail.com
+                - generic [ref=f3e1389]:
+                  - img [ref=f3e1390]
+                  - text: ops admin
+                - generic [ref=f3e1392]:
+                  - img [ref=f3e1393]
+                  - generic [ref=f3e1396]: Never
+                - button "Revoke" [ref=f3e1397] [cursor=pointer]:
+                  - img
+                  - text: Revoke

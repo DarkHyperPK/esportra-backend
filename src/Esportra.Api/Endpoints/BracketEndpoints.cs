@@ -6,6 +6,7 @@ using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
+using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -29,17 +30,38 @@ public static class BracketEndpoints
     {
         // ── POST /api/brackets/generate ───────────────────────────────────────
         app.MapPost("/api/brackets/generate", async (
+            HttpContext ctx,
             [FromBody] GenerateBracketRequest req,
-            BracketPersistenceService         persistence,
-            IHubContext<BracketHub>           bracketHub,
-            CancellationToken                 ct) =>
+            BracketPersistenceService persistence,
+            TournamentAuthorizationService tournamentAuth,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.StageId is Guid stageId)
+            {
+                if (!await tournamentAuth.CanEditBracketByStageAsync(userCtx, stageId, ct))
+                    return Results.Forbid();
+            }
+            else if (req.TournamentId != Guid.Empty)
+            {
+                if (!await tournamentAuth.CanManageTournamentAsync(
+                        userCtx, req.TournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                    return Results.Forbid();
+            }
+            else
+            {
+                return Results.BadRequest(new { error = "TournamentId or StageId is required." });
+            }
+
             IBracketGenerator generator = req.Format.ToLowerInvariant() switch
             {
                 "double_elimination" => new DoubleEliminationGenerator(),
-                "round_robin"        => new RoundRobinGenerator(),
-                "swiss"              => new SwissGenerator(),
-                _                    => new SingleEliminationGenerator(),
+                "round_robin" => new RoundRobinGenerator(),
+                "swiss" => new SwissGenerator(),
+                _ => new SingleEliminationGenerator(),
             };
 
             var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
@@ -47,13 +69,54 @@ public static class BracketEndpoints
                 return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
 
             var config = new BracketConfig(
-                DailyStartTime:      req.DailyStartTime,
+                DailyStartTime: req.DailyStartTime,
                 TournamentStartDate: req.TournamentStartDate,
-                SwissGroups:         req.SwissGroups,
-                SwissRounds:         req.SwissRounds);
+                SwissGroups: req.SwissGroups,
+                SwissRounds: req.SwissRounds);
 
-            var graph  = generator.Generate(teams, req.TournamentId, req.StageId,
-                req.BestOf, req.BracketSize, req.AdvancementCount, config);
+            // Validate per-round BO configuration
+            var effectiveBoMode = req.BoMode ?? "per_stage";
+
+            if (effectiveBoMode == "per_round")
+            {
+                if (req.RoundBoOverrides is null || req.RoundBoOverrides.Count == 0)
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "Per-round BO mode requires roundBoOverrides to be specified. " +
+                                "Configure BO values for each round or use 'per_stage' mode."
+                    });
+                }
+
+                // Warn about missing keys (but allow generation)
+                var expectedRounds = StageRoundConfiguration.GetRoundStructure(
+                    req.Format, req.BracketSize ?? teams.Count);
+                var missingKeys = expectedRounds
+                    .Select(r => r.Key)
+                    .Where(k => !req.RoundBoOverrides.ContainsKey(k))
+                    .ToList();
+
+                if (missingKeys.Count > 0)
+                {
+                    Console.WriteLine($"[BracketGenerate] Warning: Missing round overrides for keys: {string.Join(", ", missingKeys)}. " +
+                                      $"Using default BO={req.BestOf} for these rounds.");
+                }
+            }
+
+            var roundConfig = new StageRoundConfiguration(
+                req.Format,
+                req.BestOf,
+                effectiveBoMode,
+                req.RoundBoOverrides);
+
+            var graph = generator.Generate(
+                teams,
+                req.TournamentId,
+                req.StageId,
+                roundConfig,
+                req.BracketSize,
+                req.AdvancementCount,
+                config);
 
             var errors = GraphValidator.Validate(graph);
             if (errors.Count > 0)
@@ -73,21 +136,23 @@ public static class BracketEndpoints
 
             return Results.Ok(new
             {
-                versionId  = version.Id,
-                nodeCount  = graph.Nodes.Count,
-                edgeCount  = graph.Edges.Count,
+                versionId = version.Id,
+                nodeCount = graph.Nodes.Count,
+                edgeCount = graph.Edges.Count,
             });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/persist ────────────────────────────────────────
         // Used by MatchRepository.ts to save a client-generated bracket graph.
         // Frontend sends snake_case JSON — deserialize with SnakeCaseLower naming policy.
         app.MapPost("/api/brackets/persist", async (
-            HttpContext                         ctx,
-            BracketPersistenceService          persistence,
-            IDbConnectionFactory               db,
-            IHubContext<BracketHub>            bracketHub,
-            CancellationToken                  ct) =>
+            HttpContext ctx,
+            BracketPersistenceService persistence,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            IHubContext<BracketHub> bracketHub,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
             var graph = await ctx.Request.ReadFromJsonAsync<BracketGraph>(s_snakeCase, ct);
             if (graph is null) return Results.BadRequest("Invalid bracket graph");
@@ -95,22 +160,50 @@ public static class BracketEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            // Verify user is organizer or staff with bracket:edit on the tournament
+            var logger = loggerFactory.CreateLogger("BracketEndpoints.Persist");
+
             using var conn = db.CreateConnection();
             var stageId = graph.Version.StageId;
-            if (stageId is not null)
+            var tournamentId = graph.Version.TournamentId;
+
+            if (stageId is Guid resolvedStageId)
             {
-                var allowed = await StaffAuthHelper.CanActOnStageAsync(
-                    conn, userCtx.UserIdGuid, stageId.Value, StaffAuthHelper.PermBracketEdit);
-                if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                if (!await tournamentAuth.CanEditBracketByStageAsync(userCtx, resolvedStageId, ct))
                     return Results.Forbid();
+            }
+            else if (tournamentId != Guid.Empty)
+            {
+                if (!await tournamentAuth.CanManageTournamentAsync(
+                        userCtx, tournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                    return Results.Forbid();
+            }
+            else
+            {
+                return Results.BadRequest(new { error = "Bracket graph must include stageId or tournamentId." });
             }
 
             var errors = GraphValidator.Validate(graph);
             if (errors.Count > 0)
-                return Results.BadRequest(new { errors });
+                return Results.BadRequest(new { error = "Bracket validation failed.", errors });
 
-            var version = await persistence.SaveGraphAsync(graph, ct);
+            Guid versionId;
+            try
+            {
+                var version = await persistence.SaveGraphAsync(graph, ct);
+                versionId = version.Id;
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                var traceId = ctx.TraceIdentifier;
+                logger.LogError(ex, "Failed to persist bracket graph (trace {TraceId})", traceId);
+                return Results.Json(
+                    new { error = "Could not save bracket. Please try again.", traceId },
+                    statusCode: 500);
+            }
 
             // Notify subscribers
             if (graph.Version.TournamentId != Guid.Empty)
@@ -118,21 +211,21 @@ public static class BracketEndpoints
                 await bracketHub.Clients
                     .Group(BracketHub.TournamentGroup(graph.Version.TournamentId.ToString()))
                     .SendAsync(BracketHubEvents.VersionCreated,
-                        new { versionId = version.Id, tournamentId = graph.Version.TournamentId },
+                        new { versionId, tournamentId = graph.Version.TournamentId },
                         ct);
             }
 
-            return Results.Ok(new { success = true, versionId = version.Id });
+            return Results.Ok(new { success = true, versionId });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/{versionId}/advance-byes ───────────────────────
         app.MapPost("/api/brackets/{versionId}/advance-byes", async (
-            Guid                      versionId,
-            HttpContext               ctx,
+            Guid versionId,
+            HttpContext ctx,
             BracketPersistenceService persistence,
-            IDbConnectionFactory      db,
-            IHubContext<BracketHub>   bracketHub,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -154,16 +247,16 @@ public static class BracketEndpoints
             }
 
             return Results.Ok(new { advanced = count });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/{versionId}/reset ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/reset", async (
-            Guid                      versionId,
-            HttpContext               ctx,
+            Guid versionId,
+            HttpContext ctx,
             BracketPersistenceService persistence,
-            IDbConnectionFactory      db,
-            IHubContext<BracketHub>   bracketHub,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -180,15 +273,15 @@ public static class BracketEndpoints
                 .SendAsync(BracketHubEvents.BracketReset, new { versionId }, ct);
 
             return Results.Ok(new { message = "Bracket reset." });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/brackets/{versionId} ─────────────────────────────────
         app.MapDelete("/api/brackets/{versionId}", async (
-            Guid                      versionId,
-            HttpContext               ctx,
+            Guid versionId,
+            HttpContext ctx,
             BracketPersistenceService persistence,
-            IDbConnectionFactory      db,
-            CancellationToken         ct) =>
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -207,16 +300,16 @@ public static class BracketEndpoints
             {
                 return Results.Json(new { error = "We couldn't delete the bracket. Please try again." }, statusCode: 500);
             }
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/brackets/{versionId} ─────────────────────────────────────
         // Update version status (draft → active → archived) and activated_at.
         app.MapPut("/api/brackets/{versionId}", async (
-            Guid                 versionId,
-            HttpContext           ctx,
+            Guid versionId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<BracketHub> bracketHub,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -270,12 +363,12 @@ public static class BracketEndpoints
             }
 
             return Results.Ok(new { success = true, versionId, status });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/{versionId}/standings ───────────────────────────
         app.MapGet("/api/brackets/{versionId}/standings", async (
-            Guid             versionId,
-            string?          groupId,
+            Guid versionId,
+            string? groupId,
             StandingsService standingsSvc,
             IDbConnectionFactory db,
             CancellationToken ct) =>
@@ -294,8 +387,8 @@ public static class BracketEndpoints
         // ── GET /api/stages/{stageId}/standings ──────────────────────────────
         // Convenience route: frontend passes stageId directly (not versionId)
         app.MapGet("/api/stages/{stageId}/standings", async (
-            Guid             stageId,
-            string?          groupId,
+            Guid stageId,
+            string? groupId,
             StandingsService standingsSvc,
             CancellationToken ct) =>
         {
@@ -305,12 +398,12 @@ public static class BracketEndpoints
 
         // ── POST /api/swiss/next-round ────────────────────────────────────────
         app.MapPost("/api/swiss/next-round", async (
-            [FromBody]      SwissNextRoundRequest req,
-            HttpContext                           ctx,
-            SwissNextRoundService                 swissSvc,
-            IDbConnectionFactory                  db,
-            IHubContext<BracketHub>               bracketHub,
-            CancellationToken                     ct) =>
+            [FromBody] SwissNextRoundRequest req,
+            HttpContext ctx,
+            SwissNextRoundService swissSvc,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -330,17 +423,17 @@ public static class BracketEndpoints
                     ct);
 
             return Results.Ok(new { message = $"Round {req.CurrentRound + 1} generated." });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/swiss/{stageId}/round/{roundNumber} ─────────────────
         app.MapDelete("/api/swiss/{stageId}/round/{roundNumber:int}", async (
-            Guid                     stageId,
-            int                      roundNumber,
-            HttpContext              ctx,
-            IDbConnectionFactory     db,
-            TournamentWinnerService  winnerService,
-            IHubContext<BracketHub>  bracketHub,
-            CancellationToken        ct) =>
+            Guid stageId,
+            int roundNumber,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -391,7 +484,7 @@ public static class BracketEndpoints
             }
 
             return Results.Ok(new { deletedCount = deleted });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
 
         // ── POST /api/brackets/advance ────────────────────────────────────────
@@ -399,11 +492,11 @@ public static class BracketEndpoints
         // Called by a DB webhook trigger after match completion.
         app.MapPost("/api/brackets/advance", async (
             [FromBody] AdvanceBracketRequest req,
-            HttpContext                      ctx,
-            IDbConnectionFactory             db,
-            IHubContext<BracketHub>          bracketHub,
-            ILogger<BracketHub>             logger,
-            CancellationToken                ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            ILogger<BracketHub> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -425,19 +518,35 @@ public static class BracketEndpoints
 
             var advancements = (await conn.QueryAsync("""
                 SELECT ba.target_match_id, ba.target_slot, ba.type,
-                       bm.winner_id, bm.loser_id
+                       bm.winner_id, bm.loser_id, bm.team1_id, bm.team2_id,
+                       bm.team1_seed, bm.team2_seed
                 FROM public.brkt_advancements ba
                 JOIN public.brkt_matches bm ON bm.id = ba.source_match_id
                 WHERE ba.source_match_id = @matchId
                 """, new { matchId = req.MatchId })).ToList();
 
-            // Resolve team IDs for each advancement
+            // Resolve team IDs and seeds for each advancement
             var updates = advancements
-                .Select(adv => new
+                .Select(adv =>
                 {
-                    TargetMatchId = (Guid)adv.target_match_id,
-                    TargetSlot    = (int)adv.target_slot,
-                    TeamId        = (Guid?)((string)adv.type == "winner" ? adv.winner_id : adv.loser_id),
+                    bool isWinner = (string)adv.type == "winner";
+                    Guid? teamId = isWinner ? (Guid?)adv.winner_id : (Guid?)adv.loser_id;
+                    int? teamSeed = null;
+                    if (teamId is not null)
+                    {
+                        // Determine which slot the advancing team came from
+                        if ((Guid?)adv.team1_id == teamId)
+                            teamSeed = (int?)adv.team1_seed;
+                        else if ((Guid?)adv.team2_id == teamId)
+                            teamSeed = (int?)adv.team2_seed;
+                    }
+                    return new
+                    {
+                        TargetMatchId = (Guid)adv.target_match_id,
+                        TargetSlot = (int)adv.target_slot,
+                        TeamId = teamId,
+                        TeamSeed = teamSeed,
+                    };
                 })
                 .Where(u => u.TeamId is not null)
                 .ToList();
@@ -447,18 +556,21 @@ public static class BracketEndpoints
             {
                 // Batch all slot updates in a single UNNEST query
                 var targetIds = updates.Select(u => u.TargetMatchId).ToArray();
-                var slots     = updates.Select(u => u.TargetSlot).ToArray();
-                var teamIds   = updates.Select(u => u.TeamId!.Value).ToArray();
+                var slots = updates.Select(u => u.TargetSlot).ToArray();
+                var teamIds = updates.Select(u => u.TeamId!.Value).ToArray();
+                var teamSeeds = updates.Select(u => u.TeamSeed).ToArray();
 
                 advanced = await conn.ExecuteAsync("""
                     UPDATE public.brkt_matches m
                     SET team1_id = CASE WHEN u.slot = 1 THEN u.team_id ELSE m.team1_id END,
-                        team2_id = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END
-                    FROM UNNEST(@targetIds::uuid[], @slots::int[], @teamIds::uuid[])
-                         AS u(target_match_id, slot, team_id)
+                        team2_id = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END,
+                        team1_seed = CASE WHEN u.slot = 1 THEN u.team_seed ELSE m.team1_seed END,
+                        team2_seed = CASE WHEN u.slot = 2 THEN u.team_seed ELSE m.team2_seed END
+                    FROM UNNEST(@targetIds::uuid[], @slots::int[], @teamIds::uuid[], @teamSeeds::int[])
+                         AS u(target_match_id, slot, team_id, team_seed)
                     WHERE m.id = u.target_match_id
                     """,
-                    new { targetIds, slots, teamIds });
+                    new { targetIds, slots, teamIds, teamSeeds });
 
                 // Broadcast single update for the entire version
                 await bracketHub.Clients
@@ -490,19 +602,27 @@ public static class BracketEndpoints
 
         // ── POST /api/brackets/{versionId}/cache ──────────────────────────────
         app.MapPost("/api/brackets/{versionId}/cache", async (
-            Guid                 versionId,
+            Guid versionId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanEditBracketByVersionAsync(userCtx, versionId, ct))
+                return Results.Forbid();
+
             var count = await RebuildUiCacheAsync(versionId, db, ct);
             return Results.Ok(new { success = true, versionId, matchCount = count });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/{versionId} ─────────────────────────────────────
         app.MapGet("/api/brackets/{versionId}", async (
-            Guid                 versionId,
+            Guid versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var cached = await conn.QuerySingleOrDefaultAsync<string>(
@@ -519,9 +639,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/{versionId}/graph ──────────────────────────────
         // Full graph structure (replaces MatchRepository.getGraphStructure)
         app.MapGet("/api/brackets/{versionId}/graph", async (
-            Guid                 versionId,
+            Guid versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -531,17 +651,15 @@ public static class BracketEndpoints
             if (version is null) return Results.NotFound(new { error = "Bracket not found." });
 
             var nodes = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.*,
                        l.x, l.y,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
-                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE m.version_id = @versionId
                 """,
                 new { versionId });
@@ -556,9 +674,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/{versionId}/bye-matches ────────────────────────
         // Pending matches with exactly one team (BYE matches)
         app.MapGet("/api/brackets/{versionId}/bye-matches", async (
-            Guid                 versionId,
+            Guid versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -575,25 +693,23 @@ public static class BracketEndpoints
         // ── GET /api/brackets/matches ─────────────────────────────────────────
         // Returns all matches for a bracket version
         app.MapGet("/api/brackets/matches", async (
-            Guid?                versionId,
-            Guid?                stageId,
+            Guid? versionId,
+            Guid? stageId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
             if (versionId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    """
+                    $"""
                     SELECT m.*,
-                           COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                           COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                           {BracketTeamResolutionSql.Team1Columns},
+                           {BracketTeamResolutionSql.Team2Columns}
                     FROM brkt_matches m
-                    LEFT JOIN teams t1 ON t1.id = m.team1_id
-                    LEFT JOIN teams t2 ON t2.id = m.team2_id
-                    LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                    LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                    {BracketTeamResolutionSql.Team1Joins}
+                    {BracketTeamResolutionSql.Team2Joins}
                     WHERE m.version_id = @versionId
                     ORDER BY m.round_index, m.match_number
                     """, new { versionId });
@@ -603,16 +719,14 @@ public static class BracketEndpoints
             if (stageId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    """
+                    $"""
                     SELECT m.*,
-                           COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                           COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                           {BracketTeamResolutionSql.Team1Columns},
+                           {BracketTeamResolutionSql.Team2Columns}
                     FROM brkt_matches m
                     JOIN brkt_versions v ON v.id = m.version_id
-                    LEFT JOIN teams t1 ON t1.id = m.team1_id
-                    LEFT JOIN teams t2 ON t2.id = m.team2_id
-                    LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                    LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                    {BracketTeamResolutionSql.Team1Joins}
+                    {BracketTeamResolutionSql.Team2Joins}
                     WHERE v.stage_id = @stageId
                     ORDER BY v.version_number DESC, m.round_index, m.match_number
                     """, new { stageId });
@@ -624,36 +738,41 @@ public static class BracketEndpoints
 
         // ── GET /api/brackets/matches/{id} ────────────────────────────────────
         app.MapGet("/api/brackets/matches/{id}", async (
-            Guid                 id,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
+                return Results.Forbid();
+
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
+                $"""
                 SELECT m.*,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo,
-                       ts.best_of AS stage_best_of
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns},
+                       COALESCE(m.best_of, ts.best_of) AS stage_best_of
                 FROM brkt_matches m
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
-                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 LEFT JOIN brkt_versions bv ON bv.id = m.version_id
                 LEFT JOIN tournament_stages ts ON ts.id = bv.stage_id
                 WHERE m.id = @id
                 """, new { id });
             return match is null ? Results.NotFound() : Results.Ok(match);
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/events ──────────────────────────────────────────
         // Returns bracket match events (scores, status changes, etc.)
         app.MapGet("/api/brackets/events", async (
-            Guid?                matchId,
-            Guid?                versionId,
+            Guid? matchId,
+            Guid? versionId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -685,11 +804,11 @@ public static class BracketEndpoints
         // Returns individual game results within a match (by matchId) or
         // all completed games for a tournament (by tournament_id + status)
         app.MapGet("/api/brackets/match-games", async (
-            Guid?                matchId,
-            Guid?                tournament_id,
-            string?              status,
+            Guid? matchId,
+            Guid? tournament_id,
+            string? status,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -724,9 +843,9 @@ public static class BracketEndpoints
         // ── GET /api/brackets/versions/tournament/{tournamentId} ─────────────
         // List bracket versions for a tournament (replaces direct Supabase query)
         app.MapGet("/api/brackets/versions/tournament/{tournamentId}", async (
-            Guid                 tournamentId,
+            Guid tournamentId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -741,12 +860,19 @@ public static class BracketEndpoints
             return Results.Ok(rows);
         });
 
+        // ── GET /api/brackets/debug/round-config ─────────────────────────────
+        // Debug endpoint to inspect per-round BO configuration for a stage
+        app.MapGet("/api/brackets/debug/round-config", async (
+            Guid stageId,
+            IDbConnectionFactory db,
+            CancellationToken ct) => await GetRoundConfigDebugAsync(stageId, db, ct));
+
         // ── GET /api/brackets/versions/{id} ──────────────────────────────────
         // Alias for GET /api/brackets/{versionId} — same data, different URL pattern
         app.MapGet("/api/brackets/versions/{id}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -755,17 +881,15 @@ public static class BracketEndpoints
             if (version is null) return Results.NotFound(new { error = "Bracket not found." });
 
             var nodes = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.*,
                        l.x, l.y,
-                       COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                       COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
                 LEFT JOIN brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
-                LEFT JOIN tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-                LEFT JOIN tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE m.version_id = @id
                 """, new { id });
 
@@ -774,6 +898,62 @@ public static class BracketEndpoints
 
             return Results.Ok(new { version, nodes, edges });
         });
+
+        // ── PATCH /api/brackets/matches/{matchId}/best-of ────────────────────────
+        // Allow organizers to override BO format on individual matches after bracket generation
+        app.MapPatch("/api/brackets/matches/{matchId}/best-of", async (
+            Guid matchId,
+            [FromBody] UpdateMatchBestOfRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT m.id, m.status, m.best_of, v.tournament_id, v.id AS version_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                WHERE m.id = @matchId
+                """, new { matchId });
+
+            if (match is null) return Results.NotFound(new { error = "Match not found." });
+
+            var tournamentId = (Guid)match.tournament_id;
+            var allowed = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
+            if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            if ((string)match.status == "completed")
+                return Results.BadRequest(new { error = "Cannot change BO format on completed matches." });
+
+            if (req.BestOf is not (1 or 3 or 5))
+                return Results.BadRequest(new { error = "BestOf must be 1, 3, or 5." });
+
+            var vetoInProgress = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM match_map_vetos WHERE match_id = @matchId AND status = 'in_progress')",
+                new { matchId });
+            if (vetoInProgress)
+                return Results.BadRequest(new { error = "Cannot change BO format while veto is in progress." });
+
+            await conn.ExecuteAsync(
+                "UPDATE brkt_matches SET best_of = @bestOf WHERE id = @matchId",
+                new { bestOf = req.BestOf, matchId });
+
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(((Guid)match.version_id).ToString()))
+                .SendAsync(BracketHubEvents.MatchUpdated,
+                    new { matchId, bestOf = req.BestOf },
+                    ct);
+
+            return Results.Ok(new { success = true, matchId, bestOf = req.BestOf });
+        }).RequireAuthorization("Authenticated");
     }
 
     private static async Task ClearTournamentWinnerIfMatchesContainWinnerAsync(
@@ -843,22 +1023,20 @@ public static class BracketEndpoints
     {
         using var conn = db.CreateConnection();
 
-        var matches = (await conn.QueryAsync("""
+        var matches = (await conn.QueryAsync($"""
             SELECT m.id, m.match_number, m.round_index, m.team1_id, m.team2_id,
                    m.winner_id, m.loser_id, m.team1_score, m.team2_score,
                    m.status, m.scheduled_time, m.best_of, m.party_code,
                    m.bracket_type, m.group_id,
                    l.x AS x_pos, l.y AS y_pos,
                    bv.stage_id,
-                   COALESCE(t1.name, tp1.team_name) AS team1_name, t1.logo_url AS team1_logo,
-                   COALESCE(t2.name, tp2.team_name) AS team2_name, t2.logo_url AS team2_logo
+                   {BracketTeamResolutionSql.Team1Columns},
+                   {BracketTeamResolutionSql.Team2Columns}
             FROM public.brkt_matches m
             LEFT JOIN public.brkt_layout l ON l.match_id = m.id AND l.version_id = m.version_id
             LEFT JOIN public.brkt_versions bv ON bv.id = m.version_id
-            LEFT JOIN public.teams t1 ON t1.id = m.team1_id
-            LEFT JOIN public.teams t2 ON t2.id = m.team2_id
-            LEFT JOIN public.tournament_participants tp1 ON tp1.is_mock = TRUE AND tp1.id = m.team1_id
-            LEFT JOIN public.tournament_participants tp2 ON tp2.is_mock = TRUE AND tp2.id = m.team2_id
+            {BracketTeamResolutionSql.Team1Joins}
+            {BracketTeamResolutionSql.Team2Joins}
             WHERE m.version_id = @versionId
             ORDER BY m.round_index, m.match_number
             """, new { versionId })).AsList();
@@ -881,25 +1059,25 @@ public static class BracketEndpoints
 
         var uiMatches = matches.Select(m => new
         {
-            id               = $"db-{m.id}",
-            round            = m.round_index,
-            matchNumber      = m.match_number,
-            team1            = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo },
-            team2            = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo },
-            winner           = m.winner_id,
-            team1_score      = m.team1_score,
-            team2_score      = m.team2_score,
-            status           = m.status ?? "pending",
-            scheduledTime    = m.scheduled_time,
-            bestOf           = m.best_of,
-            partyCode        = m.party_code,
-            bracketType      = m.bracket_type,
-            nextMatchId      = nextMatchMap.TryGetValue(((Guid)m.id).ToString(), out string? nm) ? nm : null,
+            id = $"db-{m.id}",
+            round = m.round_index,
+            matchNumber = m.match_number,
+            team1 = m.team1_id is null ? (object?)null : new { id = m.team1_id, name = m.team1_name, logoUrl = m.team1_logo, seed = (int?)m.team1_seed },
+            team2 = m.team2_id is null ? (object?)null : new { id = m.team2_id, name = m.team2_name, logoUrl = m.team2_logo, seed = (int?)m.team2_seed },
+            winner = m.winner_id,
+            team1_score = m.team1_score,
+            team2_score = m.team2_score,
+            status = m.status ?? "pending",
+            scheduledTime = m.scheduled_time,
+            bestOf = m.best_of,
+            partyCode = m.party_code,
+            bracketType = m.bracket_type,
+            nextMatchId = nextMatchMap.TryGetValue(((Guid)m.id).ToString(), out string? nm) ? nm : null,
             loserNextMatchId = loserNextMap.TryGetValue(((Guid)m.id).ToString(), out string? lm) ? lm : null,
-            stageId          = m.stage_id,
-            groupId          = m.group_id,
-            x                = m.x_pos,
-            y                = m.y_pos,
+            stageId = m.stage_id,
+            groupId = m.group_id,
+            x = m.x_pos,
+            y = m.y_pos,
         }).ToList();
 
         var json = JsonSerializer.Serialize(uiMatches);
@@ -908,5 +1086,90 @@ public static class BracketEndpoints
             new { json, versionId });
 
         return uiMatches.Count;
+    }
+
+    /// <summary>
+    /// Debug endpoint to inspect per-round BO configuration for a stage.
+    /// Returns the exact configuration that would be used during bracket generation.
+    /// </summary>
+    public static async Task<IResult> GetRoundConfigDebugAsync(
+        Guid stageId,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+
+        var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            """
+            SELECT format, capacity, best_of, bo_mode, round_bo_overrides
+            FROM tournament_stages
+            WHERE id = @stageId
+            """,
+            new { stageId });
+
+        if (stage is null)
+            return Results.NotFound(new { error = "Stage not found" });
+
+        string format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+        int capacity = (int?)stage.capacity ?? 8;
+        int defaultBestOf = (int?)stage.best_of ?? 1;
+        string boMode = (string?)stage.bo_mode ?? "per_stage";
+
+        Dictionary<string, int>? overrides = null;
+        if (stage.round_bo_overrides is not null)
+        {
+            var jsonStr = stage.round_bo_overrides.ToString();
+            if (!string.IsNullOrWhiteSpace(jsonStr) && jsonStr != "{}")
+            {
+                overrides = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr);
+            }
+        }
+
+        var roundStructure = StageRoundConfiguration.GetRoundStructure(format, capacity);
+
+        var resolvedRounds = roundStructure.Select(r => new
+        {
+            r.Key,
+            r.Label,
+            r.BracketType,
+            ConfiguredBestOf = overrides?.GetValueOrDefault(r.Key),
+            EffectiveBestOf = boMode == "per_round" && overrides?.ContainsKey(r.Key) == true
+                ? overrides[r.Key]
+                : defaultBestOf,
+            HasOverride = overrides?.ContainsKey(r.Key) ?? false
+        }).ToList();
+
+        var warnings = new List<string>();
+        if (boMode == "per_round")
+        {
+            if (overrides is null || overrides.Count == 0)
+            {
+                warnings.Add("Per-round mode enabled but no overrides configured - bracket generation will fail.");
+            }
+            else
+            {
+                var missingKeys = roundStructure
+                    .Select(r => r.Key)
+                    .Where(k => !overrides.ContainsKey(k))
+                    .ToList();
+                if (missingKeys.Count > 0)
+                {
+                    warnings.Add($"Missing overrides for rounds: {string.Join(", ", missingKeys)}. " +
+                                 $"These rounds will use default BO={defaultBestOf}.");
+                }
+            }
+        }
+
+        return Results.Ok(new
+        {
+            stageId,
+            format,
+            capacity,
+            defaultBestOf,
+            boMode,
+            configuredOverrides = overrides,
+            roundStructure = resolvedRounds,
+            warnings
+        });
     }
 }

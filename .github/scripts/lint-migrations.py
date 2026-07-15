@@ -23,7 +23,7 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MIGRATIONS_DIR = (
     REPO_ROOT / "src" / "Esportra.Infrastructure" / "Migrations" / "Scripts"
 )
@@ -161,6 +161,20 @@ def extract_matches(
     return [(m.group(1), m.group(2)) for m in pattern.finditer(content)]
 
 
+def collect_defined_tables(files: list[Path]) -> set[str]:
+    """Tables introduced by CREATE TABLE in this migration set (not legacy Supabase schema)."""
+    defined: set[str] = set()
+    for sql_file in files:
+        content = strip_noise(
+            sql_file.read_text(encoding="utf-8", errors="replace")
+        )
+        for schema, table in extract_matches(content, _CREATE_TABLE):
+            name = canonical(schema, table)
+            if name:
+                defined.add(name)
+    return defined
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -173,6 +187,11 @@ def main() -> int:
     if not files:
         print("ERROR: No migration files found.")
         return 1
+
+    # Pre-DbUp schema (profiles, venues, tournaments, …) is documented in
+    # 20260317_001_baseline.sql but not recreated here. Only enforce ordering for
+    # tables that this script corpus actually CREATE TABLEs.
+    defined_tables = collect_defined_tables(files)
 
     known: set[str] = set()
     errors: list[str] = []
@@ -194,7 +213,11 @@ def main() -> int:
         for pattern, label in _REFERENCE_CHECKS:
             for schema, table in extract_matches(content, pattern):
                 name = canonical(schema, table)
-                if name and name not in available:
+                if (
+                    name
+                    and name in defined_tables
+                    and name not in available
+                ):
                     errors.append(
                         f"  \u274c  {sql_file.name}\n"
                         f"       {label} \u2192 '{name}' is not yet created\n"
@@ -213,7 +236,8 @@ def main() -> int:
 
     print(
         f"\u2705  Migration linter passed \u2014 "
-        f"{len(known)} table(s) tracked across {len(files)} script(s)."
+        f"{len(defined_tables)} managed table(s), "
+        f"{len(known)} created in-order across {len(files)} script(s)."
     )
     return 0
 

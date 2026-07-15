@@ -7,7 +7,7 @@ public sealed class PostgresHealthCheck(IDbConnectionFactory db) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
-        CancellationToken  cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         try
         {

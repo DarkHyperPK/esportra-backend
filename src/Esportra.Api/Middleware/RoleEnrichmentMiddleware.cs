@@ -88,6 +88,16 @@ public sealed class RoleEnrichmentMiddleware(
             permissions = [];
         }
 
+        if (adminRoles.Contains(AdminRoles.SuperAdmin, StringComparer.OrdinalIgnoreCase))
+        {
+            permissions = typeof(Permissions)
+                .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                .Where(f => f.IsLiteral)
+                .Select(f => (string)f.GetRawConstantValue()!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         var email = context.User.FindFirstValue(ClaimTypes.Email)
                  ?? context.User.FindFirstValue("email")
                  ?? string.Empty;
@@ -97,10 +107,10 @@ public sealed class RoleEnrichmentMiddleware(
 
         return new UserContext
         {
-            UserId      = userId,
-            Email       = email,
-            Roles       = roles,
-            AdminRoles  = adminRoles,
+            UserId = userId,
+            Email = email,
+            Roles = roles,
+            AdminRoles = adminRoles,
             Permissions = permissions,
         };
     }

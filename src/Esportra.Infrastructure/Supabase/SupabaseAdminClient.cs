@@ -17,8 +17,8 @@ public sealed class SupabaseAdminClient(
     IConfiguration config,
     ILogger<SupabaseAdminClient> logger) : ISupabaseAdminClient
 {
-    private readonly string _baseUrl  = config["Supabase:Url"]?.TrimEnd('/') ?? throw new InvalidOperationException("Supabase:Url is required");
-    private readonly string _svcKey   = config["Supabase:ServiceKey"] ?? throw new InvalidOperationException("Supabase:ServiceKey is required");
+    private readonly string _baseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? throw new InvalidOperationException("Supabase:Url is required");
+    private readonly string _svcKey = config["Supabase:ServiceKey"] ?? throw new InvalidOperationException("Supabase:ServiceKey is required");
 
     private HttpRequestMessage BuildRequest(HttpMethod method, string path, object? body = null)
     {
@@ -47,56 +47,42 @@ public sealed class SupabaseAdminClient(
             throw new InvalidOperationException($"UpdateUser failed: {await res.Content.ReadAsStringAsync(ct)}");
     }
 
-    public async Task SetPasswordAsync(string userId, string password, CancellationToken ct = default)
+    public async Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, CancellationToken ct = default)
     {
-        await UpdateUserAsync(userId, new { password }, ct);
-        logger.LogInformation("[SupabaseAdmin] Password updated for user {UserId}", userId);
+        return await GenerateLinkAsync("recovery", email,
+            config["FrontendUrl"]?.TrimEnd('/') ?? "https://esportra.com", ct);
     }
 
-    public async Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, CancellationToken ct = default)
+    public async Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default)
+    {
+        return await GenerateLinkAsync("invite", email, redirectUrl, ct);
+    }
+
+    private async Task<GeneratedLink> GenerateLinkAsync(
+        string type,
+        string email,
+        string redirectUrl,
+        CancellationToken ct)
     {
         var req = BuildRequest(HttpMethod.Post, "/generate_link", new
         {
-            type         = "recovery",
-            email        = email,
-            redirect_to  = config["FrontendUrl"]?.TrimEnd('/') ?? "https://esportra.com",
+            type,
+            email = email,
+            redirect_to = redirectUrl,
         });
 
         var res = await http.SendAsync(req, ct);
         var body = await res.Content.ReadAsStringAsync(ct);
         if (!res.IsSuccessStatusCode)
-            throw new InvalidOperationException($"GenerateLink failed: {body}");
+            throw new InvalidOperationException($"GenerateLink failed with status {(int)res.StatusCode}.");
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        var tokenHash  = root.TryGetProperty("hashed_token", out var ht) ? ht.GetString() ?? "" : "";
-        var actionLink = root.TryGetProperty("action_link",  out var al) ? al.GetString() ?? "" : "";
+        var tokenHash = root.TryGetProperty("hashed_token", out var ht) ? ht.GetString() ?? "" : "";
+        var actionLink = root.TryGetProperty("action_link", out var al) ? al.GetString() ?? "" : "";
 
         return new GeneratedLink(tokenHash, actionLink);
-    }
-
-    public async Task<SupabaseUser?> VerifyOtpAsync(string tokenHash, string type, CancellationToken ct = default)
-    {
-        // Use the public verify endpoint (not admin) — same as edge function
-        var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/auth/v1/verify");
-        req.Headers.Add("apikey", _svcKey);
-        req.Content = JsonContent.Create(new { token_hash = tokenHash, type });
-
-        var res = await http.SendAsync(req, ct);
-        var body = await res.Content.ReadAsStringAsync(ct);
-        if (!res.IsSuccessStatusCode) return null;
-
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-        var userId = root.TryGetProperty("user", out var u)
-            ? (u.TryGetProperty("id", out var id) ? id.GetString() : null)
-            : null;
-        var email = root.TryGetProperty("user", out var u2)
-            ? (u2.TryGetProperty("email", out var em) ? em.GetString() : null)
-            : null;
-
-        return userId is not null ? new SupabaseUser(userId, email ?? "") : null;
     }
 
     public async Task<SupabaseUser?> GetUserByEmailAsync(string email, CancellationToken ct = default)
@@ -111,7 +97,8 @@ public sealed class SupabaseAdminClient(
         {
             var req = BuildRequest(HttpMethod.Get, $"/users?page={page}&per_page={perPage}");
             var res = await http.SendAsync(req, ct);
-            if (!res.IsSuccessStatusCode) return null;
+            if (!res.IsSuccessStatusCode)
+                throw new InvalidOperationException($"GetUserByEmail failed with status {(int)res.StatusCode}.");
 
             var body = await res.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(body);
@@ -141,9 +128,9 @@ public sealed class SupabaseAdminClient(
     {
         var req = BuildRequest(HttpMethod.Post, "/users", new
         {
-            email          = email,
-            email_confirm  = true,
-            user_metadata  = userMetadata,
+            email = email,
+            email_confirm = true,
+            user_metadata = userMetadata,
         });
 
         var res = await http.SendAsync(req, ct);
@@ -153,7 +140,7 @@ public sealed class SupabaseAdminClient(
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
-        var id   = root.GetProperty("id").GetString()!;
+        var id = root.GetProperty("id").GetString()!;
         var mail = root.TryGetProperty("email", out var em) ? em.GetString() ?? email : email;
         return new SupabaseUser(id, mail);
     }
@@ -180,7 +167,7 @@ public sealed class SupabaseAdminClient(
         {
             foreach (var user in usersEl.Value.EnumerateArray())
             {
-                var id    = user.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                var id = user.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                 var email = user.TryGetProperty("email", out var emEl) ? emEl.GetString() ?? "" : "";
 
                 DateTimeOffset? lastSignIn = null;

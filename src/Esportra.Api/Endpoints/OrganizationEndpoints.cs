@@ -1,11 +1,15 @@
-﻿using System.Data;
+using System.Data;
 using System.Dynamic;
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Helpers;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Tournaments;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Hybrid;
 using Esportra.Api.Hubs;
 
 namespace Esportra.Api.Endpoints;
@@ -58,30 +62,15 @@ public static class OrganizationEndpoints
             new { orgId, userId });
     }
 
-    private static async Task<bool> ColumnExists(IDbConnection conn, string tableName, string columnName)
-    {
-        return await conn.ExecuteScalarAsync<bool>(
-            """
-            SELECT EXISTS(
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = @tableName
-                  AND column_name = @columnName
-            )
-            """,
-            new { tableName, columnName });
-    }
-
     public static void MapOrganizationEndpoints(this WebApplication app)
     {
         // ── GET /api/organizations/{orgId}/staff ───────────────────────────────
         // N+1 fix: single query with jsonb_agg for profiles + tournament assignments.
         app.MapGet("/api/organizations/{orgId}/staff", async (
-            Guid                 orgId,
-            HttpContext          ctx,
+            Guid orgId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -98,7 +87,7 @@ public static class OrganizationEndpoints
                 )
                 """,
                 new { orgId, userId = userCtx.UserIdGuid });
-            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            if (!hasAccess && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
             var staff = await conn.QueryAsync<dynamic>(
                 """
@@ -113,6 +102,7 @@ public static class OrganizationEndpoints
                                 'tournament_id',         sta.tournament_id,
                                 'assigned_by',           sta.assigned_by,
                                 'created_at',            sta.created_at,
+                                'permissions',           sta.permissions,
                                 'tournament',            to_jsonb(t)
                             ) ORDER BY sta.created_at
                         ) FILTER (WHERE sta.id IS NOT NULL),
@@ -143,12 +133,12 @@ public static class OrganizationEndpoints
         // ── POST /api/organizations/{orgId}/staff/invite ───────────────────────
         // All 5 operations in one server call: resolve + upsert + assign + notify + email + audit.
         app.MapPost("/api/organizations/{orgId}/staff/invite", async (
-            Guid                            orgId,
-            [FromBody] InviteStaffRequest   req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            IHubContext<NotificationHub>   notifHub,
-            CancellationToken              ct) =>
+            Guid orgId,
+            [FromBody] InviteStaffRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<NotificationHub> notifHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -157,6 +147,9 @@ public static class OrganizationEndpoints
 
             if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
+
+            if (!StaffAuthHelper.TryNormalizeStaffPermissions(req.Permissions, out var normalizedPerms, out var permError))
+                return Results.BadRequest(new { error = permError });
 
             // 1. Resolve user by email
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -183,7 +176,7 @@ public static class OrganizationEndpoints
                         status = 'pending', accepted_at = NULL, responded_at = NULL, updated_at = NOW()
                     WHERE id = @staffId
                     """,
-                    new { staffId = staffIdGuid, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserIdGuid });
+                    new { staffId = staffIdGuid, role = req.Role, permissions = normalizedPerms, assignedBy = userCtx.UserIdGuid });
             }
             else
             {
@@ -194,7 +187,7 @@ public static class OrganizationEndpoints
                     VALUES (@orgId, @profileId, @role, @permissions::text[], @assignedBy, 'pending')
                     RETURNING id
                     """,
-                    new { orgId, profileId = profileIdGuid, role = req.Role, permissions = req.Permissions, assignedBy = userCtx.UserIdGuid });
+                    new { orgId, profileId = profileIdGuid, role = req.Role, permissions = normalizedPerms, assignedBy = userCtx.UserIdGuid });
                 staffIdGuid = (Guid)inserted.id;
             }
 
@@ -220,10 +213,10 @@ public static class OrganizationEndpoints
                 """,
                 new
                 {
-                    userId  = profileIdGuid,
-                    title   = $"🎯 You've Been Recruited as Staff!",
+                    userId = profileIdGuid,
+                    title = $"🎯 You've Been Recruited as Staff!",
                     message = $"{req.InviterName ?? "An organizer"} wants you on the team — join {req.OrgName ?? "their organization"} as {FriendlyRole(req.Role)}.",
-                    data    = System.Text.Json.JsonSerializer.Serialize(new { link = "/staff/dashboard", organization_staff_id = staffIdGuid, organization_id = orgId, role = req.Role }),
+                    data = System.Text.Json.JsonSerializer.Serialize(new { link = "/staff/dashboard", organization_staff_id = staffIdGuid, organization_id = orgId, role = req.Role }),
                 });
 
             // Broadcast to user's SignalR session (if connected)
@@ -232,21 +225,21 @@ public static class OrganizationEndpoints
 
             // 5. Audit log
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.invite", "staff", staffIdGuid,
-                new { invitedEmail = req.UserEmail, req.Role, req.Permissions });
+                new { invitedEmail = req.UserEmail, req.Role, Permissions = normalizedPerms });
 
             // 6. Staff invite notification is handled in-app only (via SignalR NotificationHub above)
 
             return Results.Ok(new { staffId = staffIdGuid });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/organizations/{orgId}/staff/{staffId} ────────────────────
         app.MapPut("/api/organizations/{orgId}/staff/{staffId}", async (
-            Guid                             orgId,
-            Guid                             staffId,
-            [FromBody] UpdateStaffRequest    req,
-            HttpContext                      ctx,
-            IDbConnectionFactory            db,
-            CancellationToken               ct) =>
+            Guid orgId,
+            Guid staffId,
+            [FromBody] UpdateStaffRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -256,27 +249,30 @@ public static class OrganizationEndpoints
             if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
+            if (!StaffAuthHelper.TryNormalizeStaffPermissions(req.Permissions, out var normalized, out var permError))
+                return Results.BadRequest(new { error = permError });
+
             await conn.ExecuteAsync(
                 """
                 UPDATE organization_staff
                 SET role = @role, permissions = @permissions::text[], updated_at = NOW()
                 WHERE id = @staffId AND organization_id = @orgId
                 """,
-                new { staffId, orgId, role = req.Role, permissions = req.Permissions });
+                new { staffId, orgId, role = req.Role, permissions = normalized });
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.update_permissions", "staff", staffId,
-                new { req.Role, req.Permissions });
+                new { req.Role, Permissions = normalized });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/staff/{staffId} ─────────────────
         app.MapDelete("/api/organizations/{orgId}/staff/{staffId}", async (
-            Guid                 orgId,
-            Guid                 staffId,
-            HttpContext          ctx,
+            Guid orgId,
+            Guid staffId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -292,13 +288,13 @@ public static class OrganizationEndpoints
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.remove", "staff", staffId, new { });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/staff/invites — pending for current user ───
         app.MapGet("/api/organizations/staff/invites", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -321,9 +317,9 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations/staff/assignments — active for current user ─
         app.MapGet("/api/organizations/staff/assignments", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -346,11 +342,11 @@ public static class OrganizationEndpoints
 
         // ── POST /api/organizations/staff/{inviteId}/respond ──────────────────
         app.MapPost("/api/organizations/staff/{inviteId}/respond", async (
-            Guid                            inviteId,
+            Guid inviteId,
             [FromBody] RespondInviteRequest req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -372,7 +368,7 @@ public static class OrganizationEndpoints
                 new
                 {
                     inviteId,
-                    status     = req.Accept ? "active" : "declined",
+                    status = req.Accept ? "active" : "declined",
                     acceptedAt = req.Accept ? now : (DateTime?)null,
                     now,
                 });
@@ -386,12 +382,12 @@ public static class OrganizationEndpoints
 
         // ── POST /api/organizations/{orgId}/staff/{staffId}/assign-tournaments ─
         app.MapPost("/api/organizations/{orgId}/staff/{staffId}/assign-tournaments", async (
-            Guid                                      orgId,
-            Guid                                      staffId,
-            [FromBody] AssignTournamentsRequest       req,
-            HttpContext                               ctx,
-            IDbConnectionFactory                     db,
-            CancellationToken                        ct) =>
+            Guid orgId,
+            Guid staffId,
+            [FromBody] AssignTournamentsRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -401,29 +397,50 @@ public static class OrganizationEndpoints
             if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
 
-            if (req.TournamentIds.Count > 0)
+            var assignmentItems = ResolveAssignTournamentItems(req);
+            if (assignmentItems.Count > 0)
             {
+                foreach (var item in assignmentItems)
+                {
+                    if (item.Permissions is { Count: > 0 }
+                        && !StaffAuthHelper.TryNormalizeStaffPermissions(item.Permissions, out _, out var permError))
+                    {
+                        return Results.BadRequest(new { error = permError });
+                    }
+                }
+
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO staff_tournament_assignments (organization_staff_id, tournament_id, assigned_by)
-                    VALUES (@staffId, @tournamentId, @assignedBy)
-                    ON CONFLICT (organization_staff_id, tournament_id) DO NOTHING
+                    INSERT INTO staff_tournament_assignments (organization_staff_id, tournament_id, assigned_by, permissions)
+                    VALUES (@staffId, @tournamentId, @assignedBy, @permissions)
+                    ON CONFLICT (organization_staff_id, tournament_id) DO UPDATE
+                    SET assigned_by = EXCLUDED.assigned_by,
+                        permissions = COALESCE(EXCLUDED.permissions, staff_tournament_assignments.permissions)
                     """,
-                    req.TournamentIds.Select(tid => new { staffId, tournamentId = Guid.Parse(tid), assignedBy = userCtx.UserIdGuid }));
+                    assignmentItems.Select(item => new
+                    {
+                        staffId,
+                        tournamentId = Guid.Parse(item.TournamentId),
+                        assignedBy = userCtx.UserIdGuid,
+                        permissions = item.Permissions is { Count: > 0 }
+                            ? StaffAuthHelper.NormalizeStaffPermissions(item.Permissions)
+                            : (string[]?)null,
+                    }));
             }
 
             await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.assign_tournament", "staff", staffId,
-                new { tournamentIds = req.TournamentIds });
+                new { tournamentIds = assignmentItems.Select(a => a.TournamentId).ToList() });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
-        // ── DELETE /api/organizations/{orgId}/staff/assignments/{assignmentId} ─
-        app.MapDelete("/api/organizations/{orgId}/staff/assignments/{assignmentId}", async (
-            Guid                 orgId,
-            Guid                 assignmentId,
-            HttpContext          ctx,
+        // ── PUT /api/organizations/{orgId}/staff/assignments/{assignmentId} ───
+        app.MapPut("/api/organizations/{orgId}/staff/assignments/{assignmentId}", async (
+            Guid orgId,
+            Guid assignmentId,
+            [FromBody] UpdateAssignmentPermissionsRequest req,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -432,6 +449,63 @@ public static class OrganizationEndpoints
 
             if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
                 return Results.Forbid();
+
+            string[]? normalized = null;
+            if (req.Permissions is not null)
+            {
+                if (!StaffAuthHelper.TryNormalizeStaffPermissions(req.Permissions, out normalized, out var permError))
+                    return Results.BadRequest(new { error = permError });
+            }
+
+            var updated = await conn.ExecuteAsync(
+                """
+                UPDATE staff_tournament_assignments sta
+                SET permissions = @permissions
+                WHERE sta.id = @assignmentId
+                  AND sta.organization_staff_id IN (
+                    SELECT id FROM organization_staff WHERE organization_id = @orgId
+                  )
+                """,
+                new { assignmentId, orgId, permissions = normalized });
+
+            if (updated == 0)
+                return Results.NotFound();
+
+            await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.update_assignment_permissions", "assignment", assignmentId,
+                new { Permissions = normalized });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
+        // ── DELETE /api/organizations/{orgId}/staff/assignments/{assignmentId} ─
+        app.MapDelete("/api/organizations/{orgId}/staff/assignments/{assignmentId}", async (
+            Guid orgId,
+            Guid assignmentId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            if (!await IsOrgOwner(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
+            var assignment = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT sta.tournament_id, t.name AS tournament_name
+                FROM staff_tournament_assignments sta
+                LEFT JOIN tournaments t ON t.id = sta.tournament_id
+                WHERE sta.id = @assignmentId
+                  AND sta.organization_staff_id IN (
+                    SELECT id FROM organization_staff WHERE organization_id = @orgId
+                  )
+                """,
+                new { assignmentId, orgId });
+            if (assignment is null)
+                return Results.NotFound();
 
             await conn.ExecuteAsync(
                 """
@@ -443,21 +517,25 @@ public static class OrganizationEndpoints
                 """,
                 new { assignmentId, orgId });
 
-            await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId, new { });
+            var tournamentId = (Guid)assignment.tournament_id;
+            var tournamentName = assignment.tournament_name as string;
+            await LogAudit(conn, orgId, userCtx.UserIdGuid, "staff.unassign_tournament", "assignment", assignmentId,
+                new { tournamentId = tournamentId.ToString(), tournamentName });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{tournamentId}/assigned-staff ────────────────
         app.MapGet("/api/tournaments/{tournamentId}/assigned-staff", async (
-            Guid                 tournamentId,
+            Guid tournamentId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT sta.id, sta.tournament_id, sta.role AS assignment_role, sta.created_at,
-                       os.user_id, os.role, os.status
+                       sta.permissions,
+                       os.user_id, os.role, os.status, os.permissions AS org_permissions
                 FROM staff_tournament_assignments sta
                 LEFT JOIN organization_staff os ON os.id = sta.organization_staff_id
                 WHERE sta.tournament_id = @tournamentId
@@ -469,11 +547,11 @@ public static class OrganizationEndpoints
         // ── GET /api/organizations/staff/permissions ──────────────────────────
         // Replaces getOrgStaffPermissionsForTournament (2 Supabase calls → 1 query).
         app.MapGet("/api/organizations/staff/permissions", async (
-            string?              organizationId,
-            string?              tournamentId,
-            HttpContext          ctx,
+            string? organizationId,
+            string? tournamentId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -492,32 +570,42 @@ public static class OrganizationEndpoints
 
             // Admins get all permissions without a tournament assignment check
             if ((string)staff.role == "admin")
-                return Results.Ok(staff.permissions ?? Array.Empty<string>());
+                return Results.Ok(StaffAuthHelper.AllStaffPermissions);
 
             // Non-admins need an explicit tournament assignment
-            if (string.IsNullOrEmpty(tournamentId)) return Results.Ok(Array.Empty<string>());
+            if (string.IsNullOrEmpty(tournamentId))
+                return Results.Ok(Array.Empty<string>());
 
-            var assignment = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            var assignment = await conn.QuerySingleOrDefaultAsync<(Guid id, string[]? org_permissions, string[]? assignment_permissions)?>(
                 """
-                SELECT id FROM staff_tournament_assignments
-                WHERE organization_staff_id = @staffId AND tournament_id = @tournamentId
+                SELECT sta.id, os.permissions AS org_permissions, sta.permissions AS assignment_permissions
+                FROM staff_tournament_assignments sta
+                JOIN organization_staff os ON os.id = sta.organization_staff_id
+                WHERE sta.organization_staff_id = @staffId AND sta.tournament_id = @tournamentId
                 """,
                 new { staffId = (Guid)staff.id, tournamentId = Guid.Parse(tournamentId) });
 
-            return assignment is not null
-                ? Results.Ok(staff.permissions ?? Array.Empty<string>())
-                : Results.Ok(Array.Empty<string>());
+            if (assignment is null)
+                return Results.Ok(Array.Empty<string>());
+
+            var effective = StaffAuthHelper.ResolveEffectivePermissions(
+                assignment.Value.org_permissions,
+                assignment.Value.assignment_permissions);
+
+            return Results.Ok(effective);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/{orgId}/audit-logs ─────────────────────────
         app.MapGet("/api/organizations/{orgId}/audit-logs", async (
-            Guid                 orgId,
-            string?              action,
-            int                  limit  = 50,
-            int                  offset = 0,
-            HttpContext          ctx    = null!,
-            IDbConnectionFactory db     = null!,
-            CancellationToken    ct     = default) =>
+            Guid orgId,
+            string? action,
+            Guid? actorId,
+            Guid? tournamentId,
+            int limit = 50,
+            int offset = 0,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
@@ -536,10 +624,30 @@ public static class OrganizationEndpoints
                 )
                 """,
                 new { orgId, userId = userCtx.UserIdGuid });
-            if (!hasAccess && !userCtx.Roles.Contains("admin")) return Results.Forbid();
+            if (!hasAccess && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+
+            const string auditWhereClause = """
+                WHERE sal.organization_id = @orgId
+                  AND (
+                    @action IS NULL
+                    OR (
+                      position('.' in @action) > 0 AND sal.action = @action
+                    )
+                    OR (
+                      position('.' in @action) = 0 AND sal.action ILIKE '%' || @action || '%'
+                    )
+                  )
+                  AND (@actorId IS NULL OR sal.actor_id = @actorId)
+                  AND (
+                    @tournamentId IS NULL
+                    OR sal.details @> jsonb_build_object('tournamentIds', jsonb_build_array(@tournamentId::text))
+                    OR sal.details->>'tournamentId' = @tournamentId::text
+                    OR sal.details->>'tournament_id' = @tournamentId::text
+                  )
+                """;
 
             var rows = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT sal.*,
                        json_build_object(
                            'full_name', p.full_name,
@@ -548,12 +656,11 @@ public static class OrganizationEndpoints
                        )::text AS actor_json
                 FROM staff_audit_log sal
                 LEFT JOIN profiles p ON p.id = sal.actor_id
-                WHERE sal.organization_id = @orgId
-                  AND (@action IS NULL OR sal.action ILIKE '%' || @action || '%')
+                {auditWhereClause}
                 ORDER BY sal.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { orgId, action, limit, offset });
+                new { orgId, action, actorId, tournamentId, limit, offset });
 
             // Parse actor_json string into object for proper JSON serialization
             var mapped = rows.Select(r =>
@@ -565,21 +672,31 @@ public static class OrganizationEndpoints
                     dict["actor"] = System.Text.Json.JsonSerializer.Deserialize<object>(actorJson);
                 else
                     dict["actor"] = null;
+
+                if (dict.TryGetValue("details", out var detailsVal) && detailsVal is not null)
+                {
+                    dict["details"] = ParseStaffAuditDetails(detailsVal);
+                }
+
                 return r;
             }).ToList();
 
             var total = await conn.QuerySingleAsync<int>(
-                "SELECT COUNT(*) FROM staff_audit_log WHERE organization_id = @orgId",
-                new { orgId });
+                $"""
+                SELECT COUNT(*)
+                FROM staff_audit_log sal
+                {auditWhereClause}
+                """,
+                new { orgId, action, actorId, tournamentId });
 
             return Results.Ok(new { logs = mapped, total });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/by-slug/{slug} — public org lookup ────────
         app.MapGet("/api/organizations/by-slug/{slug}", async (
-            string               slug,
+            string slug,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -590,91 +707,172 @@ public static class OrganizationEndpoints
         });
 
         // ── GET /api/organizations/{orgId}/tournaments — full details ───────
+        // Org members see all tournaments (including draft/unlisted). Public callers
+        // only receive public tournaments in displayable statuses.
         app.MapGet("/api/organizations/{orgId}/tournaments", async (
-            Guid                 orgId,
-            HttpContext          ctx,
+            Guid orgId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct,
-            bool?                deleted = null,
-            bool?                exclude_completed = null) =>
+            CancellationToken ct,
+            bool? deleted = null,
+            bool? exclude_completed = null) =>
         {
             using var conn = db.CreateConnection();
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            var canManageOrg = userCtx is not null && await IsOrgMember(conn, orgId, userCtx.UserIdGuid);
 
-            string filter;
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            var isOrgMember = userCtx is not null
+                && await IsOrgMember(conn, orgId, userCtx.UserIdGuid);
+
+            string lifecycleFilter;
             if (deleted == true)
-                filter = "t.deleted_at IS NOT NULL";
+                lifecycleFilter = "t.deleted_at IS NOT NULL";
             else
             {
-                filter = "t.deleted_at IS NULL";
+                lifecycleFilter = "t.deleted_at IS NULL";
                 if (exclude_completed == true)
-                    filter += " AND t.status != 'completed'";
+                    lifecycleFilter += " AND t.status::text != 'completed'";
             }
+
+            var visibilityFilter = isOrgMember
+                ? string.Empty
+                : """
+                  AND t.is_public = TRUE
+                  AND t.status::text IN ('published', 'open', 'check_in', 'ongoing', 'completed', 'cancelled')
+                  """;
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT
-                    t.id,
-                    t.name,
-                    t.slug,
-                    t.game,
-                    t.format,
-                    t.status,
-                    t.start_date,
-                    t.end_date,
-                    t.venue_id,
-                    t.max_teams,
-                    t.team_size,
-                    t.prize_pool,
-                    t.entry_fee,
-                    t.banner_url,
-                    t.logo_url,
-                    t.organization_id,
-                    t.organizer_id,
-                    t.is_public,
-                    t.currency,
-                    t.deleted_at,
-                    t.created_at,
-                    o.name AS organization_name,
-                    o.slug AS organization_slug,
-                    o.logo_url AS organization_logo,
-                    o.owner_id AS organization_owner_id,
-                    (
-                        SELECT COUNT(*)
-                        FROM public.tournament_participants tp
-                        WHERE tp.tournament_id = t.id
-                          AND tp.status NOT IN ('rejected', 'cancelled')
-                    ) AS current_participants
-                FROM public.tournaments t
-                LEFT JOIN public.organizations o ON o.id = t.organization_id
+                SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                       t.start_date, t.end_date, t.registration_deadline,
+                       t.max_teams, t.min_teams, t.team_size,
+                       t.entry_fee, t.prize_pool,
+                       t.banner_url, t.logo_url, t.is_public,
+                       t.organizer_id, t.venue_id, t.organization_id, t.description,
+                       t.created_at, t.updated_at, t.deleted_at, t.region, t.currency,
+                       (SELECT COUNT(*) FROM tournament_participants tp
+                        WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
+                       o.name   AS organizer_name,
+                       o.slug   AS organization_slug
+                FROM tournaments t
+                LEFT JOIN organizations o ON o.id = t.organization_id
                 WHERE t.organization_id = @orgId
-                  AND {filter}
-                  AND (
-                    @canManageOrg = TRUE
-                    OR (
-                      t.is_public = TRUE
-                      AND t.status::text IN ('published', 'open', 'check_in', 'ongoing', 'completed', 'cancelled')
-                    )
-                  )
+                  AND {lifecycleFilter}
+                  {visibilityFilter}
                 ORDER BY t.created_at DESC NULLS LAST, t.start_date DESC NULLS LAST
                 """,
-                new { orgId, canManageOrg });
+                new { orgId });
             return Results.Ok(rows);
         });
+
+        // ── POST /api/organizations/{orgId}/tournaments/bulk-lifecycle ───────
+        // Soft-delete, restore, or permanently delete many tournaments in one round-trip.
+        // Replaces the frontend anti-pattern of firing one PUT/DELETE per tournament.
+        app.MapPost("/api/organizations/{orgId}/tournaments/bulk-lifecycle", async (
+            Guid orgId,
+            [FromBody] BulkTournamentLifecycleRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            const int maxBatchSize = 500;
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.TournamentIds is not { Length: > 0 })
+                return Results.BadRequest(new { error = "TournamentIds must not be empty." });
+            if (req.TournamentIds.Length > maxBatchSize)
+                return Results.BadRequest(new { error = $"Cannot process more than {maxBatchSize} tournaments at once." });
+
+            var action = (req.Action ?? string.Empty).Trim().ToLowerInvariant();
+            if (action is not ("soft-delete" or "restore" or "permanent-delete"))
+                return Results.BadRequest(new { error = "Action must be soft-delete, restore, or permanent-delete." });
+
+            using var conn = db.CreateConnection();
+
+            if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid))
+                return Results.Forbid();
+
+            int affected;
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                switch (action)
+                {
+                    case "soft-delete":
+                        affected = await conn.ExecuteAsync(
+                            """
+                            UPDATE tournaments
+                            SET deleted_at = COALESCE(@deletedAt, NOW()), updated_at = NOW()
+                            WHERE organization_id = @orgId
+                              AND id = ANY(@ids)
+                              AND deleted_at IS NULL
+                            """,
+                            new
+                            {
+                                orgId,
+                                ids = req.TournamentIds,
+                                deletedAt = req.DeletedAt ?? DateTimeOffset.UtcNow,
+                            },
+                            tx);
+                        await MockTeamCleanup.DeleteForTournamentsAsync(conn, tx, req.TournamentIds, ct);
+                        break;
+
+                    case "restore":
+                        affected = await conn.ExecuteAsync(
+                            """
+                            UPDATE tournaments
+                            SET deleted_at = NULL,
+                                status = 'open'::tournament_status,
+                                updated_at = NOW()
+                            WHERE organization_id = @orgId
+                              AND id = ANY(@ids)
+                              AND deleted_at IS NOT NULL
+                            """,
+                            new { orgId, ids = req.TournamentIds },
+                            tx);
+                        break;
+
+                    default:
+                        await MockTeamCleanup.DeleteForTournamentsAsync(conn, tx, req.TournamentIds, ct);
+                        affected = await conn.ExecuteAsync(
+                            """
+                            DELETE FROM tournaments
+                            WHERE organization_id = @orgId
+                              AND id = ANY(@ids)
+                              AND deleted_at IS NOT NULL
+                            """,
+                            new { orgId, ids = req.TournamentIds },
+                            tx);
+                        break;
+                }
+
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
+
+            try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
+
+            return Results.Ok(new { success = true, affected, action });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/organizations/{orgId}/participants — aggregate org registrations ─
         // Single server-side read for the organizer management console. This avoids the
         // frontend N+1 pattern of fetching every tournament and then every participant list.
         app.MapGet("/api/organizations/{orgId}/participants", async (
-            Guid                 orgId,
-            HttpContext          ctx,
+            Guid orgId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct,
-            string?              search = null,
-            string?              status = null,
-            int?                 limit = null,
-            int?                 offset = null) =>
+            CancellationToken ct,
+            string? search = null,
+            string? status = null,
+            int? limit = null,
+            int? offset = null) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -688,44 +886,23 @@ public static class OrganizationEndpoints
             var pageOffset = Math.Max(offset ?? 0, 0);
             var searchTerm = string.IsNullOrWhiteSpace(search) ? null : $"%{search.Trim()}%";
             var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToLowerInvariant();
-            var participantTypeSelect = await ColumnExists(conn, "tournament_participants", "participant_type")
-                ? "tp.participant_type::text AS participant_type"
-                : "CASE WHEN tp.team_id IS NULL THEN 'solo' ELSE 'team' END AS participant_type";
-            var sourceSelect = await ColumnExists(conn, "tournament_participants", "source")
-                ? "COALESCE(tp.source, 'open')::text AS source"
-                : "'open'::text AS source";
-            var paymentStatusSelect = await ColumnExists(conn, "tournament_participants", "payment_status")
-                ? "COALESCE(tp.payment_status, 'not_required')::text AS payment_status"
-                : "'not_required'::text AS payment_status";
-            var checkedInAtSelect = await ColumnExists(conn, "tournament_participants", "checked_in_at")
-                ? "tp.checked_in_at AS checked_in_at"
-                : "NULL::timestamptz AS checked_in_at";
-            var isMockSelect = await ColumnExists(conn, "tournament_participants", "is_mock")
-                ? "COALESCE(tp.is_mock, FALSE) AS is_mock"
-                : "FALSE AS is_mock";
-            var teamNameExpression = await ColumnExists(conn, "tournament_participants", "team_name")
-                ? "tp.team_name"
-                : "NULL::text";
-            var teamCaptainExpression = await ColumnExists(conn, "tournament_participants", "team_captain_id")
-                ? "tp.team_captain_id"
-                : "NULL::uuid";
 
             var rows = (await conn.QueryAsync<dynamic>(
-                $"""
+                """
                 WITH registrations AS (
                     SELECT
                         tp.id,
                         tp.tournament_id,
                         tp.user_id,
                         tp.team_id,
-                        {participantTypeSelect},
+                        tp.participant_type::text AS participant_type,
                         tp.status::text AS status,
-                        {sourceSelect},
-                        {paymentStatusSelect},
+                        tp.source,
+                        tp.payment_status::text AS payment_status,
                         tp.created_at AS registered_at,
-                        {checkedInAtSelect},
-                        {isMockSelect},
-                        COALESCE(team.name, {teamNameExpression}, solo.username, solo.full_name, 'Unknown Participant') AS display_name,
+                        tp.checked_in_at,
+                        COALESCE(tp.is_mock, FALSE) AS is_mock,
+                        COALESCE(team.name, tp.team_name, solo.username, solo.full_name, 'Unknown Participant') AS display_name,
                         team.logo_url AS team_logo_url,
                         COALESCE(captain.username, captain.full_name, solo.username, solo.full_name, 'Unknown Captain') AS captain_name,
                         solo.username AS solo_username,
@@ -740,13 +917,13 @@ public static class OrganizationEndpoints
                     JOIN public.tournaments t ON t.id = tp.tournament_id
                     LEFT JOIN public.teams team ON team.id = tp.team_id
                     LEFT JOIN public.profiles solo ON solo.id = tp.user_id
-                    LEFT JOIN public.profiles captain ON captain.id = COALESCE(team.owner_id, {teamCaptainExpression}, tp.user_id)
+                    LEFT JOIN public.profiles captain ON captain.id = COALESCE(team.owner_id, tp.team_captain_id, tp.user_id)
                     WHERE t.organization_id = @orgId
                       AND t.deleted_at IS NULL
                       AND (@normalizedStatus IS NULL OR tp.status::text = @normalizedStatus)
                       AND (
                           @searchTerm IS NULL
-                          OR COALESCE(team.name, {teamNameExpression}, solo.username, solo.full_name, '') ILIKE @searchTerm
+                          OR COALESCE(team.name, tp.team_name, solo.username, solo.full_name, '') ILIKE @searchTerm
                           OR COALESCE(captain.username, captain.full_name, '') ILIKE @searchTerm
                           OR t.name ILIKE @searchTerm
                       )
@@ -797,9 +974,9 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations/{orgId}/albums — with cover URL ──────────
         app.MapGet("/api/organizations/{orgId}/albums", async (
-            Guid                 orgId,
+            Guid orgId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -825,9 +1002,9 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations/{orgId}/media — all media (public) ───────
         app.MapGet("/api/organizations/{orgId}/media", async (
-            Guid                 orgId,
+            Guid orgId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -838,11 +1015,11 @@ public static class OrganizationEndpoints
 
         // ── POST /api/organizations/{orgId}/media — insert media record ──────
         app.MapPost("/api/organizations/{orgId}/media", async (
-            Guid                              orgId,
-            [FromBody] InsertOrgMediaRequest  req,
-            HttpContext                       ctx,
-            IDbConnectionFactory            db,
-            CancellationToken               ct) =>
+            Guid orgId,
+            [FromBody] InsertOrgMediaRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -860,15 +1037,15 @@ public static class OrganizationEndpoints
                 new { orgId, url = req.Url, type = req.Type, caption = req.Caption, albumId = req.AlbumId is not null ? Guid.Parse(req.AlbumId) : (Guid?)null });
 
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/media/{mediaId} ────────────────
         app.MapDelete("/api/organizations/{orgId}/media/{mediaId}", async (
-            Guid                 orgId,
-            Guid                 mediaId,
-            HttpContext          ctx,
+            Guid orgId,
+            Guid mediaId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -882,15 +1059,15 @@ public static class OrganizationEndpoints
                 "DELETE FROM organization_media WHERE id = @mediaId AND organization_id = @orgId",
                 new { mediaId, orgId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/organizations/{orgId}/albums — create album ────────────
         app.MapPost("/api/organizations/{orgId}/albums", async (
-            Guid                             orgId,
-            [FromBody] CreateOrgAlbumRequest  req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            CancellationToken                ct) =>
+            Guid orgId,
+            [FromBody] CreateOrgAlbumRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -908,15 +1085,15 @@ public static class OrganizationEndpoints
                 """,
                 new { orgId, title = req.Title, description = req.Description });
             return Results.Ok(album);
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId}/albums/{albumId} ───────────────
         app.MapDelete("/api/organizations/{orgId}/albums/{albumId}", async (
-            Guid                 orgId,
-            Guid                 albumId,
-            HttpContext          ctx,
+            Guid orgId,
+            Guid albumId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -931,15 +1108,15 @@ public static class OrganizationEndpoints
                 "DELETE FROM organization_albums WHERE id = @albumId AND organization_id = @orgId",
                 new { albumId, orgId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/organizations/{orgId}/logo ──────────────────────────────
         app.MapPut("/api/organizations/{orgId}/logo", async (
-            Guid                            orgId,
+            Guid orgId,
             [FromBody] UpdateOrgImageRequest req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -953,15 +1130,15 @@ public static class OrganizationEndpoints
                 "UPDATE organizations SET logo_url = @url WHERE id = @orgId",
                 new { orgId, url = req.Url });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/organizations/{orgId}/banner ────────────────────────────
         app.MapPut("/api/organizations/{orgId}/banner", async (
-            Guid                            orgId,
+            Guid orgId,
             [FromBody] UpdateOrgImageRequest req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -975,14 +1152,14 @@ public static class OrganizationEndpoints
                 "UPDATE organizations SET banner_url = @url WHERE id = @orgId",
                 new { orgId, url = req.Url });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/organizations/{orgId} — safe delete via RPC ──────────
         app.MapDelete("/api/organizations/{orgId}", async (
-            Guid                 orgId,
-            HttpContext          ctx,
+            Guid orgId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -999,15 +1176,16 @@ public static class OrganizationEndpoints
                 "SELECT * FROM delete_organization_safely(@p_org_id)",
                 new { p_org_id = orgId });
             return Results.Ok(result);
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/by-slug/{slug} — fetch with org join ────────
         // Replaces ManageBracketPage's supabase query
         app.MapGet("/api/tournaments/by-slug/{slug}", async (
-            string               slug,
-            HttpContext          ctx,
+            string slug,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            IStaffAuthorizationService staffAuth,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var isUuid = Guid.TryParse(slug, out var slugGuid);
@@ -1039,22 +1217,16 @@ public static class OrganizationEndpoints
 
             // Resolve staff permissions for the calling user
             var userCtx = ctx.Items["UserContext"] as UserContext;
-            string[]? staffPermissions = null;
             if (userCtx is not null && row is IDictionary<string, object?> d)
             {
                 var tournamentId = d["id"] is Guid g ? g : Guid.Parse(d["id"]!.ToString()!);
-                staffPermissions = (await conn.QueryAsync<string>(
-                    """
-                    SELECT DISTINCT unnest(os.permissions)
-                    FROM organization_staff os
-                    JOIN staff_tournament_assignments sta ON sta.organization_staff_id = os.id
-                    WHERE sta.tournament_id = @tid
-                      AND os.user_id = @userId AND os.status = 'active'
-                    """,
-                    new { tid = tournamentId, userId = userCtx.UserIdGuid })).ToArray();
-
-                if (staffPermissions.Length > 0)
-                    d["staffPermissions"] = staffPermissions;
+                var access = await staffAuth.ResolveTournamentAccessAsync(
+                    userCtx, tournamentId, ct);
+                if (!access.IsOrganizer && access.Role != "none")
+                {
+                    d["staffPermissions"] = access.Permissions;
+                    d["staffRole"] = access.Role;
+                }
             }
 
             return Results.Ok(row);
@@ -1064,9 +1236,9 @@ public static class OrganizationEndpoints
         // Returns the organization owned by the current user.
         // Also aliased as /api/organizations/mine for compat.
         app.MapGet("/api/organizations/me", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1080,9 +1252,9 @@ public static class OrganizationEndpoints
         }).RequireAuthorization("Authenticated");
 
         app.MapGet("/api/organizations/mine", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1098,9 +1270,9 @@ public static class OrganizationEndpoints
         // ── GET /api/organizations/my-staff ────────────────────────────────────
         // Returns the organization where current user is a staff member (not owner).
         app.MapGet("/api/organizations/my-staff", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1122,14 +1294,30 @@ public static class OrganizationEndpoints
         // Create a new organization.
         app.MapPost("/api/organizations", async (
             [FromBody] CreateOrganizationRequest req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            CancellationToken                   ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            // TEMPORARY: Verified organizer gate (will be replaced by AuthorizationEnforcementMiddleware)
+            if (!userCtx.Roles.Contains("organizer", StringComparer.OrdinalIgnoreCase))
+                return Results.Json(new { error = "Organizer role required to create an organization" }, statusCode: 403);
+
             using var conn = db.CreateConnection();
+
+            var isVerified = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM verified_roles
+                    WHERE user_id = @userId AND role = 'organizer'::app_role
+                      AND status = 'approved' AND is_active = TRUE
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+            if (!isVerified)
+                return Results.Json(new { error = "Approved organizer verification required" }, statusCode: 403);
 
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
@@ -1151,12 +1339,12 @@ public static class OrganizationEndpoints
                 """,
                 new
                 {
-                    ownerId     = userCtx.UserIdGuid,
-                    name        = req.Name,
+                    ownerId = userCtx.UserIdGuid,
+                    name = req.Name,
                     slug,
                     description = req.Description,
-                    logoUrl     = req.LogoUrl,
-                    bannerUrl   = req.BannerUrl,
+                    logoUrl = req.LogoUrl,
+                    bannerUrl = req.BannerUrl,
                     socialLinks = req.SocialLinks.HasValue
                         ? req.SocialLinks.Value.GetRawText()
                         : "{}"
@@ -1168,11 +1356,11 @@ public static class OrganizationEndpoints
         // ── PUT /api/organizations/{orgId} ─────────────────────────────────────
         // Update organization details (owner only).
         app.MapPut("/api/organizations/{orgId}", async (
-            Guid                                orgId,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            ILoggerFactory                      loggerFactory,
-            CancellationToken                   ct) =>
+            Guid orgId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
             var logger = loggerFactory.CreateLogger("OrganizationUpdate");
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1195,15 +1383,15 @@ public static class OrganizationEndpoints
 
             try
             {
-            using var conn = db.CreateConnection();
+                using var conn = db.CreateConnection();
 
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
-                new { orgId, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+                var isOwner = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
+                    new { orgId, userId = userCtx.UserIdGuid });
+                if (!isOwner) return Results.Forbid();
 
-            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
+                var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
                 UPDATE organizations
                 SET name         = COALESCE(@name, name),
                     slug         = COALESCE(@slug, slug),
@@ -1215,20 +1403,20 @@ public static class OrganizationEndpoints
                 WHERE id = @orgId
                 RETURNING id, owner_id, name, slug, description, logo_url, banner_url, social_links, created_at, updated_at
                 """,
-                new
-                {
-                    orgId,
-                    name        = req.Name,
-                    slug        = req.Slug,
-                    description = req.Description,
-                    logoUrl     = req.LogoUrl,
-                    bannerUrl   = req.BannerUrl,
-                    socialLinks = req.SocialLinks.HasValue
-                        ? req.SocialLinks.Value.GetRawText()
-                        : null
-                });
+                    new
+                    {
+                        orgId,
+                        name = req.Name,
+                        slug = req.Slug,
+                        description = req.Description,
+                        logoUrl = req.LogoUrl,
+                        bannerUrl = req.BannerUrl,
+                        socialLinks = req.SocialLinks.HasValue
+                            ? req.SocialLinks.Value.GetRawText()
+                            : null
+                    });
 
-            return updated is null ? Results.NotFound() : Results.Ok(ParseOrgSocialLinks(updated));
+                return updated is null ? Results.NotFound() : Results.Ok(ParseOrgSocialLinks(updated));
             }
             catch (Exception ex)
             {
@@ -1239,9 +1427,9 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations/{orgId}/stats ───────────────────────────────
         app.MapGet("/api/organizations/{orgId}/stats", async (
-            Guid                 orgId,
+            Guid orgId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1260,9 +1448,9 @@ public static class OrganizationEndpoints
 
             return Results.Ok(new
             {
-                totalTournaments  = (long)stats.total_tournaments,
+                totalTournaments = (long)stats.total_tournaments,
                 activeTournaments = (long)stats.active_tournaments,
-                staffCount        = (long)stats.staff_count,
+                staffCount = (long)stats.staff_count,
                 totalParticipants = (long)stats.total_participants
             });
         }).RequireAuthorization("Authenticated");
@@ -1273,16 +1461,16 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations — list user's organizations (owned) ───────
         app.MapGet("/api/organizations", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            int                  limit  = 20,
-            int                  offset = 0,
-            CancellationToken    ct     = default) =>
+            int limit = 20,
+            int offset = 0,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            limit  = Math.Clamp(limit, 1, 100);
+            limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
 
             using var conn = db.CreateConnection();
@@ -1307,10 +1495,10 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations/{orgId}/details — org with venue list ─────
         app.MapGet("/api/organizations/{orgId}/details", async (
-            Guid                 orgId,
-            HttpContext          ctx,
+            Guid orgId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1343,11 +1531,11 @@ public static class OrganizationEndpoints
 
         // ── POST /api/organizations/{orgId}/venues/{venueId} — add venue ─────
         app.MapPost("/api/organizations/{orgId}/venues/{venueId}", async (
-            Guid                 orgId,
-            Guid                 venueId,
-            HttpContext          ctx,
+            Guid orgId,
+            Guid venueId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1386,11 +1574,11 @@ public static class OrganizationEndpoints
 
         // ── DELETE /api/organizations/{orgId}/venues/{venueId} — remove venue ─
         app.MapDelete("/api/organizations/{orgId}/venues/{venueId}", async (
-            Guid                 orgId,
-            Guid                 venueId,
-            HttpContext          ctx,
+            Guid orgId,
+            Guid venueId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1419,12 +1607,12 @@ public static class OrganizationEndpoints
 
         // ── GET /api/organizations/{orgId}/analytics — aggregate across venues ─
         app.MapGet("/api/organizations/{orgId}/analytics", async (
-            Guid                 orgId,
-            [FromQuery] string   from,
-            [FromQuery] string   to,
-            HttpContext          ctx,
+            Guid orgId,
+            [FromQuery] string from,
+            [FromQuery] string to,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1433,7 +1621,7 @@ public static class OrganizationEndpoints
 
             // Verify ownership or active staff
             if (!await IsOrgMember(conn, orgId, userCtx.UserIdGuid)
-                && !userCtx.Roles.Contains("admin"))
+                && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             if (!DateOnly.TryParse(from, out var fromDate) || !DateOnly.TryParse(to, out var toDate))
@@ -1543,11 +1731,21 @@ public static class OrganizationEndpoints
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private static List<AssignTournamentItem> ResolveAssignTournamentItems(AssignTournamentsRequest req)
+    {
+        if (req.Assignments is { Count: > 0 })
+            return req.Assignments;
+
+        return (req.TournamentIds ?? [])
+            .Select(tid => new AssignTournamentItem(tid, null))
+            .ToList();
+    }
+
     private static string FriendlyRole(string role) => role switch
     {
         "admin" => "an Administrator",
-        "mod"   => "a Moderator",
-        _       => "a Co-Host",
+        "mod" => "a Moderator",
+        _ => "a Co-Host",
     };
 
     private static Task LogAudit(IDbConnection conn, Guid orgId, Guid actorId,
@@ -1566,40 +1764,82 @@ public static class OrganizationEndpoints
                 targetId,
                 details = System.Text.Json.JsonSerializer.Serialize(details),
             });
+
+    private static object? ParseStaffAuditDetails(object detailsVal)
+    {
+        try
+        {
+            if (detailsVal is string detailsStr)
+            {
+                if (detailsStr.Length == 0)
+                    return new Dictionary<string, object?>();
+                return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(detailsStr)
+                    ?? System.Text.Json.JsonSerializer.Deserialize<object>(detailsStr);
+            }
+
+            if (detailsVal is JsonElement element)
+            {
+                var parsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(element.GetRawText());
+                if (parsed is not null)
+                    return parsed;
+                return System.Text.Json.JsonSerializer.Deserialize<object>(element.GetRawText());
+            }
+
+            if (detailsVal is IDictionary<string, object?> dict)
+                return dict;
+
+            return detailsVal;
+        }
+        catch
+        {
+            return detailsVal;
+        }
+    }
 }
 
 // ── Request records ────────────────────────────────────────────────────────────
 
 public sealed record InviteStaffRequest(
-    string       UserEmail,
-    string       Role,
+    string UserEmail,
+    string Role,
     List<string> Permissions,
-    string?      OrgName       = null,
-    string?      OrgLogo       = null,
-    string?      InviterName   = null,
+    string? OrgName = null,
+    string? OrgLogo = null,
+    string? InviterName = null,
     List<string>? TournamentIds = null);
 
 public sealed record UpdateStaffRequest(string Role, List<string> Permissions);
 
 public sealed record RespondInviteRequest(bool Accept);
 
-public sealed record AssignTournamentsRequest(List<string> TournamentIds);
+public sealed record AssignTournamentsRequest(
+    List<string>? TournamentIds = null,
+    List<AssignTournamentItem>? Assignments = null);
+
+public sealed record AssignTournamentItem(string TournamentId, List<string>? Permissions = null);
+
+public sealed record UpdateAssignmentPermissionsRequest(List<string>? Permissions);
+
+public sealed record BulkTournamentLifecycleRequest(
+    Guid[] TournamentIds,
+    string Action,
+    DateTimeOffset? DeletedAt = null);
 
 public sealed record InsertOrgMediaRequest(string Url, string Type, string? Caption = null, string? AlbumId = null);
 public sealed record UpdateOrgImageRequest(string Url);
 public sealed record CreateOrgAlbumRequest(string Title, string? Description = null);
 
 public sealed record CreateOrganizationRequest(
-    string                               Name,
-    string?                              Description = null,
-    string?                              LogoUrl     = null,
-    string?                              BannerUrl   = null,
-    System.Text.Json.JsonElement?        SocialLinks = null);
+    string Name,
+    string? Description = null,
+    string? LogoUrl = null,
+    string? BannerUrl = null,
+    System.Text.Json.JsonElement? SocialLinks = null);
 
 public sealed record UpdateOrganizationRequest(
-    string?                              Name        = null,
-    string?                              Slug        = null,
-    string?                              Description = null,
-    string?                              LogoUrl     = null,
-    string?                              BannerUrl   = null,
-    System.Text.Json.JsonElement?        SocialLinks = null);
+    string? Name = null,
+    string? Slug = null,
+    string? Description = null,
+    string? LogoUrl = null,
+    string? BannerUrl = null,
+    System.Text.Json.JsonElement? SocialLinks = null);

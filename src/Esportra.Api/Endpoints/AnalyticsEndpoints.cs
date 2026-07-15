@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
@@ -17,9 +17,9 @@ public static class AnalyticsEndpoints
         // ── POST /api/analytics/events ───────────────────────────────────────
         app.MapPost("/api/analytics/events", async (
             [FromBody] TrackEventRequest req,
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
 
@@ -32,7 +32,7 @@ public static class AnalyticsEndpoints
                 """,
                 new
                 {
-                    userId    = userCtx?.UserIdGuid,
+                    userId = userCtx?.UserIdGuid,
                     eventType = req.EventType,
                     eventData = req.EventData ?? "{}",
                     sessionId = req.SessionId,
@@ -94,15 +94,15 @@ public static class AnalyticsEndpoints
             var events = data.AsList();
             var summary = new
             {
-                total_events       = events.Count,
-                page_views         = events.Count(e => (string)e.event_type == "page_view"),
-                user_actions       = events.Count(e => (string)e.event_type == "user_action"),
-                tournament_events  = events.Count(e => (string)e.event_type == "tournament_event"),
-                team_events        = events.Count(e => (string)e.event_type == "team_event"),
-                venue_events       = events.Count(e => (string)e.event_type == "venue_event"),
-                payment_events     = events.Count(e => (string)e.event_type == "payment_event"),
-                search_events      = events.Count(e => (string)e.event_type == "search"),
-                error_events       = events.Count(e => (string)e.event_type == "error"),
+                total_events = events.Count,
+                page_views = events.Count(e => (string)e.event_type == "page_view"),
+                user_actions = events.Count(e => (string)e.event_type == "user_action"),
+                tournament_events = events.Count(e => (string)e.event_type == "tournament_event"),
+                team_events = events.Count(e => (string)e.event_type == "team_event"),
+                venue_events = events.Count(e => (string)e.event_type == "venue_event"),
+                payment_events = events.Count(e => (string)e.event_type == "payment_event"),
+                search_events = events.Count(e => (string)e.event_type == "search"),
+                error_events = events.Count(e => (string)e.event_type == "error"),
             };
 
             return Results.Ok(new { data = events, summary });
@@ -112,9 +112,9 @@ public static class AnalyticsEndpoints
         // Returns active user_roles + verified_roles for the current user.
         // Replaces RoleContext's Supabase queries.
         app.MapGet("/api/me/roles", async (
-            HttpContext           ctx,
-            IDbConnectionFactory  db,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -122,7 +122,7 @@ public static class AnalyticsEndpoints
             using var conn = db.CreateConnection();
 
             var userRoles = await conn.QueryAsync<dynamic>(
-                "SELECT role, is_active, assigned_at FROM user_roles WHERE user_id = @userId AND is_active = TRUE ORDER BY assigned_at DESC",
+                "SELECT role, is_active FROM user_roles WHERE user_id = @userId AND is_active = TRUE ORDER BY assigned_at DESC",
                 new { userId = userCtx.UserIdGuid });
 
             var verifiedRoles = await conn.QueryAsync<dynamic>(
@@ -136,8 +136,30 @@ public static class AnalyticsEndpoints
             var org = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
+            var hasOrganization = org is not null;
 
-            return Results.Ok(new { userRoles, verifiedRoles, verificationRequests, organization_id = (object?)org?.id });
+            var hasApprovedLicense = verifiedRoles.Any(r =>
+                (bool)r.is_active &&
+                string.Equals((string)r.status, "approved", StringComparison.OrdinalIgnoreCase));
+            var canCreateTournament = userRoles.Any(r =>
+                (bool)r.is_active &&
+                string.Equals((string)r.role, "organizer", StringComparison.OrdinalIgnoreCase)) &&
+                verifiedRoles.Any(r =>
+                    (bool)r.is_active &&
+                    string.Equals((string)r.role, "organizer", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals((string)r.status, "approved", StringComparison.OrdinalIgnoreCase)) &&
+                hasOrganization;
+
+            return Results.Ok(new
+            {
+                userRoles,
+                verifiedRoles,
+                verificationRequests,
+                organization_id = (object?)org?.id,
+                hasOrganization,
+                hasApprovedLicense,
+                canCreateTournament
+            });
         }).RequireAuthorization("Authenticated");
     }
 }

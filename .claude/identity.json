@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "technicalLevel": "senior",
+  "preferredStyle": {
+    "verbosity": "minimal",
+    "codeComments": false,
+    "explanations": true
+  },
+  "domains": [
+    "dotnet",
+    "csharp",
+    "postgresql",
+    "api-development",
+    "real-time-systems"
+  ],
+  "principles": [
+    "security-first",
+    "simplicity",
+    "explicit-over-implicit",
+    "test-driven"
+  ],
+  "createdAt": "2026-07-03"
+}

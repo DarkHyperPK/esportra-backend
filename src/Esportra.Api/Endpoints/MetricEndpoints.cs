@@ -19,11 +19,11 @@ public static class MetricEndpoints
     {
         app.MapPost("/api/metrics", async (
             [FromBody] RecordMetricRequest req,
-            IDbConnectionFactory            db,
-            IHttpClientFactory             httpFactory,
-            IConfiguration                 config,
-            HttpContext                     ctx,
-            CancellationToken              ct) =>
+            IDbConnectionFactory db,
+            IHttpClientFactory httpFactory,
+            IConfiguration config,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(req.SponsorId) ||
                 string.IsNullOrWhiteSpace(req.EventType))
@@ -35,9 +35,9 @@ public static class MetricEndpoints
                   ?? "0.0.0.0";
 
             // Daily privacy-preserving visitor ID: SHA256(IP:YYYY-MM-DD:salt)
-            var today     = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            var salt      = config["Metrics:VisitorSalt"] ?? "esportra-visitor-v1";
-            var rawId     = $"{ip}:{today}:{salt}";
+            var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
+            var salt = config["Metrics:VisitorSalt"] ?? "esportra-visitor-v1";
+            var rawId = $"{ip}:{today}:{salt}";
             var visitorId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawId)));
 
             // For authenticated users: get country + age from their profile (reliable).
@@ -64,11 +64,11 @@ public static class MetricEndpoints
 
                     ageGroup = age switch
                     {
-                        < 13  => "under_13",
-                        < 18  => "13_17",
-                        < 25  => "18_24",
-                        < 35  => "25_34",
-                        _     => "35_plus",
+                        < 13 => "under_13",
+                        < 18 => "13_17",
+                        < 25 => "18_24",
+                        < 35 => "25_34",
+                        _ => "35_plus",
                     };
                 }
             }
@@ -97,7 +97,7 @@ public static class MetricEndpoints
             {
                 sponsorId = req.SponsorId,
                 eventType = req.EventType,
-                pageUrl   = req.PageUrl,
+                pageUrl = req.PageUrl,
                 visitorId,
                 metadata,
             });

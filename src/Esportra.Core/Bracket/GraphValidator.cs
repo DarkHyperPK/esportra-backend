@@ -52,13 +52,13 @@ public static class GraphValidator
             adj[e.SourceMatchId].Add(e.TargetMatchId);
         }
 
-        var visited  = new HashSet<Guid>();
+        var visited = new HashSet<Guid>();
         var recStack = new HashSet<Guid>();
 
         bool Dfs(Guid nodeId)
         {
             if (recStack.Contains(nodeId)) return true;
-            if (visited.Contains(nodeId))  return false;
+            if (visited.Contains(nodeId)) return false;
 
             visited.Add(nodeId);
             recStack.Add(nodeId);

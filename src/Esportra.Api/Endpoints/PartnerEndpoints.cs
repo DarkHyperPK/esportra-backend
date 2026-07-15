@@ -18,7 +18,7 @@ public static class PartnerEndpoints
         app.MapPost("/api/partners/apply", async (
             [FromBody] PartnerApplicationRequest req,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -47,19 +47,19 @@ public static class PartnerEndpoints
                 """,
                 new
                 {
-                    companyName      = req.CompanyName,
-                    companyWebsite   = req.CompanyWebsite,
-                    companySize      = req.CompanySize,
-                    industry         = req.Industry,
-                    contactName      = req.ContactName,
-                    contactEmail     = req.ContactEmail,
-                    contactPhone     = req.ContactPhone,
-                    contactTitle     = req.ContactTitle,
-                    partnershipTier  = req.PartnershipTier ?? "standard",
+                    companyName = req.CompanyName,
+                    companyWebsite = req.CompanyWebsite,
+                    companySize = req.CompanySize,
+                    industry = req.Industry,
+                    contactName = req.ContactName,
+                    contactEmail = req.ContactEmail,
+                    contactPhone = req.ContactPhone,
+                    contactTitle = req.ContactTitle,
+                    partnershipTier = req.PartnershipTier ?? "standard",
                     partnershipGoals = req.PartnershipGoals ?? Array.Empty<string>(),
-                    budgetRange      = req.BudgetRange,
-                    message          = req.Message,
-                    howHeard         = req.HowHeard,
+                    budgetRange = req.BudgetRange,
+                    message = req.Message,
+                    howHeard = req.HowHeard,
                 });
 
             return Results.Created($"/api/partners/applications/{row.id}", new { success = true, id = row.id.ToString() });
@@ -69,7 +69,7 @@ public static class PartnerEndpoints
         // Lists approved partners (public, no auth)
         app.MapGet("/api/partners/public", async (
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 

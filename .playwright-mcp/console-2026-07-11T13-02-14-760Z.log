@@ -1,0 +1,3 @@
+[     523ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ chrome-error://chromewebdata/:0
+[  485632ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://staging.esportra.com/:0
+[  485788ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://staging.esportra.com/favicon.ico:0

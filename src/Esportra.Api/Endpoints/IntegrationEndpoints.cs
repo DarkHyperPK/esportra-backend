@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
@@ -33,23 +35,23 @@ public static class IntegrationEndpoints
         // ── GET /api/integrations/riot/start ──────────────────────────────────
         // Authenticated. Generates encrypted state, returns Riot authorize URL.
         app.MapGet("/api/integrations/riot/start", (
-            HttpContext           ctx,
-            IConfiguration        config,
-            OAuthStateProtector   stateProtector) =>
+            HttpContext ctx,
+            IConfiguration config,
+            OAuthStateProtector stateProtector) =>
         {
             var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? ctx.User.FindFirstValue("sub");
             if (userId is null) return Results.Unauthorized();
 
-            var clientId    = config["Riot:OAuthClientId"] ?? string.Empty;
-            var backendUrl  = ResolveBackendUrl(config);
+            var clientId = config["Riot:OAuthClientId"] ?? string.Empty;
+            var backendUrl = ResolveBackendUrl(config);
             var redirectUri = $"{backendUrl}/api/integrations/riot/callback";
 
             var state = stateProtector.Protect(new OAuthStatePayload(
-                UserId:       userId,
-                Provider:     "riot",
+                UserId: userId,
+                Provider: "riot",
                 CodeVerifier: null,
-                CreatedAt:    DateTime.UtcNow));
+                CreatedAt: DateTime.UtcNow));
 
             var url = $"https://auth.riotgames.com/authorize"
                     + $"?redirect_uri={Uri.EscapeDataString(redirectUri)}"
@@ -66,15 +68,15 @@ public static class IntegrationEndpoints
         // Public (Riot redirects here). Decrypts state, exchanges code,
         // saves tokens, redirects browser to frontend.
         app.MapGet("/api/integrations/riot/callback", async (
-            HttpContext           ctx,
-            IConfiguration        config,
-            OAuthStateProtector   stateProtector,
-            IDbConnectionFactory  db,
-            HttpClient            http,
-            CancellationToken     ct) =>
+            HttpContext ctx,
+            IConfiguration config,
+            OAuthStateProtector stateProtector,
+            IDbConnectionFactory db,
+            HttpClient http,
+            CancellationToken ct) =>
         {
             var frontendUrl = ResolveFrontendUrl(config);
-            var code  = ctx.Request.Query["code"].FirstOrDefault();
+            var code = ctx.Request.Query["code"].FirstOrDefault();
             var state = ctx.Request.Query["state"].FirstOrDefault();
             var error = ctx.Request.Query["error"].FirstOrDefault();
 
@@ -92,19 +94,19 @@ public static class IntegrationEndpoints
             if (!Guid.TryParse(payload.UserId, out var userGuid))
                 return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=invalid_user");
 
-            var clientId     = config["Riot:OAuthClientId"]     ?? string.Empty;
+            var clientId = config["Riot:OAuthClientId"] ?? string.Empty;
             var clientSecret = config["Riot:OAuthClientSecret"] ?? string.Empty;
-            var backendUrl   = ResolveBackendUrl(config);
-            var redirectUri  = $"{backendUrl}/api/integrations/riot/callback";
+            var backendUrl = ResolveBackendUrl(config);
+            var redirectUri = $"{backendUrl}/api/integrations/riot/callback";
 
             // Exchange code for tokens
             var tokenReq = new HttpRequestMessage(HttpMethod.Post, "https://auth.riotgames.com/token");
             tokenReq.Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["grant_type"]    = "authorization_code",
-                ["code"]          = code,
-                ["redirect_uri"]  = redirectUri,
-                ["client_id"]     = clientId,
+                ["grant_type"] = "authorization_code",
+                ["code"] = code,
+                ["redirect_uri"] = redirectUri,
+                ["client_id"] = clientId,
                 ["client_secret"] = clientSecret,
             });
 
@@ -114,12 +116,12 @@ public static class IntegrationEndpoints
 
             var tokenBody = await tokenRes.Content.ReadAsStringAsync(ct);
             using var tokenDoc = JsonDocument.Parse(tokenBody);
-            var accessToken  = tokenDoc.RootElement.GetProperty("access_token").GetString()!;
+            var accessToken = tokenDoc.RootElement.GetProperty("access_token").GetString()!;
             var refreshToken = tokenDoc.RootElement.TryGetProperty("refresh_token", out var rt)
                 ? rt.GetString() : null;
-            var expiresIn    = tokenDoc.RootElement.TryGetProperty("expires_in", out var ei)
+            var expiresIn = tokenDoc.RootElement.TryGetProperty("expires_in", out var ei)
                 ? ei.GetInt32() : 3600;
-            var expiresAt    = DateTime.UtcNow.AddSeconds(expiresIn);
+            var expiresAt = DateTime.UtcNow.AddSeconds(expiresIn);
 
             // Fetch account info
             var infoReq = new HttpRequestMessage(HttpMethod.Get,
@@ -133,9 +135,9 @@ public static class IntegrationEndpoints
 
             var infoBody = await infoRes.Content.ReadAsStringAsync(ct);
             using var infoDoc = JsonDocument.Parse(infoBody);
-            var puuid    = infoDoc.RootElement.GetProperty("puuid").GetString()!;
+            var puuid = infoDoc.RootElement.GetProperty("puuid").GetString()!;
             var gameName = infoDoc.RootElement.GetProperty("gameName").GetString()!;
-            var tagLine  = infoDoc.RootElement.GetProperty("tagLine").GetString()!;
+            var tagLine = infoDoc.RootElement.GetProperty("tagLine").GetString()!;
 
             using var conn = db.CreateConnection();
 
@@ -197,12 +199,12 @@ public static class IntegrationEndpoints
             if (account is null) return Results.Ok(new { linked = false });
             return Results.Ok(new
             {
-                linked    = true,
-                puuid     = (string?)account.puuid,
+                linked = true,
+                puuid = (string?)account.puuid,
                 game_name = (string?)account.game_name,
-                tag_line  = (string?)account.tag_line,
-                region    = (string?)account.region,
-                riot_tag  = (string?)account.riot_tag
+                tag_line = (string?)account.tag_line,
+                region = (string?)account.region,
+                riot_tag = (string?)account.riot_tag
             });
         }).RequireAuthorization("Authenticated");
 
@@ -231,11 +233,57 @@ public static class IntegrationEndpoints
         // ── POST /api/integrations/riot/proxy ─────────────────────────────────
         app.MapPost("/api/integrations/riot/proxy", async (
             [FromBody] RiotProxyRequest req,
-            RiotApiClient               riot,
-            CancellationToken           ct) =>
+            RiotApiClient riot,
+            CancellationToken ct) =>
         {
             var (status, body) = await riot.ProxyAsync(req.Region, req.Endpoint, ct);
             return Results.Content(body, "application/json", statusCode: status);
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/integrations/riot/enriched-match ────────────────────────
+        // Fetches a Valorant match from Riot and attaches parsed analytics fields.
+        app.MapPost("/api/integrations/riot/enriched-match", async (
+            [FromBody] RiotEnrichedMatchRequest req,
+            RiotApiClient riot,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.MatchId))
+            {
+                return Results.BadRequest(new { error = "matchId is required" });
+            }
+
+            var (status, body) = await riot.ProxyAsync(
+                req.Region,
+                $"/val/match/v1/matches/{req.MatchId}",
+                ct);
+
+            if (status != 200)
+            {
+                return Results.Content(body, "application/json", statusCode: status);
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var emptyTeams = new HashSet<string>(StringComparer.Ordinal);
+            var parsed = RiotMatchDetailsParser.Parse(doc.RootElement, emptyTeams, emptyTeams);
+            if (parsed is null)
+            {
+                return Results.BadRequest(new { error = "Failed to parse Riot match payload" });
+            }
+
+            var serializedDerived = ValorantMatchStatsHelper.SerializeDerivedDetails(parsed.Derived);
+            var root = JsonNode.Parse(body)?.AsObject();
+            if (root is null)
+            {
+                return Results.BadRequest(new { error = "Invalid Riot match payload" });
+            }
+
+            root["enrichedPlayers"] = JsonSerializer.SerializeToNode(parsed.Players);
+            root["matchInfoParsed"] = JsonSerializer.SerializeToNode(parsed.MatchInfo);
+            root["roundTimeline"] = JsonSerializer.SerializeToNode(serializedDerived.RoundTimeline);
+            root["economyTimeline"] = JsonSerializer.SerializeToNode(serializedDerived.EconomyTimeline);
+            root["weaponSummaries"] = JsonSerializer.SerializeToNode(serializedDerived.WeaponSummaries);
+
+            return Results.Json(root);
         }).RequireAuthorization("Authenticated");
     }
 }

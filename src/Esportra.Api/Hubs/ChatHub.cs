@@ -1,4 +1,6 @@
 using Dapper;
+using Esportra.Api.Helpers;
+using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
@@ -16,7 +18,7 @@ public sealed class ChatHub : Hub
 
     public ChatHub(IDbConnectionFactory db, ILogger<ChatHub> logger)
     {
-        _db     = db;
+        _db = db;
         _logger = logger;
     }
 
@@ -74,32 +76,32 @@ public sealed class ChatHub : Hub
         {
             using var conn = _db.CreateConnection();
 
-            // Fetch username and team_id for this match
-            var userInfo = await conn.QuerySingleOrDefaultAsync<dynamic>("""
-                SELECT p.username,
-                       (SELECT tm.team_id FROM team_members tm
-                        JOIN brkt_matches bm ON tm.team_id IN (bm.team1_id, bm.team2_id)
-                        WHERE bm.id = @MatchId AND tm.user_id = @UserId
-                        LIMIT 1) AS team_id
-                FROM profiles p WHERE p.id = @UserId
-                """, new { MatchId = Guid.Parse(matchId), UserId = Guid.Parse(userId) });
+            var competitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, Guid.Parse(userId), Guid.Parse(matchId));
+
+            var userInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT username FROM profiles p WHERE p.id = @UserId",
+                new { UserId = Guid.Parse(userId) });
 
             var username = (string?)(userInfo?.username) ?? "Unknown";
-            var teamId   = (Guid?)(userInfo?.team_id);
+            var userCtx = HubAuthHelper.GetUserContext(Context);
+            var isOrganizer = userCtx is not null && await StaffAuthHelper.IsMatchOrganizerOrStaffAsync(
+                conn, userCtx.UserIdGuid, Guid.Parse(matchId), userCtx);
 
             const string sql = """
                 INSERT INTO match_messages (match_id, sender_id, sender_name, team_id, content, message_type, created_at)
                 VALUES (@MatchId, @SenderId, @SenderName, @TeamId, @Content, 'user', NOW())
-                RETURNING id::text, match_id::text, sender_id::text, sender_name, team_id::text, content, message_type, created_at;
+                RETURNING id::text, match_id::text, sender_id::text, sender_name, team_id::text, content, message_type, created_at, @IsOrganizer AS is_organizer;
                 """;
 
             var message = await conn.QuerySingleAsync<MessageDto>(sql, new
             {
-                MatchId    = Guid.Parse(matchId),
-                SenderId   = Guid.Parse(userId),
+                MatchId = Guid.Parse(matchId),
+                SenderId = Guid.Parse(userId),
                 SenderName = username,
-                TeamId     = teamId,
-                Content    = content.Trim(),
+                TeamId = competitorId,
+                Content = content.Trim(),
+                IsOrganizer = isOrganizer,
             });
 
             await Clients.Group(ChatGroup(matchId))
@@ -153,43 +155,33 @@ public sealed class ChatHub : Hub
     /// </summary>
     private async Task<bool> IsMatchParticipantAsync(string userId, string matchId)
     {
+        var userCtx = HubAuthHelper.GetUserContext(Context);
+        if (userCtx is null) return false;
+
         using var conn = _db.CreateConnection();
-        var isParticipant = await conn.QuerySingleOrDefaultAsync<bool>(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM brkt_matches bm
-                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role != 'coach'
-                UNION ALL
-                SELECT 1 FROM brkt_matches bm
-                JOIN brkt_versions bv ON bv.id = bm.version_id
-                JOIN tournament_stages ts ON ts.id = bv.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                WHERE bm.id = @matchId AND t.organizer_id = @userId
-            )
-            """,
-            new { matchId = Guid.Parse(matchId), userId = Guid.Parse(userId) });
-        return isParticipant;
+        return await StaffAuthHelper.CanAccessMatchRoomAsync(
+            conn, userCtx.UserIdGuid, Guid.Parse(matchId), userCtx);
     }
 }
 
 // ── DTO ───────────────────────────────────────────────────────────────────────
 
 public sealed record MessageDto(
-    string   Id,
-    string   MatchId,
-    string   SenderId,
-    string   SenderName,
-    string?  TeamId,
-    string   Content,
-    string   MessageType,
-    DateTime CreatedAt);
+    string Id,
+    string MatchId,
+    string SenderId,
+    string SenderName,
+    string? TeamId,
+    string Content,
+    string MessageType,
+    DateTime CreatedAt,
+    bool IsOrganizer);
 
 /// <summary>Events broadcast to chat group clients.</summary>
 public static class ChatHubEvents
 {
     public const string MessageReceived = "MessageReceived";
-    public const string TypingStart     = "TypingStart";
-    public const string TypingStop      = "TypingStop";
-    public const string Error           = "Error";
+    public const string TypingStart = "TypingStart";
+    public const string TypingStop = "TypingStop";
+    public const string Error = "Error";
 }

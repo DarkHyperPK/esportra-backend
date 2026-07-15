@@ -17,11 +17,11 @@ public static class AnnouncementEndpoints
         // ?staff=true returns ALL announcements (including inactive/expired) for management UI.
         // Default returns only active, non-expired announcements (public/gamer view).
         app.MapGet("/api/venues/{venueId}/announcements", async (
-            Guid                 venueId,
-            [FromQuery] bool     staff = false,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            [FromQuery] bool staff = false,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             using var conn = db.CreateConnection();
 
@@ -70,11 +70,11 @@ public static class AnnouncementEndpoints
 
         // ── POST /api/venues/{venueId}/announcements — create announcement ──
         app.MapPost("/api/venues/{venueId}/announcements", async (
-            Guid                                    venueId,
-            [FromBody] CreateAnnouncementRequest     req,
-            HttpContext                              ctx,
-            IDbConnectionFactory                    db,
-            CancellationToken                       ct) =>
+            Guid venueId,
+            [FromBody] CreateAnnouncementRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -107,11 +107,11 @@ public static class AnnouncementEndpoints
                 new
                 {
                     venueId,
-                    title     = req.Title.Trim(),
-                    body      = req.Body?.Trim() ?? "",
-                    type      = req.Type.Trim(),
-                    priority  = req.Priority ?? 0,
-                    startsAt  = req.StartsAt,
+                    title = req.Title.Trim(),
+                    body = req.Body?.Trim() ?? "",
+                    type = req.Type.Trim(),
+                    priority = req.Priority ?? 0,
+                    startsAt = req.StartsAt,
                     expiresAt = req.ExpiresAt,
                     createdBy = userCtx.UserIdGuid
                 });
@@ -121,12 +121,12 @@ public static class AnnouncementEndpoints
 
         // ── PUT /api/venues/{venueId}/announcements/{id} — update ───────────
         app.MapPut("/api/venues/{venueId}/announcements/{id}", async (
-            Guid                                    venueId,
-            Guid                                    id,
-            [FromBody] UpdateAnnouncementRequest     req,
-            HttpContext                              ctx,
-            IDbConnectionFactory                    db,
-            CancellationToken                       ct) =>
+            Guid venueId,
+            Guid id,
+            [FromBody] UpdateAnnouncementRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -164,11 +164,11 @@ public static class AnnouncementEndpoints
                 {
                     id,
                     venueId,
-                    title     = req.Title.Trim(),
-                    body      = req.Body?.Trim() ?? "",
-                    type      = req.Type.Trim(),
-                    priority  = req.Priority ?? 0,
-                    startsAt  = req.StartsAt,
+                    title = req.Title.Trim(),
+                    body = req.Body?.Trim() ?? "",
+                    type = req.Type.Trim(),
+                    priority = req.Priority ?? 0,
+                    startsAt = req.StartsAt,
                     expiresAt = req.ExpiresAt
                 });
 
@@ -177,11 +177,11 @@ public static class AnnouncementEndpoints
 
         // ── DELETE /api/venues/{venueId}/announcements/{id} — owner only ────
         app.MapDelete("/api/venues/{venueId}/announcements/{id}", async (
-            Guid                 venueId,
-            Guid                 id,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            Guid id,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -203,11 +203,11 @@ public static class AnnouncementEndpoints
 
         // ── PATCH /api/venues/{venueId}/announcements/{id}/toggle — toggle active
         app.MapPatch("/api/venues/{venueId}/announcements/{id}/toggle", async (
-            Guid                 venueId,
-            Guid                 id,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            Guid id,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -238,18 +238,18 @@ public static class AnnouncementEndpoints
     // ── Request DTOs ────────────────────────────────────────────────────────────
 
     private sealed record CreateAnnouncementRequest(
-        string  Title,
+        string Title,
         string? Body,
-        string  Type,
-        int?    Priority,
+        string Type,
+        int? Priority,
         string? StartsAt,
         string? ExpiresAt);
 
     private sealed record UpdateAnnouncementRequest(
-        string  Title,
+        string Title,
         string? Body,
-        string  Type,
-        int?    Priority,
+        string Type,
+        int? Priority,
         string? StartsAt,
         string? ExpiresAt);
 }

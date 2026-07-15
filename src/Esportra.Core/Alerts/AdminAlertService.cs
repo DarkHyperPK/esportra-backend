@@ -15,12 +15,12 @@ public sealed class AdminAlertService(IDbConnectionFactory db, ILogger<AdminAler
     /// Creates an admin alert. Never throws — failures are logged as warnings.
     /// </summary>
     public async Task CreateAsync(
-        string        type,
+        string type,
         AlertSeverity severity,
-        string        title,
-        string?       message = null,
-        object?       data    = null,
-        CancellationToken ct  = default)
+        string title,
+        string? message = null,
+        object? data = null,
+        CancellationToken ct = default)
     {
         try
         {

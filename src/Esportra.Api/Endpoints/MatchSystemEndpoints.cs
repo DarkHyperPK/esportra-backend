@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+using System.Data;
+using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
@@ -7,9 +8,12 @@ using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
 using Esportra.Core.Match;
+using Esportra.Core.Notifications;
+using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Npgsql;
 
 namespace Esportra.Api.Endpoints;
 
@@ -24,11 +28,36 @@ public static class MatchSystemEndpoints
         MapSchedulingEndpoints(app);
         MapTimeProposalEndpoints(app);
         MapDisputeEndpoints(app);
+
+        // ── GET /api/matches/{id}/captain-room-link ───────────────────────────
+        app.MapGet("/api/matches/{id}/captain-room-link", async (
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
+                return Results.Forbid();
+
+            var matchContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, id);
+            var link = CaptainMatchLinkBuilder.BuildLink(matchContext.TournamentSlug, id);
+            return Results.Ok(new
+            {
+                link,
+                tournament_slug = matchContext.TournamentSlug,
+                match_id = id,
+            });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/matches/{id}/reports ─────────────────────────────────────
         app.MapGet("/api/matches/{id}/reports", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var reports = await conn.QueryAsync<dynamic>(
@@ -44,13 +73,15 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/reports ────────────────────────────────────
         app.MapPost("/api/matches/{id}/reports", async (
-            Guid                          id,
+            Guid id,
             [FromBody] SubmitReportRequest req,
-            HttpContext                    ctx,
-            IDbConnectionFactory          db,
-            IHubContext<MatchHub>         matchHub,
-            ILoggerFactory                loggerFactory,
-            CancellationToken             ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            SelfPlayMatchRoomService roomService,
+            GameCatalogService gameCatalog,
+            IHubContext<MatchHub> matchHub,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
             var logger = loggerFactory.CreateLogger("MatchReports");
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -58,53 +89,72 @@ public static class MatchSystemEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a captain of the reporting team
-            if (!Guid.TryParse(req.ReportedByTeamId, out var reportingTeamId))
-                return Results.BadRequest(new { error = "Invalid team ID" });
+            // Verify caller may report for this competitor (team captain or solo participant)
+            if (!Guid.TryParse(req.ReportedByTeamId, out var reportingCompetitorId))
+                return Results.BadRequest(new { error = "Invalid competitor ID" });
 
-            var isCaptain = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND role = 'captain' AND is_active = TRUE)",
-                new { teamId = reportingTeamId, userId = userCtx.UserIdGuid });
-            if (!isCaptain) return Results.Forbid();
+            if (!await BracketCompetitorResolver.CanUserReportForCompetitorAsync(
+                    conn, userCtx.UserIdGuid, id, reportingCompetitorId))
+                return Results.Json(new { error = "Only a captain or solo participant in this match can submit a report." }, statusCode: 403);
 
-            // Verify the reporting team is actually in this match
-            var isTeamInMatch = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM brkt_matches WHERE id = @matchId AND (team1_id = @teamId OR team2_id = @teamId))",
-                new { matchId = id, teamId = reportingTeamId });
-            if (!isTeamInMatch) return Results.Forbid();
+            if (!await BracketCompetitorResolver.IsCompetitorInMatchAsync(conn, id, reportingCompetitorId))
+                return Results.Json(new { error = "The reporting competitor is not part of this match." }, statusCode: 403);
 
             try
             {
-            // Block submission if same game is already disputed
-            var existingDisputed = await conn.QuerySingleOrDefaultAsync<bool>(
-                """
+                var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+                    """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
+                    new { matchId = id });
+                if (gameRow?.Game is not null)
+                {
+                    var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                        gameRow.Game, gameRow.GameMode, existingConnection: conn);
+                    var roomContext = await roomService.LoadContextAsync(id, supportsMapVeto, ct);
+                    if (roomContext is not null)
+                    {
+                        var reportGuard = roomService.CanSubmitResult(
+                            roomContext, reportingCompetitorId, DateTime.UtcNow);
+                        if (!reportGuard.Allowed)
+                            return SelfPlayGuardResponse(reportGuard);
+                    }
+                }
+
+                // Block submission if same game is already disputed
+                var existingDisputed = await conn.QuerySingleOrDefaultAsync<bool>(
+                    """
                 SELECT EXISTS(
                     SELECT 1 FROM match_result_reports
                     WHERE match_id = @matchId AND game_number = @gameNumber AND status = 'disputed'
                 )
                 """,
-                new { matchId = id, gameNumber = req.GameNumber });
-            if (existingDisputed)
-                return Results.Conflict(new { error = "This game is currently disputed. Results cannot be submitted until the dispute is resolved." });
+                    new { matchId = id, gameNumber = req.GameNumber });
+                if (existingDisputed)
+                    return Results.Conflict(new { error = "This game is currently disputed. Results cannot be submitted until the dispute is resolved." });
 
-            // Derive winner from scores if not explicitly provided
-            Guid? derivedWinner = Guid.TryParse(req.WinnerTeamId, out var parsedWinner) ? parsedWinner : (Guid?)null;
-            if (derivedWinner is null && req.Team1Score != req.Team2Score)
-            {
-                var matchTeams = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT team1_id, team2_id FROM brkt_matches WHERE id = @id", new { id });
-                if (matchTeams is not null)
+                // Derive winner from scores if not explicitly provided
+                Guid? derivedWinner = Guid.TryParse(req.WinnerTeamId, out var parsedWinner) ? parsedWinner : (Guid?)null;
+                if (derivedWinner is null && req.Team1Score != req.Team2Score)
                 {
-                    derivedWinner = req.Team1Score > req.Team2Score
-                        ? (Guid)matchTeams.team1_id
-                        : (Guid)matchTeams.team2_id;
-                    logger.LogInformation("Derived winner for report on match {MatchId}: {T1}-{T2} → {Winner}",
-                        id, req.Team1Score, req.Team2Score, derivedWinner);
+                    var matchTeams = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        "SELECT team1_id, team2_id FROM brkt_matches WHERE id = @id", new { id });
+                    if (matchTeams is not null)
+                    {
+                        derivedWinner = req.Team1Score > req.Team2Score
+                            ? (Guid)matchTeams.team1_id
+                            : (Guid)matchTeams.team2_id;
+                        logger.LogInformation("Derived winner for report on match {MatchId}: {T1}-{T2} → {Winner}",
+                            id, req.Team1Score, req.Team2Score, derivedWinner);
+                    }
                 }
-            }
 
-            var report = await conn.QuerySingleAsync<dynamic>(
-                """
+                var report = await conn.QuerySingleAsync<dynamic>(
+                    """
                 INSERT INTO match_result_reports
                   (match_id, game_number, reported_by, reported_by_team_id,
                    riot_match_id, map_id, map_name,
@@ -132,68 +182,76 @@ public static class MatchSystemEndpoints
                          winner_team_id, riot_match_id, map_id, map_name, match_data,
                          screenshot_urls, comment, status, created_at, updated_at
                 """,
-                new
-                {
-                    matchId           = id,
-                    gameNumber        = req.GameNumber,
-                    reportedBy        = userCtx.UserIdGuid,
-                    reportedByTeamId  = reportingTeamId,
-                    riotMatchId       = (string?)req.RiotMatchId,
-                    mapId             = Guid.TryParse(req.MapId, out var parsedMapId) ? (Guid?)parsedMapId : null,
-                    mapName           = (string?)req.MapName,
-                    team1Score        = req.Team1Score,
-                    team2Score        = req.Team2Score,
-                    winnerTeamId      = derivedWinner,
-                    matchData         = req.MatchData is not null
-                        ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
-                        : "{}",
-                    screenshotUrls    = req.ScreenshotUrls is not null
-                        ? System.Text.Json.JsonSerializer.Serialize(req.ScreenshotUrls)
-                        : "[]",
-                    comment           = (string?)req.Comment,
-                });
-
-            // Notify opposing captain via notification + SignalR
-            var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @id", new { id });
-
-            // Resolve tournament ID for notification link
-            var tournamentId = match?.version_id is not null
-                ? await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT tournament_id FROM brkt_versions WHERE id = @vid",
-                    new { vid = (Guid)match.version_id })
-                : (Guid?)null;
-            var matchLink = tournamentId is not null
-                ? $"/tournaments/{tournamentId}/captain-match/{id}"
-                : "/tournaments";
-
-            if (match is not null)
-            {
-                string? opposingTeamId = match.team1_id?.ToString() == req.ReportedByTeamId
-                    ? match.team2_id?.ToString()
-                    : match.team1_id?.ToString();
-
-                if (!Guid.TryParse(opposingTeamId, out var opposingTeamGuid))
-                    return Results.Ok(report);
-
-                if (opposingTeamId is not null)
-                {
-                    var captain = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        """
-                        SELECT user_id FROM team_members
-                        WHERE team_id = @tid AND role = 'captain' AND is_active = TRUE
-                        LIMIT 1
-                        """,
-                        new { tid = opposingTeamGuid });
-
-                    if (captain?.user_id is not null)
+                    new
                     {
-                        var captainId = captain.user_id is Guid g ? g : Guid.Parse(captain.user_id.ToString());
-                        var reporterTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                            "SELECT name FROM teams WHERE id = @id",
-                            new { id = Guid.Parse(req.ReportedByTeamId) });
-                        await conn.ExecuteAsync(
-                            """
+                        matchId = id,
+                        gameNumber = req.GameNumber,
+                        reportedBy = userCtx.UserIdGuid,
+                        reportedByTeamId = reportingCompetitorId,
+                        riotMatchId = (string?)req.RiotMatchId,
+                        mapId = Guid.TryParse(req.MapId, out var parsedMapId) ? (Guid?)parsedMapId : null,
+                        mapName = (string?)req.MapName,
+                        team1Score = req.Team1Score,
+                        team2Score = req.Team2Score,
+                        winnerTeamId = derivedWinner,
+                        matchData = req.MatchData is not null
+                            ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
+                            : "{}",
+                        screenshotUrls = req.ScreenshotUrls is not null
+                            ? System.Text.Json.JsonSerializer.Serialize(req.ScreenshotUrls)
+                            : "[]",
+                        comment = (string?)req.Comment,
+                    });
+
+                // Notify opposing captain via notification + SignalR
+                var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @id", new { id });
+
+                // Resolve tournament slug for notification link
+                var tournamentSlug = match?.version_id is not null
+                    ? await conn.QuerySingleOrDefaultAsync<string?>(
+                        """
+                    SELECT t.slug FROM tournaments t
+                    JOIN brkt_versions v ON v.tournament_id = t.id
+                    WHERE v.id = @vid
+                    """,
+                        new { vid = (Guid)match.version_id })
+                    : null;
+                var matchLink = !string.IsNullOrWhiteSpace(tournamentSlug)
+                    ? $"/tournaments/{tournamentSlug}/captain-match/{id}"
+                    : "/tournaments";
+
+                try
+                {
+                    await matchHub.Clients
+                        .Group(MatchHub.MatchGroup(id.ToString()))
+                        .SendAsync(MatchHubEvents.ReportSubmitted,
+                            new { matchId = id, reportId = report.id?.ToString() }, ct);
+                }
+                catch (Exception signalrEx)
+                {
+                    logger.LogWarning(signalrEx, "Report saved for match {MatchId} but SignalR broadcast failed", id);
+                }
+
+                if (match is not null)
+                {
+                    try
+                    {
+                        string? opposingTeamId = match.team1_id?.ToString() == req.ReportedByTeamId
+                            ? match.team2_id?.ToString()
+                            : match.team1_id?.ToString();
+
+                        if (Guid.TryParse(opposingTeamId, out var opposingCompetitorId))
+                        {
+                            var opposingUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(
+                                conn, opposingCompetitorId);
+
+                            if (opposingUserId is not null)
+                            {
+                                var reporterTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(
+                                    conn, reportingCompetitorId);
+                                await conn.ExecuteAsync(
+                                    """
                             INSERT INTO notifications
                               (user_id, type, title, message, link, data, is_read)
                             VALUES
@@ -201,48 +259,66 @@ public static class MatchSystemEndpoints
                                @msg,
                                @link, @data::jsonb, FALSE)
                             """,
-                            new
-                            {
-                                userId = captainId,
-                                title  = $"⚔️ Match Result Submitted",
-                                msg    = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
-                                link   = matchLink,
-                                data   = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
-                            });
-
-                        // Push via NotificationHub
-                        await matchHub.Clients
-                            .Group(MatchHub.MatchGroup(id.ToString()))
-                            .SendAsync(MatchHubEvents.ReportSubmitted,
-                                new { matchId = id, reportId = report.id?.ToString() }, ct);
+                                    new
+                                    {
+                                        userId = opposingUserId.Value,
+                                        title = $"⚔️ Match Result Submitted",
+                                        msg = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
+                                        link = matchLink,
+                                        data = System.Text.Json.JsonSerializer.Serialize(new { match_id = id }),
+                                    });
+                            }
+                        }
+                    }
+                    catch (Exception notifyEx)
+                    {
+                        logger.LogWarning(notifyEx, "Report saved for match {MatchId} but notification dispatch failed", id);
                     }
                 }
-            }
 
-            DapperJsonbHelper.FixJsonb(report);
-            return Results.Ok(report);
+                DapperJsonbHelper.FixJsonb(report);
+                return Results.Ok(report);
+            }
+            catch (PostgresException pgEx)
+            {
+                logger.LogError(pgEx, "Database error submitting match report for match {MatchId} (SqlState={SqlState})", id, pgEx.SqlState);
+                var traceId = ctx.TraceIdentifier;
+                var message = pgEx.SqlState switch
+                {
+                    PostgresErrorCodes.ForeignKeyViolation =>
+                        "Could not link this report to the match competitor. Try again after the page refreshes.",
+                    "42P10" =>
+                        "Report submission is not configured on the database yet. Contact support with the reference ID.",
+                    PostgresErrorCodes.UndefinedColumn =>
+                        "Report submission schema is out of date. Contact support with the reference ID.",
+                    _ => "We couldn't submit your report. Please verify scores and try again.",
+                };
+                return Results.Json(new { error = message, traceId }, statusCode: 500);
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to submit match report for match {MatchId}", id);
-                return Results.Json(new { error = "We couldn't submit your report. Please try again." }, statusCode: 500);
+                var traceId = ctx.TraceIdentifier;
+                return Results.Json(
+                    new { error = "We couldn't submit your report. Please verify scores and try again.", traceId },
+                    statusCode: 500);
             }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{id}/reports/{rid}/accept ───────────────────────
         app.MapPost("/api/matches/{id}/reports/{rid}/accept", async (
-            Guid                           id,
-            Guid                           rid,
-            [FromBody] AcceptReportRequest  req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            VetoDbService                  vetoService,
-            MatchFinalizationService       finalizer,
-            TournamentWinnerService        winnerService,
-            IHubContext<MatchHub>          matchHub,
-            IHubContext<BracketHub>        bracketHub,
-            ILoggerFactory                 loggerFactory,
-            CancellationToken              ct) =>
+            Guid id,
+            Guid rid,
+            [FromBody] AcceptReportRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            VetoDbService vetoService,
+            MatchFinalizationService finalizer,
+            TournamentWinnerService winnerService,
+            IHubContext<MatchHub> matchHub,
+            IHubContext<BracketHub> bracketHub,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
         {
             var logger = loggerFactory.CreateLogger("MatchReports");
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -250,122 +326,116 @@ public static class MatchSystemEndpoints
 
             try
             {
-            using var conn = db.CreateConnection();
+                using var conn = db.CreateConnection();
 
-            // Verify caller is a captain in this match (opposing team)
-            var captainTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT tm.team_id FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId = id, userId = userCtx.UserIdGuid });
-            if (captainTeamId is null) return Results.Forbid();
+                // Verify caller is a captain or solo participant in this match
+                var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                    conn, userCtx.UserIdGuid, id);
+                if (captainCompetitorId is null) return Results.Forbid();
 
-            // Prevent a team from accepting their own report
-            var reportingTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT reported_by_team_id FROM match_result_reports WHERE id = @rid AND match_id = @matchId",
-                new { rid, matchId = id });
-            if (reportingTeamId is not null && captainTeamId == reportingTeamId)
-                return Results.BadRequest(new { error = "Cannot accept your own team's report." });
+                // Prevent a competitor from accepting their own report
+                var reportingCompetitorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT reported_by_team_id FROM match_result_reports WHERE id = @rid AND match_id = @matchId",
+                    new { rid, matchId = id });
+                if (reportingCompetitorId is not null && captainCompetitorId == reportingCompetitorId)
+                    return Results.BadRequest(new { error = "Cannot accept your own team's report." });
 
-            // Mark report accepted
-            await conn.ExecuteAsync(
-                """
+                // Mark report accepted
+                await conn.ExecuteAsync(
+                    """
                 UPDATE match_result_reports
                 SET status = 'accepted', responded_by = @userId, responded_at = NOW()
                 WHERE id = @rid AND match_id = @matchId AND status = 'pending'
                 """,
-                new { rid, matchId = id, userId = userCtx.UserIdGuid });
+                    new { rid, matchId = id, userId = userCtx.UserIdGuid });
 
-            // Auto-process: record game result, check if series is complete
-            Guid? winnerId = null;
-            bool seriesComplete = false;
-            try
-            {
-                var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    """
+                // Auto-process: record game result, check if series is complete
+                Guid? winnerId = null;
+                bool seriesComplete = false;
+                try
+                {
+                    var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
                     SELECT winner_team_id, team1_score, team2_score,
                            match_data, map_name, map_id, riot_match_id,
                            screenshot_urls, game_number, reported_by_team_id
                     FROM match_result_reports WHERE id = @rid
                     """, new { rid });
 
-                if (report is not null)
-                {
-                    var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                        "SELECT version, team1_id, team2_id, version_id, best_of FROM brkt_matches WHERE id = @matchId",
-                        new { matchId = id });
-
-                    if (match is not null)
+                    if (report is not null)
                     {
-                        // Use Convert.ToInt32 for safe numeric conversion (Dapper may return long/short)
-                        int t1 = Convert.ToInt32(report.team1_score);
-                        int t2 = Convert.ToInt32(report.team2_score);
-                        int bestOf = Convert.ToInt32(match.best_of ?? 1);
-                        int winsNeeded = (bestOf / 2) + 1; // BO1→1, BO3→2, BO5→3
+                        var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            "SELECT version, team1_id, team2_id, version_id, best_of FROM brkt_matches WHERE id = @matchId",
+                            new { matchId = id });
 
-                        logger.LogInformation(
-                            "Accept report for match {MatchId}: game score {T1}-{T2}, bestOf={BestOf}, winsNeeded={WinsNeeded}",
-                            id, t1, t2, bestOf, winsNeeded);
+                        if (match is not null)
+                        {
+                            // Use Convert.ToInt32 for safe numeric conversion (Dapper may return long/short)
+                            int t1 = Convert.ToInt32(report.team1_score);
+                            int t2 = Convert.ToInt32(report.team2_score);
+                            int bestOf = Convert.ToInt32(match.best_of ?? 1);
+                            int winsNeeded = (bestOf / 2) + 1; // BO1→1, BO3→2, BO5→3
 
-                        // Derive game winner from this report
-                        Guid? gameWinnerId = null;
-                        if (report.winner_team_id is not null)
-                        {
-                            gameWinnerId = (Guid)report.winner_team_id;
-                        }
-                        else if (t1 != t2)
-                        {
-                            gameWinnerId = t1 > t2 ? (Guid)match.team1_id : (Guid)match.team2_id;
-                        }
+                            logger.LogInformation(
+                                "Accept report for match {MatchId}: game score {T1}-{T2}, bestOf={BestOf}, winsNeeded={WinsNeeded}",
+                                id, t1, t2, bestOf, winsNeeded);
 
-                        if (gameWinnerId is null)
-                        {
-                            logger.LogWarning("Cannot auto-process match {MatchId}: tied scores {T1}-{T2} and no explicit winner", id, t1, t2);
-                        }
-                        else
-                        {
-                            var gameLoserId = gameWinnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
-
-                            // 1. Upsert brkt_match_games FIRST (before checking series)
-                            try
+                            // Derive game winner from this report
+                            Guid? gameWinnerId = null;
+                            if (report.winner_team_id is not null)
                             {
-                                var gameNumber = Convert.ToInt32(report.game_number);
-                                var mapName = (string?)(report.map_name?.ToString());
-                                var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
+                                gameWinnerId = (Guid)report.winner_team_id;
+                            }
+                            else if (t1 != t2)
+                            {
+                                gameWinnerId = t1 > t2 ? (Guid)match.team1_id : (Guid)match.team2_id;
+                            }
 
-                                // Enrich map info from veto data if report doesn't have it
-                                if (mapId is null || mapName is null)
+                            if (gameWinnerId is null)
+                            {
+                                logger.LogWarning("Cannot auto-process match {MatchId}: tied scores {T1}-{T2} and no explicit winner", id, t1, t2);
+                            }
+                            else
+                            {
+                                var gameLoserId = gameWinnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
+
+                                // 1. Upsert brkt_match_games FIRST (before checking series)
+                                try
                                 {
-                                    try
+                                    var gameNumber = Convert.ToInt32(report.game_number);
+                                    var mapName = (string?)(report.map_name?.ToString());
+                                    var mapId = report.map_id is Guid mg ? (Guid?)mg : null;
+
+                                    // Enrich map info from veto data if report doesn't have it
+                                    if (mapId is null || mapName is null)
                                     {
-                                        var gameMapOrder = await vetoService.GetGameMapOrderAsync(id, ct);
-                                        var vetoGame = gameMapOrder.FirstOrDefault(g => g.GameNumber == gameNumber);
-                                        if (vetoGame != default)
+                                        try
                                         {
-                                            mapId ??= Guid.TryParse(vetoGame.MapId, out var vid) ? vid : null;
-                                            mapName ??= vetoGame.MapName;
+                                            var gameMapOrder = await vetoService.GetGameMapOrderAsync(id, ct);
+                                            var vetoGame = gameMapOrder.FirstOrDefault(g => g.GameNumber == gameNumber);
+                                            if (vetoGame != default)
+                                            {
+                                                mapId ??= Guid.TryParse(vetoGame.MapId, out var vid) ? vid : null;
+                                                mapName ??= vetoGame.MapName;
+                                            }
+                                        }
+                                        catch (Exception vetoEx)
+                                        {
+                                            logger.LogWarning(vetoEx, "Failed to enrich map from veto for match {MatchId} game {GameNumber}", id, (int)gameNumber);
                                         }
                                     }
-                                    catch (Exception vetoEx)
-                                    {
-                                        logger.LogWarning(vetoEx, "Failed to enrich map from veto for match {MatchId} game {GameNumber}", id, (int)gameNumber);
-                                    }
-                                }
-                                var riotMatchId = (string?)(report.riot_match_id?.ToString());
-                                var matchDetails = report.match_data is string mdStr ? mdStr
-                                    : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)
-                                    : null;
-                                var matchDetailsJson = matchDetails ?? "{}";
+                                    var riotMatchId = (string?)(report.riot_match_id?.ToString());
+                                    var matchDetails = report.match_data is string mdStr ? mdStr
+                                        : report.match_data is not null ? System.Text.Json.JsonSerializer.Serialize(report.match_data)
+                                        : null;
+                                    var matchDetailsJson = matchDetails ?? "{}";
 
-                                logger.LogInformation(
-                                    "Upserting brkt_match_games for match {MatchId}: game={GameNumber}, map={MapName}, mapId={MapId}, winner={Winner}",
-                                    id, (int)gameNumber, mapName ?? "null", mapId?.ToString() ?? "null", (Guid?)gameWinnerId);
+                                    logger.LogInformation(
+                                        "Upserting brkt_match_games for match {MatchId}: game={GameNumber}, map={MapName}, mapId={MapId}, winner={Winner}",
+                                        id, (int)gameNumber, mapName ?? "null", mapId?.ToString() ?? "null", (Guid?)gameWinnerId);
 
-                                await conn.ExecuteAsync(
-                                    """
+                                    await conn.ExecuteAsync(
+                                        """
                                     INSERT INTO brkt_match_games
                                         (match_id, game_number, team1_score, team2_score, map_name, map_id,
                                          riot_match_id, status, winner_id, loser_id, match_details,
@@ -387,194 +457,200 @@ public static class MatchSystemEndpoints
                                         reported_by_team_id = @reportedByTeamId,
                                         completed_at   = NOW()
                                     """,
-                                    new
-                                    {
-                                        matchId = id, gameNumber, t1, t2,
-                                        mapName, mapId, riotMatchId,
-                                        matchDetails = matchDetailsJson,
-                                        winnerId = gameWinnerId, loserId = gameLoserId,
-                                        reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
-                                    });
+                                        new
+                                        {
+                                            matchId = id,
+                                            gameNumber,
+                                            t1,
+                                            t2,
+                                            mapName,
+                                            mapId,
+                                            riotMatchId,
+                                            matchDetails = matchDetailsJson,
+                                            winnerId = gameWinnerId,
+                                            loserId = gameLoserId,
+                                            reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
+                                        });
 
-                                logger.LogInformation("brkt_match_games upsert succeeded for match {MatchId} game {GameNumber}", id, (int)gameNumber);
-                            }
-                            catch (Exception gmEx)
-                            {
-                                logger.LogError(gmEx, "Failed to upsert brkt_match_games for match {MatchId}", id);
-                            }
+                                    logger.LogInformation("brkt_match_games upsert succeeded for match {MatchId} game {GameNumber}", id, (int)gameNumber);
+                                }
+                                catch (Exception gmEx)
+                                {
+                                    logger.LogError(gmEx, "Failed to upsert brkt_match_games for match {MatchId}", id);
+                                }
 
-                            // 2. Count series wins from all completed games
-                            // Use COUNT + FILTER instead of SUM to get integer (not bigint)
-                            var seriesWins = await conn.QuerySingleAsync<dynamic>(
-                                """
+                                // 2. Count series wins from all completed games
+                                // Use COUNT + FILTER instead of SUM to get integer (not bigint)
+                                var seriesWins = await conn.QuerySingleAsync<dynamic>(
+                                    """
                                 SELECT
                                     COUNT(*) FILTER (WHERE winner_id = @team1Id)::int AS team1_wins,
                                     COUNT(*) FILTER (WHERE winner_id = @team2Id)::int AS team2_wins
                                 FROM brkt_match_games
                                 WHERE match_id = @matchId AND status = 'completed'
                                 """,
-                                new { matchId = id, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
+                                    new { matchId = id, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
 
-                            int team1Wins = Convert.ToInt32(seriesWins.team1_wins);
-                            int team2Wins = Convert.ToInt32(seriesWins.team2_wins);
+                                int team1Wins = Convert.ToInt32(seriesWins.team1_wins);
+                                int team2Wins = Convert.ToInt32(seriesWins.team2_wins);
 
-                            logger.LogInformation(
-                                "Match {MatchId} series update: {T1Wins}-{T2Wins} (need {WinsNeeded} for BO{BestOf})",
-                                id, team1Wins, team2Wins, winsNeeded, bestOf);
+                                logger.LogInformation(
+                                    "Match {MatchId} series update: {T1Wins}-{T2Wins} (need {WinsNeeded} for BO{BestOf})",
+                                    id, team1Wins, team2Wins, winsNeeded, bestOf);
 
-                            // 3. Update series score on brkt_matches (visible in bracket UI)
-                            await conn.ExecuteAsync(
-                                """
+                                // 3. Update series score on brkt_matches (visible in bracket UI)
+                                await conn.ExecuteAsync(
+                                    """
                                 UPDATE brkt_matches
                                 SET team1_score = @team1Wins, team2_score = @team2Wins, updated_at = NOW()
                                 WHERE id = @matchId
                                 """,
-                                new { matchId = id, team1Wins, team2Wins });
+                                    new { matchId = id, team1Wins, team2Wins });
 
-                            // 4. Only finalize + advance if a team has reached winsNeeded
-                            if (team1Wins >= winsNeeded || team2Wins >= winsNeeded)
-                            {
-                                seriesComplete = true;
-                                winnerId = team1Wins >= winsNeeded ? (Guid)match.team1_id : (Guid)match.team2_id;
-                                var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
-
-                                try
+                                // 4. Only finalize + advance if a team has reached winsNeeded
+                                if (team1Wins >= winsNeeded || team2Wins >= winsNeeded)
                                 {
-                                    var finalized = await finalizer.FinalizeAsync(
-                                        id, Convert.ToInt32(match.version), winnerId.Value, loserId,
-                                        team1Wins, team2Wins, ct);
+                                    seriesComplete = true;
+                                    winnerId = team1Wins >= winsNeeded ? (Guid)match.team1_id : (Guid)match.team2_id;
+                                    var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
 
-                                    if (finalized)
+                                    try
                                     {
-                                        logger.LogInformation(
-                                            "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
-                                            id, winnerId, team1Wins, team2Wins, bestOf);
+                                        var finalized = await finalizer.FinalizeAsync(
+                                            id, Convert.ToInt32(match.version), winnerId.Value, loserId,
+                                            team1Wins, team2Wins, ct);
 
-                                        // Auto-delete game server after match finalized
-                                        var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
-                                        _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
-                                            id, db, dathostSvc,
-                                            matchHub, logger, CancellationToken.None));
-
-                                        // Check if all matches in this stage are now completed → set stage + tournament winner
-                                        try
+                                        if (finalized)
                                         {
-                                            if (match.version_id is not null)
-                                            {
-                                                var versionId = (Guid)match.version_id;
-                                                var pendingCount = await conn.QuerySingleAsync<int>(
-                                                    "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
-                                                    new { versionId });
+                                            logger.LogInformation(
+                                                "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
+                                                id, winnerId, team1Wins, team2Wins, bestOf);
 
-                                                if (pendingCount == 0)
+                                            // Auto-delete game server after match finalized
+                                            var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
+                                            _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
+                                                id, db, dathostSvc,
+                                                matchHub, logger, CancellationToken.None));
+
+                                            // Check if all matches in this stage are now completed → set stage + tournament winner
+                                            try
+                                            {
+                                                if (match.version_id is not null)
                                                 {
-                                                    var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
+                                                    var versionId = (Guid)match.version_id;
+                                                    var pendingCount = await conn.QuerySingleAsync<int>(
+                                                        "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
                                                         new { versionId });
 
-                                                    if (stageId is not null)
+                                                    if (pendingCount == 0)
                                                     {
-                                                        await conn.ExecuteAsync(
-                                                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                                                            new { stageId });
+                                                        var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                                                            "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
+                                                            new { versionId });
 
-                                                        var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                                                            "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
-                                                            new { stageId });
-
-                                                        if (stageInfo is not null)
+                                                        if (stageId is not null)
                                                         {
-                                                            var fmt = (string?)stageInfo.format;
-                                                            if (fmt is "single_elimination" or "double_elimination")
+                                                            await conn.ExecuteAsync(
+                                                                "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+                                                                new { stageId });
+
+                                                            var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                                                                "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
+                                                                new { stageId });
+
+                                                            if (stageInfo is not null)
                                                             {
-                                                                var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                                                    """
+                                                                var fmt = (string?)stageInfo.format;
+                                                                if (fmt is "single_elimination" or "double_elimination")
+                                                                {
+                                                                    var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                                                                        """
                                                                     SELECT winner_id FROM brkt_matches
                                                                     WHERE version_id = @versionId
                                                                       AND status = 'completed' AND winner_id IS NOT NULL
                                                                     ORDER BY round_index DESC, match_number DESC
                                                                     LIMIT 1
                                                                     """,
-                                                                    new { versionId });
+                                                                        new { versionId });
 
-                                                                if (gfWinnerId is not null)
-                                                                {
-                                                                    var tid = (Guid)stageInfo.tournament_id;
-                                                                    await winnerService.SetWinnerAsync(
-                                                                        conn,
-                                                                        tx: null,
-                                                                        tid,
-                                                                        gfWinnerId.Value,
-                                                                        reason: "match report completed final bracket",
-                                                                        ct);
+                                                                    if (gfWinnerId is not null)
+                                                                    {
+                                                                        var tid = (Guid)stageInfo.tournament_id;
+                                                                        await winnerService.SetWinnerAsync(
+                                                                            conn,
+                                                                            tx: null,
+                                                                            tid,
+                                                                            gfWinnerId.Value,
+                                                                            reason: "match report completed final bracket",
+                                                                            ct);
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
-                                        catch (Exception stageEx)
-                                        {
-                                            logger.LogWarning(stageEx, "Stage completion check failed for match {MatchId} (non-fatal)", id);
+                                            catch (Exception stageEx)
+                                            {
+                                                logger.LogWarning(stageEx, "Stage completion check failed for match {MatchId} (non-fatal)", id);
+                                            }
                                         }
                                     }
-                                }
-                                catch (InvalidOperationException ex)
-                                {
-                                    logger.LogWarning(ex, "Match {MatchId} finalization version conflict", id);
-                                    // Surface the conflict so the client can retry
-                                    return Results.Conflict(new
+                                    catch (InvalidOperationException ex)
                                     {
-                                        success        = false,
-                                        error          = "version_conflict",
-                                        message        = "This match was updated by someone else. Please try again.",
-                                        matchId        = id,
-                                        reportId       = rid,
-                                        seriesComplete = true,
-                                    });
+                                        logger.LogWarning(ex, "Match {MatchId} finalization version conflict", id);
+                                        // Surface the conflict so the client can retry
+                                        return Results.Conflict(new
+                                        {
+                                            success = false,
+                                            error = "version_conflict",
+                                            message = "This match was updated by someone else. Please try again.",
+                                            matchId = id,
+                                            reportId = rid,
+                                            seriesComplete = true,
+                                        });
+                                    }
                                 }
-                            }
-                            else
-                            {
-                                logger.LogInformation(
-                                    "Match {MatchId} series in progress: {T1Wins}-{T2Wins}, need {WinsNeeded} wins (BO{BestOf})",
-                                    id, team1Wins, team2Wins, winsNeeded, bestOf);
-                            }
+                                else
+                                {
+                                    logger.LogInformation(
+                                        "Match {MatchId} series in progress: {T1Wins}-{T2Wins}, need {WinsNeeded} wins (BO{BestOf})",
+                                        id, team1Wins, team2Wins, winsNeeded, bestOf);
+                                }
 
-                            // 5. Broadcast bracket update (even for partial series progress)
-                            if (match.version_id is not null)
-                            {
-                                var vid = (Guid)match.version_id;
-                                await bracketHub.Clients
-                                    .Group(BracketHub.BracketGroup(vid.ToString()))
-                                    .SendAsync(BracketHubEvents.MatchUpdated,
-                                        new { versionId = vid, matchId = id }, ct);
+                                // 5. Broadcast bracket update (even for partial series progress)
+                                if (match.version_id is not null)
+                                {
+                                    var vid = (Guid)match.version_id;
+                                    await bracketHub.Clients
+                                        .Group(BracketHub.BracketGroup(vid.ToString()))
+                                        .SendAsync(BracketHubEvents.MatchUpdated,
+                                            new { versionId = vid, matchId = id }, ct);
+                                }
                             }
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Auto-process after accept failed for match {MatchId} (non-fatal)", id);
-            }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Auto-process after accept failed for match {MatchId} (non-fatal)", id);
+                }
 
-            // Notify via SignalR
-            await matchHub.Clients
-                .Group(MatchHub.MatchGroup(id.ToString()))
-                .SendAsync(MatchHubEvents.ReportAccepted,
-                    new { matchId = id, reportId = rid, riotMatchId = req.RiotMatchId }, ct);
+                // Notify via SignalR
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(id.ToString()))
+                    .SendAsync(MatchHubEvents.ReportAccepted,
+                        new { matchId = id, reportId = rid, riotMatchId = req.RiotMatchId }, ct);
 
-            return Results.Ok(new
-            {
-                success       = true,
-                matchId       = id,
-                reportId      = rid,
-                riotMatchId   = req.RiotMatchId,
-                processed     = winnerId is not null,
-                seriesComplete,
-            });
+                return Results.Ok(new
+                {
+                    success = true,
+                    matchId = id,
+                    reportId = rid,
+                    riotMatchId = req.RiotMatchId,
+                    processed = winnerId is not null,
+                    seriesComplete,
+                });
             }
             catch (Exception ex)
             {
@@ -585,30 +661,24 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/reports/{rid}/dispute ──────────────────────
         app.MapPost("/api/matches/{id}/reports/{rid}/dispute", async (
-            Guid                             id,
-            Guid                             rid,
-            [FromBody] DisputeReportRequest   req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            IHubContext<MatchHub>            matchHub,
+            Guid id,
+            Guid rid,
+            [FromBody] DisputeReportRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<MatchHub> matchHub,
             Esportra.Core.Alerts.AdminAlertService alertService,
-            CancellationToken                ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a captain of a team in this match
-            var captainTeamId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT tm.team_id FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId = id, userId = userCtx.UserIdGuid });
-            if (captainTeamId is null) return Results.Forbid();
+            // Verify caller is a captain or solo participant in this match
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, id);
+            if (captainCompetitorId is null) return Results.Forbid();
 
             using var tx = conn.BeginTransaction();
 
@@ -636,53 +706,79 @@ public static class MatchSystemEndpoints
                     new { rid }, tx);
 
                 Guid? tournamentId = info?.tournament_id;
-                Guid? organizerId  = info?.organizer_id;
-                Guid? reporterId   = info?.reported_by;
-                string? slug       = info?.slug;
+                Guid? organizerId = info?.organizer_id;
+                Guid? reporterId = info?.reported_by;
+                string? slug = info?.slug;
 
                 // 3. Insert match-level dispute (used by useMatchDispute hook)
                 var teamId = Guid.TryParse(req.TeamId, out var tg) ? tg : (Guid?)null;
+                var evidenceUrls = (req.EvidenceUrls ?? []).ToArray();
+                var primaryEvidenceUrl = evidenceUrls.Length > 0 ? evidenceUrls[0] : null;
+
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO match_disputes
                         (match_id, disputed_by_team_id, disputed_by_user_id, reason, evidence_urls, status)
                     VALUES
-                        (@matchId, @teamId, @userId, @reason, '{}', 'pending')
+                        (@matchId, @teamId, @userId, @reason, @evidenceUrls, 'pending')
                     """,
-                    new { matchId = id, teamId, userId = userCtx.UserIdGuid, reason = req.Reason }, tx);
+                    new
+                    {
+                        matchId = id,
+                        teamId,
+                        userId = userCtx.UserIdGuid,
+                        reason = req.Reason,
+                        evidenceUrls,
+                    },
+                    tx);
 
                 // 4. Insert tournament-level dispute (organizer disputes tab)
                 var dispute = await conn.QuerySingleAsync<dynamic>(
                     """
                     INSERT INTO tournament_disputes
                         (tournament_id, match_id, raised_by_user_id, team_id,
-                         title, description, dispute_reason, status, reference_number)
+                         title, description, dispute_reason, status, reference_number, evidence_url)
                     VALUES
                         (@tournamentId, @matchId, @userId, @teamId,
                          'Match Result Disputed', @reason, 'result_dispute', 'open',
-                         'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'))
+                         'DSP-' || LPAD(nextval('dispute_reference_seq')::text, 4, '0'), @evidenceUrl)
                     RETURNING id, tournament_id, match_id, raised_by_user_id, team_id,
                              title, description, dispute_reason, status, reference_number, created_at
                     """,
                     new
                     {
-                        tournamentId, matchId = id,
-                        userId = userCtx.UserIdGuid, teamId,
+                        tournamentId,
+                        matchId = id,
+                        userId = userCtx.UserIdGuid,
+                        teamId,
                         reason = req.Reason,
+                        evidenceUrl = primaryEvidenceUrl,
                     }, tx);
 
                 // 5. Notify reporter that their result is being disputed
                 if (reporterId is not null && reporterId != userCtx.UserIdGuid)
                 {
+                    var captainMatchLink = CaptainMatchLinkBuilder.BuildLink(slug, id);
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                         VALUES (@userId, 'result_disputed', '🚨 Result Disputed!',
                                 'The opposing team has challenged your reported result. An organizer will step in to review.',
-                                '/tournaments/captain',
-                                jsonb_build_object('match_id', @matchId::text)::jsonb, false)
+                                @link,
+                                jsonb_build_object(
+                                    'match_id', @matchId::text,
+                                    'tournament_slug', @tournamentSlug
+                                )::jsonb,
+                                false)
                         """,
-                        new { userId = reporterId, matchId = id }, tx);
+                        new
+                        {
+                            userId = reporterId,
+                            matchId = id,
+                            link = captainMatchLink,
+                            tournamentSlug = slug,
+                        },
+                        tx);
                 }
 
                 // 6. Notify tournament organizer
@@ -728,20 +824,54 @@ public static class MatchSystemEndpoints
 
         // ── GET /api/matches/{id}/messages ───────────────────────────────────
         app.MapGet("/api/matches/{id}/messages", async (
-            Guid                 id,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
-                """
-                SELECT id, match_id, sender_id, sender_name, team_id,
-                       content, message_type, metadata, created_at
-                FROM match_messages
-                WHERE match_id = @id
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
+                return Results.Json(new { error = "You do not have access to this match chat." }, statusCode: 403);
+
+            const string matchMessagesSqlTemplate = """
+                SELECT mm.id, mm.match_id, mm.sender_id, mm.sender_name, mm.team_id,
+                       mm.content, mm.message_type, mm.metadata, mm.created_at,
+                       EXISTS (
+                           SELECT 1
+                           FROM brkt_matches bm
+                           JOIN brkt_versions bv ON bv.id = bm.version_id
+                           JOIN tournaments t ON t.id = bv.tournament_id
+                           LEFT JOIN organizations o ON o.id = t.organization_id
+                           LEFT JOIN organization_staff os
+                                  ON os.user_id = mm.sender_id
+                                 AND os.status = 'active'
+                                 AND __STAFF_LINK__
+                           LEFT JOIN staff_tournament_assignments sta
+                                  ON sta.organization_staff_id = os.id
+                                 AND sta.tournament_id = t.id
+                           WHERE bm.id = mm.match_id
+                             AND (
+                                 t.organizer_id = mm.sender_id
+                                 OR o.owner_id = mm.sender_id
+                                 OR os.role = 'admin'
+                                 OR (sta.id IS NOT NULL AND ('bracket:edit' = ANY(os.permissions) OR 'disputes:assist' = ANY(os.permissions)))
+                                 OR EXISTS(SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = mm.sender_id)
+                             )
+                       ) AS is_organizer
+                FROM match_messages mm
+                WHERE mm.match_id = @id
                 ORDER BY created_at ASC
                 LIMIT 500
-                """,
+                """;
+
+            var matchMessagesSql = matchMessagesSqlTemplate.Replace(
+                "__STAFF_LINK__", StaffAuthHelper.StaffOrgTournamentLinkSql);
+
+            var rows = await conn.QueryAsync<dynamic>(
+                matchMessagesSql,
                 new { id });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
@@ -749,12 +879,12 @@ public static class MatchSystemEndpoints
         // ── POST /api/matches/{id}/messages/system ────────────────────────────
         // System messages: only organizers/admins can send these.
         app.MapPost("/api/matches/{id}/messages/system", async (
-            Guid                               id,
-            [FromBody] SystemMessageRequest    req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            IHubContext<ChatHub>              chatHub,
-            CancellationToken                 ct) =>
+            Guid id,
+            [FromBody] SystemMessageRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<ChatHub> chatHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -793,9 +923,9 @@ public static class MatchSystemEndpoints
                 """,
                 new
                 {
-                    matchId  = id,
+                    matchId = id,
                     senderId = userCtx?.UserId ?? "00000000-0000-0000-0000-000000000000",
-                    content  = req.Content,
+                    content = req.Content,
                     metadata = req.Metadata is not null
                         ? System.Text.Json.JsonSerializer.Serialize(req.Metadata)
                         : "{}",
@@ -806,24 +936,106 @@ public static class MatchSystemEndpoints
                 .Group(ChatHub.ChatGroup(id.ToString()))
                 .SendAsync("MessageReceived", new
                 {
-                    id         = (string?)msg.id,
-                    matchId    = id,
-                    userId     = (string?)msg.sender_id,
-                    username   = "System",
-                    content    = (string?)msg.content,
-                    createdAt  = (DateTime?)msg.created_at,
+                    id = (string?)msg.id,
+                    matchId = id,
+                    userId = (string?)msg.sender_id,
+                    username = "System",
+                    content = (string?)msg.content,
+                    createdAt = (DateTime?)msg.created_at,
                 }, ct);
 
             return Results.Ok(msg);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/matches/{matchId}/room-state ─────────────────────────────
+        app.MapGet("/api/matches/{matchId}/room-state", async (
+            Guid matchId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            SelfPlayMatchRoomService roomService,
+            CheckinWalkoverProcessor walkoverProcessor,
+            CheckinWalkoverNotifier walkoverNotifier,
+            GameCatalogService gameCatalog,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
+
+            var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+                """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId });
+            if (gameRow?.Game is null)
+                return Results.NotFound(new { error = "Match not found." });
+
+            var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                gameRow.Game, gameRow.GameMode, existingConnection: conn);
+
+            var nowUtc = DateTime.UtcNow;
+            var context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+            if (context is null)
+                return Results.NotFound(new { error = "Match not found." });
+
+            var callerCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            var canForceGoLive = await StaffAuthHelper.CanActOnBracketMatchAsync(
+                    conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermScoresUpdate)
+                || StaffAuthHelper.IsPlatformAdmin(userCtx);
+
+            var room = roomService.BuildRoomState(
+                context,
+                callerCompetitorId,
+                canForceGoLive,
+                nowUtc);
+
+            // Award walkover immediately when the window has closed (idempotent).
+            if (room.CheckinWindowClosed && !room.BothCheckedIn)
+            {
+                var walkover = await walkoverProcessor.TryProcessDueWalkoverAsync(matchId, nowUtc, ct);
+                if (walkover.Processed || walkover.NeedsOrganizerNotification)
+                {
+                    await walkoverNotifier.DispatchAsync(matchId, walkover, ct);
+                    if (walkover.Processed)
+                    {
+                        context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+                        if (context is not null)
+                        {
+                            room = roomService.BuildRoomState(
+                                context,
+                                callerCompetitorId,
+                                canForceGoLive,
+                                nowUtc);
+                        }
+                    }
+                }
+            }
+
+            return Results.Ok(ToRoomStateResponse(room));
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/matches/{id}/checkins ────────────────────────────────────
         app.MapGet("/api/matches/{id}/checkins", async (
-            Guid                 id,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
+
             var rows = await conn.QueryAsync<dynamic>(
                 "SELECT match_id::text, team_id::text, user_id::text, checked_in_at FROM match_checkins WHERE match_id = @id", new { id });
             return Results.Ok(rows);
@@ -831,32 +1043,61 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{id}/checkin ────────────────────────────────────
         app.MapPost("/api/matches/{id}/checkin", async (
-            Guid                        id,
-            [FromBody] CheckinRequest   req,
-            HttpContext                 ctx,
-            IDbConnectionFactory       db,
-            IHubContext<MatchHub>      matchHub,
-            CancellationToken          ct) =>
+            Guid id,
+            [FromBody] CheckinRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            SelfPlayMatchRoomService roomService,
+            CheckinWalkoverProcessor walkoverProcessor,
+            CheckinWalkoverNotifier walkoverNotifier,
+            GameCatalogService gameCatalog,
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            if (!Guid.TryParse(req.TeamId, out var teamIdGuid))
-                return Results.BadRequest(new { error = "Invalid team ID." });
+            if (!Guid.TryParse(req.TeamId, out var competitorIdGuid))
+                return Results.BadRequest(new { error = "Invalid competitor ID." });
 
             using var conn = db.CreateConnection();
 
-            // Verify caller belongs to the team and is not a coach
-            var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE AND role != 'coach')",
-                new { teamId = teamIdGuid, userId = userCtx.UserIdGuid });
-            if (!isMember) return Results.Forbid();
+            if (!await BracketCompetitorResolver.CanUserCheckInForCompetitorAsync(
+                    conn, userCtx.UserIdGuid, id, competitorIdGuid))
+                return Results.Forbid();
 
-            // Verify the team is actually in this match
-            var isTeamInMatch = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM brkt_matches WHERE id = @matchId AND (team1_id = @teamId OR team2_id = @teamId))",
-                new { matchId = id, teamId = teamIdGuid });
-            if (!isTeamInMatch) return Results.Forbid();
+            var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+                """
+                SELECT t.game AS Game, t.game_mode AS GameMode
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournaments t ON t.id = v.tournament_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId = id });
+
+            if (gameRow?.Game is not null)
+            {
+                var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+                    gameRow.Game, gameRow.GameMode, existingConnection: conn);
+                var context = await roomService.LoadContextAsync(id, supportsMapVeto, ct);
+                if (context is not null)
+                {
+                    var nowUtc = DateTime.UtcNow;
+                    var guard = roomService.CanCheckIn(context, competitorIdGuid, nowUtc);
+                    if (!guard.Allowed)
+                    {
+                        if (guard.Code == "checkin_window_closed")
+                        {
+                            var walkover = await walkoverProcessor.TryProcessDueWalkoverAsync(id, nowUtc, ct);
+                            if (walkover.Processed || walkover.NeedsOrganizerNotification)
+                                await walkoverNotifier.DispatchAsync(id, walkover, ct);
+                        }
+
+                        return SelfPlayGuardResponse(guard);
+                    }
+                }
+            }
 
             await conn.ExecuteAsync(
                 """
@@ -864,14 +1105,14 @@ public static class MatchSystemEndpoints
                 VALUES (@matchId, @teamId, @userId, NOW())
                 ON CONFLICT (match_id, team_id) DO NOTHING
                 """,
-                new { matchId = id, teamId = teamIdGuid, userId = userCtx.UserIdGuid });
+                new { matchId = id, teamId = competitorIdGuid, userId = userCtx.UserIdGuid });
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(id.ToString()))
                 .SendAsync(MatchHubEvents.CheckInUpdated,
-                    new { matchId = id, teamId = teamIdGuid }, ct);
+                    new { matchId = id, teamId = competitorIdGuid }, ct);
 
-            return Results.Ok(new { success = true, matchId = id, teamId = teamIdGuid });
+            return Results.Ok(new { success = true, matchId = id, teamId = competitorIdGuid });
         }).RequireAuthorization("Authenticated");
     }
 
@@ -883,9 +1124,9 @@ public static class MatchSystemEndpoints
     {
         // ── GET /api/stages/{stageId}/scheduling-config ─────────────────────
         app.MapGet("/api/stages/{stageId}/scheduling-config", async (
-            Guid                 stageId,
+            Guid stageId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var config = await conn.QuerySingleOrDefaultAsync<string?>(
@@ -897,10 +1138,11 @@ public static class MatchSystemEndpoints
 
         // ── PUT /api/stages/{stageId}/scheduling-config ─────────────────────
         app.MapPut("/api/stages/{stageId}/scheduling-config", async (
-            Guid                                stageId,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            CancellationToken                   ct) =>
+            Guid stageId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -914,29 +1156,60 @@ public static class MatchSystemEndpoints
 
             // Store raw JSON body as-is to preserve frontend key casing (snake_case)
             var json = await new StreamReader(ctx.Request.Body).ReadToEndAsync(ct);
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET scheduling_config = @json::jsonb WHERE id = @stageId",
                 new { json, stageId });
 
+            if (tournamentId is not null)
+            {
+                JsonElement? schedulingConfigPayload = null;
+                try
+                {
+                    schedulingConfigPayload = JsonDocument.Parse(json).RootElement;
+                }
+                catch (JsonException)
+                {
+                    // Broadcast without inline config; clients will refetch.
+                }
+
+                await bracketHub.Clients
+                    .Group(BracketHub.TournamentGroup(tournamentId.Value.ToString()))
+                    .SendAsync(
+                        BracketHubEvents.StageUpdated,
+                        new
+                        {
+                            stageId,
+                            tournamentId,
+                            field = "scheduling_config",
+                            schedulingConfig = schedulingConfigPayload,
+                        },
+                        ct);
+            }
+
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/stages/{stageId}/matches ───────────────────────────────
         app.MapGet("/api/stages/{stageId}/matches", async (
-            Guid                 stageId,
+            Guid stageId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.id, m.match_number, m.scheduled_time, m.team1_id, m.team2_id,
                        m.status, m.round_index, m.bracket_type,
-                       t1.name AS team1_name, t2.name AS team2_name
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
                 JOIN brkt_versions v ON v.id = m.version_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE v.stage_id = @stageId
                 ORDER BY m.round_index, m.match_number
                 """,
@@ -946,11 +1219,13 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/stages/{stageId}/schedule-bulk ────────────────────────
         app.MapPost("/api/stages/{stageId}/schedule-bulk", async (
-            Guid                               stageId,
-            [FromBody] BulkScheduleRequest     req,
-            HttpContext                         ctx,
-            IDbConnectionFactory               db,
-            CancellationToken                  ct) =>
+            Guid stageId,
+            [FromBody] BulkScheduleRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            MatchScheduleNotificationService scheduleNotify,
+            StaffTournamentAuditService staffAudit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -965,8 +1240,18 @@ public static class MatchSystemEndpoints
                 return Results.BadRequest(new { error = "No updates provided." });
 
             // UNNEST-based bulk update — single round-trip
-            var ids   = req.Updates.Select(u => u.MatchId).ToArray();
+            var ids = req.Updates.Select(u => u.MatchId).ToArray();
             var times = req.Updates.Select(u => u.ScheduledTime).ToArray();
+
+            var changedMatchIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT m.id
+                FROM brkt_matches m
+                JOIN UNNEST(@ids::uuid[], @times::timestamptz[]) AS u(id, scheduled_time) ON m.id = u.id
+                WHERE m.version_id IN (SELECT v.id FROM brkt_versions v WHERE v.stage_id = @stageId)
+                  AND m.scheduled_time IS DISTINCT FROM u.scheduled_time
+                """,
+                new { ids, times, stageId })).ToList();
 
             var updated = await conn.ExecuteAsync(
                 """
@@ -978,16 +1263,44 @@ public static class MatchSystemEndpoints
                 """,
                 new { ids, times, stageId });
 
+            var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+            foreach (var update in req.Updates)
+            {
+                if (!Guid.TryParse(update.MatchId, out var bulkMatchId))
+                    continue;
+                if (!changedMatchIds.Contains(bulkMatchId))
+                    continue;
+
+                var scheduledTime = ParseScheduledTimeUtc(update.ScheduledTime);
+                await scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct);
+                await SyncProposalsAfterOrganizerScheduleAsync(conn, bulkMatchId, scheduledTime);
+
+                if (scheduledTime.HasValue)
+                    await jobScheduler.ScheduleMatchWalkoverAsync(bulkMatchId, scheduledTime.Value, ct: ct);
+                else
+                    await jobScheduler.CancelMatchWalkoverAsync(bulkMatchId, ct);
+            }
+
+            if (updated > 0)
+            {
+                await staffAudit.TryLogStageActionAsync(
+                    conn, userCtx.UserIdGuid, stageId, "tournament.schedule_bulk",
+                    new { matches_updated = updated, matches_notified = changedMatchIds.Count },
+                    ct: ct);
+            }
+
             return Results.Ok(new { success = true, updated });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/matches/{matchId}/scheduled-time ───────────────────────
         app.MapPut("/api/matches/{matchId}/scheduled-time", async (
-            Guid                                  matchId,
-            [FromBody] UpdateMatchTimeRequest      req,
-            HttpContext                             ctx,
-            IDbConnectionFactory                   db,
-            CancellationToken                      ct) =>
+            Guid matchId,
+            [FromBody] UpdateMatchTimeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            MatchScheduleNotificationService scheduleNotify,
+            StaffTournamentAuditService staffAudit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -999,14 +1312,35 @@ public static class MatchSystemEndpoints
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
+            var scheduledTime = ParseScheduledTimeUtc(req.ScheduledTime);
+
+            var previousTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+
             await conn.ExecuteAsync(
                 "UPDATE brkt_matches SET scheduled_time = @scheduledTime WHERE id = @matchId",
-                new { matchId, scheduledTime = string.IsNullOrEmpty(req.ScheduledTime)
-                    ? (DateTime?)null
-                    : DateTime.Parse(req.ScheduledTime, null, System.Globalization.DateTimeStyles.RoundtripKind) });
+                new { matchId, scheduledTime });
+
+            await SyncProposalsAfterOrganizerScheduleAsync(conn, matchId, scheduledTime);
+
+            if (!MatchScheduleNotificationService.ScheduledTimesEqual(previousTime, scheduledTime))
+                await scheduleNotify.DispatchScheduleChangedAsync(matchId, scheduledTime, ct);
+
+            // Schedule/cancel walkover job
+            var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+            if (scheduledTime.HasValue)
+                await jobScheduler.ScheduleMatchWalkoverAsync(matchId, scheduledTime.Value, ct: ct);
+            else
+                await jobScheduler.CancelMatchWalkoverAsync(matchId, ct);
+
+            await staffAudit.TryLogMatchActionAsync(
+                conn, userCtx.UserIdGuid, matchId, "match.schedule_update",
+                new { scheduled_time = scheduledTime?.ToString("o"), previous_scheduled_time = previousTime?.ToString("o") },
+                ct: ct);
 
             return Results.Ok(new { success = true, matchId });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1017,11 +1351,18 @@ public static class MatchSystemEndpoints
     {
         // ── GET /api/matches/{matchId}/time-proposals ───────────────────────
         app.MapGet("/api/matches/{matchId}/time-proposals", async (
-            Guid                 matchId,
+            Guid matchId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
+
             var rows = await conn.QueryAsync<dynamic>(
                 """
                 SELECT id::text, match_id::text, proposed_by::text, proposed_time, status,
@@ -1036,12 +1377,15 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/time-proposals ──────────────────────
         app.MapPost("/api/matches/{matchId}/time-proposals", async (
-            Guid                               matchId,
-            [FromBody] ProposeTimeRequest       req,
-            HttpContext                          ctx,
-            IDbConnectionFactory                db,
-            ILogger<Program>                    logger,
-            CancellationToken                   ct) =>
+            Guid matchId,
+            [FromBody] ProposeTimeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            SelfPlayMatchRoomService roomService,
+            GameCatalogService gameCatalog,
+            IHubContext<MatchHub> matchHub,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1050,16 +1394,14 @@ public static class MatchSystemEndpoints
 
             try
             {
-                // Verify caller is a captain of one of the teams in this match
-                var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                    """
-                    SELECT tm.team_id::text FROM team_members tm
-                    JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                    WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                    LIMIT 1
-                    """,
-                    new { matchId, userId = userCtx.UserIdGuid });
-                if (captainTeam is null) return Results.Forbid();
+                var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                    conn, userCtx.UserIdGuid, matchId);
+                if (captainCompetitorId is null) return Results.Forbid();
+
+                var proposalGuard = await TryGetProposalGuardAsync(
+                    conn, roomService, gameCatalog, matchId, ct);
+                if (proposalGuard is not null)
+                    return proposalGuard;
 
                 var proposal = await conn.QuerySingleAsync<dynamic>(
                     """
@@ -1068,6 +1410,11 @@ public static class MatchSystemEndpoints
                     RETURNING id::text, match_id::text, proposed_by::text, proposed_time, status, created_at, responded_at
                     """,
                     new { matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
+
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(matchId.ToString()))
+                    .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                        new { matchId, proposalId = (string)proposal.id, status = "pending" }, ct);
 
                 return Results.Ok(proposal);
             }
@@ -1080,38 +1427,35 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/accept ──
         app.MapPost("/api/matches/{matchId}/time-proposals/{proposalId}/accept", async (
-            Guid                 matchId,
-            Guid                 proposalId,
-            HttpContext           ctx,
+            Guid matchId,
+            Guid proposalId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            SelfPlayMatchRoomService roomService,
+            GameCatalogService gameCatalog,
+            MatchScheduleNotificationService scheduleNotify,
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            if (captainCompetitorId is null) return Results.Forbid();
+
+            var acceptGuard = await TryGetProposalGuardAsync(
+                conn, roomService, gameCatalog, matchId, ct);
+            if (acceptGuard is not null)
+                return acceptGuard;
 
             // Prevent accepting own proposal
-            var proposerTeamId = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM match_time_proposals mtp
-                JOIN team_members tm ON tm.user_id = mtp.proposed_by AND tm.role = 'captain' AND tm.is_active = TRUE
-                JOIN brkt_matches bm ON bm.id = mtp.match_id AND (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE mtp.id = @proposalId AND mtp.match_id = @matchId
-                LIMIT 1
-                """,
-                new { proposalId, matchId });
-            if (proposerTeamId is not null && captainTeam == proposerTeamId)
+            var proposerCompetitorId = await BracketCompetitorResolver.GetProposerCompetitorIdAsync(
+                conn, matchId, proposalId);
+            if (proposerCompetitorId is not null
+                && captainCompetitorId.ToString() == proposerCompetitorId)
                 return Results.BadRequest(new { error = "Cannot accept your own time proposal." });
 
             // Atomic: accept proposal + update match scheduled_time in a CTE
@@ -1130,33 +1474,47 @@ public static class MatchSystemEndpoints
                 new { proposalId, matchId });
 
             if (rows == 0) return Results.BadRequest(new { error = "Proposal not found or already handled." });
+
+            var acceptedTime = await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                "SELECT scheduled_time FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+
+            await scheduleNotify.DispatchScheduleChangedAsync(matchId, acceptedTime, ct);
+
+            // Schedule walkover job at the agreed time
+            if (acceptedTime.HasValue)
+            {
+                var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+                await jobScheduler.ScheduleMatchWalkoverAsync(matchId, acceptedTime.Value, ct: ct);
+            }
+
+            await matchHub.Clients
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
+                .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                    new { matchId, proposalId, status = "accepted" }, ct);
+
             return Results.Ok(new { success = true, matchId, proposalId });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/reject ──
         app.MapPost("/api/matches/{matchId}/time-proposals/{proposalId}/reject", async (
-            Guid                 matchId,
-            Guid                 proposalId,
-            HttpContext           ctx,
+            Guid matchId,
+            Guid proposalId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            if (captainCompetitorId is null) return Results.Forbid();
 
-            await conn.ExecuteAsync(
+            var rejected = await conn.ExecuteAsync(
                 """
                 UPDATE match_time_proposals
                 SET status = 'rejected', responded_at = NOW()
@@ -1164,32 +1522,42 @@ public static class MatchSystemEndpoints
                 """,
                 new { proposalId, matchId });
 
+            if (rejected > 0)
+            {
+                await matchHub.Clients
+                    .Group(MatchHub.MatchGroup(matchId.ToString()))
+                    .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                        new { matchId, proposalId, status = "rejected" }, ct);
+            }
+
             return Results.Ok(new { success = true, matchId, proposalId });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/matches/{matchId}/time-proposals/{proposalId}/counter ─
         app.MapPost("/api/matches/{matchId}/time-proposals/{proposalId}/counter", async (
-            Guid                                 matchId,
-            Guid                                 proposalId,
-            [FromBody] ProposeTimeRequest         req,
-            HttpContext                            ctx,
-            IDbConnectionFactory                  db,
-            CancellationToken                     ct) =>
+            Guid matchId,
+            Guid proposalId,
+            [FromBody] ProposeTimeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            SelfPlayMatchRoomService roomService,
+            GameCatalogService gameCatalog,
+            IHubContext<MatchHub> matchHub,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            var captainTeam = await conn.QuerySingleOrDefaultAsync<string?>(
-                """
-                SELECT tm.team_id::text FROM team_members tm
-                JOIN brkt_matches bm ON (bm.team1_id = tm.team_id OR bm.team2_id = tm.team_id)
-                WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.role = 'captain' AND tm.is_active = TRUE
-                LIMIT 1
-                """,
-                new { matchId, userId = userCtx.UserIdGuid });
-            if (captainTeam is null) return Results.Forbid();
+            var captainCompetitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
+                conn, userCtx.UserIdGuid, matchId);
+            if (captainCompetitorId is null) return Results.Forbid();
+
+            var counterGuard = await TryGetProposalGuardAsync(
+                conn, roomService, gameCatalog, matchId, ct);
+            if (counterGuard is not null)
+                return counterGuard;
 
             // Atomic: mark old as countered + insert new in a CTE
             var newProposal = await conn.QuerySingleAsync<dynamic>(
@@ -1205,6 +1573,11 @@ public static class MatchSystemEndpoints
                 """,
                 new { proposalId, matchId, proposedBy = userCtx.UserIdGuid, proposedTime = req.ProposedTime });
 
+            await matchHub.Clients
+                .Group(MatchHub.MatchGroup(matchId.ToString()))
+                .SendAsync(MatchHubEvents.TimeProposalUpdated,
+                    new { matchId, proposalId = (string)newProposal.id, status = "pending" }, ct);
+
             return Results.Ok(newProposal);
         }).RequireAuthorization("Authenticated");
     }
@@ -1217,9 +1590,9 @@ public static class MatchSystemEndpoints
     {
         // ── GET /api/matches/{matchId}/dispute ──────────────────────────────
         app.MapGet("/api/matches/{matchId}/dispute", async (
-            Guid                 matchId,
+            Guid matchId,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1238,22 +1611,23 @@ public static class MatchSystemEndpoints
 
         // ── POST /api/matches/{matchId}/disputes ────────────────────────────
         app.MapPost("/api/matches/{matchId}/disputes", async (
-            Guid                            matchId,
-            [FromBody] FileDisputeRequest    req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            CancellationToken                ct) =>
+            Guid matchId,
+            [FromBody] FileDisputeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is a member of the disputing team
-            var isMember = await conn.QuerySingleOrDefaultAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
-                new { teamId = req.TeamId, userId = userCtx.UserIdGuid });
-            if (!isMember) return Results.Forbid();
+            if (!Guid.TryParse(req.TeamId, out var competitorId))
+                return Results.BadRequest(new { error = "Invalid competitor ID." });
+
+            if (!await BracketCompetitorResolver.CanUserCheckInForCompetitorAsync(
+                    conn, userCtx.UserIdGuid, matchId, competitorId))
+                return Results.Forbid();
 
             var evidenceUrls = (req.EvidenceUrls ?? []).ToArray();
 
@@ -1268,9 +1642,9 @@ public static class MatchSystemEndpoints
                 new
                 {
                     matchId,
-                    teamId       = req.TeamId,
-                    userId       = userCtx.UserIdGuid,
-                    reason       = req.Reason,
+                    teamId = competitorId,
+                    userId = userCtx.UserIdGuid,
+                    reason = req.Reason,
                     evidenceUrls,
                 });
 
@@ -1279,12 +1653,13 @@ public static class MatchSystemEndpoints
 
         // ── PUT /api/matches/{matchId}/disputes/{disputeId}/resolve ─────────
         app.MapPut("/api/matches/{matchId}/disputes/{disputeId}/resolve", async (
-            Guid                                matchId,
-            Guid                                disputeId,
-            [FromBody] ResolveDisputeRequest     req,
-            HttpContext                           ctx,
-            IDbConnectionFactory                 db,
-            CancellationToken                    ct) =>
+            Guid matchId,
+            Guid disputeId,
+            [FromBody] ResolveDisputeRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            StaffTournamentAuditService staffAudit,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1314,7 +1689,7 @@ public static class MatchSystemEndpoints
                 {
                     disputeId,
                     matchId,
-                    status     = req.Status,
+                    status = req.Status,
                     resolution = req.Resolution,
                     resolvedBy = userCtx.UserIdGuid,
                 });
@@ -1326,22 +1701,21 @@ public static class MatchSystemEndpoints
 
             if (dispute is not null)
             {
-                var notifType    = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
-                var notifTitle   = req.Status == "resolved"
+                var notifType = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
+                var notifTitle = req.Status == "resolved"
                     ? "✅ Dispute Resolved"
                     : "❌ Dispute Rejected";
                 var notifMessage = req.Status == "resolved"
                     ? $"Your match dispute has been resolved in your favor. Organizer note: {req.Resolution}"
                     : $"Your match dispute was reviewed and rejected. Organizer note: {req.Resolution}";
-                var notifData    = JsonSerializer.Serialize(new { match_id = matchId });
 
-                // Resolve tournament ID for notification link
-                var disputeTournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT v.tournament_id FROM brkt_matches m JOIN brkt_versions v ON v.id = m.version_id WHERE m.id = @matchId",
-                    new { matchId });
-                var disputeLink = disputeTournamentId is not null
-                    ? $"/tournaments/{disputeTournamentId}/captain-match/{matchId}"
-                    : "/tournaments";
+                var disputeContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, matchId);
+                var disputeLink = CaptainMatchLinkBuilder.BuildLink(disputeContext.TournamentSlug, matchId);
+                var notifDataWithSlug = JsonSerializer.Serialize(new
+                {
+                    match_id = matchId,
+                    tournament_slug = disputeContext.TournamentSlug,
+                });
 
                 // Notify the disputing user
                 await conn.ExecuteAsync(
@@ -1349,8 +1723,15 @@ public static class MatchSystemEndpoints
                     INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                     VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                     """,
-                    new { userId = (Guid)dispute.disputed_by_user_id, type = notifType,
-                          title = notifTitle, message = notifMessage, link = disputeLink, data = notifData });
+                    new
+                    {
+                        userId = (Guid)dispute.disputed_by_user_id,
+                        type = notifType,
+                        title = notifTitle,
+                        message = notifMessage,
+                        link = disputeLink,
+                        data = notifDataWithSlug
+                    });
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1368,21 +1749,34 @@ public static class MatchSystemEndpoints
                         INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                         VALUES (@userId, @type, @title, @message, @link, @data::jsonb, FALSE)
                         """,
-                        new { userId = reporter, type = notifType, title = notifTitle,
-                              message = notifMessage, link = disputeLink, data = notifData });
+                        new
+                        {
+                            userId = reporter,
+                            type = notifType,
+                            title = notifTitle,
+                            message = notifMessage,
+                            link = disputeLink,
+                            data = notifDataWithSlug
+                        });
                 }
             }
 
+            await staffAudit.TryLogMatchActionAsync(
+                conn, userCtx.UserIdGuid, matchId,
+                req.Status == "resolved" ? "dispute.resolve" : "dispute.reject",
+                new { dispute_id = disputeId, status = req.Status, resolution = req.Resolution },
+                ct: ct);
+
             return Results.Ok(new { success = true, disputeId, status = req.Status });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/matches/{id}/riot-accounts ──────────────────────────────
         // Returns all Riot accounts for players in both teams of a match
         app.MapGet("/api/matches/{id}/riot-accounts", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1399,6 +1793,19 @@ public static class MatchSystemEndpoints
                 LEFT JOIN teams ON teams.id = tm.team_id
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 WHERE bm.id = @matchId
+                UNION ALL
+                SELECT tp.id AS team_id,
+                       COALESCE(tp.team_name, p.username) AS team_name,
+                       tp.user_id,
+                       COALESCE(p.full_name, p.username) AS username,
+                       ra.game_name, ra.tag_line, ra.puuid
+                FROM brkt_matches bm
+                JOIN tournament_participants tp
+                  ON tp.id IN (bm.team1_id, bm.team2_id)
+                 AND tp.participant_type = 'solo'
+                JOIN riot_accounts ra ON ra.user_id = tp.user_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE bm.id = @matchId
                 """,
                 new { matchId = id });
             return Results.Ok(rows);
@@ -1407,10 +1814,10 @@ public static class MatchSystemEndpoints
         // ── GET /api/matches/{id}/verify ─────────────────────────────────────
         // Organizer match verification: returns reports, riot accounts, game details
         app.MapGet("/api/matches/{id}/verify", async (
-            Guid                 id,
-            HttpContext          ctx,
+            Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1419,15 +1826,16 @@ public static class MatchSystemEndpoints
 
             // Verify organizer/staff access
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
+                $"""
                 SELECT bm.id, bm.team1_id, bm.team2_id, bm.team1_score, bm.team2_score,
                        bm.match_number, bm.best_of, bm.status, bm.bracket_type, bm.round_index,
-                       t1.name AS team1_name, t2.name AS team2_name,
+                       {BracketTeamResolutionSql.BracketMatchTeam1Columns},
+                       {BracketTeamResolutionSql.BracketMatchTeam2Columns},
                        bv.tournament_id
                 FROM brkt_matches bm
                 JOIN brkt_versions bv ON bv.id = bm.version_id
-                LEFT JOIN teams t1 ON t1.id = bm.team1_id
-                LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                {BracketTeamResolutionSql.BracketMatchTeam1Joins}
+                {BracketTeamResolutionSql.BracketMatchTeam2Joins}
                 WHERE bm.id = @matchId
                 """, new { matchId = id });
             if (match is null) return Results.NotFound();
@@ -1470,6 +1878,17 @@ public static class MatchSystemEndpoints
                 LEFT JOIN teams ON teams.id = tm.team_id
                 LEFT JOIN profiles p ON p.id = tm.user_id
                 WHERE tm.team_id IN (@team1Id, @team2Id) AND tm.is_active = true
+                UNION ALL
+                SELECT tp.id AS team_id,
+                       COALESCE(tp.team_name, p.username) AS team_name,
+                       tp.user_id,
+                       COALESCE(p.full_name, p.username) AS username,
+                       ra.game_name, ra.tag_line, ra.puuid
+                FROM tournament_participants tp
+                JOIN riot_accounts ra ON ra.user_id = tp.user_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE tp.id IN (@team1Id, @team2Id)
+                  AND tp.participant_type = 'solo'
                 """,
                 new { team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
 
@@ -1485,32 +1904,138 @@ public static class MatchSystemEndpoints
             return Results.Ok(new { match, reports, riotAccounts, games });
         }).RequireAuthorization("Authenticated");
     }
+
+    private sealed record MatchGameRow(string Game, string? GameMode);
+
+    private static IResult SelfPlayGuardResponse(SelfPlayGuardResult guard)
+        => Results.Json(new
+        {
+            error = guard.Message,
+            code = guard.Code,
+            phase = guard.Phase,
+            nextAction = guard.NextAction,
+        }, statusCode: 400);
+
+    private static object ToRoomStateResponse(SelfPlayRoomState room)
+        => new
+        {
+            selfPlayEnabled = room.SelfPlayEnabled,
+            phase = room.Phase,
+            nextAction = room.NextAction,
+            message = room.Message,
+            effectiveScheduledTime = room.EffectiveScheduledTime,
+            scheduleSource = room.ScheduleSource,
+            checkinWindowMinutes = room.CheckinWindowMinutes,
+            checkinWindowOpen = room.CheckinWindowOpen,
+            checkinWindowClosed = room.CheckinWindowClosed,
+            bothCheckedIn = room.BothCheckedIn,
+            team1CheckedIn = room.Team1CheckedIn,
+            team2CheckedIn = room.Team2CheckedIn,
+            team1Id = room.Team1Id,
+            team2Id = room.Team2Id,
+            callerCompetitorId = room.CallerCompetitorId,
+            callerIsTeam1Captain = room.CallerIsTeam1Captain,
+            callerCanForceGoLive = room.CallerCanForceGoLive,
+            isMatchLive = room.IsMatchLive,
+            partyCode = room.PartyCode,
+            mapVetoEnabled = room.MapVetoEnabled,
+            mapVetoCompleted = room.MapVetoCompleted,
+            matchOutcome = room.MatchOutcome,
+            forfeitReason = room.ForfeitReason,
+        };
+
+    private static DateTime? ParseScheduledTimeUtc(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw))
+            return null;
+
+        var parsed = DateTime.Parse(raw, null, System.Globalization.DateTimeStyles.RoundtripKind);
+        return MatchScheduleNotificationService.NormalizeUtc(parsed);
+    }
+
+    private static Task SyncProposalsAfterOrganizerScheduleAsync(
+        IDbConnection conn,
+        Guid matchId,
+        DateTime? scheduledTime)
+    {
+        if (scheduledTime.HasValue)
+        {
+            return conn.ExecuteAsync(
+                """
+                UPDATE match_time_proposals
+                SET status = 'rejected', responded_at = NOW()
+                WHERE match_id = @matchId AND status = 'pending';
+
+                UPDATE match_time_proposals
+                SET proposed_time = @scheduledTime, responded_at = NOW()
+                WHERE match_id = @matchId AND status = 'accepted';
+                """,
+                new { matchId, scheduledTime });
+        }
+
+        return conn.ExecuteAsync(
+            """
+            UPDATE match_time_proposals
+            SET status = 'rejected', responded_at = NOW()
+            WHERE match_id = @matchId AND status IN ('pending', 'accepted');
+            """,
+            new { matchId });
+    }
+
+    private static async Task<IResult?> TryGetProposalGuardAsync(
+        IDbConnection conn,
+        SelfPlayMatchRoomService roomService,
+        GameCatalogService gameCatalog,
+        Guid matchId,
+        CancellationToken ct)
+    {
+        var gameRow = await conn.QuerySingleOrDefaultAsync<MatchGameRow>(
+            """
+            SELECT t.game AS Game, t.game_mode AS GameMode
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
+            WHERE m.id = @matchId
+            """,
+            new { matchId });
+        if (gameRow?.Game is null)
+            return null;
+
+        var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+            gameRow.Game, gameRow.GameMode, existingConnection: conn);
+        var context = await roomService.LoadContextAsync(matchId, supportsMapVeto, ct);
+        if (context is null)
+            return null;
+
+        var guard = roomService.CanProposeTime(context, DateTime.UtcNow);
+        return guard.Allowed ? null : SelfPlayGuardResponse(guard);
+    }
 }
 
 // ── Request records ───────────────────────────────────────────────────────────
 
 public sealed record SubmitReportRequest(
-    int     GameNumber,
-    string  ReportedByTeamId,
-    int     Team1Score,
-    int     Team2Score,
-    string? WinnerTeamId  = null,
-    string? RiotMatchId   = null,
-    string? MapId         = null,
-    string? MapName       = null,
-    object? MatchData     = null,
+    int GameNumber,
+    string ReportedByTeamId,
+    int Team1Score,
+    int Team2Score,
+    string? WinnerTeamId = null,
+    string? RiotMatchId = null,
+    string? MapId = null,
+    string? MapName = null,
+    object? MatchData = null,
     string[]? ScreenshotUrls = null,
-    string? Comment       = null);
+    string? Comment = null);
 
 public sealed record AcceptReportRequest(
-    int    GameNumber,
+    int GameNumber,
     string? RiotMatchId = null,
     string? MapId = null);
 
 public sealed record DisputeReportRequest(
-    string         Reason,
-    string         TeamId,
-    List<string>?  EvidenceUrls = null);
+    string Reason,
+    string TeamId,
+    List<string>? EvidenceUrls = null);
 
 public sealed record CheckinRequest(string TeamId);
 
@@ -1519,13 +2044,13 @@ public sealed record SystemMessageRequest(string Content, object? Metadata = nul
 // ── Scheduling records ───────────────────────────────────────────────────────
 
 public sealed record SchedulingConfigRequest(
-    bool    SelfPlayEnabled,
-    bool    CheckinEnabled,
-    int     CheckinWindowMinutes,
+    bool SelfPlayEnabled,
+    bool CheckinEnabled,
+    int CheckinWindowMinutes,
     string? RoundDeadline,
     Dictionary<string, string>? RoundDeadlines,
     string? ScheduleStartTime,
-    int     MatchIntervalMinutes,
+    int MatchIntervalMinutes,
     string? DailyStartTime,
     string? SchedulingMode);
 
@@ -1533,7 +2058,7 @@ public sealed record BulkScheduleRequest(
     List<BulkScheduleItem> Updates);
 
 public sealed record BulkScheduleItem(
-    string  MatchId,
+    string MatchId,
     string? ScheduledTime);
 
 public sealed record UpdateMatchTimeRequest(string? ScheduledTime);
@@ -1545,8 +2070,8 @@ public sealed record ProposeTimeRequest(string ProposedTime);
 // ── Dispute records ──────────────────────────────────────────────────────────
 
 public sealed record FileDisputeRequest(
-    string        TeamId,
-    string        Reason,
+    string TeamId,
+    string Reason,
     List<string>? EvidenceUrls = null);
 
 public sealed record ResolveDisputeRequest(

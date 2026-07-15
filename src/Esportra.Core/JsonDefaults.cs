@@ -10,7 +10,7 @@ public static class JsonDefaults
 {
     public static readonly JsonSerializerOptions SnakeCase = new()
     {
-        PropertyNamingPolicy        = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         PropertyNameCaseInsensitive = true,
     };
 }

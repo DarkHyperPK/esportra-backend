@@ -14,18 +14,18 @@ public sealed record RedisConnectionString(string Value);
 /// the one-time cache swap and logs connection lifecycle events.
 /// </summary>
 public sealed class RedisBackgroundConnector(
-    IConnectionMultiplexer          mux,
-    SwappableDistributedCache       distributedCache,
+    IConnectionMultiplexer mux,
+    SwappableDistributedCache distributedCache,
     ILogger<RedisBackgroundConnector> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Subscribe to SE.Redis events so reconnect cycles are always visible in logs
-        mux.ConnectionFailed   += (_, e) => logger.LogWarning(
+        mux.ConnectionFailed += (_, e) => logger.LogWarning(
             "[Redis] Connection lost to {Endpoint} — reason: {Reason}", e.EndPoint, e.FailureType);
         mux.ConnectionRestored += (_, e) => logger.LogInformation(
             "[Redis] Connection restored to {Endpoint}", e.EndPoint);
-        mux.ErrorMessage       += (_, e) => logger.LogError(
+        mux.ErrorMessage += (_, e) => logger.LogError(
             "[Redis] Server error from {Endpoint}: {Message}", e.EndPoint, e.Message);
 
         logger.LogInformation("[Redis] Waiting for Redis to become reachable...");

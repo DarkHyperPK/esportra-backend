@@ -16,7 +16,7 @@ public sealed class ConversationHub : Hub
 
     public ConversationHub(IDbConnectionFactory db, ILogger<ConversationHub> logger)
     {
-        _db     = db;
+        _db = db;
         _logger = logger;
     }
 
@@ -121,19 +121,19 @@ public sealed class ConversationHub : Hub
 
 /// <summary>Message payload sent via SignalR.</summary>
 public sealed record ConversationMessageDto(
-    string   Id,
-    string   ConversationId,
-    string   SenderId,
-    string   Content,
-    string   MessageType,
-    object?  Attachments,
-    bool     IsEdited,
+    string Id,
+    string ConversationId,
+    string SenderId,
+    string Content,
+    string MessageType,
+    object? Attachments,
+    bool IsEdited,
     DateTime CreatedAt,
     ConversationSenderDto? Sender);
 
 public sealed record ConversationSenderDto(
-    string  Id,
-    string  Username,
+    string Id,
+    string Username,
     string? FullName,
     string? AvatarUrl);
 

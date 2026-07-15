@@ -1,0 +1,194 @@
+- generic [ref=f3e7]:
+  - region "Notifications (F8)":
+    - list
+  - main [ref=f3e2067]:
+    - generic [ref=f3e2068]:
+      - generic [ref=f3e2069]:
+        - link "Admin super admin" [ref=f3e2070] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e2072]
+          - generic [ref=f3e2074]:
+            - paragraph [ref=f3e2075]: Admin
+            - paragraph [ref=f3e2076]: super admin
+        - link "Home" [ref=f3e2077] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f3e2078]:
+        - link "Command Centre" [ref=f3e2079] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f3e2080]
+          - text: Command Centre
+        - link "All Users" [ref=f3e2085] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f3e2086]
+          - text: All Users
+        - link "Verifications" [ref=f3e2091] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f3e2092]
+          - text: Verifications
+        - link "Licenses" [ref=f3e2095] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f3e2096]
+          - text: Licenses
+        - link "Sessions" [ref=f3e2100] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f3e2101]
+          - text: Sessions
+        - link "Tournaments" [ref=f3e2103] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f3e2104]
+          - text: Tournaments
+        - link "Teams" [ref=f3e2110] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f3e2111]
+          - text: Teams
+        - link "Venues" [ref=f3e2115] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f3e2116]
+          - text: Venues
+        - link "Games" [ref=f3e2119] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f3e2120]
+          - text: Games
+        - link "Moderation" [ref=f3e2122] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f3e2123]
+          - text: Moderation
+    - generic [ref=f3e2126]:
+      - generic [ref=f3e2127]:
+        - generic [ref=f3e2128]:
+          - link [ref=f3e2129] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - button [ref=f3e2130]:
+              - img
+          - generic [ref=f3e2131]:
+            - heading "Team Management" [level=1] [ref=f3e2132]:
+              - img [ref=f3e2133]
+              - text: Team Management
+            - paragraph [ref=f3e2137]: Manage all teams, members, and participation
+        - generic [ref=f3e2138]:
+          - button "Refresh" [ref=f3e2139] [cursor=pointer]:
+            - img
+            - text: Refresh
+          - button "Export CSV" [ref=f3e2140] [cursor=pointer]:
+            - img
+            - text: Export CSV
+      - generic [ref=f3e2141]:
+        - generic [ref=f3e2143]:
+          - img [ref=f3e2145]
+          - generic [ref=f3e2149]:
+            - paragraph [ref=f3e2150]: Real Teams
+            - paragraph [ref=f3e2151]: "4"
+        - generic [ref=f3e2153]:
+          - img [ref=f3e2155]
+          - generic [ref=f3e2160]:
+            - paragraph [ref=f3e2161]: Active Teams
+            - paragraph [ref=f3e2162]: "4"
+        - generic [ref=f3e2164]:
+          - img [ref=f3e2166]
+          - generic [ref=f3e2171]:
+            - paragraph [ref=f3e2172]: Avg Members
+            - paragraph [ref=f3e2173]: "5"
+        - generic [ref=f3e2175]:
+          - img [ref=f3e2177]
+          - generic [ref=f3e2179]:
+            - paragraph [ref=f3e2180]: Solo Adapters
+            - paragraph [ref=f3e2181]: "0"
+        - generic [ref=f3e2183]:
+          - img [ref=f3e2185]
+          - generic [ref=f3e2187]:
+            - paragraph [ref=f3e2188]: Mock Teams
+            - paragraph [ref=f3e2189]: "1056"
+        - generic [ref=f3e2191]:
+          - img [ref=f3e2193]
+          - generic [ref=f3e2195]:
+            - paragraph [ref=f3e2196]: Orphan Mocks
+            - paragraph [ref=f3e2197]: "0"
+      - generic [ref=f3e2198]:
+        - generic [ref=f3e2199]:
+          - img [ref=f3e2200]
+          - textbox "Search teams by name or tag..." [ref=f3e2203]
+        - textbox "Filter by game..." [ref=f3e2204]
+      - table [ref=f3e2207]:
+        - rowgroup [ref=f3e2208]:
+          - row "Team Game Members Tournaments Wins Owner Created" [ref=f3e2209]:
+            - columnheader "Team" [ref=f3e2210]
+            - columnheader "Game" [ref=f3e2211]
+            - columnheader "Members" [ref=f3e2212]
+            - columnheader "Tournaments" [ref=f3e2213]
+            - columnheader "Wins" [ref=f3e2214]
+            - columnheader "Owner" [ref=f3e2215]
+            - columnheader "Created" [ref=f3e2216]
+            - columnheader [ref=f3e2217]
+        - rowgroup [ref=f3e2218]:
+          - row "Player16 [PT16] Organization 5 5 0 player16 Jun 10, 2026" [ref=f3e2219]:
+            - cell "Player16 [PT16]" [ref=f3e2220]:
+              - generic [ref=f3e2222]:
+                - paragraph [ref=f3e2223]: Player16
+                - paragraph [ref=f3e2224]: "[PT16]"
+            - cell "Organization" [ref=f3e2225]:
+              - generic [ref=f3e2226]:
+                - img [ref=f3e2227]
+                - text: Organization
+            - cell "5" [ref=f3e2229]
+            - cell "5" [ref=f3e2230]
+            - cell "0" [ref=f3e2231]
+            - cell "player16" [ref=f3e2232]:
+              - generic [ref=f3e2235]: player16
+            - cell "Jun 10, 2026" [ref=f3e2236]
+            - cell [ref=f3e2237]:
+              - button [ref=f3e2238] [cursor=pointer]:
+                - img
+          - row "Player11 [P11] Organization 5 1 0 player11 Jun 10, 2026" [ref=f3e2239]:
+            - cell "Player11 [P11]" [ref=f3e2240]:
+              - generic [ref=f3e2242]:
+                - paragraph [ref=f3e2243]: Player11
+                - paragraph [ref=f3e2244]: "[P11]"
+            - cell "Organization" [ref=f3e2245]:
+              - generic [ref=f3e2246]:
+                - img [ref=f3e2247]
+                - text: Organization
+            - cell "5" [ref=f3e2249]
+            - cell "1" [ref=f3e2250]
+            - cell "0" [ref=f3e2251]
+            - cell "player11" [ref=f3e2252]:
+              - generic [ref=f3e2255]: player11
+            - cell "Jun 10, 2026" [ref=f3e2256]
+            - cell [ref=f3e2257]:
+              - button [ref=f3e2258] [cursor=pointer]:
+                - img
+          - row "SYNCX [TT2] Organization 5 1 0 player7 Jun 9, 2026" [ref=f3e2259]:
+            - cell "SYNCX [TT2]" [ref=f3e2260]:
+              - generic [ref=f3e2262]:
+                - paragraph [ref=f3e2263]: SYNCX
+                - paragraph [ref=f3e2264]: "[TT2]"
+            - cell "Organization" [ref=f3e2265]:
+              - generic [ref=f3e2266]:
+                - img [ref=f3e2267]
+                - text: Organization
+            - cell "5" [ref=f3e2269]
+            - cell "1" [ref=f3e2270]
+            - cell "0" [ref=f3e2271]
+            - cell "player7" [ref=f3e2272]:
+              - generic [ref=f3e2275]: player7
+            - cell "Jun 9, 2026" [ref=f3e2276]
+            - cell [ref=f3e2277]:
+              - button [ref=f3e2278] [cursor=pointer]:
+                - img
+          - row "Scytes [SCYTES] Organization 5 4 0 Forsaken Jun 9, 2026" [ref=f3e2279]:
+            - cell "Scytes [SCYTES]" [ref=f3e2280]:
+              - generic [ref=f3e2282]:
+                - paragraph [ref=f3e2283]: Scytes
+                - paragraph [ref=f3e2284]: "[SCYTES]"
+            - cell "Organization" [ref=f3e2285]:
+              - generic [ref=f3e2286]:
+                - img [ref=f3e2287]
+                - text: Organization
+            - cell "5" [ref=f3e2289]
+            - cell "4" [ref=f3e2290]
+            - cell "0" [ref=f3e2291]
+            - cell "Forsaken" [ref=f3e2292]:
+              - generic [ref=f3e2294]: Forsaken
+            - cell "Jun 9, 2026" [ref=f3e2295]
+            - cell [ref=f3e2296]:
+              - button [ref=f3e2297] [cursor=pointer]:
+                - img

@@ -1,0 +1,72 @@
+- generic [ref=f14e7]:
+  - region "Notifications (F8)":
+    - list
+  - region "Notifications alt+T":
+    - list:
+      - status [ref=f14e115]:
+        - img [ref=f14e117]
+        - generic [ref=f14e120]: Flag created
+  - main [ref=f14e10]:
+    - generic [ref=f14e11]:
+      - generic [ref=f14e12]:
+        - link "Admin super admin" [ref=f14e13] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f14e15]
+          - generic [ref=f14e17]:
+            - paragraph [ref=f14e18]: Admin
+            - paragraph [ref=f14e19]: super admin
+        - link "Home" [ref=f14e20] [cursor=pointer]:
+          - /url: /
+      - generic [ref=f14e21]:
+        - link "Command Centre" [ref=f14e22] [cursor=pointer]:
+          - /url: /admin/dashboard
+          - img [ref=f14e23]
+          - text: Command Centre
+        - link "All Users" [ref=f14e28] [cursor=pointer]:
+          - /url: /admin/users
+          - img [ref=f14e29]
+          - text: All Users
+        - link "Verifications" [ref=f14e34] [cursor=pointer]:
+          - /url: /admin/users/verifications
+          - img [ref=f14e35]
+          - text: Verifications
+        - link "Licenses" [ref=f14e38] [cursor=pointer]:
+          - /url: /admin/users/licenses
+          - img [ref=f14e39]
+          - text: Licenses
+        - link "Sessions" [ref=f14e43] [cursor=pointer]:
+          - /url: /admin/users/sessions
+          - img [ref=f14e44]
+          - text: Sessions
+        - link "Tournaments" [ref=f14e46] [cursor=pointer]:
+          - /url: /admin/content/tournaments
+          - img [ref=f14e47]
+          - text: Tournaments
+        - link "Teams" [ref=f14e53] [cursor=pointer]:
+          - /url: /admin/content/teams
+          - img [ref=f14e54]
+          - text: Teams
+        - link "Venues" [ref=f14e58] [cursor=pointer]:
+          - /url: /admin/content/venues
+          - img [ref=f14e59]
+          - text: Venues
+        - link "Games" [ref=f14e62] [cursor=pointer]:
+          - /url: /admin/content/games
+          - img [ref=f14e63]
+          - text: Games
+        - link "Moderation" [ref=f14e65] [cursor=pointer]:
+          - /url: /admin/content/moderation
+          - img [ref=f14e66]
+          - text: Moderation
+    - generic [ref=f14e69]:
+      - generic [ref=f14e70]:
+        - generic [ref=f14e71]:
+          - heading "Feature Flags" [level=1] [ref=f14e72]
+          - paragraph [ref=f14e73]: Control feature rollouts with flags, rules, and user overrides
+        - button "New Flag" [ref=f14e74] [cursor=pointer]:
+          - img
+          - text: New Flag
+      - generic [ref=f14e75]:
+        - img [ref=f14e76]
+        - textbox "Search flags..." [ref=f14e79]
+      - generic [ref=f14e81]: No feature flags configured

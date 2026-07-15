@@ -22,11 +22,11 @@ public static class ComboEndpoints
         // ?staff=true returns ALL items (including unavailable) for management UI.
         // Default returns only available items (public/gamer view).
         app.MapGet("/api/venues/{venueId}/menu", async (
-            Guid                 venueId,
-            [FromQuery] bool     staff = false,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            [FromQuery] bool staff = false,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             using var conn = db.CreateConnection();
 
@@ -70,11 +70,11 @@ public static class ComboEndpoints
 
         // ── POST /api/venues/{venueId}/menu — create menu item ──────────────
         app.MapPost("/api/venues/{venueId}/menu", async (
-            Guid                             venueId,
-            [FromBody] CreateMenuItemRequest  req,
-            HttpContext                       ctx,
-            IDbConnectionFactory             db,
-            CancellationToken                ct) =>
+            Guid venueId,
+            [FromBody] CreateMenuItemRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -104,9 +104,9 @@ public static class ComboEndpoints
                 new
                 {
                     venueId,
-                    name     = req.Name.Trim(),
+                    name = req.Name.Trim(),
                     category = req.Category.Trim(),
-                    price    = req.Price
+                    price = req.Price
                 });
 
             return Results.Created($"/api/venues/{venueId}/menu/{row.id}", row);
@@ -114,12 +114,12 @@ public static class ComboEndpoints
 
         // ── PUT /api/venues/{venueId}/menu/{id} — update menu item ──────────
         app.MapPut("/api/venues/{venueId}/menu/{id}", async (
-            Guid                              venueId,
-            Guid                              id,
-            [FromBody] UpdateMenuItemRequest   req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            Guid venueId,
+            Guid id,
+            [FromBody] UpdateMenuItemRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -155,11 +155,11 @@ public static class ComboEndpoints
                 {
                     id,
                     venueId,
-                    name        = req.Name.Trim(),
-                    category    = req.Category.Trim(),
-                    price       = req.Price,
+                    name = req.Name.Trim(),
+                    category = req.Category.Trim(),
+                    price = req.Price,
                     isAvailable = req.IsAvailable,
-                    sortOrder   = req.SortOrder
+                    sortOrder = req.SortOrder
                 });
 
             return row is not null ? Results.Ok(row) : Results.NotFound();
@@ -167,11 +167,11 @@ public static class ComboEndpoints
 
         // ── DELETE /api/venues/{venueId}/menu/{id} — owner only ─────────────
         app.MapDelete("/api/venues/{venueId}/menu/{id}", async (
-            Guid                 venueId,
-            Guid                 id,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            Guid id,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -213,11 +213,11 @@ public static class ComboEndpoints
         // ?staff=true returns ALL combos (including inactive) for management UI.
         // Default returns only active combos (public/gamer view).
         app.MapGet("/api/venues/{venueId}/combos", async (
-            Guid                 venueId,
-            [FromQuery] bool     staff = false,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            [FromQuery] bool staff = false,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             using var conn = db.CreateConnection();
 
@@ -265,11 +265,11 @@ public static class ComboEndpoints
 
         // ── POST /api/venues/{venueId}/combos — create combo ────────────────
         app.MapPost("/api/venues/{venueId}/combos", async (
-            Guid                           venueId,
-            [FromBody] CreateComboRequest   req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            Guid venueId,
+            [FromBody] CreateComboRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -318,10 +318,10 @@ public static class ComboEndpoints
                 new
                 {
                     venueId,
-                    name          = req.Name.Trim(),
-                    description   = req.Description?.Trim() ?? "",
-                    items         = req.Items ?? "[]",
-                    totalPrice    = req.TotalPrice,
+                    name = req.Name.Trim(),
+                    description = req.Description?.Trim() ?? "",
+                    items = req.Items ?? "[]",
+                    totalPrice = req.TotalPrice,
                     originalPrice = req.OriginalPrice
                 });
 
@@ -330,12 +330,12 @@ public static class ComboEndpoints
 
         // ── PUT /api/venues/{venueId}/combos/{id} — update combo ────────────
         app.MapPut("/api/venues/{venueId}/combos/{id}", async (
-            Guid                           venueId,
-            Guid                           id,
-            [FromBody] UpdateComboRequest   req,
-            HttpContext                     ctx,
-            IDbConnectionFactory           db,
-            CancellationToken              ct) =>
+            Guid venueId,
+            Guid id,
+            [FromBody] UpdateComboRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -390,13 +390,13 @@ public static class ComboEndpoints
                 {
                     id,
                     venueId,
-                    name          = req.Name.Trim(),
-                    description   = req.Description?.Trim() ?? "",
-                    items         = req.Items ?? "[]",
-                    totalPrice    = req.TotalPrice,
+                    name = req.Name.Trim(),
+                    description = req.Description?.Trim() ?? "",
+                    items = req.Items ?? "[]",
+                    totalPrice = req.TotalPrice,
                     originalPrice = req.OriginalPrice,
-                    isActive      = req.IsActive,
-                    sortOrder     = req.SortOrder
+                    isActive = req.IsActive,
+                    sortOrder = req.SortOrder
                 });
 
             return row is not null ? Results.Ok(row) : Results.NotFound();
@@ -404,11 +404,11 @@ public static class ComboEndpoints
 
         // ── DELETE /api/venues/{venueId}/combos/{id} — owner only ───────────
         app.MapDelete("/api/venues/{venueId}/combos/{id}", async (
-            Guid                 venueId,
-            Guid                 id,
-            HttpContext          ctx = null!,
-            IDbConnectionFactory db  = null!,
-            CancellationToken    ct  = default) =>
+            Guid venueId,
+            Guid id,
+            HttpContext ctx = null!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -432,30 +432,30 @@ public static class ComboEndpoints
     // ── Request DTOs ────────────────────────────────────────────────────────────
 
     private sealed record CreateMenuItemRequest(
-        string  Name,
-        string  Category,
+        string Name,
+        string Category,
         decimal Price);
 
     private sealed record UpdateMenuItemRequest(
-        string  Name,
-        string  Category,
+        string Name,
+        string Category,
         decimal Price,
-        bool    IsAvailable,
-        int     SortOrder);
+        bool IsAvailable,
+        int SortOrder);
 
     private sealed record CreateComboRequest(
-        string  Name,
+        string Name,
         string? Description,
         string? Items,
         decimal TotalPrice,
         decimal OriginalPrice);
 
     private sealed record UpdateComboRequest(
-        string  Name,
+        string Name,
         string? Description,
         string? Items,
         decimal TotalPrice,
         decimal OriginalPrice,
-        bool    IsActive,
-        int     SortOrder);
+        bool IsActive,
+        int SortOrder);
 }

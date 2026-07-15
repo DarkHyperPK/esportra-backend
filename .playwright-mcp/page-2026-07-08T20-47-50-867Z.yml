@@ -1,0 +1,253 @@
+- generic:
+  - generic:
+    - list
+    - generic:
+      - generic:
+        - main:
+          - generic:
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - generic:
+                  - img
+                - generic:
+                  - paragraph: Admin
+                  - paragraph: super admin
+              - link:
+                - /url: /
+                - text: Home
+            - generic:
+              - link:
+                - /url: /admin/dashboard
+                - img
+                - text: Command Centre
+              - link:
+                - /url: /admin/users
+                - img
+                - text: All Users
+              - link:
+                - /url: /admin/users/verifications
+                - img
+                - text: Verifications
+              - link:
+                - /url: /admin/users/licenses
+                - img
+                - text: Licenses
+              - link:
+                - /url: /admin/users/sessions
+                - img
+                - text: Sessions
+              - link:
+                - /url: /admin/content/tournaments
+                - img
+                - text: Tournaments
+              - link:
+                - /url: /admin/content/teams
+                - img
+                - text: Teams
+              - link:
+                - /url: /admin/content/venues
+                - img
+                - text: Venues
+              - link:
+                - /url: /admin/content/games
+                - img
+                - text: Games
+              - link:
+                - /url: /admin/content/moderation
+                - img
+                - text: Moderation
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - link:
+                    - /url: /admin/dashboard
+                    - button:
+                      - img
+                      - text: Back
+                  - generic:
+                    - generic:
+                      - img
+                    - generic:
+                      - heading [level=1]: Verification Requests
+                      - paragraph: Review incoming organizer and venue applications
+                - generic:
+                  - button:
+                    - img
+                    - text: Refresh
+                  - button:
+                    - img
+                    - text: Export
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "6"
+                  - paragraph: Total Requests
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "1"
+                  - paragraph: Pending
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "0"
+                  - paragraph: Approved
+                - generic:
+                  - generic:
+                    - img
+                  - paragraph: "5"
+                  - paragraph: Rejected
+              - generic:
+                - generic:
+                  - img
+                  - textbox:
+                    - /placeholder: Search by name, role, or business...
+                - generic:
+                  - button: All
+                  - button: pending
+                  - button: approved
+                  - button: rejected
+              - generic:
+                - generic:
+                  - table:
+                    - rowgroup:
+                      - row:
+                        - columnheader: Applicant
+                        - columnheader: Role
+                        - columnheader: Business
+                        - columnheader: Status
+                        - columnheader: Submitted
+                        - columnheader: Actions
+                    - rowgroup:
+                      - row:
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: player16 16
+                              - paragraph: "@player16"
+                        - cell:
+                          - generic: organizer
+                        - cell:
+                          - generic:
+                            - generic: asdasd
+                            - generic: gaming_community
+                        - cell:
+                          - generic: pending
+                        - cell: 08/07/2026
+                        - cell:
+                          - button [expanded]:
+                            - img
+                      - row:
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: asd as
+                              - paragraph: "@player7"
+                        - cell:
+                          - generic: organizer
+                        - cell:
+                          - generic:
+                            - generic: asda
+                            - generic: tournament_organizer
+                        - cell:
+                          - generic: rejected
+                        - cell: 18/04/2026
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Mudassir Mudassir
+                              - paragraph: "@TENZZZ"
+                        - cell:
+                          - generic: venue owner
+                        - cell:
+                          - generic:
+                            - generic: gaming_zone
+                        - cell:
+                          - generic: rejected
+                        - cell: 18/10/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Mudassir Siddiqui
+                              - paragraph: "@TENZZZ"
+                        - cell:
+                          - generic: organizer
+                        - cell:
+                          - generic:
+                            - generic: optix
+                        - cell:
+                          - generic: rejected
+                        - cell: 15/10/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Mudassir Mudassir
+                              - paragraph: "@TENZZZ"
+                        - cell:
+                          - generic: organizer
+                        - cell:
+                          - generic:
+                            - generic: Mudassir
+                        - cell:
+                          - generic: rejected
+                        - cell: 15/10/2025
+                        - cell:
+                          - button:
+                            - img
+                      - row:
+                        - cell:
+                          - generic:
+                            - generic:
+                              - img
+                            - generic:
+                              - paragraph: Mudassir Mudassir
+                              - paragraph: "@TENZZZ"
+                        - cell:
+                          - generic: organizer
+                        - cell:
+                          - generic:
+                            - generic: Mudassir
+                        - cell:
+                          - generic: rejected
+                        - cell: 15/10/2025
+                        - cell:
+                          - button:
+                            - img
+  - menu [active] [ref=f11e259]:
+    - menuitem "View Details" [ref=f11e260] [cursor=pointer]:
+      - img [ref=f11e261]
+      - text: View Details
+    - menuitem "Approve" [ref=f11e264] [cursor=pointer]:
+      - img [ref=f11e265]
+      - text: Approve
+    - menuitem "Reject" [ref=f11e268] [cursor=pointer]:
+      - img [ref=f11e269]
+      - text: Reject
+    - menuitem "Delete" [ref=f11e273] [cursor=pointer]:
+      - img [ref=f11e274]
+      - text: Delete

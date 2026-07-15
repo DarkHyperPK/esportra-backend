@@ -1,9 +1,11 @@
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
 using Esportra.Core.Bracket;
+using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -17,25 +19,28 @@ public static class StageEndpoints
         // Batch sync: accepts full stage array, diffs against DB, upserts/deletes.
         // Replaces useTournamentWizard's 3 sequential Supabase calls.
         app.MapPut("/api/tournaments/{tournamentId}/stages", async (
-            Guid                              tournamentId,
-            [FromBody] SyncStagesRequest      req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            TournamentWinnerService           winnerService,
-            CancellationToken                 ct) =>
+            Guid tournamentId,
+            [FromBody] SyncStagesRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(
+                    userCtx, tournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
 
-            // Verify ownership/organizer
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT organizer_id, max_teams FROM tournaments WHERE id = @tournamentId FOR UPDATE",
                 new { tournamentId }, tx);
             if (tournament is null) return Results.NotFound();
-            if ((Guid)tournament.organizer_id != userCtx.UserIdGuid) return Results.Forbid();
             int? tournamentMaxTeams = (int?)tournament.max_teams is > 0
                 ? (int)tournament.max_teams
                 : null;
@@ -74,13 +79,19 @@ public static class StageEndpoints
             {
                 var stageGuid = s.Id is not null && Guid.TryParse(s.Id, out var parsed) ? parsed : (Guid?)null;
 
+                var roundBoOverridesJson = s.RoundBoOverrides is { Count: > 0 }
+                    ? System.Text.Json.JsonSerializer.Serialize(s.RoundBoOverrides)
+                    : null;
+
                 if (stageGuid.HasValue && existingGuids.Contains(stageGuid.Value))
                 {
                     await conn.ExecuteAsync(
                         """
                         UPDATE tournament_stages
                         SET name = @name, format = @format, stage_order = @stageOrder,
-                            best_of = @bestOf, capacity = @capacity,
+                            best_of = @bestOf, bo_mode = @boMode,
+                            round_bo_overrides = CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                            capacity = @capacity,
                             advancement_count = @advancementCount,
                             config = CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE config END,
                             starts_at = @startsAt,
@@ -90,39 +101,45 @@ public static class StageEndpoints
                         """,
                         new
                         {
-                            id               = stageGuid.Value,
-                            name             = s.Name,
-                            format           = s.Format,
-                            stageOrder       = s.StageOrder,
-                            bestOf           = s.BestOf ?? 1,
-                            capacity         = s.Capacity,
+                            id = stageGuid.Value,
+                            name = s.Name,
+                            format = s.Format,
+                            stageOrder = s.StageOrder,
+                            bestOf = s.BestOf ?? 1,
+                            boMode = s.BoMode ?? "per_stage",
+                            roundBoOverrides = roundBoOverridesJson,
+                            capacity = s.Capacity,
                             advancementCount = s.AdvancementCount,
-                            config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
-                            startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
-                            endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
+                            config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
+                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
                         }, tx);
                 }
                 else
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, capacity, advancement_count, config, starts_at, ends_at)
-                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount,
+                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, bo_mode, round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
+                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @boMode,
+                                CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                                @capacity, @advancementCount,
                                 CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
                                 @startsAt, @endsAt)
                         """,
                         new
                         {
                             tournamentId,
-                            name             = s.Name,
-                            format           = s.Format,
-                            stageOrder       = s.StageOrder,
-                            bestOf           = s.BestOf ?? 1,
-                            capacity         = s.Capacity,
+                            name = s.Name,
+                            format = s.Format,
+                            stageOrder = s.StageOrder,
+                            bestOf = s.BestOf ?? 1,
+                            boMode = s.BoMode ?? "per_stage",
+                            roundBoOverrides = roundBoOverridesJson,
+                            capacity = s.Capacity,
                             advancementCount = s.AdvancementCount,
-                            config           = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
-                            startsAt         = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
-                            endsAt           = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
+                            config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
+                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
                         }, tx);
                 }
             }
@@ -139,12 +156,12 @@ public static class StageEndpoints
         // ── PUT /api/tournaments/{tournamentId}/map-pools ────────────────────
         // Replace all map pool entries for a tournament.
         app.MapPut("/api/tournaments/{tournamentId}/map-pools", async (
-            Guid                              tournamentId,
-            [FromBody] SyncMapPoolsRequest    req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            ILogger<Program>                  logger,
-            CancellationToken                 ct) =>
+            Guid tournamentId,
+            [FromBody] SyncMapPoolsRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -184,46 +201,29 @@ public static class StageEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/stages/{stageId}/status ──────────────────────────────
-        // Update a single stage's status (e.g. draft → live → completed).
-        // Used by StageManagementTab after bracket generation.
-        app.MapPatch("/api/stages/{stageId}/status", async (
-            Guid                              stageId,
-            [FromBody] UpdateStageStatusRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+        // Deprecated: stage progress is derived from completion rules and tournament timeline.
+        app.MapPatch("/api/stages/{stageId}/status", (
+            Guid stageId,
+            [FromBody] UpdateStageStatusRequest req) =>
         {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
-            using var conn = db.CreateConnection();
-
-            var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, tournament_id FROM tournament_stages WHERE id = @stageId",
-                new { stageId });
-            if (stage is null) return Results.NotFound(new { error = "Stage not found" });
-
-            // Verify ownership
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tid AND organizer_id = @userId)",
-                new { tid = (Guid)stage.tournament_id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
-
-            await conn.ExecuteAsync(
-                "UPDATE tournament_stages SET status = @status, updated_at = NOW() WHERE id = @stageId",
-                new { stageId, status = req.Status });
-
-            return Results.Ok(new { success = true, stageId, status = req.Status });
+            _ = stageId;
+            _ = req;
+            return Results.Json(
+                new
+                {
+                    error = "Manual stage status updates are deprecated. Stage progress is derived automatically from rounds, matches, and advancement.",
+                },
+                statusCode: StatusCodes.Status410Gone);
         }).RequireAuthorization("Authenticated");
 
         // ── PATCH /api/stages/{stageId}/order ───────────────────────────────
         // Update a single stage's order. Used during reorder after delete.
         app.MapPatch("/api/stages/{stageId}/order", async (
-            Guid                              stageId,
+            Guid stageId,
             [FromBody] UpdateStageOrderRequest req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            CancellationToken                 ct) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -250,28 +250,23 @@ public static class StageEndpoints
         // ── POST /api/tournaments/{tournamentId}/stages/delete ─────────────
         // Delete specific stages by ID. Used by StageManagementTab.
         app.MapPost("/api/tournaments/{tournamentId}/stages/delete", async (
-            Guid                              tournamentId,
-            [FromBody] DeleteStagesRequest    req,
-            HttpContext                        ctx,
-            IDbConnectionFactory              db,
-            TournamentWinnerService           winnerService,
-            CancellationToken                 ct) =>
+            Guid tournamentId,
+            [FromBody] DeleteStagesRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentWinnerService winnerService,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(
+                    userCtx, tournamentId, StaffAuthHelper.PermBracketEdit, ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
             using var tx = conn.BeginTransaction();
-
-            // Verify ownership
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
-                new { tournamentId, userId = userCtx.UserIdGuid }, tx);
-            if (!isOwner)
-            {
-                tx.Rollback();
-                return Results.Forbid();
-            }
 
             if (req.DeleteIds is not { Length: > 0 })
             {
@@ -292,18 +287,28 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{stageId}/completion-status ─────────────────────
         app.MapGet("/api/stages/{stageId}/completion-status", async (
-            Guid                stageId,
+            Guid stageId,
             IDbConnectionFactory db,
-            StandingsService    standings,
-            CancellationToken   ct) =>
+            StandingsService standings,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
-            // 1. Get stage info
+            // 1. Get stage info (includes BO config for debugging)
             var stage = await conn.QuerySingleOrDefaultAsync(
-                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config FROM tournament_stages WHERE id = @stageId",
+                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config, best_of, bo_mode, round_bo_overrides FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
+
+            string format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+            var alreadyAdvanced = await StageCompletionHelper.IsStageAlreadyAdvancedAsync(conn, stage, stageId);
+
+            if (format is "battle_royale")
+            {
+                var brSnapshot = await StageCompletionHelper.EvaluateBattleRoyaleAsync(
+                    conn, stage, stageId, alreadyAdvanced, ct);
+                return Results.Ok(brSnapshot.ToResponse());
+            }
 
             int advancementCount = (int?)stage.advancement_count ?? 1;
 
@@ -327,6 +332,8 @@ public static class StageEndpoints
                 return Results.Ok(new
                 {
                     isComplete = false,
+                    alreadyAdvanced,
+                    progressLabel = alreadyAdvanced ? "advanced" : "setup",
                     advancingTeams = Array.Empty<object>(),
                     reason = $"Invalid Configuration: Advancement count ({advancementCount}) must be less than participants ({participantsCount}) to ensure elimination."
                 });
@@ -337,44 +344,72 @@ public static class StageEndpoints
                 "SELECT id FROM brkt_versions WHERE stage_id = @stageId ORDER BY version_number DESC LIMIT 1",
                 new { stageId });
             if (version is null)
-                return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "No bracket found" });
+            {
+                return Results.Ok(new
+                {
+                    isComplete = false,
+                    alreadyAdvanced,
+                    progressLabel = alreadyAdvanced ? "advanced" : "setup",
+                    advancingTeams = Array.Empty<object>(),
+                    reason = "No bracket found"
+                });
+            }
 
             // 4. Get all matches
             var matches = (await conn.QueryAsync(
                 "SELECT * FROM brkt_matches WHERE version_id = @vid",
                 new { vid = (Guid)version.id })).AsList();
             if (matches.Count == 0)
-                return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "No matches found" });
+            {
+                return Results.Ok(new
+                {
+                    isComplete = false,
+                    alreadyAdvanced,
+                    progressLabel = alreadyAdvanced ? "advanced" : "setup",
+                    advancingTeams = Array.Empty<object>(),
+                    reason = "No matches found"
+                });
+            }
 
             // 5. Check completion based on format
-            string format = (string?)stage.format ?? "single_elimination";
+            var bracketProgressLabel = await StageCompletionHelper.EvaluateBracketProgressLabelAsync(conn, stage, stageId);
 
             if (format is "single_elimination" or "double_elimination")
             {
-                return Results.Ok(await CheckEliminationCompletion(conn, matches, advancementCount));
-            }
-            else if (format is "swiss" or "round_robin")
-            {
-                return Results.Ok(await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct));
+                var elimination = await CheckEliminationCompletion(conn, matches, advancementCount);
+                return Results.Ok(MergeBracketCompletion(elimination, alreadyAdvanced, bracketProgressLabel));
             }
 
-            return Results.Ok(new { isComplete = false, advancingTeams = Array.Empty<object>(), reason = "Unknown format" });
-        }).RequireAuthorization("Organizer");
+            if (format is "swiss" or "round_robin")
+            {
+                var roundRobin = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct);
+                return Results.Ok(MergeBracketCompletion(roundRobin, alreadyAdvanced, bracketProgressLabel));
+            }
+
+            return Results.Ok(new
+            {
+                isComplete = false,
+                alreadyAdvanced,
+                progressLabel = alreadyAdvanced ? "advanced" : "setup",
+                advancingTeams = Array.Empty<object>(),
+                reason = "Unknown format"
+            });
+        }).RequireAuthorization("Authenticated");
 
 
         // ── POST /api/stages/{stageId}/advance ──────────────────────────────
         app.MapPost("/api/stages/{stageId}/advance", async (
-            Guid                stageId,
+            Guid stageId,
             IDbConnectionFactory db,
-            StandingsService    standings,
+            StandingsService standings,
             TournamentWinnerService winnerService,
-            CancellationToken   ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
-            // 1. Get stage info
+            // 1. Get stage info (includes BO config for debugging)
             var stage = await conn.QuerySingleOrDefaultAsync(
-                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config FROM tournament_stages WHERE id = @stageId",
+                "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config, best_of, bo_mode, round_bo_overrides FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
 
@@ -498,12 +533,12 @@ public static class StageEndpoints
                 nextStageId,
                 advancedCount = advancingTeams.Count
             });
-        }).RequireAuthorization("Organizer");
+        }).RequireAuthorization("Authenticated");
 
 
         // ── GET /api/stages/{stageId}/next ──────────────────────────────────
         app.MapGet("/api/stages/{stageId}/next", async (
-            Guid                stageId,
+            Guid stageId,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -522,9 +557,9 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{id} ──────────────────────────────────────────────
         app.MapGet("/api/stages/{id}", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -540,9 +575,9 @@ public static class StageEndpoints
 
         // ── GET /api/stages/{id}/participants ─────────────────────────────────
         app.MapGet("/api/stages/{id}/participants", async (
-            Guid                 id,
+            Guid id,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var participants = await conn.QueryAsync<dynamic>(
@@ -557,6 +592,22 @@ public static class StageEndpoints
                 """, new { id });
             return Results.Ok(participants);
         });
+
+        // ── GET /api/stages/round-structure ───────────────────────────────────
+        // Returns the list of configurable rounds for a format/size combination.
+        // Used by frontend to render per-round BO configuration UI.
+        app.MapGet("/api/stages/round-structure", (
+            string format,
+            int bracketSize) =>
+        {
+            if (string.IsNullOrWhiteSpace(format))
+                return Results.BadRequest(new { error = "format is required" });
+            if (bracketSize < 2)
+                return Results.BadRequest(new { error = "bracketSize must be at least 2" });
+
+            var rounds = StageRoundConfiguration.GetRoundStructure(format, bracketSize);
+            return Results.Ok(new { format, bracketSize, rounds });
+        });
     }
 
     private static StageDto[] NormalizeStageCapacities(StageDto[] stages, int? tournamentMaxTeams)
@@ -566,9 +617,10 @@ public static class StageEndpoints
             .Select((stage, index) =>
             {
                 var stageOrder = index + 1;
-                var capacity = stageOrder == 1
+                var isBattleRoyale = string.Equals(stage.Format, "battle_royale", StringComparison.OrdinalIgnoreCase);
+                var capacity = stageOrder == 1 && !isBattleRoyale
                     ? tournamentMaxTeams
-                    : stage.Capacity;
+                    : stage.Capacity ?? (isBattleRoyale ? tournamentMaxTeams : null);
 
                 return stage with
                 {
@@ -584,8 +636,12 @@ public static class StageEndpoints
         for (var i = 0; i < stages.Length; i++)
         {
             var stage = stages[i];
+            var isBattleRoyale = string.Equals(stage.Format, "battle_royale", StringComparison.OrdinalIgnoreCase);
             if (stage.Capacity is <= 0)
                 return $"{stage.Name} capacity must be greater than zero.";
+
+            if (isBattleRoyale)
+                continue;
 
             if (tournamentMaxTeams is > 0 && stage.Capacity is > 0 && stage.Capacity > tournamentMaxTeams)
                 return $"{stage.Name} capacity cannot exceed the tournament max capacity of {tournamentMaxTeams}.";
@@ -639,14 +695,33 @@ public static class StageEndpoints
             ct);
     }
 
+    private static object MergeBracketCompletion(object bracketCore, bool alreadyAdvanced, string progressLabel)
+    {
+        var dict = bracketCore.GetType().GetProperties()
+            .ToDictionary(p => p.Name, p => p.GetValue(bracketCore));
+
+        var isComplete = dict.TryGetValue("isComplete", out var completeValue) && completeValue is true;
+        var reason = dict.TryGetValue("reason", out var reasonValue) ? reasonValue as string : null;
+        var advancingTeams = dict.TryGetValue("advancingTeams", out var teamsValue) ? teamsValue : Array.Empty<object>();
+
+        return new
+        {
+            isComplete,
+            alreadyAdvanced,
+            progressLabel,
+            reason,
+            advancingTeams,
+        };
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private record AdvancingTeam(Guid TeamId, string TeamName, int Seed);
 
     private static async Task<object> CheckEliminationCompletion(
         System.Data.IDbConnection conn,
-        List<dynamic>             matches,
-        int                       advancementCount)
+        List<dynamic> matches,
+        int advancementCount)
     {
         var pendingCount = matches.Count(m => (string?)m.status is "pending" or "in_progress");
         int maxRound = matches.Max(m => (int)(m.round_index ?? 0));
@@ -687,12 +762,12 @@ public static class StageEndpoints
 
     private static async Task<object> CheckRoundRobinCompletion(
         System.Data.IDbConnection conn,
-        List<dynamic>             matches,
-        int                       advancementCount,
-        Guid                      stageId,
-        dynamic                   stage,
-        StandingsService          standings,
-        CancellationToken         ct)
+        List<dynamic> matches,
+        int advancementCount,
+        Guid stageId,
+        dynamic stage,
+        StandingsService standings,
+        CancellationToken ct)
     {
         int pendingCount = matches.Count(m => (string?)m.status != "completed");
 
@@ -851,31 +926,17 @@ public static class StageEndpoints
             var rows = missingMocks.Select(row =>
             {
                 var mockId = (Guid)row.id;
-                return new
-                {
+                return new TeamCreationHelper.MockTeamParams(
                     mockId,
-                    teamName = (string)row.team_name,
-                    tag = $"mock-{mockId:N}"[..18],
-                    game = (string)row.game,
-                    ownerId = (Guid)row.organizer_id,
-                    isSolo = (int)row.team_size == 1,
-                    maxMembers = Math.Max((int)row.team_size, 1),
-                };
+                    (string)row.team_name,
+                    TeamCreationHelper.BuildMockTag(mockId),
+                    (string)row.game,
+                    (Guid)row.organizer_id,
+                    (int)row.team_size == 1,
+                    Math.Max((int)row.team_size, 1));
             }).ToList();
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO teams (id, name, tag, game, owner_id, is_solo, max_members)
-                VALUES (@mockId, @teamName, @tag, @game, @ownerId, @isSolo, @maxMembers)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    tag = EXCLUDED.tag,
-                    game = EXCLUDED.game,
-                    owner_id = EXCLUDED.owner_id,
-                    is_solo = EXCLUDED.is_solo,
-                    max_members = EXCLUDED.max_members
-                """,
-                rows);
+            await TeamCreationHelper.UpsertMockTeamsAsync(conn, null, rows);
         }
 
         await conn.ExecuteAsync(

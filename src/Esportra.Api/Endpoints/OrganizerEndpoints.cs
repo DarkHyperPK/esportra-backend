@@ -1,6 +1,8 @@
-﻿using Dapper;
+using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
+using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Esportra.Api.Endpoints;
@@ -15,9 +17,9 @@ public static class OrganizerEndpoints
     {
         // ── GET /api/organizer/stats ─────────────────────────────────────────
         app.MapGet("/api/organizer/stats", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken    ct) =>
+            CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -71,10 +73,10 @@ public static class OrganizerEndpoints
 
             return Results.Ok(new
             {
-                totalTournaments    = (long)summary.total_tournaments,
-                activeTournaments   = (long)summary.active_tournaments,
+                totalTournaments = (long)summary.total_tournaments,
+                activeTournaments = (long)summary.active_tournaments,
                 upcomingTournaments = (long)summary.upcoming_tournaments,
-                totalPrizePool      = (decimal)summary.total_prize_pool,
+                totalPrizePool = (decimal)summary.total_prize_pool,
                 totalParticipants,
                 gameDistribution,
                 monthlyParticipation,
@@ -84,11 +86,11 @@ public static class OrganizerEndpoints
         // ── GET /api/organizer/schedule ───────────────────────────────────────
         // Returns matches for organizer's tournaments, filtered by date range
         app.MapGet("/api/organizer/schedule", async (
-            HttpContext          ctx,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            [FromQuery] string?  start = null,
-            [FromQuery] string?  end   = null,
-            CancellationToken    ct    = default) =>
+            [FromQuery] string? start = null,
+            [FromQuery] string? end = null,
+            CancellationToken ct = default) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -108,10 +110,11 @@ public static class OrganizerEndpoints
                 endDt = startDt.AddDays(1);
 
             var matches = await conn.QueryAsync<dynamic>(
-                """
+                $"""
                 SELECT m.id, m.scheduled_time, m.status,
                        m.round_index, m.match_number,
-                       t1.name AS team1_name, t2.name AS team2_name,
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns},
                        t.id AS tournament_id, t.name AS tournament_name,
                        t.game AS tournament_game, t.slug AS tournament_slug,
                        ts.name AS stage_name
@@ -119,24 +122,24 @@ public static class OrganizerEndpoints
                 JOIN brkt_versions v ON v.id = m.version_id
                 JOIN tournament_stages ts ON ts.id = v.stage_id
                 JOIN tournaments t ON t.id = ts.tournament_id
-                LEFT JOIN teams t1 ON t1.id = m.team1_id
-                LEFT JOIN teams t2 ON t2.id = m.team2_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
                 WHERE (
-                    t.organizer_id = @organizerId
+                    t.organizer_id = @userId
                     OR EXISTS (
-                        SELECT 1 FROM organization_staff os
-                        WHERE os.user_id = @organizerId
-                          AND os.organization_id = t.organization_id
-                          AND os.status = 'active'
+                        SELECT 1 FROM organizations o
+                        WHERE o.id = t.organization_id AND o.owner_id = @userId
                     )
+                    OR {StaffAuthHelper.StaffTournamentAccessExistsSql}
                 )
                   AND (
-                    (m.scheduled_time IS NOT NULL AND m.scheduled_time >= @startDt AND m.scheduled_time < @endDt)
-                    OR (m.scheduled_time IS NULL AND t.start_date >= @startDt AND t.start_date < @endDt)
+                    m.scheduled_time IS NOT NULL
+                    AND m.scheduled_time >= @startDt
+                    AND m.scheduled_time < @endDt
                   )
                 ORDER BY m.scheduled_time ASC NULLS LAST, m.round_index ASC, m.match_number ASC
                 LIMIT 100
-                """, new { organizerId = userCtx.UserIdGuid, startDt, endDt });
+                """, new { userId = userCtx.UserIdGuid, startDt, endDt });
             return Results.Ok(matches);
         }).RequireAuthorization("Authenticated");
     }

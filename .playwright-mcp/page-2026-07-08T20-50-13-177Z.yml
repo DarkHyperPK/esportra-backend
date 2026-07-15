@@ -1,0 +1,238 @@
+- generic [active] [ref=f12e6]:
+  - generic [ref=f12e7]:
+    - region "Notifications (F8)":
+      - list [ref=f12e291]:
+        - status [ref=f12e459]:
+          - generic [ref=f12e461]: License revoked
+          - button [ref=f12e462] [cursor=pointer]:
+            - img [ref=f12e463]
+    - main [ref=f12e10]:
+      - generic [ref=f12e11]:
+        - generic [ref=f12e12]:
+          - link "Admin super admin" [ref=f12e13] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - img [ref=f12e15]
+            - generic [ref=f12e17]:
+              - paragraph [ref=f12e18]: Admin
+              - paragraph [ref=f12e19]: super admin
+          - link "Home" [ref=f12e20] [cursor=pointer]:
+            - /url: /
+        - generic [ref=f12e21]:
+          - link "Command Centre" [ref=f12e22] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - img [ref=f12e23]
+            - text: Command Centre
+          - link "All Users" [ref=f12e28] [cursor=pointer]:
+            - /url: /admin/users
+            - img [ref=f12e29]
+            - text: All Users
+          - link "Verifications" [ref=f12e34] [cursor=pointer]:
+            - /url: /admin/users/verifications
+            - img [ref=f12e35]
+            - text: Verifications
+          - link "Licenses" [ref=f12e38] [cursor=pointer]:
+            - /url: /admin/users/licenses
+            - img [ref=f12e39]
+            - text: Licenses
+          - link "Sessions" [ref=f12e43] [cursor=pointer]:
+            - /url: /admin/users/sessions
+            - img [ref=f12e44]
+            - text: Sessions
+          - link "Tournaments" [ref=f12e46] [cursor=pointer]:
+            - /url: /admin/content/tournaments
+            - img [ref=f12e47]
+            - text: Tournaments
+          - link "Teams" [ref=f12e53] [cursor=pointer]:
+            - /url: /admin/content/teams
+            - img [ref=f12e54]
+            - text: Teams
+          - link "Venues" [ref=f12e58] [cursor=pointer]:
+            - /url: /admin/content/venues
+            - img [ref=f12e59]
+            - text: Venues
+          - link "Games" [ref=f12e62] [cursor=pointer]:
+            - /url: /admin/content/games
+            - img [ref=f12e63]
+            - text: Games
+          - link "Moderation" [ref=f12e65] [cursor=pointer]:
+            - /url: /admin/content/moderation
+            - img [ref=f12e66]
+            - text: Moderation
+      - generic [ref=f12e69]:
+        - generic [ref=f12e70]:
+          - button "Back" [ref=f12e71] [cursor=pointer]:
+            - img
+            - text: Back
+          - generic [ref=f12e72]:
+            - img [ref=f12e74]
+            - heading "License Management" [level=1] [ref=f12e77]
+        - generic [ref=f12e78]:
+          - generic [ref=f12e79]:
+            - generic [ref=f12e80]:
+              - heading "License Management" [level=2] [ref=f12e81]:
+                - img [ref=f12e82]
+                - text: License Management
+              - paragraph [ref=f12e85]: 5 licenses total
+            - generic [ref=f12e86]:
+              - button "Refresh" [ref=f12e87] [cursor=pointer]:
+                - img
+                - text: Refresh
+              - button "Assign License" [ref=f12e88] [cursor=pointer]:
+                - img
+                - text: Assign License
+          - generic [ref=f12e89]:
+            - generic [ref=f12e90]:
+              - generic [ref=f12e91]:
+                - img [ref=f12e92]
+                - generic [ref=f12e98]: Organizer (ESP-OR)
+              - list [ref=f12e99]:
+                - listitem [ref=f12e100]: • Create & manage tournaments
+                - listitem [ref=f12e101]: • Set entry fees & prize pools
+                - listitem [ref=f12e102]: • Access bracket & match management
+                - listitem [ref=f12e103]: • Dispute resolution tools
+                - listitem [ref=f12e104]: • Organizer analytics dashboard
+                - listitem [ref=f12e105]: • Custom organizer profile page
+            - generic [ref=f12e106]:
+              - generic [ref=f12e107]:
+                - img [ref=f12e108]
+                - generic [ref=f12e111]: Venue Owner (ESP-VO)
+              - list [ref=f12e112]:
+                - listitem [ref=f12e113]: • List & manage gaming venues
+                - listitem [ref=f12e114]: • Booking management system
+                - listitem [ref=f12e115]: • Station & availability control
+                - listitem [ref=f12e116]: • Venue impression analytics
+                - listitem [ref=f12e117]: • Desktop pairing for live status
+                - listitem [ref=f12e118]: • Appear in "Near Me" search
+          - generic [ref=f12e119]:
+            - generic [ref=f12e120]:
+              - img [ref=f12e121]
+              - textbox "Search by name, email, or license ID..." [ref=f12e124]
+            - combobox [ref=f12e125] [cursor=pointer]:
+              - generic: All Statuses
+              - img [ref=f12e126]
+            - combobox [ref=f12e128] [cursor=pointer]:
+              - generic: All Types
+              - img [ref=f12e129]
+          - table [ref=f12e467]:
+            - rowgroup [ref=f12e468]:
+              - row "User License ID Type Status Issued Expires Actions" [ref=f12e469]:
+                - columnheader "User" [ref=f12e470]
+                - columnheader "License ID" [ref=f12e471]
+                - columnheader "Type" [ref=f12e472]
+                - columnheader "Status" [ref=f12e473]
+                - columnheader "Issued" [ref=f12e474]
+                - columnheader "Expires" [ref=f12e475]
+                - columnheader "Actions" [ref=f12e476]
+            - rowgroup [ref=f12e477]:
+              - row "TENZZZ player2@gmail.com ESP-OR-266829 Organizer active 31/03/2026 31/03/2027" [ref=f12e478]:
+                - cell "TENZZZ player2@gmail.com" [ref=f12e479]:
+                  - button "TENZZZ player2@gmail.com" [ref=f12e480] [cursor=pointer]:
+                    - generic [ref=f12e481]:
+                      - generic [ref=f12e482]: TENZZZ
+                      - generic [ref=f12e483]: player2@gmail.com
+                - cell "ESP-OR-266829" [ref=f12e484]:
+                  - button "ESP-OR-266829" [ref=f12e485] [cursor=pointer]:
+                    - text: ESP-OR-266829
+                    - img [ref=f12e486]
+                - cell "Organizer" [ref=f12e489]
+                - cell "active" [ref=f12e490]
+                - cell "31/03/2026" [ref=f12e491]
+                - cell "31/03/2027" [ref=f12e492]
+                - cell [ref=f12e493]:
+                  - generic [ref=f12e494]:
+                    - button "View Details" [ref=f12e495] [cursor=pointer]:
+                      - img [ref=f12e496]
+                    - button "Revoke" [ref=f12e499] [cursor=pointer]:
+                      - img [ref=f12e500]
+                    - button "Delete" [ref=f12e503] [cursor=pointer]:
+                      - img [ref=f12e504]
+              - row "Mindfreak player1@gmail.com ESP-OR-184471 Organizer revoked 28/03/2026 09/07/2027" [ref=f12e507]:
+                - cell "Mindfreak player1@gmail.com" [ref=f12e508]:
+                  - button "Mindfreak player1@gmail.com" [ref=f12e509] [cursor=pointer]:
+                    - generic [ref=f12e510]:
+                      - generic [ref=f12e511]: Mindfreak
+                      - generic [ref=f12e512]: player1@gmail.com
+                - cell "ESP-OR-184471" [ref=f12e513]:
+                  - button "ESP-OR-184471" [ref=f12e514] [cursor=pointer]:
+                    - text: ESP-OR-184471
+                    - img [ref=f12e515]
+                - cell "Organizer" [ref=f12e518]
+                - cell "revoked" [ref=f12e519]
+                - cell "28/03/2026" [ref=f12e520]
+                - cell "09/07/2027" [ref=f12e521]
+                - cell [ref=f12e522]:
+                  - generic [ref=f12e523]:
+                    - button "View Details" [ref=f12e524] [cursor=pointer]:
+                      - img [ref=f12e525]
+                    - button "Reinstate" [ref=f12e528] [cursor=pointer]:
+                      - img [ref=f12e529]
+                    - button "Delete" [ref=f12e532] [cursor=pointer]:
+                      - img [ref=f12e533]
+              - row "S SystemOptiX paradox1632000@gmail.com ESP-OR-766617 Organizer active 28/03/2026 28/03/2027" [ref=f12e536]:
+                - cell "S SystemOptiX paradox1632000@gmail.com" [ref=f12e537]:
+                  - button "S SystemOptiX paradox1632000@gmail.com" [ref=f12e538] [cursor=pointer]:
+                    - generic [ref=f12e539]: S
+                    - generic [ref=f12e540]:
+                      - generic [ref=f12e541]: SystemOptiX
+                      - generic [ref=f12e542]: paradox1632000@gmail.com
+                - cell "ESP-OR-766617" [ref=f12e543]:
+                  - button "ESP-OR-766617" [ref=f12e544] [cursor=pointer]:
+                    - text: ESP-OR-766617
+                    - img [ref=f12e545]
+                - cell "Organizer" [ref=f12e548]
+                - cell "active" [ref=f12e549]
+                - cell "28/03/2026" [ref=f12e550]
+                - cell "28/03/2027" [ref=f12e551]
+                - cell [ref=f12e552]:
+                  - generic [ref=f12e553]:
+                    - button "View Details" [ref=f12e554] [cursor=pointer]:
+                      - img [ref=f12e555]
+                    - button "Revoke" [ref=f12e558] [cursor=pointer]:
+                      - img [ref=f12e559]
+                    - button "Delete" [ref=f12e562] [cursor=pointer]:
+                      - img [ref=f12e563]
+              - row "TENZZZ player2@gmail.com ESP-VO-730269 Venue Owner active 03/03/2026 31/03/2027" [ref=f12e566]:
+                - cell "TENZZZ player2@gmail.com" [ref=f12e567]:
+                  - button "TENZZZ player2@gmail.com" [ref=f12e568] [cursor=pointer]:
+                    - generic [ref=f12e569]:
+                      - generic [ref=f12e570]: TENZZZ
+                      - generic [ref=f12e571]: player2@gmail.com
+                - cell "ESP-VO-730269" [ref=f12e572]:
+                  - button "ESP-VO-730269" [ref=f12e573] [cursor=pointer]:
+                    - text: ESP-VO-730269
+                    - img [ref=f12e574]
+                - cell "Venue Owner" [ref=f12e577]
+                - cell "active" [ref=f12e578]
+                - cell "03/03/2026" [ref=f12e579]
+                - cell "31/03/2027" [ref=f12e580]
+                - cell [ref=f12e581]:
+                  - generic [ref=f12e582]:
+                    - button "View Details" [ref=f12e583] [cursor=pointer]:
+                      - img [ref=f12e584]
+                    - button "Revoke" [ref=f12e587] [cursor=pointer]:
+                      - img [ref=f12e588]
+                    - button "Delete" [ref=f12e591] [cursor=pointer]:
+                      - img [ref=f12e592]
+              - row "Mindfreak player1@gmail.com ESP-VO-915300 Venue Owner active 03/03/2026 28/03/2027" [ref=f12e595]:
+                - cell "Mindfreak player1@gmail.com" [ref=f12e596]:
+                  - button "Mindfreak player1@gmail.com" [ref=f12e597] [cursor=pointer]:
+                    - generic [ref=f12e598]:
+                      - generic [ref=f12e599]: Mindfreak
+                      - generic [ref=f12e600]: player1@gmail.com
+                - cell "ESP-VO-915300" [ref=f12e601]:
+                  - button "ESP-VO-915300" [ref=f12e602] [cursor=pointer]:
+                    - text: ESP-VO-915300
+                    - img [ref=f12e603]
+                - cell "Venue Owner" [ref=f12e606]
+                - cell "active" [ref=f12e607]
+                - cell "03/03/2026" [ref=f12e608]
+                - cell "28/03/2027" [ref=f12e609]
+                - cell [ref=f12e610]:
+                  - generic [ref=f12e611]:
+                    - button "View Details" [ref=f12e612] [cursor=pointer]:
+                      - img [ref=f12e613]
+                    - button "Revoke" [ref=f12e616] [cursor=pointer]:
+                      - img [ref=f12e617]
+                    - button "Delete" [ref=f12e620] [cursor=pointer]:
+                      - img [ref=f12e621]
+  - status [ref=f12e624]: Notification License revoked

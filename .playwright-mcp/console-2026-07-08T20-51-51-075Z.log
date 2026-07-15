@@ -1,0 +1,3 @@
+[    1523ms] [ERROR] Failed to load resource: the server responded with a status of 500 () @ https://staging.esportra.com/functions/v1/admin-api:0
+[   71209ms] [ERROR] Failed to load resource: the server responded with a status of 500 () @ https://staging.esportra.com/functions/v1/admin-api:0
+[   71370ms] [ERROR] Failed to load resource: the server responded with a status of 500 () @ https://staging.esportra.com/functions/v1/admin-api:0

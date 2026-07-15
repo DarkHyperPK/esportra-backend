@@ -2,7 +2,9 @@ using System.Text;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
+using Esportra.Api.Services;
 using Esportra.Api.HealthChecks;
+using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
@@ -11,6 +13,8 @@ using Esportra.Core.Bracket;
 using Esportra.Core.Match;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Email;
+using Hangfire;
+using Hangfire.PostgreSql;
 using Esportra.Infrastructure.Integrations;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -46,7 +50,7 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
     ?? throw new InvalidOperationException("Supabase:JwtSecret is required.");
 var jwtAudience = builder.Configuration["Supabase:JwtAudience"] ?? "authenticated";
-var jwtIssuer   = builder.Configuration["Supabase:JwtIssuer"];
+var jwtIssuer = builder.Configuration["Supabase:JwtIssuer"];
 var validateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer);
 
 // ── Authentication — Supabase JWT ─────────────────────────────────────────────
@@ -57,13 +61,13 @@ builder.Services
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-            ValidateIssuer           = validateIssuer,
-            ValidIssuer              = validateIssuer ? jwtIssuer : null,
-            ValidateAudience         = true,
-            ValidAudience            = jwtAudience,
-            ValidateLifetime         = true,
-            ClockSkew                = TimeSpan.Zero,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+            ValidateIssuer = validateIssuer,
+            ValidIssuer = validateIssuer ? jwtIssuer : null,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
         };
 
         // Supabase JWT via Authorization header (standard) or query string (SignalR WS)
@@ -98,8 +102,6 @@ builder.Services.AddAuthorization(opts =>
             policy.Requirements.Add(new PermissionRequirement(perm)));
     }
 
-    opts.AddPolicy("Organizer",    policy => policy.RequireAuthenticatedUser());
-    opts.AddPolicy("VenueOwner",   policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("Authenticated", policy => policy.RequireAuthenticatedUser());
     opts.AddPolicy("Admin", policy =>
         policy.Requirements.Add(new AdminRequirement()));
@@ -153,7 +155,7 @@ static ConfigurationOptions BuildRedisConfig(IConfiguration config)
             var parts = uri.UserInfo.Split(':', 2);
             if (parts.Length == 2)
             {
-                opts.User     = Uri.UnescapeDataString(parts[0]);
+                opts.User = Uri.UnescapeDataString(parts[0]);
                 opts.Password = Uri.UnescapeDataString(parts[1]);
             }
             else
@@ -176,10 +178,10 @@ static ConfigurationOptions BuildRedisConfig(IConfiguration config)
 
 // AbortOnConnectFail=false means startup never blocks; SE.Redis reconnects automatically
 // whenever Redis becomes available after a transient outage.
-redisConfig.AbortOnConnectFail   = false;
+redisConfig.AbortOnConnectFail = false;
 redisConfig.ReconnectRetryPolicy = new LinearRetry(5_000);
-redisConfig.ConnectTimeout       = 5_000;
-redisConfig.SyncTimeout          = 3_000;
+redisConfig.ConnectTimeout = 5_000;
+redisConfig.SyncTimeout = 3_000;
 builder.Services.AddSingleton<IConnectionMultiplexer>(
     ConnectionMultiplexer.Connect(redisConfig));
 
@@ -195,14 +197,14 @@ builder.Services.AddHybridCache(opts =>
 {
     opts.DefaultEntryOptions = new HybridCacheEntryOptions
     {
-        Expiration           = TimeSpan.FromSeconds(60),
+        Expiration = TimeSpan.FromSeconds(60),
         LocalCacheExpiration = TimeSpan.FromSeconds(30),
     };
 });
 
 // ── Health checks ─────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks()
-    .AddCheck<RedisHealthCheck>("redis",    tags: ["ready"])
+    .AddCheck<RedisHealthCheck>("redis", tags: ["ready"])
     .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
 
 // ── SignalR ────────────────────────────────────────────────────────────────────
@@ -274,7 +276,8 @@ builder.Services.AddCors(opts =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials());
+              .AllowCredentials()
+              .SetPreflightMaxAge(TimeSpan.FromHours(2)));
 });
 
 // ── Email service (SMTP via MailKit) ─────────────────────────────────────────
@@ -283,6 +286,19 @@ builder.Services.AddScoped<IEmailService, ResendEmailService>();
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
 builder.Services.AddScoped<ISupabaseAdminClient, SupabaseAdminClient>();
+builder.Services.AddHttpClient<SupabasePublicAuthClient>();
+builder.Services.AddScoped<ISupabasePublicAuthClient, SupabasePublicAuthClient>();
+builder.Services.AddHttpClient<MfaFactorCleanupService>();
+builder.Services.AddScoped<PasswordRecoveryService>();
+builder.Services.AddScoped<AccountSecurityService>();
+builder.Services.AddScoped<PartnerSponsorOnboardingService>();
+builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
+    .Bind(builder.Configuration.GetSection(Esportra.Api.Auth.RecoveryOptions.SectionName))
+    .Validate(options => Uri.TryCreate(options.MainRedirectUrl, UriKind.Absolute, out _),
+        "Recovery:MainRedirectUrl must be an absolute URL")
+    .Validate(options => Uri.TryCreate(options.PartnerRedirectUrl, UriKind.Absolute, out _),
+        "Recovery:PartnerRedirectUrl must be an absolute URL")
+    .ValidateOnStart();
 
 // ── External API clients ──────────────────────────────────────────────────────
 builder.Services.AddHttpClient<RiotApiClient>();
@@ -318,19 +334,48 @@ builder.Services.AddScoped<MatchFinalizationService>();
 builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
+builder.Services.AddScoped<MatchScheduleNotificationService>();
+builder.Services.AddScoped<BrScheduleNotificationService>();
+builder.Services.AddScoped<StaffTournamentAuditService>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.SelfPlayMatchRoomService>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.CheckinWalkoverProcessor>();
+builder.Services.AddScoped<Esportra.Api.Services.CheckinWalkoverNotifier>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<OperationsAuditService>();
+builder.Services.AddScoped<GhostModeTokenService>();
+builder.Services.AddScoped<OperationsAuthorizationService>();
+builder.Services.AddScoped<Esportra.Api.Services.GameCatalogService>();
+builder.Services.AddScoped<Esportra.Api.Services.GameCatalogAssetService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
+builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapService>();
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
+builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
+builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
 builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
 
-// ── Background jobs ───────────────────────────────────────────────────────────
+// ── Hangfire (scheduled jobs) ─────────────────────────────────────────────────
+// Hangfire requires direct Postgres connection (not pooler) for LISTEN/NOTIFY.
+// Falls back to main connection string if no dedicated one is configured.
+var hangfireConnStr = builder.Configuration.GetConnectionString("PostgresHangfire") ?? pgConnStr;
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UsePostgreSqlStorage(opts => opts.UseNpgsqlConnection(hangfireConnStr)));
+builder.Services.AddHangfireServer(opts =>
+{
+    opts.WorkerCount = Environment.ProcessorCount;
+    opts.Queues = ["default", "notifications", "recovery"];
+});
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+
+// ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
-builder.Services.AddHostedService<CheckinWalkoversJob>();
-builder.Services.AddHostedService<DiscordDmDispatcherJob>();
+builder.Services.AddHostedService<R6MapAssetSeedService>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -339,6 +384,10 @@ builder.Services.AddOpenApi();
 Console.WriteLine("[STARTUP] Building app...");
 var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
+
+// Configure StageRoundConfiguration logging
+Esportra.Core.Bracket.StageRoundConfiguration.ConfigureLogging(
+    app.Services.GetRequiredService<ILoggerFactory>());
 
 // ── Run database migrations (development/legacy fallback only) ──────────────
 // Dedicated schema upgrades should run through Esportra.Migrator before the API
@@ -393,6 +442,29 @@ Esportra.Infrastructure.Email.EmailTemplates.Init(
     builder.Configuration["FrontendUrl"] ?? "https://esportra.com",
     builder.Configuration["Supabase:Url"] ?? "https://api.esportra.com");
 
+using (var scope = app.Services.CreateScope())
+{
+    var catalog = scope.ServiceProvider.GetRequiredService<Esportra.Api.Services.GameCatalogService>();
+    await catalog.ImportPackagedCatalogAsync();
+    await catalog.BackfillActiveCatalogBannerUrlsAsync();
+}
+
+// ── Hangfire recurring jobs + startup recovery ───────────────────────────────
+// Use service-based API (not static) to ensure JobStorage is initialized
+using (var scope = app.Services.CreateScope())
+{
+    var recurringJobs = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
+    var backgroundJobs = scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>();
+
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
+        "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
+        "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
+
+    backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.StartupRecoveryJob>(
+        j => j.ExecuteAsync(CancellationToken.None));
+}
+
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
@@ -405,8 +477,8 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
     ForwardLimit = 1,
     // Trust Docker bridge network and typical Coolify/Traefik subnets
-    KnownNetworks  = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12) },
-    KnownProxies   = { },
+    KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12) },
+    KnownProxies = { },
 });
 
 // ── Health probes — mapped before middleware so they always respond ────────────
@@ -414,23 +486,23 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 // /health/ready — readiness: are Postgres + Redis reachable? (Coolify startup probe)
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
-    Predicate      = _ => false,     // no checks — pure liveness ping
+    Predicate = _ => false,     // no checks — pure liveness ping
     ResponseWriter = HealthResponseWriter.WriteJson,
 }).AllowAnonymous();
 
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
-    Predicate      = c => c.Tags.Contains("ready"),
+    Predicate = c => c.Tags.Contains("ready"),
     ResponseWriter = HealthResponseWriter.WriteJson,
 }).AllowAnonymous();
 
 // Legacy /health kept for backwards-compat with existing Coolify health check config
 app.MapGet("/health", () => Results.Ok(new
 {
-    status    = "healthy",
+    status = "healthy",
     timestamp = DateTime.UtcNow,
-    version   = "1.0.0-phase4",
-    build     = "20260328-rbac-fix",
+    version = "1.0.0-phase4",
+    build = "20260328-rbac-fix",
 }));
 
 app.UseRouting();
@@ -459,18 +531,22 @@ app.Use(async (ctx, next) =>
         logger?.LogError(ex, "Unhandled exception on {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
         if (!ctx.Response.HasStarted)
         {
-            ctx.Response.StatusCode = 500;
-            await ctx.Response.WriteAsJsonAsync(new
-            {
-                error = "Something went wrong. Please try again or contact support if the issue persists.",
-            });
+            var env = ctx.RequestServices.GetRequiredService<IHostEnvironment>();
+            var payload = ApiErrorResponses.FromException(ex, ctx.Request.Path, !env.IsProduction());
+            ctx.Response.StatusCode = payload.StatusCode;
+            await ctx.Response.WriteAsJsonAsync(ApiErrorResponses.ToJson(payload, !env.IsProduction()));
         }
     }
 });
 app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
+app.UseSessionRevocation(); // Block revoked sessions via server-side blacklist
+app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
+app.UseGhostMode();        // Validate and audit short-lived impersonation tokens
+app.UseAdminMutationAudit(); // Pre-audit destructive admin mutations before endpoint execution
 app.UseRateLimit();        // Redis sliding-window rate limiter
 app.UseAuthorization();
+app.UseAuthorizationEnforcement(); // Route-level auth (AUDIT MODE until config flip)
 
 // ── JWT validation probe───────────────────────────────────────────────────────
 app.MapGet("/api/me", (HttpContext ctx) =>
@@ -480,14 +556,25 @@ app.MapGet("/api/me", (HttpContext ctx) =>
 }).RequireAuthorization("Authenticated");
 
 // ── Phase 1: Edge Function replacements ───────────────────────────────────────
+app.MapHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
+{
+    Authorization = [new Esportra.Api.ScheduledJobs.HangfireDashboardAuthFilter()]
+});
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapFeatureFlagEndpoints();
+app.MapBroadcastEndpoints();
+app.MapGhostModeEndpoints();
+app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();
 app.MapSteamAccountEndpoints();
 app.MapGameEndpoints();
+app.MapGameCatalogAdminEndpoints();
+app.MapGameMapAdminEndpoints();
 app.MapMetricEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
+app.MapPublicToolEndpoints();
 
 // ── Phase 4: Domain API endpoints ─────────────────────────────────────────────
 app.MapProfileEndpoints();
@@ -495,6 +582,7 @@ app.MapProfileResolveEndpoint();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
+app.MapTournamentInvitationEndpoints();
 app.MapVenueEndpoints();
 app.MapVenueStaffEndpoints();
 app.MapSessionRefundEndpoints();
@@ -539,6 +627,8 @@ app.MapHub<ConversationHub>("/hubs/conversations").RequireCors("EsportraPolicy")
 app.MapHub<NotificationHub>("/hubs/notifications").RequireCors("EsportraPolicy");
 app.MapHub<LiveHub>("/hubs/live").RequireCors("EsportraPolicy");
 app.MapHub<VenueSyncHub>("/hubs/venue-sync").RequireCors("EsportraPolicy");
+app.MapHub<BRHub>("/hubs/br").RequireCors("EsportraPolicy");
+app.MapHub<AdminHub>("/hubs/admin").RequireCors("EsportraPolicy");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();
@@ -574,3 +664,4 @@ catch (Exception ex)
     Console.Out.Flush();
     throw;
 }
+

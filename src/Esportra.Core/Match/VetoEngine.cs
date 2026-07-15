@@ -16,20 +16,20 @@ public static class VetoEngine
 
         return veto.CurrentAction switch
         {
-            "ban"       => VetoState.Ban,
-            "pick"      => VetoState.Pick,
+            "ban" => VetoState.Ban,
+            "pick" => VetoState.Pick,
             "pick_side" => VetoState.PickSide,
-            _           => VetoState.Init,
+            _ => VetoState.Init,
         };
     }
 
     // ── Transition validation ─────────────────────────────────────────────────
 
     public static VetoTransitionResult ValidateTransition(
-        VetoState  state,
-        VetoEvent  ev,
+        VetoState state,
+        VetoEvent ev,
         TurnContext context,
-        string?    mapId = null,
+        string? mapId = null,
         MatchMapVeto? veto = null)
     {
         // RESET is organizer-only, always valid regardless of state
@@ -44,8 +44,8 @@ public static class VetoEngine
         return ev switch
         {
             VetoEvent.SetBo =>
-                state != VetoState.Init  ? new(false, "INVALID_STATE") :
-                !context.IsOrganizer     ? new(false, "FORBIDDEN") :
+                state != VetoState.Init ? new(false, "INVALID_STATE") :
+                !context.IsOrganizer ? new(false, "FORBIDDEN") :
                 new(true),
 
             VetoEvent.BanMap or VetoEvent.PickMap or VetoEvent.PickSide =>
@@ -66,8 +66,8 @@ public static class VetoEngine
             return new(false, "NOT_YOUR_TURN");
 
         // State must match event
-        if (ev == VetoEvent.BanMap  && state != VetoState.Ban)      return new(false, "INVALID_STATE");
-        if (ev == VetoEvent.PickMap && state != VetoState.Pick)     return new(false, "INVALID_STATE");
+        if (ev == VetoEvent.BanMap && state != VetoState.Ban) return new(false, "INVALID_STATE");
+        if (ev == VetoEvent.PickMap && state != VetoState.Pick) return new(false, "INVALID_STATE");
         if (ev == VetoEvent.PickSide && state != VetoState.PickSide) return new(false, "INVALID_STATE");
 
         // Map-level invariants
@@ -87,14 +87,19 @@ public static class VetoEngine
     // ── Next action resolution ────────────────────────────────────────────────
 
     /// <summary>
-    /// Given the current action number and bestOf, returns the next action.
+    /// Given the current action number, bestOf, game, and pool size, returns the next action.
     /// Returns null when the veto sequence is complete.
     /// </summary>
-    public static (string? Action, string? TeamSide)? NextAction(int bestOf, int currentActionNumber)
+    public static (string? Action, string? TeamSide)? NextAction(
+        int bestOf, int currentActionNumber, string game, int poolSize)
     {
-        var next = VetoSequences.GetStep(bestOf, currentActionNumber + 1);
+        var next = VetoSequences.GetStep(bestOf, currentActionNumber + 1, game, poolSize);
         return next is null ? null : (next.Action, next.Team);
     }
+
+    /// <summary>Backward-compatible default: Valorant pool of 7.</summary>
+    public static (string? Action, string? TeamSide)? NextAction(int bestOf, int currentActionNumber)
+        => NextAction(bestOf, currentActionNumber, "valorant", 7);
 
     /// <summary>Returns the team ID that should act next.</summary>
     public static string? ResolveCurrentTeamId(string teamSide, string? team1Id, string? team2Id)

@@ -1,0 +1,120 @@
+- generic [active] [ref=f13e6]:
+  - generic [ref=f13e7]:
+    - region "Notifications (F8)":
+      - list [ref=f13e164]:
+        - status [ref=f13e165]:
+          - generic [ref=f13e166]:
+            - generic [ref=f13e167]: Session revoked
+            - generic [ref=f13e168]: User has been forcefully logged out.
+          - button [ref=f13e169] [cursor=pointer]:
+            - img [ref=f13e170]
+    - main [ref=f13e10]:
+      - generic [ref=f13e11]:
+        - generic [ref=f13e12]:
+          - link "Admin super admin" [ref=f13e13] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - img [ref=f13e15]
+            - generic [ref=f13e17]:
+              - paragraph [ref=f13e18]: Admin
+              - paragraph [ref=f13e19]: super admin
+          - link "Home" [ref=f13e20] [cursor=pointer]:
+            - /url: /
+        - generic [ref=f13e21]:
+          - link "Command Centre" [ref=f13e22] [cursor=pointer]:
+            - /url: /admin/dashboard
+            - img [ref=f13e23]
+            - text: Command Centre
+          - link "All Users" [ref=f13e28] [cursor=pointer]:
+            - /url: /admin/users
+            - img [ref=f13e29]
+            - text: All Users
+          - link "Verifications" [ref=f13e34] [cursor=pointer]:
+            - /url: /admin/users/verifications
+            - img [ref=f13e35]
+            - text: Verifications
+          - link "Licenses" [ref=f13e38] [cursor=pointer]:
+            - /url: /admin/users/licenses
+            - img [ref=f13e39]
+            - text: Licenses
+          - link "Sessions" [ref=f13e43] [cursor=pointer]:
+            - /url: /admin/users/sessions
+            - img [ref=f13e44]
+            - text: Sessions
+          - link "Tournaments" [ref=f13e46] [cursor=pointer]:
+            - /url: /admin/content/tournaments
+            - img [ref=f13e47]
+            - text: Tournaments
+          - link "Teams" [ref=f13e53] [cursor=pointer]:
+            - /url: /admin/content/teams
+            - img [ref=f13e54]
+            - text: Teams
+          - link "Venues" [ref=f13e58] [cursor=pointer]:
+            - /url: /admin/content/venues
+            - img [ref=f13e59]
+            - text: Venues
+          - link "Games" [ref=f13e62] [cursor=pointer]:
+            - /url: /admin/content/games
+            - img [ref=f13e63]
+            - text: Games
+          - link "Moderation" [ref=f13e65] [cursor=pointer]:
+            - /url: /admin/content/moderation
+            - img [ref=f13e66]
+            - text: Moderation
+      - generic [ref=f13e70]:
+        - generic [ref=f13e72]:
+          - img [ref=f13e74]
+          - generic [ref=f13e76]:
+            - heading "Session Management" [level=1] [ref=f13e77]
+            - paragraph [ref=f13e78]: Monitor active sessions and audit authentication activity
+        - generic [ref=f13e79]:
+          - generic [ref=f13e80]:
+            - generic [ref=f13e85]: Online Now
+            - paragraph [ref=f13e86]: "1"
+          - generic [ref=f13e87]:
+            - generic [ref=f13e88]:
+              - img [ref=f13e89]
+              - generic [ref=f13e94]: Total Users
+            - paragraph [ref=f13e95]: "2"
+        - generic [ref=f13e96]:
+          - tablist [ref=f13e97]:
+            - tab "Active Sessions" [selected] [ref=f13e98] [cursor=pointer]:
+              - img [ref=f13e99]
+              - text: Active Sessions
+            - tab "Session Audit" [ref=f13e104] [cursor=pointer]:
+              - img [ref=f13e105]
+              - text: Session Audit
+          - tabpanel "Active Sessions" [ref=f13e107]:
+            - generic [ref=f13e108]:
+              - generic [ref=f13e109]:
+                - img [ref=f13e110]
+                - textbox "Search sessions" [ref=f13e113]:
+                  - /placeholder: Search by email or username…
+              - generic [ref=f13e114]:
+                - generic [ref=f13e115]:
+                  - generic [ref=f13e116]:
+                    - generic [ref=f13e118]: M
+                    - generic [ref=f13e119]:
+                      - generic [ref=f13e120]:
+                        - paragraph [ref=f13e121]: SystemOptiX
+                        - generic [ref=f13e122]: You
+                      - paragraph [ref=f13e123]: paradox1632000@gmail.com
+                  - generic [ref=f13e125]:
+                    - img [ref=f13e126]
+                    - text: super admin
+                  - generic [ref=f13e128]:
+                    - img [ref=f13e129]
+                    - generic [ref=f13e132]: Never
+                - generic [ref=f13e133]:
+                  - generic [ref=f13e136]:
+                    - paragraph [ref=f13e138]: player61
+                    - paragraph [ref=f13e139]: player6@gmail.com
+                  - generic [ref=f13e141]:
+                    - img [ref=f13e142]
+                    - text: ops admin
+                  - generic [ref=f13e144]:
+                    - img [ref=f13e145]
+                    - generic [ref=f13e148]: Never
+                  - button "Revoke" [ref=f13e149] [cursor=pointer]:
+                    - img
+                    - text: Revoke
+  - status [ref=f13e174]: Notification Session revokedUser has been forcefully logged out.

@@ -6,11 +6,12 @@ namespace Esportra.Contracts.Auth;
 /// </summary>
 public sealed record UserContext
 {
-    public string UserId       { get; init; } = string.Empty;
-    public string Email        { get; init; } = string.Empty;
-    public string[] Roles      { get; init; } = [];   // e.g. ["casual","organizer"]
+    public string UserId { get; init; } = string.Empty;
+    public string Email { get; init; } = string.Empty;
+    public string[] Roles { get; init; } = [];   // e.g. ["casual","organizer"]
     public string[] AdminRoles { get; init; } = [];   // e.g. ["ops_admin","moderator"]
     public string[] Permissions { get; init; } = [];  // e.g. ["users:ban","disputes:resolve"]
+    public bool IsSuperAdmin => AdminRoles.Contains(Esportra.Contracts.Auth.AdminRoles.SuperAdmin, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// UserId parsed as Guid — use this when passing to Dapper so Npgsql

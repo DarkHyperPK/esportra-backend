@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Esportra.Api.Helpers;
+using Esportra.Api.Services;
 using Dapper;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
@@ -14,12 +16,28 @@ public static class GameEndpoints
 {
     public static void MapGameEndpoints(this WebApplication app)
     {
+        app.MapGet("/api/games/catalog", async (HttpContext ctx, GameCatalogService catalog, CancellationToken ct) =>
+        {
+            var response = await catalog.GetCatalogAsync(ct);
+            ctx.Response.Headers.CacheControl = "public, max-age=600";
+            ctx.Response.Headers.ETag = $"\"{response.ContentHash}\"";
+            if (GameCatalogHttpHelper.MatchesETag(ctx.Request.Headers.IfNoneMatch.ToString(), response.ContentHash))
+                return Results.StatusCode(StatusCodes.Status304NotModified);
+            return Results.Ok(response);
+        });
+
+        app.MapGet("/api/games/catalog/{slugOrAlias}", async (string slugOrAlias, GameCatalogService catalog, CancellationToken ct) =>
+        {
+            var game = await catalog.GetGameAsync(slugOrAlias, ct);
+            return game is null ? Results.NotFound(new { error = "Game catalog entry not found." }) : Results.Ok(game);
+        });
+
         // ── GET /api/games/search?q={query} ───────────────────────────────────
         app.MapGet("/api/games/search", async (
-            string               q,
+            string q,
             IDbConnectionFactory db,
-            RawgApiClient        rawg,
-            CancellationToken    ct) =>
+            RawgApiClient rawg,
+            CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Please enter a search term." });
@@ -53,9 +71,9 @@ public static class GameEndpoints
             var results = doc.RootElement.TryGetProperty("results", out var r) ? r : default;
             if (results.ValueKind == JsonValueKind.Array && results.GetArrayLength() > 0)
             {
-                var first  = results[0];
-                var rawgId = first.TryGetProperty("id",               out var id)  ? id.GetInt32()    : (int?)null;
-                var bg     = first.TryGetProperty("background_image", out var bi)  ? bi.GetString()   : null;
+                var first = results[0];
+                var rawgId = first.TryGetProperty("id", out var id) ? id.GetInt32() : (int?)null;
+                var bg = first.TryGetProperty("background_image", out var bi) ? bi.GetString() : null;
 
                 if (rawgId.HasValue)
                 {
@@ -83,9 +101,10 @@ public static class GameEndpoints
         // ── GET /api/games/maps?game={game}&mode={mode} ──────────────────────
         // Used by StepFormatRules.tsx — mode filters Skirmish vs competitive pools
         app.MapGet("/api/games/maps", async (
-            string               game,
-            string?              mode,
-            IDbConnectionFactory db) =>
+            string game,
+            string? mode,
+            IDbConnectionFactory db,
+            IConfiguration config) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
@@ -109,7 +128,10 @@ public static class GameEndpoints
 
             sql += " ORDER BY map_name ASC";
 
-            var maps = await conn.QueryAsync<dynamic>(sql, new { game });
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var maps = GameMapImageHelper.EnrichRows(
+                await conn.QueryAsync<GameMapRow>(sql, new { game }),
+                supabaseUrl);
 
             return Results.Ok(maps);
         }); // Public
@@ -117,10 +139,11 @@ public static class GameEndpoints
         // ── GET /api/game-maps?game={game}&is_active=true ────────────────────
         // Used by MapPoolManager.tsx
         app.MapGet("/api/game-maps", async (
-            string               game,
-            bool?                is_active,
-            string?              map_name,
-            IDbConnectionFactory db) =>
+            string game,
+            bool? is_active,
+            string? map_name,
+            IDbConnectionFactory db,
+            IConfiguration config) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
@@ -131,14 +154,17 @@ public static class GameEndpoints
             if (!string.IsNullOrWhiteSpace(map_name)) sql += " AND map_name ILIKE @map_name";
             sql += " ORDER BY map_name ASC";
 
-            var maps = await conn.QueryAsync<dynamic>(sql, new { game, is_active, map_name });
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/');
+            var maps = GameMapImageHelper.EnrichRows(
+                await conn.QueryAsync<GameMapRow>(sql, new { game, is_active, map_name }),
+                supabaseUrl);
             return Results.Ok(maps);
         }); // Public
 
         // ── GET /api/games/{id}/screenshots ───────────────────────────────────
         app.MapGet("/api/games/{id:int}/screenshots", async (
-            int              id,
-            RawgApiClient    rawg,
+            int id,
+            RawgApiClient rawg,
             CancellationToken ct) =>
         {
             var json = await rawg.GetScreenshotsAsync(id, ct);
@@ -148,10 +174,10 @@ public static class GameEndpoints
         // ── GET /api/games/igdb-assets?game={game} ─────────────────────────
         // Returns IGDB artworks, screenshots, cover, and videos for a game (7-day DB cache)
         app.MapGet("/api/games/igdb-assets", async (
-            string               game,
+            string game,
             IDbConnectionFactory db,
-            IgdbApiClient        igdb,
-            CancellationToken    ct) =>
+            IgdbApiClient igdb,
+            CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
@@ -210,9 +236,9 @@ public static class GameEndpoints
         // browser request per card on landing/list surfaces.
         app.MapPost("/api/games/igdb-assets/batch", async (
             IgdbAssetsBatchRequest req,
-            IDbConnectionFactory   db,
-            IgdbApiClient          igdb,
-            CancellationToken      ct) =>
+            IDbConnectionFactory db,
+            IgdbApiClient igdb,
+            CancellationToken ct) =>
         {
             var games = (req.Games ?? [])
                 .Select(g => g.Trim())
@@ -296,10 +322,10 @@ public static class GameEndpoints
         // ── GET /api/games/igdb-banner?game={game} ──────────────────────────
         // Legacy: returns first IGDB banner for backward compat
         app.MapGet("/api/games/igdb-banner", async (
-            string               game,
+            string game,
             IDbConnectionFactory db,
-            IgdbApiClient        igdb,
-            CancellationToken    ct) =>
+            IgdbApiClient igdb,
+            CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(game))
                 return Results.BadRequest(new { error = "Please select a game." });
