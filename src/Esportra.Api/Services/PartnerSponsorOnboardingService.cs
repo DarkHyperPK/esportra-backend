@@ -78,7 +78,7 @@ public sealed class PartnerSponsorOnboardingService(
             if (requiresPasswordSetup)
             {
                 var link = await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
-                invitationUrl = link.ActionLink;
+                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}";
             }
 
             await emailService.SendAsync(normalizedEmail, EmailType.PartnerInvite, new
