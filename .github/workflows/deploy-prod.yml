@@ -14,62 +14,48 @@ permissions:
 
 jobs:
   build:
-    name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
 
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x"
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build (Release)
-        run: dotnet build --no-restore -c Release
-
-  lint:
-    name: Format & Lint
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x"
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Check formatting
-        run: dotnet format --verify-no-changes --verbosity diagnostic
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }
+      - run: dotnet restore
+      - run: dotnet format --verify-no-changes --verbosity diagnostic
 
   test:
-    name: Test
+    needs: build
     runs-on: ubuntu-latest
-    needs: [build]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }
+      - run: dotnet restore
+      - run: dotnet test --no-restore -c Release
 
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x"
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Run tests
-        run: dotnet test --no-restore -c Release
-
-  # TEMPORARILY DISABLED: Migration replay needs CI fixtures updated
-  migration-replay-disabled:
-    name: Migration Replay (Disabled)
+  migration-lint:
     runs-on: ubuntu-latest
-    if: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.x" }
+      - run: python .github/scripts/lint-migrations.py
+      - run: python .github/scripts/lint-prod-table-references.py
+      - run: python .github/scripts/audit-replay-legacy-deps.py --check
+      - run: python .github/scripts/generate-post-baseline-replay-schema.py --check
+      - run: python .github/scripts/generate-replay-journal-seed.py --check
+
+  migration-replay:
+    needs: [build, migration-lint]
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16
@@ -77,8 +63,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: migrationtest
           POSTGRES_DB: esportra_test
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -86,12 +71,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "9.0.x"
-
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "9.0.x" }
       - name: Apply replay fixture
         run: bash .github/scripts/apply-replay-bootstrap.sh
         env:
@@ -100,12 +81,10 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: migrationtest
           PGDATABASE: esportra_test
-
       - name: Run migrations
         run: dotnet run --project src/Esportra.Migrator -c Release
         env:
           ConnectionStrings__Postgres: "Host=localhost;Port=5432;Database=esportra_test;Username=postgres;Password=migrationtest"
-
       - name: Assert migrations complete
         run: bash .github/scripts/assert-migration-replay-complete.sh
         env:
@@ -115,58 +94,34 @@ jobs:
           PGPASSWORD: migrationtest
           PGDATABASE: esportra_test
 
-  gate:
-    name: All checks passed
-    needs: [build, lint, test]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Gate passed
-        run: echo "All pre-deploy checks passed — build, lint, tests, migrations."
-
   promote:
-    name: Promote to deploy/main
-    needs: gate
+    needs: [build, format, test, migration-lint, migration-replay]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Fast-forward deploy/main
-        uses: ./.github/actions/promote-deploy-branch
-        with:
-          deploy_branch: deploy/main
+        with: { fetch-depth: 0 }
+      - uses: ./.github/actions/promote-deploy-branch
+        with: { deploy_branch: deploy/main }
 
   smoke:
-    name: Post-deploy smoke (production API)
     needs: promote
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Wait for Coolify deploy
-        run: sleep 120
-
+      - run: sleep 120
       - name: API smoke tests
         env:
           API_URL: ${{ secrets.E2E_PROD_API_URL }}
         run: |
-          if [ -z "$API_URL" ]; then
-            echo "::warning title=Smoke skipped::E2E_PROD_API_URL not set — post-deploy smoke skipped."
-            exit 0
-          fi
+          if [ -z "$API_URL" ]; then exit 0; fi
           bash .github/scripts/smoke-test.sh "$API_URL"
 
   notify-failure:
-    name: Report failure
-    needs: [build, lint, test, gate, promote, smoke]
+    needs: [build, format, test, migration-lint, migration-replay, promote, smoke]
     if: failure() && !cancelled()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
+    permissions: { contents: read, issues: write }
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/notify-failure
-        with:
-          webhook_url: ${{ secrets.CI_NOTIFY_WEBHOOK_URL }}
+        with: { webhook_url: ${{ secrets.CI_NOTIFY_WEBHOOK_URL }} }
