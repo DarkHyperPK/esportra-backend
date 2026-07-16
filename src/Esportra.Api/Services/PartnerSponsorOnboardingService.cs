@@ -13,17 +13,19 @@ public sealed record PartnerInvitationDelivery(
     bool WasDelivered);
 public sealed record PartnerInvitationClaim(Guid SponsorId, string Role);
 public sealed record PartnerInvitationPreview(bool AccountExists, bool RequiresPasswordSetup);
-public sealed record PartnerInvitationSummary(
-    Guid Id,
-    Guid SponsorId,
-    string SponsorName,
-    string Email,
-    string Role,
-    string Status,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset ExpiresAt,
-    DateTimeOffset? DeliveredAt,
-    DateTimeOffset? AcceptedAt);
+public sealed record PartnerInvitationSummary
+{
+    public Guid Id { get; init; }
+    public Guid SponsorId { get; init; }
+    public string SponsorName { get; init; } = string.Empty;
+    public string Email { get; init; } = string.Empty;
+    public string Role { get; init; } = string.Empty;
+    public string Status { get; init; } = string.Empty;
+    public DateTime CreatedAt { get; init; }
+    public DateTime ExpiresAt { get; init; }
+    public DateTime? DeliveredAt { get; init; }
+    public DateTime? AcceptedAt { get; init; }
+}
 
 public sealed class PartnerSponsorOnboardingService(
     IDbConnectionFactory connectionFactory,
@@ -160,19 +162,19 @@ public sealed class PartnerSponsorOnboardingService(
         using var connection = connectionFactory.CreateConnection();
         var invitations = await connection.QueryAsync<PartnerInvitationSummary>(new CommandDefinition(
             """
-            SELECT invitation.id AS Id,
-                   invitation.sponsor_id AS SponsorId,
-                   sponsor.name AS SponsorName,
-                   invitation.email AS Email,
-                   invitation.role AS Role,
+                 SELECT invitation.id,
+                     invitation.sponsor_id,
+                     sponsor.name AS sponsor_name,
+                     invitation.email,
+                     invitation.role,
                    CASE
                        WHEN invitation.status = 'pending' AND invitation.expires_at <= NOW() THEN 'expired'
                        ELSE invitation.status
-                   END AS Status,
-                   invitation.created_at AS CreatedAt,
-                   invitation.expires_at AS ExpiresAt,
-                   invitation.delivered_at AS DeliveredAt,
-                   invitation.accepted_at AS AcceptedAt
+                     END AS status,
+                     invitation.created_at,
+                     invitation.expires_at,
+                     invitation.delivered_at,
+                     invitation.accepted_at
             FROM public.partner_sponsor_invitations AS invitation
             JOIN public.sponsors AS sponsor ON sponsor.id = invitation.sponsor_id
             WHERE (@sponsorId IS NULL OR invitation.sponsor_id = @sponsorId)
