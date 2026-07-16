@@ -129,15 +129,27 @@ public sealed class PartnerSponsorOnboardingService(
         if (!IsValidToken(token)) return null;
 
         using var connection = connectionFactory.CreateConnection();
-        return await connection.QuerySingleOrDefaultAsync<PartnerInvitationPreview>(
+        var invitation = await connection.QuerySingleOrDefaultAsync<(string Email, bool RequiresPasswordSetup)>(
             """
-            SELECT requires_password_setup AS RequiresPasswordSetup
+            SELECT email AS Email, requires_password_setup AS RequiresPasswordSetup
             FROM public.partner_sponsor_invitations
             WHERE token_hash = @tokenHash
               AND status = 'pending'
               AND expires_at > NOW()
             """,
             new { tokenHash = HashToken(token) });
+        if (invitation == default) return null;
+
+        // Dynamically verify — user may have been created via OAuth without a password
+        var requiresPasswordSetup = invitation.RequiresPasswordSetup;
+        if (!requiresPasswordSetup)
+        {
+            var user = await supabase.GetUserByEmailAsync(invitation.Email, cancellationToken);
+            if (user is not null && !user.HasPasswordIdentity)
+                requiresPasswordSetup = true;
+        }
+
+        return new PartnerInvitationPreview(requiresPasswordSetup);
     }
 
     public async Task<PartnerInvitationClaim?> ClaimAsync(
