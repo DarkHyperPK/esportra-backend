@@ -12,7 +12,7 @@ public sealed record PartnerInvitationDelivery(
     bool RequiresPasswordSetup,
     bool WasDelivered);
 public sealed record PartnerInvitationClaim(Guid SponsorId, string Role);
-public sealed record PartnerInvitationPreview(bool RequiresPasswordSetup);
+public sealed record PartnerInvitationPreview(bool AccountExists, bool RequiresPasswordSetup);
 public sealed record PartnerInvitationSummary(
     Guid Id,
     Guid SponsorId,
@@ -43,7 +43,7 @@ public sealed class PartnerSponsorOnboardingService(
         var normalizedEmail = PartnerInvitationPolicy.NormalizeEmail(email);
         var existingUser = await supabase.GetUserByEmailAsync(normalizedEmail, cancellationToken);
         var accountExists = existingUser is not null;
-        var requiresPasswordSetup = !accountExists || !existingUser!.HasPasswordIdentity;
+        var requiresPasswordSetup = !accountExists;
 
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
@@ -88,14 +88,10 @@ public sealed class PartnerSponsorOnboardingService(
         var wasDelivered = true;
         try
         {
-            if (requiresPasswordSetup)
+            if (!accountExists)
             {
-                var link = existingUser is null
-                    ? await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken)
-                    : await supabase.GenerateMagicLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
-                var otpType = existingUser is null ? "invite" : "magiclink";
-                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type={otpType}";
-
+                var link = await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
+                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type=invite";
             }
 
             await emailService.SendAsync(normalizedEmail, EmailType.PartnerInvite, new
@@ -133,16 +129,8 @@ public sealed class PartnerSponsorOnboardingService(
             new { tokenHash = HashToken(token) });
         if (invitation == default) return null;
 
-        // Dynamically verify — user may have been created via OAuth without a password
-        var requiresPasswordSetup = invitation.RequiresPasswordSetup;
-        if (!requiresPasswordSetup)
-        {
-            var user = await supabase.GetUserByEmailAsync(invitation.Email, cancellationToken);
-            if (user is not null && !user.HasPasswordIdentity)
-                requiresPasswordSetup = true;
-        }
-
-        return new PartnerInvitationPreview(requiresPasswordSetup);
+        var accountExists = await supabase.GetUserByEmailAsync(invitation.Email, cancellationToken) is not null;
+        return new PartnerInvitationPreview(accountExists, !accountExists);
     }
 
     public async Task<IReadOnlyList<PartnerInvitationSummary>> ListAsync(

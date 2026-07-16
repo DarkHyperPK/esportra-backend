@@ -18,7 +18,7 @@ public sealed class PartnerInvitationEmailTemplateTests
     }
 
     [Fact]
-    public void PartnerInvite_UsesPasswordSetupCopy_WhenExistingAccountHasNoPassword()
+    public void PartnerInvite_UsesExistingSignInCopy_WhenExistingAccountHasNoPassword()
     {
         var (_, html) = EmailTemplates.PartnerInvite(
             "Sponsor",
@@ -27,7 +27,8 @@ public sealed class PartnerInvitationEmailTemplateTests
             requiresPasswordSetup: true);
 
         Assert.Contains("account already exists", html);
-        Assert.Contains("securely set a password", html);
+        Assert.Contains("sign-in method linked to that account", html);
+        Assert.DoesNotContain("set a password", html);
         Assert.DoesNotContain("create your Esportra account", html);
     }
 
