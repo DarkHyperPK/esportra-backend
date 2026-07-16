@@ -43,7 +43,8 @@ public sealed class PartnerSponsorOnboardingService(
         var normalizedEmail = PartnerInvitationPolicy.NormalizeEmail(email);
         var existingUser = await supabase.GetUserByEmailAsync(normalizedEmail, cancellationToken);
         var accountExists = existingUser is not null;
-        var requiresPasswordSetup = !accountExists;
+        var requiresPasswordSetup = existingUser is null
+            || !await HasPasswordAsync(existingUser.Id, cancellationToken);
 
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
@@ -88,10 +89,15 @@ public sealed class PartnerSponsorOnboardingService(
         var wasDelivered = true;
         try
         {
-            if (!accountExists)
+            if (requiresPasswordSetup)
             {
-                var link = await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
-                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type=invite";
+                var link = accountExists
+                    ? await supabase.GenerateMagicLinkAsync(normalizedEmail, invitationUrl, cancellationToken)
+                    : await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
+                if (string.IsNullOrWhiteSpace(link.TokenHash))
+                    throw new InvalidOperationException("Authentication bootstrap link was not generated.");
+                var authType = accountExists ? "magiclink" : "invite";
+                invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type={authType}";
             }
 
             await emailService.SendAsync(normalizedEmail, EmailType.PartnerInvite, new
@@ -101,13 +107,24 @@ public sealed class PartnerSponsorOnboardingService(
                 accountExists = accountExists ? "true" : "false",
                 requiresPasswordSetup = requiresPasswordSetup ? "true" : "false",
             }, cancellationToken);
-            await MarkDeliveredAsync(invitationId);
         }
         catch (Exception exception)
         {
             wasDelivered = false;
             logger.LogWarning(exception, "Partner invitation delivery failed for invitation {InvitationId}", invitationId);
             await MarkDeliveryFailureAsync(invitationId, CancellationToken.None);
+        }
+
+        if (wasDelivered)
+        {
+            try
+            {
+                await MarkDeliveredAsync(invitationId, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Partner invitation delivery metadata update failed for {InvitationId}", invitationId);
+            }
         }
 
         return new PartnerInvitationDelivery(invitationId, requiresPasswordSetup, wasDelivered);
@@ -129,8 +146,11 @@ public sealed class PartnerSponsorOnboardingService(
             new { tokenHash = HashToken(token) });
         if (invitation == default) return null;
 
-        var accountExists = await supabase.GetUserByEmailAsync(invitation.Email, cancellationToken) is not null;
-        return new PartnerInvitationPreview(accountExists, !accountExists);
+        var user = await supabase.GetUserByEmailAsync(invitation.Email, cancellationToken);
+        var accountExists = user is not null;
+        var requiresPasswordSetup = user is null
+            || !await HasPasswordAsync(user.Id, cancellationToken);
+        return new PartnerInvitationPreview(accountExists, requiresPasswordSetup);
     }
 
     public async Task<IReadOnlyList<PartnerInvitationSummary>> ListAsync(
@@ -303,10 +323,10 @@ public sealed class PartnerSponsorOnboardingService(
             new { invitationId });
     }
 
-    private async Task MarkDeliveredAsync(Guid invitationId)
+    private async Task MarkDeliveredAsync(Guid invitationId, CancellationToken cancellationToken)
     {
         using var connection = connectionFactory.CreateConnection();
-        await connection.ExecuteAsync(
+        await connection.ExecuteAsync(new CommandDefinition(
             """
             UPDATE public.partner_sponsor_invitations
             SET delivered_at = NOW(),
@@ -315,7 +335,8 @@ public sealed class PartnerSponsorOnboardingService(
                 updated_at = NOW()
             WHERE id = @invitationId
             """,
-            new { invitationId });
+            new { invitationId },
+            cancellationToken: cancellationToken));
     }
 
     private string BuildInvitationUrl(string token)
@@ -323,6 +344,17 @@ public sealed class PartnerSponsorOnboardingService(
         var partnerUrl = configuration["PartnerUrl"]?.TrimEnd('/')
             ?? throw new InvalidOperationException("PartnerUrl is required.");
         return $"{partnerUrl}/invite/accept?token={Uri.EscapeDataString(token)}";
+    }
+
+    private async Task<bool> HasPasswordAsync(string userId, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(userId, out var parsedUserId)) return false;
+
+        using var connection = connectionFactory.CreateConnection();
+        return await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT public.partner_auth_has_password(@userId)",
+            new { userId = parsedUserId },
+            cancellationToken: cancellationToken));
     }
 
     private static string CreateToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));

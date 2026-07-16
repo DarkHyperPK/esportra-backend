@@ -123,21 +123,7 @@ public sealed class SupabaseAdminClient(
                     var id = user.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                     if (id is null) return null;
 
-                    var hasPassword = false;
-                    if (user.TryGetProperty("identities", out var identities) && identities.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var identity in identities.EnumerateArray())
-                        {
-                            var provider = identity.TryGetProperty("provider", out var p) ? p.GetString() : null;
-                            if (provider == "email")
-                            {
-                                hasPassword = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    return new SupabaseUser(id, userEmail ?? "", hasPassword);
+                    return new SupabaseUser(id, userEmail ?? "");
                 }
             }
 
@@ -164,7 +150,7 @@ public sealed class SupabaseAdminClient(
         var root = doc.RootElement;
         var id = root.GetProperty("id").GetString()!;
         var mail = root.TryGetProperty("email", out var em) ? em.GetString() ?? email : email;
-        return new SupabaseUser(id, mail, true);
+        return new SupabaseUser(id, mail);
     }
 
     public async Task<SupabaseUserListResult> ListUsersAsync(int page = 1, int perPage = 50, CancellationToken ct = default)

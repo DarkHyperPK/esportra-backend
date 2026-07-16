@@ -38,7 +38,7 @@ public sealed class SmtpEmailService(
         message.Subject = subject;
         message.Body = new TextPart("html") { Text = html };
 
-        logger.LogInformation("[Email] Sending {Type} to {Email} via SMTP", type, toEmail);
+        logger.LogInformation("[Email] Sending {Type} via SMTP", type);
 
         using var client = new SmtpClient();
         try
@@ -53,11 +53,11 @@ public sealed class SmtpEmailService(
             await client.SendAsync(message, ct);
             await client.DisconnectAsync(true, ct);
 
-            logger.LogInformation("[Email] Sent {Type} to {Email} successfully", type, toEmail);
+            logger.LogInformation("[Email] Sent {Type} successfully", type);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Email] SMTP failed to send {Type} to {Email}", type, toEmail);
+            logger.LogError(ex, "[Email] SMTP failed to send {Type}", type);
             throw;
         }
     }

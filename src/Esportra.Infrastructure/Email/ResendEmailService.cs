@@ -34,7 +34,7 @@ public sealed class ResendEmailService(
             html = html,
         };
 
-        logger.LogInformation("[Email] Sending {Type} to {Email} (from: {From})", type, toEmail, _from);
+        logger.LogInformation("[Email] Sending {Type} via Resend", type);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(10));
@@ -54,17 +54,17 @@ public sealed class ResendEmailService(
             }
             else
             {
-                logger.LogInformation("[Email] Sent {Type} email to {Email} successfully", type, toEmail);
+                logger.LogInformation("[Email] Sent {Type} email successfully", type);
             }
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("[Email] Resend API timed out for {Type} to {Email}", type, toEmail);
+            logger.LogWarning("[Email] Resend API timed out for {Type}", type);
             throw;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Email] Failed to send {Type} to {Email}", type, toEmail);
+            logger.LogError(ex, "[Email] Failed to send {Type}", type);
             throw;
         }
     }

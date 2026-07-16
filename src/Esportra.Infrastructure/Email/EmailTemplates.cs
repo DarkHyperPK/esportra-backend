@@ -251,7 +251,7 @@ public static class EmailTemplates
           {P(!accountExists
             ? "Click below to create your Esportra account, set a password, and accept your sponsor invitation."
             : requiresPasswordSetup
-                ? "An Esportra account already exists for this email. Click below and continue using the sign-in method linked to that account."
+            ? "An Esportra account already exists for this email without a password. Click below to securely add a shared Esportra password and accept your sponsor invitation."
                 : "Click below, sign in to your existing Esportra account with this email, and accept your sponsor invitation.")}
           {P("This invitation remains available for 24 hours. After acceptance, reopening it with the same account resumes your onboarding.")}
           {Btn(invitationUrl, "Accept Invitation")}

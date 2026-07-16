@@ -43,7 +43,7 @@ public interface ISupabaseAdminClient
 }
 
 public sealed record GeneratedLink(string TokenHash, string ActionLink, string? UserId);
-public sealed record SupabaseUser(string Id, string Email, bool HasPasswordIdentity);
+public sealed record SupabaseUser(string Id, string Email);
 
 /// <summary>Full user record from the GoTrue admin list-users endpoint.</summary>
 public sealed record SupabaseAuthUser(
