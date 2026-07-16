@@ -13,6 +13,17 @@ public sealed record PartnerInvitationDelivery(
     bool WasDelivered);
 public sealed record PartnerInvitationClaim(Guid SponsorId, string Role);
 public sealed record PartnerInvitationPreview(bool RequiresPasswordSetup);
+public sealed record PartnerInvitationSummary(
+    Guid Id,
+    Guid SponsorId,
+    string SponsorName,
+    string Email,
+    string Role,
+    string Status,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset ExpiresAt,
+    DateTimeOffset? DeliveredAt,
+    DateTimeOffset? AcceptedAt);
 
 public sealed class PartnerSponsorOnboardingService(
     IDbConnectionFactory connectionFactory,
@@ -21,8 +32,6 @@ public sealed class PartnerSponsorOnboardingService(
     IConfiguration configuration,
     ILogger<PartnerSponsorOnboardingService> logger)
 {
-    private static readonly TimeSpan InvitationLifetime = TimeSpan.FromDays(7);
-
     public async Task<PartnerInvitationDelivery?> CreateInvitationAsync(
         Guid sponsorId,
         string email,
@@ -30,8 +39,8 @@ public sealed class PartnerSponsorOnboardingService(
         Guid invitedBy,
         CancellationToken cancellationToken)
     {
-        if (!IsValidEmail(email) || !IsSupportedRole(role)) return null;
-        var normalizedEmail = NormalizeEmail(email);
+        if (!PartnerInvitationPolicy.IsValidEmail(email) || !PartnerInvitationPolicy.IsSupportedRole(role)) return null;
+        var normalizedEmail = PartnerInvitationPolicy.NormalizeEmail(email);
         var existingUser = await supabase.GetUserByEmailAsync(normalizedEmail, cancellationToken);
         var requiresPasswordSetup = existingUser is null || !existingUser.HasPasswordIdentity;
 
@@ -45,10 +54,12 @@ public sealed class PartnerSponsorOnboardingService(
         await connection.ExecuteAsync(
             """
             UPDATE public.partner_sponsor_invitations
-            SET status = 'revoked', revoked_at = NOW()
-            WHERE LOWER(email) = @normalizedEmail AND status = 'pending'
+                        SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
+                        WHERE sponsor_id = @sponsorId
+                            AND LOWER(email) = @normalizedEmail
+                            AND status = 'pending'
             """,
-            new { normalizedEmail }, transaction);
+                        new { sponsorId, normalizedEmail }, transaction);
 
         var token = CreateToken();
         var invitationId = await connection.QuerySingleAsync<Guid>(
@@ -67,14 +78,13 @@ public sealed class PartnerSponsorOnboardingService(
                 requiresPasswordSetup,
                 tokenHash = HashToken(token),
                 invitedBy,
-                expiresAt = DateTimeOffset.UtcNow.Add(InvitationLifetime),
+                expiresAt = DateTimeOffset.UtcNow.Add(PartnerInvitationPolicy.Lifetime),
             }, transaction);
 
         transaction.Commit();
 
         var invitationUrl = BuildInvitationUrl(token);
         var wasDelivered = true;
-        Guid? userId = existingUser is not null ? Guid.Parse(existingUser.Id) : null;
         try
         {
             if (requiresPasswordSetup)
@@ -85,8 +95,6 @@ public sealed class PartnerSponsorOnboardingService(
                 var otpType = existingUser is null ? "invite" : "magiclink";
                 invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type={otpType}";
 
-                if (existingUser is null && link.UserId is not null)
-                    userId = Guid.Parse(link.UserId);
             }
 
             await emailService.SendAsync(normalizedEmail, EmailType.PartnerInvite, new
@@ -95,6 +103,7 @@ public sealed class PartnerSponsorOnboardingService(
                 invitationUrl,
                 isNewUser = requiresPasswordSetup ? "true" : "false",
             }, cancellationToken);
+            await MarkDeliveredAsync(invitationId);
         }
         catch (Exception exception)
         {
@@ -103,30 +112,12 @@ public sealed class PartnerSponsorOnboardingService(
             await MarkDeliveryFailureAsync(invitationId, CancellationToken.None);
         }
 
-        // Create sponsor_accounts row now that we have a user_id
-        if (userId is not null)
-        {
-            using var conn2 = connectionFactory.CreateConnection();
-            var hasMembership = await conn2.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM public.sponsor_accounts WHERE user_id = @userId)",
-                new { userId = userId.Value });
-            if (!hasMembership)
-            {
-                await conn2.ExecuteAsync(
-                    """
-                    INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-                    VALUES (@userId, @sponsorId, @role, '{"completed":false,"current_step":0,"steps":{}}'::jsonb)
-                    """,
-                    new { userId = userId.Value, sponsorId, role });
-            }
-        }
-
         return new PartnerInvitationDelivery(invitationId, requiresPasswordSetup, wasDelivered);
     }
 
     public async Task<PartnerInvitationPreview?> PreviewAsync(string token, CancellationToken cancellationToken)
     {
-        if (!IsValidToken(token)) return null;
+        if (!PartnerInvitationPolicy.IsValidToken(token)) return null;
 
         using var connection = connectionFactory.CreateConnection();
         var invitation = await connection.QuerySingleOrDefaultAsync<(string Email, bool RequiresPasswordSetup)>(
@@ -134,7 +125,7 @@ public sealed class PartnerSponsorOnboardingService(
             SELECT email AS Email, requires_password_setup AS RequiresPasswordSetup
             FROM public.partner_sponsor_invitations
             WHERE token_hash = @tokenHash
-              AND status = 'pending'
+                            AND status IN ('pending', 'accepted')
               AND expires_at > NOW()
             """,
             new { tokenHash = HashToken(token) });
@@ -152,15 +143,86 @@ public sealed class PartnerSponsorOnboardingService(
         return new PartnerInvitationPreview(requiresPasswordSetup);
     }
 
+    public async Task<IReadOnlyList<PartnerInvitationSummary>> ListAsync(
+        Guid? sponsorId,
+        CancellationToken cancellationToken)
+    {
+        using var connection = connectionFactory.CreateConnection();
+        var invitations = await connection.QueryAsync<PartnerInvitationSummary>(new CommandDefinition(
+            """
+            SELECT invitation.id AS Id,
+                   invitation.sponsor_id AS SponsorId,
+                   sponsor.name AS SponsorName,
+                   invitation.email AS Email,
+                   invitation.role AS Role,
+                   CASE
+                       WHEN invitation.status = 'pending' AND invitation.expires_at <= NOW() THEN 'expired'
+                       ELSE invitation.status
+                   END AS Status,
+                   invitation.created_at AS CreatedAt,
+                   invitation.expires_at AS ExpiresAt,
+                   invitation.delivered_at AS DeliveredAt,
+                   invitation.accepted_at AS AcceptedAt
+            FROM public.partner_sponsor_invitations AS invitation
+            JOIN public.sponsors AS sponsor ON sponsor.id = invitation.sponsor_id
+            WHERE (@sponsorId IS NULL OR invitation.sponsor_id = @sponsorId)
+            ORDER BY invitation.created_at DESC
+            LIMIT 200
+            """,
+            new { sponsorId },
+            cancellationToken: cancellationToken));
+        return invitations.AsList();
+    }
+
+    public async Task<bool> RevokeAsync(Guid invitationId, CancellationToken cancellationToken)
+    {
+        using var connection = connectionFactory.CreateConnection();
+        var affectedRows = await connection.ExecuteAsync(new CommandDefinition(
+            """
+            UPDATE public.partner_sponsor_invitations
+            SET status = 'revoked', revoked_at = NOW(), updated_at = NOW()
+            WHERE id = @invitationId AND status IN ('pending', 'delivery_failed')
+            """,
+            new { invitationId },
+            cancellationToken: cancellationToken));
+        return affectedRows == 1;
+    }
+
+    public async Task<PartnerInvitationDelivery?> ResendAsync(
+        Guid invitationId,
+        Guid invitedBy,
+        CancellationToken cancellationToken)
+    {
+        using var connection = connectionFactory.CreateConnection();
+        var invitation = await connection.QuerySingleOrDefaultAsync<(Guid SponsorId, string Email, string Role)>(
+            new CommandDefinition(
+                """
+                SELECT sponsor_id AS SponsorId, email AS Email, role AS Role
+                FROM public.partner_sponsor_invitations
+                WHERE id = @invitationId AND status IN ('pending', 'delivery_failed', 'expired', 'revoked')
+                """,
+                new { invitationId },
+                cancellationToken: cancellationToken));
+        if (invitation == default) return null;
+
+        await RevokeAsync(invitationId, cancellationToken);
+        return await CreateInvitationAsync(
+            invitation.SponsorId,
+            invitation.Email,
+            invitation.Role,
+            invitedBy,
+            cancellationToken);
+    }
+
     public async Task<PartnerInvitationClaim?> ClaimAsync(
         string token,
         Guid userId,
         string email,
         CancellationToken cancellationToken)
     {
-        if (!IsValidToken(token)) return null;
+        if (!PartnerInvitationPolicy.IsValidToken(token)) return null;
         var tokenHash = HashToken(token);
-        var normalizedEmail = NormalizeEmail(email);
+        var normalizedEmail = PartnerInvitationPolicy.NormalizeEmail(email);
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
         await connection.ExecuteAsync(
@@ -169,10 +231,15 @@ public sealed class PartnerSponsorOnboardingService(
 
         var invitation = await connection.QuerySingleOrDefaultAsync<InvitationRow>(
             """
-            SELECT id AS Id, sponsor_id AS SponsorId, role AS Role, email AS Email
+            SELECT id AS Id,
+                   sponsor_id AS SponsorId,
+                   role AS Role,
+                   email AS Email,
+                   status AS Status,
+                   accepted_by_user_id AS AcceptedByUserId
             FROM public.partner_sponsor_invitations
             WHERE token_hash = @tokenHash
-              AND status = 'pending'
+              AND status IN ('pending', 'accepted')
               AND expires_at > NOW()
             FOR UPDATE
             """,
@@ -180,27 +247,52 @@ public sealed class PartnerSponsorOnboardingService(
         if (invitation is null || !string.Equals(invitation.Email, normalizedEmail, StringComparison.Ordinal))
             return null;
 
-        // sponsor_accounts row is created at invitation time, but handle edge case
-        var hasMembership = await connection.ExecuteScalarAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM public.sponsor_accounts WHERE user_id = @userId)",
+        if (invitation.Status == "accepted")
+        {
+            if (invitation.AcceptedByUserId != userId) return null;
+            transaction.Commit();
+            return new PartnerInvitationClaim(invitation.SponsorId, invitation.Role);
+        }
+
+        var existingSponsorId = await connection.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT sponsor_id
+            FROM public.sponsor_accounts
+            WHERE user_id = @userId AND status = 'active'
+            """,
             new { userId }, transaction);
-        if (!hasMembership)
+        if (existingSponsorId is not null && existingSponsorId != invitation.SponsorId)
+            return null;
+
+        if (existingSponsorId is null)
         {
             await connection.ExecuteAsync(
                 """
-                INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-                VALUES (@userId, @sponsorId, @role, '{"completed":false,"current_step":0,"steps":{}}'::jsonb)
+                INSERT INTO public.sponsor_accounts
+                    (user_id, sponsor_id, role, status, invitation_id, accepted_at, onboarding_meta)
+                VALUES
+                    (@userId, @sponsorId, @role, 'active', @invitationId, NOW(),
+                     '{"completed":false,"current_step":0,"steps":{}}'::jsonb)
                 """,
-                new { userId, invitation.SponsorId, invitation.Role }, transaction);
+                new
+                {
+                    userId,
+                    sponsorId = invitation.SponsorId,
+                    role = invitation.Role,
+                    invitationId = invitation.Id,
+                }, transaction);
         }
 
         await connection.ExecuteAsync(
             """
             UPDATE public.partner_sponsor_invitations
-            SET status = 'accepted', accepted_at = NOW()
+            SET status = 'accepted',
+                accepted_at = NOW(),
+                accepted_by_user_id = @userId,
+                updated_at = NOW()
             WHERE id = @invitationId
             """,
-            new { invitationId = invitation.Id }, transaction);
+            new { invitationId = invitation.Id, userId }, transaction);
         transaction.Commit();
 
         return new PartnerInvitationClaim(invitation.SponsorId, invitation.Role);
@@ -210,7 +302,29 @@ public sealed class PartnerSponsorOnboardingService(
     {
         using var connection = connectionFactory.CreateConnection();
         await connection.ExecuteAsync(
-            "UPDATE public.partner_sponsor_invitations SET status = 'delivery_failed' WHERE id = @invitationId",
+            """
+            UPDATE public.partner_sponsor_invitations
+            SET status = 'delivery_failed',
+                delivery_attempts = delivery_attempts + 1,
+                delivery_error_code = 'provider_error',
+                updated_at = NOW()
+            WHERE id = @invitationId
+            """,
+            new { invitationId });
+    }
+
+    private async Task MarkDeliveredAsync(Guid invitationId)
+    {
+        using var connection = connectionFactory.CreateConnection();
+        await connection.ExecuteAsync(
+            """
+            UPDATE public.partner_sponsor_invitations
+            SET delivered_at = NOW(),
+                delivery_attempts = delivery_attempts + 1,
+                delivery_error_code = NULL,
+                updated_at = NOW()
+            WHERE id = @invitationId
+            """,
             new { invitationId });
     }
 
@@ -221,20 +335,15 @@ public sealed class PartnerSponsorOnboardingService(
         return $"{partnerUrl}/invite/accept?token={Uri.EscapeDataString(token)}";
     }
 
-    private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
-
-    private static bool IsValidEmail(string email) =>
-        email.Length is > 0 and <= 254
-        && System.Net.Mail.MailAddress.TryCreate(email.Trim(), out _);
-
-    private static bool IsSupportedRole(string role) => role == "owner";
-
-    private static bool IsValidToken(string token) =>
-        token.Length == 64 && token.All(character => char.IsAsciiHexDigit(character));
-
     private static string CreateToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
     private static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 
-    private sealed record InvitationRow(Guid Id, Guid SponsorId, string Role, string Email);
+    private sealed record InvitationRow(
+        Guid Id,
+        Guid SponsorId,
+        string Role,
+        string Email,
+        string Status,
+        Guid? AcceptedByUserId);
 }

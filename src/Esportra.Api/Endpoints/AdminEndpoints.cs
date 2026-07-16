@@ -25,6 +25,14 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class AdminEndpoints
 {
+    private static string NormalizeSponsorTier(string? tier) => tier?.Trim().ToLowerInvariant() switch
+    {
+        "radiant" => "radiant",
+        "ascendant" => "ascendant",
+        "diamond" => "diamond",
+        _ => "diamond",
+    };
+
     private static string EscapeLike(string? input)
     {
         if (string.IsNullOrEmpty(input)) return "%";
@@ -105,6 +113,50 @@ public static class AdminEndpoints
                 : !invitation.WasDelivered
                     ? Results.Json(new { error = "Invitation delivery failed. Please retry." }, statusCode: 502)
                 : Results.Ok(new { invitation.InvitationId, invitation.RequiresPasswordSetup });
+        }).RequireAuthorization(Permissions.SponsorsCreate);
+
+        app.MapGet("/api/admin/sponsor-invitations", async (
+            Guid? sponsorId,
+            PartnerSponsorOnboardingService invitations,
+            CancellationToken cancellationToken) =>
+        {
+            var results = await invitations.ListAsync(sponsorId, cancellationToken);
+            return Results.Ok(results);
+        }).RequireAuthorization(Permissions.SponsorsView);
+
+        app.MapPost("/api/admin/sponsor-invitations/{invitationId}/resend", async (
+            Guid invitationId,
+            HttpContext context,
+            PartnerSponsorOnboardingService invitations,
+            CancellationToken cancellationToken) =>
+        {
+            var userContext = context.Items["UserContext"] as UserContext;
+            if (userContext is null) return Results.Unauthorized();
+
+            var result = await invitations.ResendAsync(
+                invitationId,
+                userContext.UserIdGuid,
+                cancellationToken);
+            return result is null
+                ? Results.Conflict(new { error = "Invitation cannot be resent." })
+                : !result.WasDelivered
+                    ? Results.Json(new
+                    {
+                        error = "Invitation was recreated, but delivery failed.",
+                        result.InvitationId,
+                    }, statusCode: 502)
+                    : Results.Ok(new { result.InvitationId, result.RequiresPasswordSetup });
+        }).RequireAuthorization(Permissions.SponsorsCreate);
+
+        app.MapPost("/api/admin/sponsor-invitations/{invitationId}/revoke", async (
+            Guid invitationId,
+            PartnerSponsorOnboardingService invitations,
+            CancellationToken cancellationToken) =>
+        {
+            var wasRevoked = await invitations.RevokeAsync(invitationId, cancellationToken);
+            return wasRevoked
+                ? Results.Ok(new { revoked = true })
+                : Results.Conflict(new { error = "Invitation cannot be revoked." });
         }).RequireAuthorization(Permissions.SponsorsCreate);
 
         app.MapPost("/api/admin/mfa/cleanup", async (
@@ -3625,6 +3677,7 @@ public static class AdminEndpoints
         // One-click approval: creates sponsor from application + links user account
         app.MapPost("/api/sponsors/applications/{id}/approve", async (
             Guid id,
+            [FromBody] PartnerApplicationApprovalRequest request,
             HttpContext ctx,
             IDbConnectionFactory db,
             PartnerSponsorOnboardingService invitations,
@@ -3632,44 +3685,65 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.SponsorsCreate)) return Results.Forbid();
+            if (!userCtx.Permissions.Contains(Permissions.SponsorsApproveApplication)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
-
-            var app2 = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            using var transaction = conn.BeginTransaction();
+            var application = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                UPDATE partner_applications
-                SET status = 'approved', updated_at = NOW()
-                WHERE id = @id AND status IN ('pending', 'reviewed')
-                RETURNING *
+                SELECT *
+                FROM partner_applications
+                WHERE id = @id
+                FOR UPDATE
                 """,
-                new { id });
-            if (app2 is null)
+                new { id }, transaction);
+            if (application is null) return Results.NotFound();
+
+            var dict = (IDictionary<string, object?>)application;
+            var status = dict["status"]?.ToString();
+            if (status == "approved" && dict["approved_sponsor_id"] is Guid approvedSponsorId)
+            {
+                transaction.Commit();
+                return Results.Ok(new { success = true, sponsorId = approvedSponsorId, alreadyApproved = true });
+            }
+            if (status is not ("pending" or "reviewed"))
                 return Results.Conflict(new { error = "Application is not available for approval." });
 
-            var dict = (IDictionary<string, object?>)app2;
             var companyName = dict["company_name"]?.ToString() ?? "Unknown";
             var companyWebsite = dict["company_website"]?.ToString() ?? "";
-            var contactEmail = dict["contact_email"]?.ToString();
-            var partnershipTier = dict["partnership_tier"]?.ToString() ?? "diamond";
+            var contactEmail = request.InvitationEmail?.Trim()
+                ?? dict["contact_email"]?.ToString()?.Trim();
+            var partnershipTier = NormalizeSponsorTier(request.Tier);
             var message = dict["message"]?.ToString();
 
-            if (string.IsNullOrWhiteSpace(contactEmail))
-            {
-                await conn.ExecuteAsync(
-                    "UPDATE partner_applications SET status = 'pending', updated_at = NOW() WHERE id = @id",
-                    new { id });
+            if (string.IsNullOrWhiteSpace(contactEmail)
+                || contactEmail.Length > 254
+                || !System.Net.Mail.MailAddress.TryCreate(contactEmail, out _))
                 return Results.BadRequest(new { error = "Application has no contact email." });
-            }
 
-            // 2. Create sponsor record
             var sponsorId = await conn.QuerySingleAsync<Guid>(
                 """
                 INSERT INTO sponsors (name, website_url, tier, description, is_active, placement, priority, accent_color)
-                VALUES (@name, @website, @tier, @description, true, ARRAY['banner'], 0, '#f43f5e')
+                VALUES (@name, @website, @tier, @description, false, ARRAY['banner'], 0, '#f43f5e')
                 RETURNING id
                 """,
-                new { name = companyName, website = companyWebsite, tier = partnershipTier, description = message });
+                new { name = companyName, website = companyWebsite, tier = partnershipTier, description = message },
+                transaction);
+
+            await conn.ExecuteAsync(
+                """
+                UPDATE partner_applications
+                SET status = 'approved',
+                    invitation_email = @contactEmail,
+                    approved_sponsor_id = @sponsorId,
+                    approved_by = @approvedBy,
+                    approved_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = @id
+                """,
+                new { id, contactEmail = contactEmail.ToLowerInvariant(), sponsorId, approvedBy = userCtx.UserIdGuid },
+                transaction);
+            transaction.Commit();
 
             var invitation = await invitations.CreateInvitationAsync(
                 sponsorId,
@@ -3678,18 +3752,15 @@ public static class AdminEndpoints
                 userCtx.UserIdGuid,
                 ct);
             if (invitation is null)
-            {
-                await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @sponsorId", new { sponsorId });
-                await conn.ExecuteAsync("UPDATE partner_applications SET status = 'pending', updated_at = NOW() WHERE id = @id", new { id });
                 return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
-            }
 
             if (!invitation.WasDelivered)
-            {
-                await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @sponsorId", new { sponsorId });
-                await conn.ExecuteAsync("UPDATE partner_applications SET status = 'pending', updated_at = NOW() WHERE id = @id", new { id });
-                return Results.Json(new { error = "Invitation delivery failed. Please retry." }, statusCode: 502);
-            }
+                return Results.Json(new
+                {
+                    error = "Partner approved, but invitation delivery failed. Resend the invitation.",
+                    sponsorId,
+                    invitation.InvitationId,
+                }, statusCode: 502);
 
             return Results.Ok(new
             {
@@ -3700,7 +3771,7 @@ public static class AdminEndpoints
                 invitation.InvitationId,
                 invitation.RequiresPasswordSetup,
             });
-        }).RequireAuthorization(Permissions.SponsorsCreate);
+        }).RequireAuthorization(Permissions.SponsorsApproveApplication);
 
         // ══════════════════════════════════════════════════════════════════════
         // TEAM MANAGEMENT (super_admin only)

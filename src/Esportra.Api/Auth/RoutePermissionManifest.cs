@@ -27,6 +27,11 @@ public static class RoutePermissionManifest
         P("POST", "/api/auth/set-password"),
         P("POST", "/api/sponsor-invitations/preview"),
 
+        // Public partner application and sponsor showcase
+        P("POST", "/api/partners/apply"),
+        P("GET",  "/api/partners/public"),
+        P("GET",  "/api/sponsors/active"),
+
         // Public reads — tournaments
         P("GET",  "/api/tournaments"),
         P("GET",  "/api/tournaments/{id}"),
@@ -185,9 +190,6 @@ public static class RoutePermissionManifest
         // GDPR / consent
         A("POST", "/api/gdpr/{*}"),
         A("POST", "/api/consent"),
-
-        // Partners
-        A("POST", "/api/partners/{*}"),
 
         // Operations (authenticated impersonation end)
         A("POST", "/api/operations/{*}"),

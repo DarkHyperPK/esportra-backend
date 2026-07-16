@@ -73,7 +73,7 @@ public static class SponsorEndpoints
                     """
                 SELECT sa.sponsor_id, sa.role, sa.onboarding_meta
                 FROM sponsor_accounts sa
-                WHERE sa.user_id = @userId
+                WHERE sa.user_id = @userId AND sa.status = 'active'
                 LIMIT 1
                 """,
                     new { userId = userCtx.UserIdGuid });
@@ -173,7 +173,7 @@ public static class SponsorEndpoints
 
             // Verify ownership
             var sponsorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT sponsor_id FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' LIMIT 1",
+                "SELECT sponsor_id FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (sponsorId is null)
@@ -251,7 +251,7 @@ public static class SponsorEndpoints
             using var conn = db.CreateConnection();
 
             var sponsorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT sponsor_id FROM sponsor_accounts WHERE user_id = @userId LIMIT 1",
+                "SELECT sponsor_id FROM sponsor_accounts WHERE user_id = @userId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (sponsorId is null)
@@ -313,7 +313,7 @@ public static class SponsorEndpoints
             using var conn = db.CreateConnection();
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT sponsor_id, onboarding_meta FROM sponsor_accounts WHERE user_id = @userId LIMIT 1",
+                "SELECT sponsor_id, onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (row is null)
@@ -345,7 +345,7 @@ public static class SponsorEndpoints
                 return Results.BadRequest(new { error = "Invalid onboarding step." });
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' LIMIT 1",
+                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (row is null)
@@ -399,7 +399,7 @@ public static class SponsorEndpoints
             using var conn = db.CreateConnection();
 
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' LIMIT 1",
+                "SELECT onboarding_meta FROM sponsor_accounts WHERE user_id = @userId AND role = 'owner' AND status = 'active' LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
             if (row is null)

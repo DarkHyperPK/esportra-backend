@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 196,
+  "postBaselineScriptCount": 197,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -448,6 +448,7 @@
       "firstSeenIn": "20260714110000_partner_sponsor_invitations.sql",
       "operations": [
         "alter",
+        "index",
         "policy"
       ],
       "columnsMentioned": [],
@@ -510,6 +511,14 @@
         "user_id"
       ]
     },
+    "ranked_accounts": {
+      "firstSeenIn": "20260716120000_partner_management_mvp.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
+    },
     "service_role": {
       "firstSeenIn": "20260410200500_revoke_delete_financial.sql",
       "operations": [
@@ -556,7 +565,10 @@
       "firstSeenIn": "20260714110000_partner_sponsor_invitations.sql",
       "operations": [
         "alter",
-        "policy"
+        "index",
+        "join",
+        "policy",
+        "update"
       ],
       "columnsMentioned": [],
       "onConflictColumns": []

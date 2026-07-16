@@ -248,6 +248,7 @@ public static class EmailTemplates
           {P(isNewUser
             ? "Click below to create your account, then accept your sponsor invitation."
             : "Click below, sign in with this email address, then accept your sponsor invitation.")}
+          {P("This invitation remains available for 24 hours. After acceptance, reopening it with the same account resumes your onboarding.")}
           {Btn(invitationUrl, "Accept Invitation")}
         """)
     );
