@@ -69,20 +69,24 @@ public sealed class PartnerSponsorOnboardingService(
                 invitedBy,
                 expiresAt = DateTimeOffset.UtcNow.Add(InvitationLifetime),
             }, transaction);
+
         transaction.Commit();
 
         var invitationUrl = BuildInvitationUrl(token);
         var wasDelivered = true;
+        Guid? userId = existingUser is not null ? Guid.Parse(existingUser.Id) : null;
         try
         {
             if (requiresPasswordSetup)
             {
-                var isNewUser = existingUser is null;
-                var link = isNewUser
+                var link = existingUser is null
                     ? await supabase.GenerateInviteLinkAsync(normalizedEmail, invitationUrl, cancellationToken)
                     : await supabase.GenerateMagicLinkAsync(normalizedEmail, invitationUrl, cancellationToken);
-                var otpType = isNewUser ? "invite" : "magiclink";
+                var otpType = existingUser is null ? "invite" : "magiclink";
                 invitationUrl = $"{invitationUrl}&auth_token_hash={Uri.EscapeDataString(link.TokenHash)}&auth_type={otpType}";
+
+                if (existingUser is null && link.UserId is not null)
+                    userId = Guid.Parse(link.UserId);
             }
 
             await emailService.SendAsync(normalizedEmail, EmailType.PartnerInvite, new
@@ -97,6 +101,24 @@ public sealed class PartnerSponsorOnboardingService(
             wasDelivered = false;
             logger.LogWarning(exception, "Partner invitation delivery failed for invitation {InvitationId}", invitationId);
             await MarkDeliveryFailureAsync(invitationId, CancellationToken.None);
+        }
+
+        // Create sponsor_accounts row now that we have a user_id
+        if (userId is not null)
+        {
+            using var conn2 = connectionFactory.CreateConnection();
+            var hasMembership = await conn2.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM public.sponsor_accounts WHERE user_id = @userId)",
+                new { userId = userId.Value });
+            if (!hasMembership)
+            {
+                await conn2.ExecuteAsync(
+                    """
+                    INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
+                    VALUES (@userId, @sponsorId, @role, '{"completed":false,"current_step":0,"steps":{}}'::jsonb)
+                    """,
+                    new { userId = userId.Value, sponsorId, role });
+            }
         }
 
         return new PartnerInvitationDelivery(invitationId, requiresPasswordSetup, wasDelivered);
@@ -146,17 +168,20 @@ public sealed class PartnerSponsorOnboardingService(
         if (invitation is null || !string.Equals(invitation.Email, normalizedEmail, StringComparison.Ordinal))
             return null;
 
+        // sponsor_accounts row is created at invitation time, but handle edge case
         var hasMembership = await connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM public.sponsor_accounts WHERE user_id = @userId)",
             new { userId }, transaction);
-        if (hasMembership) return null;
+        if (!hasMembership)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
+                VALUES (@userId, @sponsorId, @role, '{"completed":false,"current_step":0,"steps":{}}'::jsonb)
+                """,
+                new { userId, invitation.SponsorId, invitation.Role }, transaction);
+        }
 
-        await connection.ExecuteAsync(
-            """
-            INSERT INTO public.sponsor_accounts (user_id, sponsor_id, role, onboarding_meta)
-            VALUES (@userId, @sponsorId, @role, '{"completed":false,"current_step":0,"steps":{}}'::jsonb)
-            """,
-            new { userId, invitation.SponsorId, invitation.Role }, transaction);
         await connection.ExecuteAsync(
             """
             UPDATE public.partner_sponsor_invitations

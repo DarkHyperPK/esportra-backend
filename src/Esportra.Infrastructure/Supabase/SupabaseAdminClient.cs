@@ -86,8 +86,9 @@ public sealed class SupabaseAdminClient(
 
         var tokenHash = root.TryGetProperty("hashed_token", out var ht) ? ht.GetString() ?? "" : "";
         var actionLink = root.TryGetProperty("action_link", out var al) ? al.GetString() ?? "" : "";
+        var userId = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
 
-        return new GeneratedLink(tokenHash, actionLink);
+        return new GeneratedLink(tokenHash, actionLink, userId);
     }
 
     public async Task<SupabaseUser?> GetUserByEmailAsync(string email, CancellationToken ct = default)

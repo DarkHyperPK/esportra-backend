@@ -42,7 +42,7 @@ public interface ISupabaseAdminClient
     Task LogoutUserAsync(string userId, CancellationToken ct = default);
 }
 
-public sealed record GeneratedLink(string TokenHash, string ActionLink);
+public sealed record GeneratedLink(string TokenHash, string ActionLink, string? UserId);
 public sealed record SupabaseUser(string Id, string Email, bool HasPasswordIdentity);
 
 /// <summary>Full user record from the GoTrue admin list-users endpoint.</summary>
