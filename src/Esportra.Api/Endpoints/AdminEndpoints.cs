@@ -3703,8 +3703,71 @@ public static class AdminEndpoints
             var status = dict["status"]?.ToString();
             if (status == "approved" && dict["approved_sponsor_id"] is Guid approvedSponsorId)
             {
+                var approvedCompanyName = dict["company_name"]?.ToString() ?? "Unknown";
+                var approvedContactEmail = request.InvitationEmail?.Trim()
+                    ?? dict["invitation_email"]?.ToString()?.Trim()
+                    ?? dict["contact_email"]?.ToString()?.Trim();
+                if (string.IsNullOrWhiteSpace(approvedContactEmail)
+                    || approvedContactEmail.Length > 254
+                    || !System.Net.Mail.MailAddress.TryCreate(approvedContactEmail, out _))
+                    return Results.BadRequest(new { error = "Application has no valid invitation email." });
+
+                var existingInvitation = await conn.QuerySingleOrDefaultAsync<(Guid Id, bool RequiresPasswordSetup)>(
+                    """
+                    SELECT id AS Id, requires_password_setup AS RequiresPasswordSetup
+                    FROM partner_sponsor_invitations
+                    WHERE sponsor_id = @sponsorId
+                      AND LOWER(email) = LOWER(@email)
+                      AND (
+                          status = 'accepted'
+                          OR (status = 'pending' AND expires_at > NOW())
+                      )
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    new { sponsorId = approvedSponsorId, email = approvedContactEmail }, transaction);
                 transaction.Commit();
-                return Results.Ok(new { success = true, sponsorId = approvedSponsorId, alreadyApproved = true });
+
+                if (existingInvitation != default)
+                {
+                    return Results.Ok(new
+                    {
+                        success = true,
+                        sponsorId = approvedSponsorId,
+                        companyName = approvedCompanyName,
+                        contactEmail = approvedContactEmail,
+                        invitationId = existingInvitation.Id,
+                        existingInvitation.RequiresPasswordSetup,
+                        alreadyApproved = true,
+                    });
+                }
+
+                var replacementInvitation = await invitations.CreateInvitationAsync(
+                    approvedSponsorId,
+                    approvedContactEmail,
+                    "owner",
+                    userCtx.UserIdGuid,
+                    ct);
+                if (replacementInvitation is null)
+                    return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
+                if (!replacementInvitation.WasDelivered)
+                    return Results.Json(new
+                    {
+                        error = "Invitation delivery failed. Resend the invitation.",
+                        sponsorId = approvedSponsorId,
+                        replacementInvitation.InvitationId,
+                    }, statusCode: 502);
+
+                return Results.Ok(new
+                {
+                    success = true,
+                    sponsorId = approvedSponsorId,
+                    companyName = approvedCompanyName,
+                    contactEmail = approvedContactEmail,
+                    replacementInvitation.InvitationId,
+                    replacementInvitation.RequiresPasswordSetup,
+                    alreadyApproved = true,
+                });
             }
             if (status is not ("pending" or "reviewed"))
                 return Results.Conflict(new { error = "Application is not available for approval." });

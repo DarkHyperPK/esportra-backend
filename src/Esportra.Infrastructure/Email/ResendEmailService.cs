@@ -103,7 +103,8 @@ public sealed class ResendEmailService(
                 EmailTemplates.PartnerInvite(
                     Get("sponsorName"),
                     Get("invitationUrl"),
-                    bool.TryParse(Get("isNewUser"), out var isNewUser) && isNewUser),
+                    bool.TryParse(Get("accountExists"), out var accountExists) && accountExists,
+                    bool.TryParse(Get("requiresPasswordSetup"), out var requiresPasswordSetup) && requiresPasswordSetup),
 
             EmailType.PartnerWelcome =>
                 EmailTemplates.PartnerWelcome(Get("sponsorName"), Get("portalUrl")),

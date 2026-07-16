@@ -42,7 +42,8 @@ public sealed class PartnerSponsorOnboardingService(
         if (!PartnerInvitationPolicy.IsValidEmail(email) || !PartnerInvitationPolicy.IsSupportedRole(role)) return null;
         var normalizedEmail = PartnerInvitationPolicy.NormalizeEmail(email);
         var existingUser = await supabase.GetUserByEmailAsync(normalizedEmail, cancellationToken);
-        var requiresPasswordSetup = existingUser is null || !existingUser.HasPasswordIdentity;
+        var accountExists = existingUser is not null;
+        var requiresPasswordSetup = !accountExists || !existingUser!.HasPasswordIdentity;
 
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
@@ -101,7 +102,8 @@ public sealed class PartnerSponsorOnboardingService(
             {
                 sponsorName,
                 invitationUrl,
-                isNewUser = requiresPasswordSetup ? "true" : "false",
+                accountExists = accountExists ? "true" : "false",
+                requiresPasswordSetup = requiresPasswordSetup ? "true" : "false",
             }, cancellationToken);
             await MarkDeliveredAsync(invitationId);
         }
@@ -337,7 +339,8 @@ public sealed class PartnerSponsorOnboardingService(
 
     private static string CreateToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
-    private static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+    private static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(
+        Encoding.UTF8.GetBytes(PartnerInvitationPolicy.NormalizeToken(token))));
 
     private sealed record InvitationRow(
         Guid Id,

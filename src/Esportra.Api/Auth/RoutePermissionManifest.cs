@@ -300,6 +300,9 @@ public static class RoutePermissionManifest
 
         // Admin sessions / security
         Adm("POST", "/api/admin/sponsors/{sponsorId}/invitations", [Permissions.SponsorsCreate]),
+        Adm("GET",  "/api/admin/sponsor-invitations", [Permissions.SponsorsView]),
+        Adm("POST", "/api/admin/sponsor-invitations/{id}/resend", [Permissions.SponsorsCreate]),
+        Adm("POST", "/api/admin/sponsor-invitations/{id}/revoke", [Permissions.SponsorsCreate]),
         Adm("POST", "/api/admin/mfa/cleanup", [Permissions.SecurityRevokeSessions]),
         Adm("GET",  "/api/admin/sessions/{*}", [Permissions.SecurityViewSessions]),
         Adm("POST", "/api/admin/sessions/{*}", [Permissions.SecurityRevokeSessions]),

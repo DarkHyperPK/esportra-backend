@@ -6,6 +6,8 @@ public static class PartnerInvitationPolicy
 
     public static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 
+    public static string NormalizeToken(string token) => token.Trim().ToUpperInvariant();
+
     public static bool IsValidEmail(string email) =>
         email.Length is > 0 and <= 254
         && System.Net.Mail.MailAddress.TryCreate(email.Trim(), out _);

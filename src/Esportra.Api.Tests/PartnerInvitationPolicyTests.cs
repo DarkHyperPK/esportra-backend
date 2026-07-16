@@ -19,6 +19,12 @@ public sealed class PartnerInvitationPolicyTests
         Assert.Equal(expected, PartnerInvitationPolicy.NormalizeEmail(email));
     }
 
+    [Fact]
+    public void NormalizeToken_ReturnsCanonicalUppercaseToken()
+    {
+        Assert.Equal(new string('A', 64), PartnerInvitationPolicy.NormalizeToken($" {new string('a', 64)} "));
+    }
+
     [Theory]
     [InlineData("owner@example.com", true)]
     [InlineData("invalid", false)]
