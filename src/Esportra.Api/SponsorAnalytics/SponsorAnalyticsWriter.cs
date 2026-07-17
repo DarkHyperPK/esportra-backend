@@ -30,7 +30,7 @@ public sealed class SponsorAnalyticsWriter(
         HttpContext context,
         CancellationToken cancellationToken)
     {
-        if (!IsValid(request)) return SponsorAnalyticsWriteResult.Invalid;
+        if (!IsValidRequest(request)) return SponsorAnalyticsWriteResult.Invalid;
 
         var now = timeProvider.GetUtcNow();
         var demographics = await ResolveDemographicsAsync(userContext, context, now, cancellationToken);
@@ -234,13 +234,13 @@ public sealed class SponsorAnalyticsWriter(
         return new DemographicSnapshot(null, "unknown", null, "unknown");
     }
 
-    private static bool IsValid(RecordSponsorAnalyticsEventRequest request) =>
+    internal static bool IsValidRequest(RecordSponsorAnalyticsEventRequest request) =>
         request.EventId != Guid.Empty
         && request.SponsorId != Guid.Empty
         && request.EventType is "impression" or "click"
         && AllowedPlacements.Contains(request.Placement)
         && request.SchemaVersion == 1
-        && request.PagePath?.Length <= 256;
+        && (request.PagePath is null || request.PagePath.Length <= 256);
 
     private static string? NormalizePagePath(string? pagePath)
     {

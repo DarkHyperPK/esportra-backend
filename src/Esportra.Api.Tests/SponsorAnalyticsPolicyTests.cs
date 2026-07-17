@@ -1,4 +1,5 @@
 using Esportra.Api.SponsorAnalytics;
+using Esportra.Contracts.Requests;
 using Xunit;
 
 namespace Esportra.Api.Tests;
@@ -78,5 +79,23 @@ public sealed class SponsorAnalyticsPolicyTests
         Assert.Equal("available", result.Status);
         Assert.Equal(2, result.Segments.Count);
         Assert.Equal(60m, result.Segments[0].PercentageOfKnown);
+    }
+
+    [Fact]
+    public void WriterValidation_AcceptsOptionalPagePath()
+    {
+        var request = new RecordSponsorAnalyticsEventRequest(
+            Guid.NewGuid(), Guid.NewGuid(), "impression", "partner_showcase");
+
+        Assert.True(SponsorAnalyticsWriter.IsValidRequest(request));
+    }
+
+    [Fact]
+    public void WriterValidation_AcceptsRelativePagePath()
+    {
+        var request = new RecordSponsorAnalyticsEventRequest(
+            Guid.NewGuid(), Guid.NewGuid(), "impression", "partner_showcase", PagePath: "/partners");
+
+        Assert.True(SponsorAnalyticsWriter.IsValidRequest(request));
     }
 }
