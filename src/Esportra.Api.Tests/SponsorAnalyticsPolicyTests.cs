@@ -46,7 +46,7 @@ public sealed class SponsorAnalyticsPolicyTests
     public void CalculateAgeBand_ReturnsExpected(string date, string expected)
     {
         Assert.Equal(expected, SponsorAnalyticsPolicy.CalculateAgeBand(
-            DateTime.Parse(date), new DateOnly(2026, 7, 17)));
+            DateOnly.Parse(date), new DateOnly(2026, 7, 17)));
     }
 
     [Fact]

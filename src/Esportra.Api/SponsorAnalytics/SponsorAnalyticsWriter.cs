@@ -113,17 +113,8 @@ public sealed class SponsorAnalyticsWriter(
         string kind,
         DateTimeOffset now)
     {
-        var existing = await connection.QuerySingleOrDefaultAsync<AudienceIdentityRow>(
-            """
-            SELECT audience_id AS AudienceId, expires_at AS ExpiresAt
-            FROM public.sponsor_audience_identities
-            WHERE sponsor_id = @sponsorId AND identity_lookup = @lookup
-            FOR UPDATE
-            """,
-            new { sponsorId, lookup }, transaction);
-        var audienceId = existing is null || existing.ExpiresAt <= now ? Guid.NewGuid() : existing.AudienceId;
-
-        await connection.ExecuteAsync(
+        var replacementAudienceId = Guid.NewGuid();
+        var audienceId = await connection.QuerySingleAsync<Guid>(
             """
             INSERT INTO public.sponsor_audience_identities
                 (sponsor_id, identity_lookup, identity_key_version, identity_kind,
@@ -140,6 +131,7 @@ public sealed class SponsorAnalyticsWriter(
                 END,
                 last_seen_at = @now,
                 expires_at = @expiresAt
+            RETURNING audience_id
             """,
             new
             {
@@ -147,7 +139,7 @@ public sealed class SponsorAnalyticsWriter(
                 lookup,
                 keyVersion = identity.KeyVersion,
                 kind,
-                audienceId,
+                audienceId = replacementAudienceId,
                 now,
                 expiresAt = now.AddDays(identity.LifetimeDays),
             }, transaction);
@@ -250,12 +242,7 @@ public sealed class SponsorAnalyticsWriter(
         return value.StartsWith('/') ? value : $"/{value}";
     }
 
-    private sealed record AudienceIdentityRow
-    {
-        public Guid AudienceId { get; init; }
-        public DateTime ExpiresAt { get; init; }
-    }
-    private sealed record ProfileRow(string? CountryCode, DateTime? DateOfBirth);
+    private sealed record ProfileRow(string? CountryCode, DateOnly? DateOfBirth);
     private sealed record DemographicSnapshot(
         string? CountryCode,
         string CountryProvenance,

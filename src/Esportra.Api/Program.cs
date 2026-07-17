@@ -300,10 +300,11 @@ builder.Services.AddOptions<SponsorAnalyticsOptions>()
         section.Bind(options);
         if (string.IsNullOrWhiteSpace(options.IdentityHmacKey))
         {
-            options.IdentityHmacKey = builder.Configuration["Metrics:VisitorSalt"] ?? string.Empty;
+            options.IdentityHmacKey = builder.Configuration["Supabase:JwtSecret"] ?? string.Empty;
         }
     })
-    .Validate(options => options.IdentityHmacKey.Length >= 32,
+    .Validate(options => options.IdentityHmacKey.Length >= 32
+        && !options.IdentityHmacKey.StartsWith("REPLACE_WITH_", StringComparison.Ordinal),
         "SponsorAnalytics:IdentityHmacKey must contain at least 32 characters.")
     .Validate(options => options.MinimumAudience >= 10,
         "SponsorAnalytics:MinimumAudience must be at least 10.")

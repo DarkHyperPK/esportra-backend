@@ -22,10 +22,10 @@ public static class SponsorAnalyticsPolicy
         return normalized.Length == 2 && normalized.All(char.IsAsciiLetter) ? normalized : null;
     }
 
-    public static string? CalculateAgeBand(DateTime? dateOfBirth, DateOnly today)
+    public static string? CalculateAgeBand(DateOnly? dateOfBirth, DateOnly today)
     {
         if (dateOfBirth is null) return null;
-        var dob = DateOnly.FromDateTime(dateOfBirth.Value);
+        var dob = dateOfBirth.Value;
         var age = today.Year - dob.Year;
         if (dob > today.AddYears(-age)) age--;
         return age switch

@@ -7,7 +7,9 @@ namespace Esportra.Api.SponsorAnalytics;
 public sealed class SponsorAnalyticsIdentity(IOptions<SponsorAnalyticsOptions> options)
 {
     private readonly SponsorAnalyticsOptions _options = options.Value;
-    private readonly byte[] _key = Encoding.UTF8.GetBytes(options.Value.IdentityHmacKey);
+    private readonly byte[] _key = HMACSHA256.HashData(
+        Encoding.UTF8.GetBytes(options.Value.IdentityHmacKey),
+        Encoding.UTF8.GetBytes("esportra:sponsor-analytics:identity:v1"));
 
     public short KeyVersion => _options.IdentityKeyVersion;
     public int LifetimeDays => _options.IdentityLifetimeDays;
