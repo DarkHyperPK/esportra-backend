@@ -14,6 +14,10 @@ public enum SponsorAnalyticsWriteResult
     SponsorNotFound,
 }
 
+public sealed record SponsorAnalyticsWriteOutcome(
+    SponsorAnalyticsWriteResult Result,
+    string? Reason = null);
+
 public sealed class SponsorAnalyticsWriter(
     IDbConnectionFactory connectionFactory,
     SponsorAnalyticsIdentity identity,
@@ -24,13 +28,15 @@ public sealed class SponsorAnalyticsWriter(
         "logo_ticker", "partner_showcase", "tournament_sidebar", "vertical_ad", "unknown",
     };
 
-    public async Task<SponsorAnalyticsWriteResult> WriteAsync(
+    public async Task<SponsorAnalyticsWriteOutcome> WriteAsync(
         RecordSponsorAnalyticsEventRequest request,
         UserContext? userContext,
         HttpContext context,
         CancellationToken cancellationToken)
     {
-        if (!IsValidRequest(request)) return SponsorAnalyticsWriteResult.Invalid;
+        var validationError = ValidateRequest(request);
+        if (validationError is not null)
+            return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Invalid, validationError);
 
         var now = timeProvider.GetUtcNow();
         var demographics = await ResolveDemographicsAsync(userContext, context, now, cancellationToken);
@@ -45,7 +51,7 @@ public sealed class SponsorAnalyticsWriter(
         var sponsorExists = await connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM public.sponsors WHERE id = @id AND is_active = TRUE)",
             new { id = request.SponsorId }, transaction);
-        if (!sponsorExists) return SponsorAnalyticsWriteResult.SponsorNotFound;
+        if (!sponsorExists) return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.SponsorNotFound);
 
         var audienceId = await ResolveAudienceIdAsync(
             connection,
@@ -90,7 +96,7 @@ public sealed class SponsorAnalyticsWriter(
         if (sequence is null)
         {
             transaction.Commit();
-            return SponsorAnalyticsWriteResult.Duplicate;
+            return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Duplicate);
         }
 
         await UpsertProjectionAsync(
@@ -102,7 +108,7 @@ public sealed class SponsorAnalyticsWriter(
             demographics,
             DateOnly.FromDateTime(now.UtcDateTime));
         transaction.Commit();
-        return SponsorAnalyticsWriteResult.Accepted;
+        return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Accepted);
     }
 
     private async Task<Guid> ResolveAudienceIdAsync(
@@ -229,13 +235,18 @@ public sealed class SponsorAnalyticsWriter(
         return new DemographicSnapshot(null, "unknown", null, "unknown");
     }
 
-    internal static bool IsValidRequest(RecordSponsorAnalyticsEventRequest request) =>
-        request.EventId != Guid.Empty
-        && request.SponsorId != Guid.Empty
-        && request.EventType is "impression" or "click"
-        && AllowedPlacements.Contains(request.Placement)
-        && request.SchemaVersion == 1
-        && (request.PagePath is null || request.PagePath.Length <= 256);
+    internal static bool IsValidRequest(RecordSponsorAnalyticsEventRequest request) => ValidateRequest(request) is null;
+
+    private static string? ValidateRequest(RecordSponsorAnalyticsEventRequest request)
+    {
+        if (request.EventId == Guid.Empty) return "event_id_required";
+        if (request.SponsorId == Guid.Empty) return "sponsor_id_required";
+        if (request.EventType is not ("impression" or "click")) return "event_type_invalid";
+        if (!AllowedPlacements.Contains(request.Placement)) return "placement_invalid";
+        if (request.SchemaVersion != 1) return "schema_version_invalid";
+        if (request.PagePath is not null && request.PagePath.Length > 256) return "page_path_too_long";
+        return null;
+    }
 
     private static string? NormalizePagePath(string? pagePath)
     {
