@@ -306,8 +306,6 @@ builder.Services.AddOptions<SponsorAnalyticsOptions>()
     .Validate(options => options.IdentityHmacKey.Length >= 32
         && !options.IdentityHmacKey.StartsWith("REPLACE_WITH_", StringComparison.Ordinal),
         "SponsorAnalytics:IdentityHmacKey must contain at least 32 characters.")
-    .Validate(options => options.MinimumAudience >= 10,
-        "SponsorAnalytics:MinimumAudience must be at least 10.")
     .Validate(options => options.IdentityLifetimeDays > 90,
         "SponsorAnalytics:IdentityLifetimeDays must exceed the maximum report window.")
     .ValidateOnStart();

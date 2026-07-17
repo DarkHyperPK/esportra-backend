@@ -1,17 +1,13 @@
 using Dapper;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Responses;
-using Microsoft.Extensions.Options;
 
 namespace Esportra.Api.SponsorAnalytics;
 
 public sealed class SponsorAudienceReportService(
     IDbConnectionFactory connectionFactory,
-    IOptions<SponsorAnalyticsOptions> options,
     TimeProvider timeProvider)
 {
-    private readonly int _threshold = options.Value.MinimumAudience;
-
     public async Task<SponsorAudienceReportResponse> GetAsync(
         Guid sponsorId,
         int days,
@@ -48,11 +44,9 @@ public sealed class SponsorAudienceReportService(
 
         var total = audience.LongCount();
         var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
-        var privacy = new SponsorAnalyticsPrivacyDto(_threshold, "k10-complementary-v1");
+        var disclosure = new SponsorAnalyticsDisclosureDto("exact-aggregates-v2", false);
         if (total == 0)
-            return Empty(days, window, privacy);
-        if (total < _threshold)
-            return Suppressed(days, window, privacy);
+            return Empty(days, window, disclosure);
 
         var countryGroups = audience.Where(row => row.CountryCode is not null)
             .GroupBy(row => row.CountryCode!, StringComparer.Ordinal)
@@ -62,31 +56,23 @@ public sealed class SponsorAudienceReportService(
             .ToDictionary(group => group.Key, group => group.LongCount(), StringComparer.Ordinal);
 
         return new SponsorAudienceReportResponse(
-            1,
+            2,
             "available",
             days,
             window,
-            privacy,
+            disclosure,
             total,
-            SponsorAnalyticsPolicy.Suppress(countryGroups, total, countryGroups.Values.Sum(), _threshold),
-            SponsorAnalyticsPolicy.Suppress(ageGroups, total, ageGroups.Values.Sum(), _threshold));
+            SponsorAnalyticsPolicy.CreateDimension(countryGroups, total, countryGroups.Values.Sum()),
+            SponsorAnalyticsPolicy.CreateDimension(ageGroups, total, ageGroups.Values.Sum()));
     }
 
     private static SponsorAudienceReportResponse Empty(
         int days,
         SponsorAnalyticsWindowDto window,
-        SponsorAnalyticsPrivacyDto privacy) => new(
-            1, "empty", days, window, privacy, 0,
-            new SponsorAudienceDimensionDto("unavailable", 0, 0, 0, 0, []),
-            new SponsorAudienceDimensionDto("unavailable", 0, 0, 0, 0, []));
-
-    private static SponsorAudienceReportResponse Suppressed(
-        int days,
-        SponsorAnalyticsWindowDto window,
-        SponsorAnalyticsPrivacyDto privacy) => new(
-            1, "suppressed", days, window, privacy, null,
-            SponsorAnalyticsPolicy.SuppressedDimension(),
-            SponsorAnalyticsPolicy.SuppressedDimension());
+        SponsorAnalyticsDisclosureDto disclosure) => new(
+            2, "empty", days, window, disclosure, 0,
+            new SponsorAudienceDimensionDto("unavailable", 0, 0, null, []),
+            new SponsorAudienceDimensionDto("unavailable", 0, 0, null, []));
 
     private sealed record AudienceRow
     {

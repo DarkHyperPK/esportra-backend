@@ -124,7 +124,10 @@ public sealed class SponsorAnalyticsWriter(
             ON CONFLICT (sponsor_id, identity_lookup) DO UPDATE SET
                 identity_key_version = EXCLUDED.identity_key_version,
                 identity_kind = EXCLUDED.identity_kind,
-                audience_id = EXCLUDED.audience_id,
+                audience_id = CASE
+                    WHEN sponsor_audience_identities.expires_at <= @now THEN EXCLUDED.audience_id
+                    ELSE sponsor_audience_identities.audience_id
+                END,
                 first_seen_at = CASE
                     WHEN sponsor_audience_identities.expires_at <= @now THEN @now
                     ELSE sponsor_audience_identities.first_seen_at

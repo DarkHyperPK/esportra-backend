@@ -50,35 +50,48 @@ public sealed class SponsorAnalyticsPolicyTests
     }
 
     [Fact]
-    public void Suppress_HidesEntireAudienceBelowThreshold()
+    public void CreateDimension_PublishesSinglePersonSegment()
     {
-        var result = SponsorAnalyticsPolicy.Suppress(
-            new Dictionary<string, long> { ["PK"] = 9 }, 9, 9, 10);
+        var result = SponsorAnalyticsPolicy.CreateDimension(
+            new Dictionary<string, long> { ["PK"] = 1 }, 1, 1);
 
-        Assert.Equal("suppressed", result.Status);
-        Assert.Empty(result.Segments);
-        Assert.Null(result.KnownAudience);
+        Assert.Equal("available", result.Status);
+        Assert.Single(result.Segments);
+        Assert.Equal(1, result.Segments[0].Audience);
     }
 
     [Fact]
-    public void Suppress_AppliesComplementarySuppression()
+    public void CreateDimension_PublishesAllSegments()
     {
-        var result = SponsorAnalyticsPolicy.Suppress(
-            new Dictionary<string, long> { ["PK"] = 12, ["US"] = 8 }, 20, 20, 10);
-
-        Assert.Equal("suppressed", result.Status);
-        Assert.Empty(result.Segments);
-    }
-
-    [Fact]
-    public void Suppress_PublishesMultipleSafeSegments()
-    {
-        var result = SponsorAnalyticsPolicy.Suppress(
-            new Dictionary<string, long> { ["PK"] = 15, ["US"] = 10 }, 25, 25, 10);
+        var result = SponsorAnalyticsPolicy.CreateDimension(
+            new Dictionary<string, long> { ["PK"] = 12, ["US"] = 8 }, 20, 20);
 
         Assert.Equal("available", result.Status);
         Assert.Equal(2, result.Segments.Count);
-        Assert.Equal(60m, result.Segments[0].PercentageOfKnown);
+    }
+
+    [Fact]
+    public void CreateDimension_ReturnsExactUnknownCoverage()
+    {
+        var result = SponsorAnalyticsPolicy.CreateDimension(
+            new Dictionary<string, long> { ["PK"] = 1 }, 2, 1);
+
+        Assert.Equal("available", result.Status);
+        Assert.Equal(1, result.KnownAudience);
+        Assert.Equal(1, result.UnknownAudience);
+        Assert.Equal(50m, result.CoveragePercent);
+    }
+
+    [Fact]
+    public void CreateDimension_ReturnsUnavailableWhenAllUnknown()
+    {
+        var result = SponsorAnalyticsPolicy.CreateDimension(
+            new Dictionary<string, long>(), 1, 0);
+
+        Assert.Equal("unavailable", result.Status);
+        Assert.Equal(0, result.KnownAudience);
+        Assert.Equal(1, result.UnknownAudience);
+        Assert.Equal(0m, result.CoveragePercent);
     }
 
     [Fact]

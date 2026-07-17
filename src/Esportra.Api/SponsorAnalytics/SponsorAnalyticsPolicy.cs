@@ -40,34 +40,16 @@ public static class SponsorAnalyticsPolicy
         };
     }
 
-    public static SponsorAudienceDimensionDto Suppress(
+    public static SponsorAudienceDimensionDto CreateDimension(
         IReadOnlyDictionary<string, long> candidateSegments,
         long totalAudience,
-        long knownAudience,
-        int threshold)
+        long knownAudience)
     {
-        if (totalAudience < threshold)
-            return SuppressedDimension();
-
-        var published = candidateSegments
-            .Where(segment => segment.Value >= threshold)
-            .OrderByDescending(segment => segment.Value)
-            .ToList();
-        var suppressedCount = candidateSegments.Count - published.Count;
-
-        // Complementary suppression: do not expose a sole published cell when hidden cells exist.
-        if (suppressedCount > 0 && published.Count == 1)
-        {
-            suppressedCount += published.Count;
-            published.Clear();
-        }
-
         var unknownAudience = totalAudience - knownAudience;
-        var canPublishKnown = knownAudience == 0 || knownAudience >= threshold;
-        var canPublishUnknown = unknownAudience == 0 || unknownAudience >= threshold;
-        var canPublishCoverage = canPublishKnown && canPublishUnknown;
-
-        var segments = published.Select(segment => new SponsorAudienceSegmentDto(
+        var segments = candidateSegments
+            .OrderByDescending(segment => segment.Value)
+            .ThenBy(segment => segment.Key, StringComparer.Ordinal)
+            .Select(segment => new SponsorAudienceSegmentDto(
             segment.Key,
             segment.Value,
             knownAudience > 0
@@ -75,18 +57,10 @@ public static class SponsorAnalyticsPolicy
                 : 0m)).ToList();
 
         return new SponsorAudienceDimensionDto(
-            segments.Count > 0 && suppressedCount == 0
-                ? "available"
-                : knownAudience == 0 ? "unavailable" : "suppressed",
-            canPublishCoverage ? knownAudience : null,
-            canPublishCoverage ? unknownAudience : null,
-            canPublishCoverage && totalAudience > 0
-                ? Math.Round((decimal)knownAudience / totalAudience * 100m, 1)
-                : null,
-            suppressedCount,
+            knownAudience > 0 ? "available" : "unavailable",
+            knownAudience,
+            unknownAudience,
+            totalAudience > 0 ? Math.Round((decimal)knownAudience / totalAudience * 100m, 1) : null,
             segments);
     }
-
-    public static SponsorAudienceDimensionDto SuppressedDimension() => new(
-        "suppressed", null, null, null, 0, []);
 }

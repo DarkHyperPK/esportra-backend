@@ -5,9 +5,9 @@ public sealed record SponsorAnalyticsWindowDto(
     DateOnly EndsOnExclusive,
     DateTimeOffset GeneratedAt);
 
-public sealed record SponsorAnalyticsPrivacyDto(
-    int MinimumAudience,
-    string MethodologyVersion);
+public sealed record SponsorAnalyticsDisclosureDto(
+    string MethodologyVersion,
+    bool SmallSegmentsSuppressed);
 
 public sealed record SponsorAudienceSegmentDto(
     string Key,
@@ -19,7 +19,6 @@ public sealed record SponsorAudienceDimensionDto(
     long? KnownAudience,
     long? UnknownAudience,
     decimal? CoveragePercent,
-    int SuppressedSegmentCount,
     IReadOnlyList<SponsorAudienceSegmentDto> Segments);
 
 public sealed record SponsorAudienceReportResponse(
@@ -27,7 +26,7 @@ public sealed record SponsorAudienceReportResponse(
     string Status,
     int PeriodDays,
     SponsorAnalyticsWindowDto Window,
-    SponsorAnalyticsPrivacyDto Privacy,
-    long? EstimatedUniqueAudience,
+    SponsorAnalyticsDisclosureDto Disclosure,
+    long EstimatedUniqueAudience,
     SponsorAudienceDimensionDto Country,
     SponsorAudienceDimensionDto Age);
