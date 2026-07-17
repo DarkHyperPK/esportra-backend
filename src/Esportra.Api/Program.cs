@@ -3,6 +3,7 @@ using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
 using Esportra.Api.Services;
+using Esportra.Api.SponsorAnalytics;
 using Esportra.Api.HealthChecks;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
@@ -292,6 +293,27 @@ builder.Services.AddHttpClient<MfaFactorCleanupService>();
 builder.Services.AddScoped<PasswordRecoveryService>();
 builder.Services.AddScoped<AccountSecurityService>();
 builder.Services.AddScoped<PartnerSponsorOnboardingService>();
+builder.Services.AddOptions<SponsorAnalyticsOptions>()
+    .Configure(options =>
+    {
+        var section = builder.Configuration.GetSection(SponsorAnalyticsOptions.SectionName);
+        section.Bind(options);
+        if (string.IsNullOrWhiteSpace(options.IdentityHmacKey))
+        {
+            options.IdentityHmacKey = builder.Configuration["Metrics:VisitorSalt"] ?? string.Empty;
+        }
+    })
+    .Validate(options => options.IdentityHmacKey.Length >= 32,
+        "SponsorAnalytics:IdentityHmacKey must contain at least 32 characters.")
+    .Validate(options => options.MinimumAudience >= 10,
+        "SponsorAnalytics:MinimumAudience must be at least 10.")
+    .Validate(options => options.IdentityLifetimeDays > 90,
+        "SponsorAnalytics:IdentityLifetimeDays must exceed the maximum report window.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<SponsorAnalyticsIdentity>();
+builder.Services.AddScoped<SponsorAnalyticsWriter>();
+builder.Services.AddScoped<SponsorAudienceReportService>();
 builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
     .Bind(builder.Configuration.GetSection(Esportra.Api.Auth.RecoveryOptions.SectionName))
     .Validate(options => Uri.TryCreate(options.MainRedirectUrl, UriKind.Absolute, out _),
@@ -572,6 +594,7 @@ app.MapGameEndpoints();
 app.MapGameCatalogAdminEndpoints();
 app.MapGameMapAdminEndpoints();
 app.MapMetricEndpoints();
+app.MapSponsorAnalyticsEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
 app.MapPublicToolEndpoints();

@@ -64,6 +64,7 @@ public static class RoutePermissionManifest
         // Anonymous analytics + metrics
         P("POST", "/api/analytics/events"),
         P("POST", "/api/metrics"),
+        P("POST", "/api/sponsor-analytics/events"),
         P("GET",  "/api/metrics/{*}"),
 
         // MatchZy M2M endpoints (secret-based, not JWT)
@@ -96,6 +97,7 @@ public static class RoutePermissionManifest
         // User profile management
         A("POST", "/api/auth/password-reset-completed"),
         A("POST", "/api/sponsor-invitations/accept"),
+        A("GET",  "/api/sponsors/me/audience"),
         A("GET",  "/api/profiles/me"),
         A("PUT",  "/api/profiles/{*}"),
         A("GET",  "/api/me/roles"),
@@ -300,6 +302,7 @@ public static class RoutePermissionManifest
 
         // Admin sessions / security
         Adm("POST", "/api/admin/sponsors/{sponsorId}/invitations", [Permissions.SponsorsCreate]),
+        Adm("GET", "/api/admin/sponsors/{sponsorId}/audience", [Permissions.SponsorsView]),
         Adm("GET",  "/api/admin/sponsor-invitations", [Permissions.SponsorsView]),
         Adm("POST", "/api/admin/sponsor-invitations/{id}/resend", [Permissions.SponsorsCreate]),
         Adm("POST", "/api/admin/sponsor-invitations/{id}/revoke", [Permissions.SponsorsCreate]),

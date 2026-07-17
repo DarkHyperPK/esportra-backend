@@ -23,6 +23,7 @@ public sealed record RateLimitOptions
         ["strict"] = new() { MaxRequests = 30, WindowSeconds = 60 },
         ["auth"] = new() { MaxRequests = 10, WindowSeconds = 60 },
         ["admin"] = new() { MaxRequests = 1000, WindowSeconds = 60 },
+        ["sponsorAnalytics"] = new() { MaxRequests = 120, WindowSeconds = 60 },
     };
 
     public HashSet<string> ExemptPaths { get; init; } = ["/health", "/api/analytics/events"];
