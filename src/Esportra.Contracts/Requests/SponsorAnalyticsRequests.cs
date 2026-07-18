@@ -8,3 +8,7 @@ public sealed record RecordSponsorAnalyticsEventRequest(
     Guid? TournamentId = null,
     string? PagePath = null,
     int SchemaVersion = 1);
+
+public sealed record RequestSponsorAnalyticsExportRequest(
+    string ReportType,
+    int Days = 30);

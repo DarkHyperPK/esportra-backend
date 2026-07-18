@@ -25,7 +25,8 @@ public sealed class SponsorAnalyticsWriter(
 {
     private static readonly HashSet<string> AllowedPlacements = new(StringComparer.Ordinal)
     {
-        "logo_ticker", "partner_showcase", "tournament_sidebar", "vertical_ad", "unknown",
+        "homepage_ticker", "partner_showcase", "sidebar_partner", "wide_partner",
+        "card_badge", "partner_logo", "unknown",
     };
 
     public async Task<SponsorAnalyticsWriteOutcome> WriteAsync(
@@ -40,9 +41,10 @@ public sealed class SponsorAnalyticsWriter(
 
         var now = timeProvider.GetUtcNow();
         var demographics = await ResolveDemographicsAsync(userContext, context, now, cancellationToken);
+        var deviceClass = SponsorAnalyticsIdentity.CoarseClientClass(context.Request.Headers.UserAgent.ToString());
         var identityKind = userContext is null ? "anonymous" : "authenticated";
         var identityMaterial = userContext?.UserId
-            ?? $"{context.Connection.RemoteIpAddress}:{SponsorAnalyticsIdentity.CoarseClientClass(context.Request.Headers.UserAgent.ToString())}";
+            ?? $"{context.Connection.RemoteIpAddress}:{deviceClass}";
         var identityLookup = identity.CreateLookup(request.SponsorId, identityKind, identityMaterial);
 
         using var connection = connectionFactory.CreateConnection();
@@ -61,6 +63,7 @@ public sealed class SponsorAnalyticsWriter(
             identityKind,
             now);
 
+        var pagePath = NormalizePagePath(request.PagePath);
         var sequence = await connection.QuerySingleOrDefaultAsync<long?>(
             """
             INSERT INTO public.sponsor_analytics_events
@@ -83,7 +86,7 @@ public sealed class SponsorAnalyticsWriter(
                 request.EventType,
                 request.Placement,
                 request.TournamentId,
-                PagePath = NormalizePagePath(request.PagePath),
+                PagePath = pagePath,
                 demographics.CountryCode,
                 demographics.CountryProvenance,
                 demographics.AgeBand,
@@ -106,6 +109,8 @@ public sealed class SponsorAnalyticsWriter(
             audienceId,
             sequence.Value,
             demographics,
+            deviceClass,
+            pagePath,
             DateOnly.FromDateTime(now.UtcDateTime));
         transaction.Commit();
         return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Accepted);
@@ -162,6 +167,8 @@ public sealed class SponsorAnalyticsWriter(
         Guid audienceId,
         long sequence,
         DemographicSnapshot demographics,
+        string deviceClass,
+        string? pagePath,
         DateOnly factDate)
     {
         await connection.ExecuteAsync(
@@ -208,6 +215,47 @@ public sealed class SponsorAnalyticsWriter(
                 clicks = sponsor_daily_totals.clicks + EXCLUDED.clicks
             """,
             new { request.SponsorId, FactDate = factDate, request.EventType }, transaction);
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO public.sponsor_placement_daily_stats (sponsor_id, stat_date, placement, impressions, clicks)
+            VALUES (@SponsorId, @FactDate, @Placement,
+                    CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
+                    CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
+            ON CONFLICT (sponsor_id, stat_date, placement) DO UPDATE SET
+                impressions = sponsor_placement_daily_stats.impressions + EXCLUDED.impressions,
+                clicks = sponsor_placement_daily_stats.clicks + EXCLUDED.clicks
+            """,
+            new { request.SponsorId, FactDate = factDate, request.Placement, request.EventType }, transaction);
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO public.sponsor_device_daily_stats (sponsor_id, stat_date, device_class, impressions, clicks)
+            VALUES (@SponsorId, @FactDate, @DeviceClass,
+                    CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
+                    CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
+            ON CONFLICT (sponsor_id, stat_date, device_class) DO UPDATE SET
+                impressions = sponsor_device_daily_stats.impressions + EXCLUDED.impressions,
+                clicks = sponsor_device_daily_stats.clicks + EXCLUDED.clicks
+            """,
+            new { request.SponsorId, FactDate = factDate, DeviceClass = deviceClass, request.EventType }, transaction);
+
+        if (request.TournamentId is not null || pagePath is not null)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO public.sponsor_content_daily_stats
+                    (sponsor_id, stat_date, tournament_id, page_path, impressions, clicks)
+                VALUES (@SponsorId, @FactDate, @TournamentId, @PagePath,
+                        CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
+                        CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
+                ON CONFLICT ON CONSTRAINT sponsor_content_daily_stats_pk DO UPDATE SET
+                    impressions = sponsor_content_daily_stats.impressions + EXCLUDED.impressions,
+                    clicks = sponsor_content_daily_stats.clicks + EXCLUDED.clicks
+                """,
+                new { request.SponsorId, FactDate = factDate, request.TournamentId, PagePath = pagePath, request.EventType },
+                transaction);
+        }
     }
 
     private async Task<DemographicSnapshot> ResolveDemographicsAsync(
