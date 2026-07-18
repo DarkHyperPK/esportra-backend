@@ -213,19 +213,6 @@ Authorization: Bearer {{jwt}}
 
 ###
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 16. METRICS — Record Metric  (POST /api/metrics)
-# Expected: 200 { message: "Metric recorded." }
-# Check sponsor_metrics table in Supabase for a new row with geoip + visitor_id
-# ─────────────────────────────────────────────────────────────────────────────
-POST {{base}}/api/metrics
-Content-Type: application/json
-
-{
-  "sponsorId": "{{sponsorId}}",
-  "eventType": "impression",
-  "pageUrl": "https://esportra.com/tournaments/test-slug"
-}
 
 ###
 
