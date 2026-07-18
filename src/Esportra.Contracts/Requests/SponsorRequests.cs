@@ -20,7 +20,3 @@ public sealed record OnboardingStepRequest(
     int NextStep);
 
 public sealed record OnboardingCompleteRequest(bool AcceptLegalTerms, string TermsVersion);
-
-public sealed record TrackSponsorImpressionRequest(
-    [property: JsonPropertyName("sponsor_id")] string SponsorId,
-    [property: JsonPropertyName("event_type")] string EventType);

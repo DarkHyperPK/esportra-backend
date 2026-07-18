@@ -61,11 +61,9 @@ public static class RoutePermissionManifest
         // Public bracket share
         P("GET",  "/api/tools/brackets/share/{*}"),
 
-        // Anonymous analytics + metrics
+        // Anonymous analytics
         P("POST", "/api/analytics/events"),
-        P("POST", "/api/metrics"),
         P("POST", "/api/sponsor-analytics/events"),
-        P("GET",  "/api/metrics/{*}"),
 
         // MatchZy M2M endpoints (secret-based, not JWT)
         P("GET",  "/api/matchzy/{*}"),

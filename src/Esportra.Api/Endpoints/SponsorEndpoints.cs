@@ -91,31 +91,30 @@ public static class SponsorEndpoints
                 if (sponsor is null)
                     return Results.NotFound(new { error = "Sponsor not found." });
 
-                // 3. Get stats (impression + click counts)
-                var impressionCount = await conn.ExecuteScalarAsync<long>(
+                // 3. Get stats from new analytics tables
+                var parsedSponsorId = Guid.Parse(sponsorId);
+                var totals = await conn.QuerySingleAsync<(long Impressions, long Clicks)>(
                     """
-                SELECT COUNT(*) FROM sponsor_impressions
-                WHERE sponsor_id = @sponsorId AND event_type = 'impression'
-                """,
-                    new { sponsorId = Guid.Parse(sponsorId) });
+                    SELECT COALESCE(SUM(impressions), 0) AS Impressions,
+                           COALESCE(SUM(clicks), 0) AS Clicks
+                    FROM public.sponsor_daily_totals
+                    WHERE sponsor_id = @sid
+                    """,
+                    new { sid = parsedSponsorId });
 
-                var clickCount = await conn.ExecuteScalarAsync<long>(
-                    """
-                SELECT COUNT(*) FROM sponsor_impressions
-                WHERE sponsor_id = @sponsorId AND event_type = 'click'
-                """,
-                    new { sponsorId = Guid.Parse(sponsorId) });
+                var impressionCount = totals.Impressions;
+                var clickCount = totals.Clicks;
 
                 // 4. Get daily history (last 90 days)
                 var dailyStats = await conn.QueryAsync<dynamic>(
                     """
-                SELECT stat_date, impressions, clicks, unique_impressions
-                FROM daily_sponsor_stats
-                WHERE sponsor_id = @sponsorId
-                ORDER BY stat_date ASC
-                LIMIT 90
-                """,
-                    new { sponsorId = Guid.Parse(sponsorId) });
+                    SELECT stat_date, impressions, clicks
+                    FROM public.sponsor_daily_totals
+                    WHERE sponsor_id = @sid
+                      AND stat_date >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY stat_date ASC
+                    """,
+                    new { sid = parsedSponsorId });
 
                 var history = dailyStats.Select(r => new
                 {
@@ -123,7 +122,7 @@ public static class SponsorEndpoints
                         ? d.ToString("yyyy-MM-dd")
                         : ((DateTime)r.stat_date).ToString("yyyy-MM-dd"),
                     impressions = (long)r.impressions,
-                    uniqueImpressions = (long)r.unique_impressions,
+                    uniqueImpressions = 0L,
                     clicks = (long)r.clicks,
                 }).ToList();
 
@@ -239,67 +238,6 @@ public static class SponsorEndpoints
             }
         }).RequireAuthorization("Authenticated");
 
-        // ── GET /api/sponsors/me/demographics ────────────────────────────────
-        app.MapGet("/api/sponsors/me/demographics", async (
-            HttpContext ctx,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
-            using var conn = db.CreateConnection();
-
-            var sponsorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT sponsor_id FROM sponsor_accounts WHERE user_id = @userId AND status = 'active' LIMIT 1",
-                new { userId = userCtx.UserIdGuid });
-
-            if (sponsorId is null)
-                return Results.NotFound(new { error = "No sponsor account linked." });
-
-            var rows = await conn.QueryAsync<dynamic>(
-                """
-                SELECT metadata
-                FROM sponsor_impressions
-                WHERE sponsor_id = @sponsorId AND event_type = 'impression'
-                """,
-                new { sponsorId = sponsorId.Value });
-
-            var countryMap = new Dictionary<string, int>();
-            var ageMap = new Dictionary<string, int>();
-
-            foreach (var row in rows)
-            {
-                string? metaJson = row.metadata?.ToString();
-                if (string.IsNullOrEmpty(metaJson)) continue;
-
-                try
-                {
-                    using var doc = JsonDocument.Parse(metaJson);
-                    var root = doc.RootElement;
-
-                    var country = root.TryGetProperty("country", out var c) ? c.GetString() ?? "Unknown" : "Unknown";
-                    var ageGroup = root.TryGetProperty("age_group", out var a) ? a.GetString() ?? "Unknown" : "Unknown";
-
-                    countryMap[country] = countryMap.GetValueOrDefault(country) + 1;
-                    ageMap[ageGroup] = ageMap.GetValueOrDefault(ageGroup) + 1;
-                }
-                catch { /* skip malformed metadata */ }
-            }
-
-            return Results.Ok(new
-            {
-                countries = countryMap
-                    .Select(kv => new { name = kv.Key, count = kv.Value })
-                    .OrderByDescending(x => x.count)
-                    .Take(8)
-                    .ToList(),
-                ageGroups = ageMap
-                    .Select(kv => new { group = kv.Key, count = kv.Value })
-                    .OrderByDescending(x => x.count)
-                    .ToList(),
-            });
-        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/sponsors/me/onboarding ──────────────────────────────────
         app.MapGet("/api/sponsors/me/onboarding", async (

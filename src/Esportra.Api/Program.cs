@@ -313,6 +313,9 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<SponsorAnalyticsIdentity>();
 builder.Services.AddScoped<SponsorAnalyticsWriter>();
 builder.Services.AddScoped<SponsorAudienceReportService>();
+builder.Services.AddScoped<SponsorPerformanceReportService>();
+builder.Services.AddScoped<SponsorAnalyticsExportService>();
+builder.Services.AddHostedService<SponsorAnalyticsExportJob>();
 builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
     .Bind(builder.Configuration.GetSection(Esportra.Api.Auth.RecoveryOptions.SectionName))
     .Validate(options => Uri.TryCreate(options.MainRedirectUrl, UriKind.Absolute, out _),
@@ -335,11 +338,6 @@ builder.Services.AddSingleton<OAuthStateProtector>();
 // Generic HttpClient for use in endpoints (Riot OAuth flows)
 builder.Services.AddHttpClient();
 
-// Named GeoIP client for MetricEndpoints
-builder.Services.AddHttpClient("GeoIP", http =>
-{
-    http.Timeout = TimeSpan.FromSeconds(3);
-});
 
 // Named VenueHub client for venue-hub inter-service calls
 builder.Services.AddHttpClient("VenueHub", http =>
@@ -592,7 +590,6 @@ app.MapSteamAccountEndpoints();
 app.MapGameEndpoints();
 app.MapGameCatalogAdminEndpoints();
 app.MapGameMapAdminEndpoints();
-app.MapMetricEndpoints();
 app.MapSponsorAnalyticsEndpoints();
 app.MapMatchEndpoints();
 app.MapBracketEndpoints();
