@@ -5,8 +5,11 @@ public sealed record PlacementDto(
     Guid SponsorId,
     Guid? TournamentId,
     string PlacementZone,
+    int? SlotNumber,
     string? BannerUrl,
+    Guid? BannerAssetId,
     string? LogoUrl,
+    Guid? LogoAssetId,
     string? Headline,
     string? CtaText,
     string? CtaUrl,
@@ -15,11 +18,21 @@ public sealed record PlacementDto(
     DateTimeOffset? StartsAt,
     DateTimeOffset? EndsAt,
     DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    string Lifecycle,
+    string? ReviewReason,
     string SponsorName,
     string? SponsorTier,
     string? SponsorLogoUrl,
     string? SponsorWebsiteUrl,
     string? TournamentName);
+
+public sealed record PlacementPageDto(
+    IReadOnlyList<PlacementDto> Items,
+    int Page,
+    int PageSize,
+    long Total,
+    IReadOnlyDictionary<string, int> StatusCounts);
 
 public sealed record TournamentSponsorLinkDto(
     [property: System.Text.Json.Serialization.JsonPropertyName("id")] string Id,
@@ -28,6 +41,10 @@ public sealed record TournamentSponsorLinkDto(
     [property: System.Text.Json.Serialization.JsonPropertyName("placement_zones")] IReadOnlyList<string> PlacementZones,
     [property: System.Text.Json.Serialization.JsonPropertyName("media_overrides")] Dictionary<string, string>? MediaOverrides,
     [property: System.Text.Json.Serialization.JsonPropertyName("priority")] int Priority,
+    [property: System.Text.Json.Serialization.JsonPropertyName("slot_number")] int SlotNumber,
+    [property: System.Text.Json.Serialization.JsonPropertyName("headline")] string? Headline,
+    [property: System.Text.Json.Serialization.JsonPropertyName("cta_text")] string? CtaText,
+    [property: System.Text.Json.Serialization.JsonPropertyName("cta_url")] string? CtaUrl,
     [property: System.Text.Json.Serialization.JsonPropertyName("sponsor")] TournamentSponsorDto Sponsor);
 
 public sealed record TournamentSponsorDto(
@@ -46,6 +63,7 @@ public sealed record GlobalPlacementDto(
     Guid Id,
     Guid SponsorId,
     string PlacementZone,
+    int SlotNumber,
     string? BannerUrl,
     string? LogoUrl,
     string? Headline,
