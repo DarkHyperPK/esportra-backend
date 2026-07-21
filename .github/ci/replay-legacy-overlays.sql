@@ -73,6 +73,23 @@ BEGIN
   END IF;
 END $$;
 
+-- ── Audit logs columns (used by 20260409100000, 20260626000000) ────────────
+ALTER TABLE public.audit_logs
+  ADD COLUMN IF NOT EXISTS target_type TEXT,
+  ADD COLUMN IF NOT EXISTS target_id UUID,
+  ADD COLUMN IF NOT EXISTS action_type TEXT,
+  ADD COLUMN IF NOT EXISTS admin_id UUID,
+  ADD COLUMN IF NOT EXISTS details JSONB,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+ALTER TABLE public.staff_audit_log
+  ADD COLUMN IF NOT EXISTS target_type TEXT,
+  ADD COLUMN IF NOT EXISTS target_id UUID,
+  ADD COLUMN IF NOT EXISTS action TEXT,
+  ADD COLUMN IF NOT EXISTS details JSONB,
+  ADD COLUMN IF NOT EXISTS actor_id UUID,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
 -- ── Organization staff (20260325140000, 20260325150000, 20260702100000) ────
 CREATE TABLE IF NOT EXISTS public.organization_staff (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

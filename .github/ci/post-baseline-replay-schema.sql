@@ -484,6 +484,15 @@ ALTER TABLE public.audit_logs
   ADD COLUMN IF NOT EXISTS target_id UUID,
   ADD COLUMN IF NOT EXISTS action_type TEXT,
   ADD COLUMN IF NOT EXISTS admin_id UUID,
+  ADD COLUMN IF NOT EXISTS details JSONB,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+ALTER TABLE public.staff_audit_log
+  ADD COLUMN IF NOT EXISTS target_type TEXT,
+  ADD COLUMN IF NOT EXISTS target_id UUID,
+  ADD COLUMN IF NOT EXISTS action TEXT,
+  ADD COLUMN IF NOT EXISTS details JSONB,
+  ADD COLUMN IF NOT EXISTS actor_id UUID,
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
 -- ── Partner sponsor onboarding (legacy tables used by 20260714110000) ──────
