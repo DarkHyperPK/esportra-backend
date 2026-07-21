@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS auth.users (
 -- Public schema from staging pg_dump:
 HEADER
 
-grep -v "^--\|^SET \|^SELECT pg_catalog\|^ALTER.*OWNER TO\|^GRANT\|^REVOKE\|^\\\\connect\|^CREATE SCHEMA IF NOT EXISTS public" \
+grep -v "^--\|^SET \|^SELECT pg_catalog\|^ALTER.*OWNER TO\|^GRANT\|^REVOKE\|^\\\\connect\|^CREATE SCHEMA public\|^CREATE SCHEMA IF NOT EXISTS public" \
   /tmp/staging_public_raw.sql >> "${SCHEMA_OUT}"
 
 echo "Wrote ${SCHEMA_OUT} ($(wc -l < "${SCHEMA_OUT}") lines)"

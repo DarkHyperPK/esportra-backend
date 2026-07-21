@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS auth.users (
 );
 
 -- ── Public schema (complete pg_dump from staging) ────────────────────────────
-CREATE SCHEMA public;
 
 CREATE TYPE public.app_role AS ENUM (
     'casual',
