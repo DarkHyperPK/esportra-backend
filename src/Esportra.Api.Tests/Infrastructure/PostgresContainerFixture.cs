@@ -1,5 +1,5 @@
+using DbUp;
 using Esportra.Infrastructure.Migrations;
-using Microsoft.Extensions.Logging.Abstractions;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -27,24 +27,33 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
 
     private void RunMigrations()
     {
-        var runner = new MigrationRunner(ConnectionString, NullLogger<MigrationRunner>.Instance);
-        var success = runner.Run();
-        if (!success) throw new InvalidOperationException("Test database migration failed.");
+        var upgrader = DbUp.DeployChanges.To
+            .PostgresqlDatabase(ConnectionString)
+            .WithScriptsEmbeddedInAssembly(
+                typeof(MigrationRunner).Assembly,
+                s => s.Contains(".Migrations.Scripts."))
+            .WithTransactionPerScript()
+            .WithVariablesDisabled()
+            .LogToConsole()
+            .Build();
+
+        var result = upgrader.PerformUpgrade();
+        if (!result.Successful)
+            throw new InvalidOperationException(
+                $"Test migration failed on: {result.ErrorScript?.Name ?? "unknown"}. Error: {result.Error?.Message}",
+                result.Error);
     }
 
     private async Task ApplyBootstrapSchemaAsync()
     {
         var bootstrapPath = FindProjectFile(".github/ci/post-baseline-replay-schema.sql");
         var journalPath = FindProjectFile(".github/ci/replay-journal-seed.sql");
-        var overlayPath = FindProjectFile(".github/ci/replay-legacy-overlays.sql");
 
         await using var connection = new Npgsql.NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
 
         if (File.Exists(bootstrapPath))
             await ExecuteSqlFileAsync(connection, bootstrapPath);
-        if (File.Exists(overlayPath))
-            await ExecuteSqlFileAsync(connection, overlayPath);
         if (File.Exists(journalPath))
             await ExecuteSqlFileAsync(connection, journalPath);
     }
