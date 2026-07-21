@@ -17,13 +17,19 @@ if ! command -v psql >/dev/null 2>&1; then
   sudo apt-get install -y postgresql-client
 fi
 
-EXPECTED="$(find "${SCRIPTS_DIR}" -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')"
-ACTUAL="$(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tAc \
-  'SELECT COUNT(*) FROM schemaversions;' | tr -d ' ')"
+EXPECTED_FILE="$(mktemp)"
+ACTUAL_FILE="$(mktemp)"
+trap 'rm -f "${EXPECTED_FILE}" "${ACTUAL_FILE}"' EXIT
 
-if [[ "${ACTUAL}" != "${EXPECTED}" ]]; then
-  echo "ERROR: schemaversions count mismatch (expected ${EXPECTED}, got ${ACTUAL})" >&2
+find "${SCRIPTS_DIR}" -maxdepth 1 -name '*.sql' -printf '%f\n' | sort > "${EXPECTED_FILE}"
+psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tAc \
+  'SELECT regexp_replace(scriptname, ''^.*\.'', '''') FROM schemaversions ORDER BY 1;' \
+  | sed '/^[[:space:]]*$/d' | sort > "${ACTUAL_FILE}"
+
+if ! diff -u "${EXPECTED_FILE}" "${ACTUAL_FILE}"; then
+  echo "ERROR: schemaversions does not exactly match migration scripts" >&2
   exit 1
 fi
 
-echo "Migration replay complete: ${ACTUAL}/${EXPECTED} scripts journaled."
+ACTUAL="$(wc -l < "${ACTUAL_FILE}" | tr -d ' ')"
+echo "Migration replay complete: ${ACTUAL} exact scripts journaled."

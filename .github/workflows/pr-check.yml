@@ -65,13 +65,9 @@ jobs:
           path: "**/TestResults/*.trx"
           retention-days: 7
 
-  # TEMPORARILY DISABLED: Migration replay needs CI fixtures updated with all
-  # legacy columns/tables from Supabase. Track in GitHub issue.
-  # See: docs/infrastructure-audit-2026-07-09.md for known issues.
-  migration-replay-disabled:
-    name: Migration Replay (Disabled)
+  migration-replay:
+    name: Migration Lint & Replay
     runs-on: ubuntu-latest
-    if: false  # Disabled until CI fixtures are complete
     services:
       postgres:
         image: postgres:16
@@ -93,6 +89,17 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
+
+      - name: Lint migrations
+        run: |
+          python .github/scripts/lint-migrations.py
+          python .github/scripts/lint-prod-table-references.py
+
+      - name: Verify generated replay fixtures
+        run: |
+          python .github/scripts/audit-replay-legacy-deps.py --check
+          python .github/scripts/generate-post-baseline-replay-schema.py --check
+          python .github/scripts/generate-replay-journal-seed.py --check
 
       - name: Apply replay fixture
         run: bash .github/scripts/apply-replay-bootstrap.sh

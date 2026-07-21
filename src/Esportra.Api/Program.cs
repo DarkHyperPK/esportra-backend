@@ -316,6 +316,8 @@ builder.Services.AddScoped<SponsorAudienceReportService>();
 builder.Services.AddScoped<SponsorPerformanceReportService>();
 builder.Services.AddScoped<SponsorAnalyticsExportService>();
 builder.Services.AddHostedService<SponsorAnalyticsExportJob>();
+builder.Services.AddScoped<SponsorAssetCleanupService>();
+builder.Services.AddHostedService<SponsorAssetCleanupJob>();
 builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
     .Bind(builder.Configuration.GetSection(Esportra.Api.Auth.RecoveryOptions.SectionName))
     .Validate(options => Uri.TryCreate(options.MainRedirectUrl, UriKind.Absolute, out _),
@@ -617,6 +619,7 @@ app.MapMessagingEndpoints();
 app.MapVetoEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
+app.MapSponsorPlacementAssetEndpoints();
 app.MapSponsorEndpoints();
 app.MapTournamentSponsorEndpoints();
 app.MapSitemapEndpoints();
@@ -683,4 +686,7 @@ catch (Exception ex)
     Console.Out.Flush();
     throw;
 }
+
+public partial class Program;
+
 

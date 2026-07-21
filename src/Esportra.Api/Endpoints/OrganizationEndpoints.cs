@@ -752,9 +752,20 @@ public static class OrganizationEndpoints
                        (SELECT COUNT(*) FROM tournament_participants tp
                         WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
                        o.name   AS organizer_name,
-                       o.slug   AS organization_slug
+                       o.slug   AS organization_slug,
+                       badge.id AS card_badge_placement_id, badge.sponsor_id AS card_badge_sponsor_id,
+                       badge.sponsor_name AS card_badge_sponsor_name, badge.logo_url AS card_badge_logo_url,
+                       badge.headline AS card_badge_headline, badge.cta_url AS card_badge_cta_url
                 FROM tournaments t
                 LEFT JOIN organizations o ON o.id = t.organization_id
+                                LEFT JOIN LATERAL (
+                                        SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                                        FROM sponsor_placements sp JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                                        WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge' AND sp.slot_number = 1
+                                            AND sp.is_active = true AND sp.review_reason IS NULL AND sp.logo_asset_id IS NOT NULL
+                                            AND (sp.starts_at IS NULL OR sp.starts_at <= NOW()) AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                                        ORDER BY sp.priority DESC, sp.created_at ASC LIMIT 1
+                                ) badge ON true
                 WHERE t.organization_id = @orgId
                   AND {lifecycleFilter}
                   {visibilityFilter}

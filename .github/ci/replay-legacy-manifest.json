@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 199,
+  "postBaselineScriptCount": 205,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -510,6 +510,14 @@
         "role",
         "user_id"
       ]
+    },
+    "ranked": {
+      "firstSeenIn": "20260719120000_slot_based_sponsor_placements.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": []
     },
     "ranked_accounts": {
       "firstSeenIn": "20260716120000_partner_management_mvp.sql",

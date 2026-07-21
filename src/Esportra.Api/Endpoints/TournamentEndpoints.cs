@@ -102,7 +102,13 @@ public static class TournamentEndpoints
         string? WinnerTeamName = null,
         string? VenueCity = null,
         string? VenueCountry = null,
-        string? GameBackgroundImage = null
+        string? GameBackgroundImage = null,
+        Guid? CardBadgePlacementId = null,
+        Guid? CardBadgeSponsorId = null,
+        string? CardBadgeSponsorName = null,
+        string? CardBadgeLogoUrl = null,
+        string? CardBadgeHeadline = null,
+        string? CardBadgeCtaUrl = null
     );
 
     private const string TournamentListSql = """
@@ -122,7 +128,13 @@ public static class TournamentEndpoints
                COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                v.city   AS venue_city,
                v.country AS venue_country,
-               gm.background_image AS game_background_image
+               gm.background_image AS game_background_image,
+               badge.id AS card_badge_placement_id,
+               badge.sponsor_id AS card_badge_sponsor_id,
+               badge.sponsor_name AS card_badge_sponsor_name,
+               badge.logo_url AS card_badge_logo_url,
+               badge.headline AS card_badge_headline,
+               badge.cta_url AS card_badge_cta_url
         FROM tournaments t
         LEFT JOIN organizations o  ON o.id  = t.organization_id
         LEFT JOIN profiles      p  ON p.id  = t.organizer_id
@@ -131,6 +143,17 @@ public static class TournamentEndpoints
         LEFT JOIN profiles wp ON wp.id = wtp.user_id
         LEFT JOIN venues        v  ON v.id  = t.venue_id
         LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
+                LEFT JOIN LATERAL (
+                        SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                        FROM sponsor_placements sp
+                        JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                        WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge'
+                            AND sp.slot_number = 1 AND sp.is_active = true AND sp.review_reason IS NULL
+                            AND COALESCE(sp.logo_url, '') <> ''
+                            AND (sp.starts_at IS NULL OR sp.starts_at <= NOW())
+                            AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                        LIMIT 1
+                ) badge ON true
         WHERE t.deleted_at IS NULL
           AND (t.is_public = TRUE OR t.organizer_id = @organizerGuid)
           AND (@status IS NULL OR t.status::text = @status)
@@ -214,7 +237,10 @@ public static class TournamentEndpoints
                            COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                            v.city   AS venue_city,
                            v.country AS venue_country,
-                           gm.background_image AS game_background_image
+                           gm.background_image AS game_background_image,
+                           badge.id AS card_badge_placement_id, badge.sponsor_id AS card_badge_sponsor_id,
+                           badge.sponsor_name AS card_badge_sponsor_name, badge.logo_url AS card_badge_logo_url,
+                           badge.headline AS card_badge_headline, badge.cta_url AS card_badge_cta_url
                     FROM tournaments t
                     LEFT JOIN organizations o  ON o.id  = t.organization_id
                     LEFT JOIN profiles      p  ON p.id  = t.organizer_id
@@ -223,6 +249,14 @@ public static class TournamentEndpoints
                     LEFT JOIN profiles wp ON wp.id = wtp.user_id
                     LEFT JOIN venues        v  ON v.id  = t.venue_id
                     LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
+                                        LEFT JOIN LATERAL (
+                                                SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                                                FROM sponsor_placements sp JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                                                WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge' AND sp.slot_number = 1
+                                                    AND sp.is_active = true AND sp.review_reason IS NULL AND sp.logo_asset_id IS NOT NULL
+                                                    AND (sp.starts_at IS NULL OR sp.starts_at <= NOW()) AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                                                ORDER BY sp.priority DESC, sp.created_at ASC LIMIT 1
+                                        ) badge ON true
                     WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
                     ORDER BY t.start_date ASC
                     """,
@@ -313,7 +347,10 @@ public static class TournamentEndpoints
                                p.full_name  AS organizer_full_name,
                                COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                                v.city   AS venue_city,
-                               v.country AS venue_country
+                               v.country AS venue_country,
+                               badge.id AS card_badge_placement_id, badge.sponsor_id AS card_badge_sponsor_id,
+                               badge.sponsor_name AS card_badge_sponsor_name, badge.logo_url AS card_badge_logo_url,
+                               badge.headline AS card_badge_headline, badge.cta_url AS card_badge_cta_url
                         FROM tournaments t
                         LEFT JOIN organizations o ON o.id = t.organization_id
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
@@ -321,6 +358,14 @@ public static class TournamentEndpoints
                         LEFT JOIN tournament_participants wtp ON wtp.id = t.winner_id
                         LEFT JOIN profiles wp ON wp.id = wtp.user_id
                         LEFT JOIN venues        v ON v.id  = t.venue_id
+                                                LEFT JOIN LATERAL (
+                                                        SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                                                        FROM sponsor_placements sp JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                                                        WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge' AND sp.slot_number = 1
+                                                            AND sp.is_active = true AND sp.review_reason IS NULL AND sp.logo_asset_id IS NOT NULL
+                                                            AND (sp.starts_at IS NULL OR sp.starts_at <= NOW()) AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                                                        ORDER BY sp.priority DESC, sp.created_at ASC LIMIT 1
+                                                ) badge ON true
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND t.status::text IN ('published', 'open', 'check_in')
