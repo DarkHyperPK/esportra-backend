@@ -41,10 +41,10 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         await using var connection = new Npgsql.NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
 
-        if (File.Exists(overlayPath))
-            await ExecuteSqlFileAsync(connection, overlayPath);
         if (File.Exists(bootstrapPath))
             await ExecuteSqlFileAsync(connection, bootstrapPath);
+        if (File.Exists(overlayPath))
+            await ExecuteSqlFileAsync(connection, overlayPath);
         if (File.Exists(journalPath))
             await ExecuteSqlFileAsync(connection, journalPath);
     }
