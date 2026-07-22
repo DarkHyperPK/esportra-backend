@@ -1,14 +1,19 @@
 -- CI post-baseline replay schema — pg_dump from staging.
 -- DO NOT EDIT BY HAND. Regenerate: bash .github/scripts/dump-replay-schema.sh
 
+-- ── Supabase platform prerequisites ──────────────────────────────────────────
+-- These exist in every Supabase instance but not in vanilla Postgres.
+
+-- Schemas
 CREATE SCHEMA IF NOT EXISTS auth;
 CREATE SCHEMA IF NOT EXISTS storage;
 CREATE SCHEMA IF NOT EXISTS extensions;
 
+-- Extensions (only those referenced by public schema objects)
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 
--- Supabase roles referenced by RLS policies
+-- Roles (referenced by RLS policies in the dump)
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     CREATE ROLE anon NOLOGIN;
@@ -21,11 +26,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Disable function body validation during restore (functions may reference
--- tables that appear later in the dump due to pg_dump ordering limitations).
-SET check_function_bodies = off;
-
--- auth.users stub (FK target for public tables)
+-- auth.users (FK target for public.profiles, user_roles, etc.)
 CREATE TABLE IF NOT EXISTS auth.users (
     id uuid NOT NULL PRIMARY KEY,
     email character varying(255),
@@ -33,7 +34,33 @@ CREATE TABLE IF NOT EXISTS auth.users (
     deleted_at timestamp with time zone
 );
 
--- Public schema from staging pg_dump:
+-- auth helper functions (referenced by RLS policies)
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+    LANGUAGE sql STABLE
+    AS $$ SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid; $$;
+
+CREATE OR REPLACE FUNCTION auth.role() RETURNS text
+    LANGUAGE sql STABLE
+    AS $$ SELECT COALESCE(current_setting('request.jwt.claim.role', true), 'anon'); $$;
+
+CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$ SELECT '{}'::jsonb; $$;
+
+-- storage.objects (referenced by functions via %ROWTYPE)
+CREATE TABLE IF NOT EXISTS storage.objects (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    bucket_id text,
+    name text,
+    owner uuid,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+-- Disable function body validation (functions may reference tables
+-- that appear later in the dump due to pg_dump ordering limitations).
+SET check_function_bodies = off;
+
+-- ── Public schema from staging pg_dump ───────────────────────────────────────
 
 
 
