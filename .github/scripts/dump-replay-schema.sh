@@ -43,6 +43,10 @@ CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 
+-- Disable function body validation during restore (functions may reference
+-- tables that appear later in the dump due to pg_dump ordering limitations).
+SET check_function_bodies = off;
+
 -- auth.users stub (FK target for public tables)
 CREATE TABLE IF NOT EXISTS auth.users (
     id uuid NOT NULL PRIMARY KEY,
