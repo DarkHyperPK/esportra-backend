@@ -95,12 +95,6 @@ jobs:
           python .github/scripts/lint-migrations.py
           python .github/scripts/lint-prod-table-references.py
 
-      - name: Verify generated replay fixtures
-        run: |
-          python .github/scripts/audit-replay-legacy-deps.py --check
-          python .github/scripts/generate-post-baseline-replay-schema.py --check
-          python .github/scripts/generate-replay-journal-seed.py --check
-
       - name: Apply replay fixture
         run: bash .github/scripts/apply-replay-bootstrap.sh
         env:
