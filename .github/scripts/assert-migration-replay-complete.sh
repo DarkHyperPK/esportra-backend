@@ -22,8 +22,8 @@ ACTUAL_FILE="$(mktemp)"
 trap 'rm -f "${EXPECTED_FILE}" "${ACTUAL_FILE}"' EXIT
 
 find "${SCRIPTS_DIR}" -maxdepth 1 -name '*.sql' -printf '%f\n' | sort > "${EXPECTED_FILE}"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tAc \
-  'SELECT regexp_replace(scriptname, ''^.*\.'', '''') FROM schemaversions ORDER BY 1;' \
+psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tA \
+  -c "SELECT regexp_replace(scriptname, '^.*\.', '') FROM schemaversions ORDER BY 1;" \
   | sed '/^[[:space:]]*$/d' | sort > "${ACTUAL_FILE}"
 
 if ! diff -u "${EXPECTED_FILE}" "${ACTUAL_FILE}"; then
