@@ -358,8 +358,17 @@ public static class StorageEndpoints
                     services);
             }
 
-            return string.IsNullOrWhiteSpace(normalizedFolder)
-                || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(normalizedFolder)
+                || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Allow known avatar folders (files are namespaced by userId in filename)
+            if (bucket.Equals("users.avatars", StringComparison.OrdinalIgnoreCase)
+                && (normalizedFolder.Equals("profile-pictures", StringComparison.OrdinalIgnoreCase)
+                    || normalizedFolder.Equals("avatars", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            return false;
         }
 
         return true;

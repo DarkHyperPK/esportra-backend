@@ -157,13 +157,17 @@ public static class ProfileEndpoints
                     $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
                     parameters);
             }
+            catch (PostgresException ex) when (ex.SqlState == "23505")
+            {
+                return Results.Conflict(new { error = "Username already taken." });
+            }
             catch (PostgresException ex) when (ex.SqlState is "22007" or "22008")
             {
                 return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
             }
-            catch (PostgresException ex)
+            catch (PostgresException)
             {
-                return Results.BadRequest(new { error = $"Profile update failed: {ex.MessageText}" });
+                return Results.BadRequest(new { error = "Profile update failed." });
             }
 
             if (row is null) return Results.NotFound();
