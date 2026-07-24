@@ -1711,6 +1711,12 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
+            var checkInEnabled = await conn.ExecuteScalarAsync<bool>(
+                "SELECT COALESCE(check_in_required, false) FROM tournaments WHERE id = @id",
+                new { id });
+            if (!checkInEnabled)
+                return Results.BadRequest(new { error = "Check-in is not enabled for this tournament." });
+
             var updated = await conn.ExecuteAsync(
                 """
                 UPDATE tournament_participants
@@ -1879,6 +1885,12 @@ public static class TournamentEndpoints
                 "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isOwner) return Results.Forbid();
+
+            var checkInEnabled = await conn.ExecuteScalarAsync<bool>(
+                "SELECT COALESCE(check_in_required, false) FROM tournaments WHERE id = @id",
+                new { id });
+            if (!checkInEnabled)
+                return Results.BadRequest(new { error = "Check-in is not enabled for this tournament." });
 
             var removed = await conn.ExecuteAsync(
                 """
@@ -4286,7 +4298,7 @@ public static class TournamentEndpoints
                 logger.LogInformation("[mock/generate] Fetching tournament {Id}", id);
 
                 var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT organizer_id, status, is_public, max_teams, team_size, game, format FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
+                    "SELECT organizer_id, status, is_public, max_teams, team_size, game, format, check_in_required FROM tournaments WHERE id = @id AND deleted_at IS NULL FOR UPDATE",
                     new { id }, tx);
                 if (tournament is null) return Results.NotFound();
                 if ((Guid)tournament.organizer_id != userCtx.UserIdGuid && !StaffAuthHelper.IsPlatformAdmin(userCtx))
@@ -4345,7 +4357,7 @@ public static class TournamentEndpoints
                     tournamentId = id,
                     teamName = r.TeamName,
                     participantType,
-                    mockStatus = "checked_in",
+                    mockStatus = (bool)(tournament.check_in_required ?? false) ? "checked_in" : "approved",
                 }).ToList();
 
                 await TeamCreationHelper.UpsertMockTeamsAsync(conn, tx, rows);
@@ -4356,7 +4368,7 @@ public static class TournamentEndpoints
                         (id, tournament_id, team_id, team_name, participant_type, status, is_mock, checked_in_at, created_at, updated_at)
                     VALUES
                         (@mockId, @tournamentId, @mockId, @teamName, @participantType::registration_type,
-                         @mockStatus::registration_status, TRUE, NOW(), NOW(), NOW())
+                         @mockStatus::registration_status, TRUE, CASE WHEN @mockStatus = 'checked_in' THEN NOW() ELSE NULL END, NOW(), NOW())
                     """,
                     participantRows, tx);
 
