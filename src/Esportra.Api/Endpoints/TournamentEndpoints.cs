@@ -65,6 +65,17 @@ public static class TournamentEndpoints
         };
     }
 
+    private static string? ReconcileEffectiveStatus(string? status, DateTimeOffset? startDate, DateTimeOffset? endDate)
+    {
+        if (string.IsNullOrEmpty(status)) return null;
+        var now = DateTimeOffset.UtcNow;
+        if (status is "open" or "published" or "check_in" && startDate is not null && now >= startDate)
+            return "ongoing";
+        if (status is "ongoing" && endDate is not null && now >= endDate)
+            return "completed";
+        return status;
+    }
+
     /// Typed DTOfor tournament list rows — required so HybridCache (System.Text.Json) can
     /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
     /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
@@ -112,7 +123,13 @@ public static class TournamentEndpoints
     );
 
     private const string TournamentListSql = """
-        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+        SELECT t.id, t.name, t.slug, t.game,
+               CASE
+                   WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                   WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                   ELSE t.status::text
+               END AS status,
+               t.format, t.game_mode,
                t.start_date, t.end_date, t.registration_deadline,
                t.max_teams, t.min_teams, t.team_size,
                t.entry_fee, t.prize_pool,
@@ -167,9 +184,12 @@ public static class TournamentEndpoints
           AND (@country IS NULL OR v.country ILIKE '%' || @country || '%')
           AND (@region  IS NULL OR t.region = @region)
           AND (@statusGroup IS NULL OR (
-               (@statusGroup = 'upcoming'  AND t.status::text IN ('published', 'open', 'check_in', 'closed'))
-            OR (@statusGroup = 'live'      AND t.status::text = 'ongoing')
-            OR (@statusGroup = 'completed' AND t.status::text = 'completed')
+               (@statusGroup = 'upcoming'  AND t.status::text IN ('published', 'open', 'check_in', 'closed')
+                                           AND (t.start_date IS NULL OR t.start_date > NOW()))
+            OR (@statusGroup = 'live'      AND (t.status::text = 'ongoing'
+                                           OR (t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW())))
+            OR (@statusGroup = 'completed' AND (t.status::text = 'completed'
+                                           OR (t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW())))
             OR (@statusGroup = 'cancelled'  AND t.status::text = 'cancelled')
           ))
         """;
@@ -221,7 +241,13 @@ public static class TournamentEndpoints
                 using var conn2 = db.CreateConnection();
                 var rows2 = (await conn2.QueryAsync<TournamentListRow>(
                     """
-                    SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                    SELECT t.id, t.name, t.slug, t.game,
+                           CASE
+                               WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                               WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                               ELSE t.status::text
+                           END AS status,
+                           t.format, t.game_mode,
                            t.start_date, t.end_date, t.registration_deadline,
                            t.max_teams, t.min_teams, t.team_size,
                            t.entry_fee, t.prize_pool,
@@ -332,7 +358,13 @@ public static class TournamentEndpoints
                     using var conn = db.CreateConnection();
                     return (await conn.QueryAsync<TournamentListRow>(
                         """
-                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                        SELECT t.id, t.name, t.slug, t.game,
+                               CASE
+                                   WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                                   WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                                   ELSE t.status::text
+                               END AS status,
+                               t.format, t.game_mode,
                                t.start_date, t.end_date, t.registration_deadline,
                                t.max_teams, t.min_teams, t.team_size,
                                t.entry_fee, t.prize_pool,
@@ -369,6 +401,7 @@ public static class TournamentEndpoints
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND t.status::text IN ('published', 'open', 'check_in')
+                          AND (t.start_date IS NULL OR t.start_date > NOW())
                         ORDER BY t.created_at DESC NULLS LAST, t.start_date ASC NULLS LAST
                         LIMIT 100
                         """)).AsList();
@@ -449,6 +482,20 @@ public static class TournamentEndpoints
 
             var tournamentId = (Guid)tournament.id;
             var organizerId = (Guid)tournament.organizer_id;
+
+            // Reconcile stale status based on time
+            var rawStatus = tournament.status?.ToString() as string;
+            var reconciledStatus = ReconcileEffectiveStatus(
+                rawStatus,
+                (DateTimeOffset?)tournament.start_date,
+                (DateTimeOffset?)tournament.end_date);
+            if (reconciledStatus is not null && reconciledStatus != rawStatus)
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE tournaments SET status = @newStatus::tournament_status, updated_at = NOW() WHERE id = @tournamentId",
+                    new { newStatus = reconciledStatus, tournamentId });
+                tournament.status = reconciledStatus;
+            }
 
             // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
             var allParticipants = await conn.QueryAsync<dynamic>(
@@ -3332,7 +3379,12 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var tournaments = await conn.QueryAsync<dynamic>(
                 """
-                SELECT DISTINCT t.id, t.name, t.slug, t.game, t.status::text AS status,
+                SELECT DISTINCT t.id, t.name, t.slug, t.game,
+                       CASE
+                           WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                           WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                           ELSE t.status::text
+                       END AS status,
                        t.start_date, t.logo_url, t.format,
                        tp.team_id, teams.name AS team_name, teams.logo_url AS team_logo
                 FROM public.team_members tm

@@ -742,7 +742,13 @@ public static class OrganizationEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                SELECT t.id, t.name, t.slug, t.game,
+                       CASE
+                           WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                           WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                           ELSE t.status::text
+                       END AS status,
+                       t.format, t.game_mode,
                        t.start_date, t.end_date, t.registration_deadline,
                        t.max_teams, t.min_teams, t.team_size,
                        t.entry_fee, t.prize_pool,
