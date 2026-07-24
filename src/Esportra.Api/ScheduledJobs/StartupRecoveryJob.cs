@@ -109,39 +109,6 @@ public sealed class StartupRecoveryJob(
         foreach (var (id, scheduledTime) in futureMatches)
             await scheduler.ScheduleMatchWalkoverAsync(id, scheduledTime, ct: ct);
 
-        // 5. Process missed invitation expiries
-        var overdueInvites = await conn.QueryAsync<Guid>(
-            """
-            SELECT id FROM tournament_invitations
-            WHERE status = 'sent'
-              AND expires_at IS NOT NULL
-              AND expires_at <= NOW()
-            """);
-
-        var overdueInviteList = overdueInvites.AsList();
-        if (overdueInviteList.Count > 0)
-        {
-            logger.LogInformation("[StartupRecovery] Found {Count} overdue invitation(s). Processing now.", overdueInviteList.Count);
-            foreach (var invId in overdueInviteList)
-            {
-                Hangfire.BackgroundJob.Enqueue<InvitationExpiryJob>(
-                    j => j.ExecuteAsync(invId, CancellationToken.None));
-            }
-        }
-
-        // 6. Schedule future invitation expiries that have no job yet
-        var futureInvites = await conn.QueryAsync<(Guid Id, DateTime ExpiresAt)>(
-            """
-            SELECT id, expires_at FROM tournament_invitations
-            WHERE status = 'sent'
-              AND expires_at IS NOT NULL
-              AND expiry_job_id IS NULL
-              AND expires_at > NOW()
-            """);
-
-        foreach (var (invId, expiresAt) in futureInvites)
-            await scheduler.ScheduleInvitationExpiryAsync(invId, expiresAt, ct);
-
         logger.LogInformation("[StartupRecovery] Recovery complete.");
     }
 }
