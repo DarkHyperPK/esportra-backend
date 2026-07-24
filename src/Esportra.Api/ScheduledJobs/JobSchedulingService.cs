@@ -92,47 +92,4 @@ public sealed class JobSchedulingService(IDbConnectionFactory db)
             j => j.ExecuteAsync(notificationId, CancellationToken.None));
     }
 
-    public async Task ScheduleInvitationExpiryAsync(
-        Guid invitationId, DateTime expiresAt, CancellationToken ct = default)
-    {
-        using var conn = db.CreateConnection();
-
-        var existingJobId = await conn.QuerySingleOrDefaultAsync<string?>(
-            "SELECT expiry_job_id FROM tournament_invitations WHERE id = @invitationId",
-            new { invitationId });
-
-        if (!string.IsNullOrEmpty(existingJobId))
-            BackgroundJob.Delete(existingJobId);
-
-        var fireAt = expiresAt.ToUniversalTime();
-
-        // If already past, enqueue immediately instead of scheduling in the past
-        var jobId = fireAt <= DateTime.UtcNow
-            ? BackgroundJob.Enqueue<InvitationExpiryJob>(
-                j => j.ExecuteAsync(invitationId, CancellationToken.None))
-            : BackgroundJob.Schedule<InvitationExpiryJob>(
-                j => j.ExecuteAsync(invitationId, CancellationToken.None),
-                fireAt);
-
-        await conn.ExecuteAsync(
-            "UPDATE tournament_invitations SET expiry_job_id = @jobId WHERE id = @invitationId",
-            new { jobId, invitationId });
-    }
-
-    public async Task CancelInvitationExpiryAsync(Guid invitationId, CancellationToken ct = default)
-    {
-        using var conn = db.CreateConnection();
-
-        var existingJobId = await conn.QuerySingleOrDefaultAsync<string?>(
-            "SELECT expiry_job_id FROM tournament_invitations WHERE id = @invitationId",
-            new { invitationId });
-
-        if (!string.IsNullOrEmpty(existingJobId))
-        {
-            BackgroundJob.Delete(existingJobId);
-            await conn.ExecuteAsync(
-                "UPDATE tournament_invitations SET expiry_job_id = NULL WHERE id = @invitationId",
-                new { invitationId });
-        }
-    }
 }
