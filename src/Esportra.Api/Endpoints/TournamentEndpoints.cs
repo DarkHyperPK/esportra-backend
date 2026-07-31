@@ -1733,6 +1733,38 @@ public static class TournamentEndpoints
                 : Results.NotFound(new { error = "No eligible registration found for check-in." });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/tournaments/{id}/participants/{pid}/approve-check-in ─────
+        app.MapPost("/api/tournaments/{id}/participants/{pid}/approve-check-in", async (
+            Guid id,
+            Guid pid,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
+            var updated = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'checked_in', checked_in_at = NOW()
+                WHERE id = @pid AND tournament_id = @id
+                  AND status IN ('approved', 'pending')
+                """,
+                new { pid, id });
+
+            return updated > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Participant not found or not eligible for check-in." });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/tournaments/{id}/my-status ────────────────────────────────
         // Consolidated endpoint: returns ban status, registration, team info for current user.
         app.MapGet("/api/tournaments/{id}/my-status", async (
@@ -2010,6 +2042,46 @@ public static class TournamentEndpoints
                     .SendAsync(BracketHubEvents.MatchUpdated,
                         new { versionId, reason = "participant_banned", bannedSlotId },
                         ct);
+
+                // Check if all matches are now completed — declare winner if so
+                var pendingCount = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
+                    new { versionId });
+
+                if (pendingCount == 0)
+                {
+                    var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId });
+                    if (stageId.HasValue)
+                    {
+                        await conn.ExecuteAsync(
+                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+                            new { stageId });
+
+                        var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                            """
+                            SELECT winner_id FROM brkt_matches
+                            WHERE version_id = @versionId
+                              AND status = 'completed' AND winner_id IS NOT NULL
+                            ORDER BY round_index DESC, match_number DESC
+                            LIMIT 1
+                            """,
+                            new { versionId });
+
+                        if (gfWinnerId.HasValue)
+                        {
+                            await conn.ExecuteAsync(
+                                "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                                new { p_tournament_id = id, p_winner_id = gfWinnerId.Value });
+                        }
+                    }
+
+                    await bracketHub.Clients
+                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                        .SendAsync(BracketHubEvents.StageCompleted,
+                            new { versionId, tournamentId = id },
+                            ct);
+                }
             }
 
             // Notify affected users
