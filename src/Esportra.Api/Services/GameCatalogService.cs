@@ -312,9 +312,10 @@ public sealed partial class GameCatalogService(
 
         var gameRow = await ResolveGameAsync(conn, tournament.Game, tx);
         var gameFeatures = ParseObject(gameRow?.FeaturesJson);
-        var requiresGameAccountLink = EffectiveBoolFeature(gameFeatures, null, "assistedReporting");
 
         var mode = await ResolveModeAsync(conn, resolved.GameSlug, resolved.GameMode, resolved.TeamSize, tx);
+        var requiresGameAccountLink = EffectiveBoolFeature(gameFeatures, mode.FeaturesOverrideJson, "assistedReporting");
+
         if (mode.ParticipantMode == "solo")
         {
             if (teamId.HasValue)
@@ -882,17 +883,21 @@ public sealed partial class GameCatalogService(
     {
         if (userIds.Length == 0) return;
 
-        var linkedCount = await conn.QuerySingleAsync<int>(
+        var unlinkedUsernames = (await conn.QueryAsync<string>(
             """
-            SELECT COUNT(DISTINCT user_id)
-            FROM public.riot_accounts
-            WHERE user_id = ANY(@userIds) AND puuid IS NOT NULL
+            SELECT p.username
+            FROM public.profiles p
+            WHERE p.id = ANY(@userIds)
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.riot_accounts ra
+                  WHERE ra.user_id = p.id AND ra.puuid IS NOT NULL
+              )
             """,
-            new { userIds }, tx);
+            new { userIds }, tx)).AsList();
 
-        if (linkedCount < userIds.Length)
+        if (unlinkedUsernames.Count > 0)
             throw new GameCatalogValidationException(
-                "All players must link their Riot account before registering for this tournament.");
+                $"The following players must link their Riot account before registering: {string.Join(", ", unlinkedUsernames)}");
     }
 
     private static bool MatchesGame(string? candidate, string expected) =>
