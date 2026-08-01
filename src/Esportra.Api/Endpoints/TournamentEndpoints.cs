@@ -1207,14 +1207,14 @@ public static class TournamentEndpoints
                         SELECT DISTINCT tp.id, tp.tournament_id
                         FROM tournament_participants tp
                         WHERE (tp.user_id = @userId OR tp.team_id = ANY(@teamIds))
-                          AND tp.status NOT IN ('cancelled', 'rejected')
+                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                         """,
                         new { userId = userCtx.UserIdGuid, teamIds });
                 }
                 else
                 {
                     rows = await conn.QueryAsync(
-                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
+                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                         new { userId = userCtx.UserIdGuid });
                 }
 
@@ -1245,7 +1245,7 @@ public static class TournamentEndpoints
             else
             {
                 registeredIdGuids = await conn.QueryAsync<Guid>(
-                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
+                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                     new { ids = idList, userId = userCtx.UserIdGuid });
             }
 
@@ -1608,7 +1608,7 @@ public static class TournamentEndpoints
 
             // Verify user is registered
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId) AND status NOT IN ('cancelled', 'rejected')",
+                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId) AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                 new { tournamentId = id, userId = userCtx.UserIdGuid });
             if (participant is null) return Results.NotFound(new { error = "You are not registered for this tournament." });
 
@@ -1808,7 +1808,7 @@ public static class TournamentEndpoints
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
                 WHERE tp.tournament_id = @id
-                  AND tp.status NOT IN ('cancelled', 'rejected')
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                   AND (tp.user_id = @userId OR tp.team_captain_id = @userId
                        OR (tp.team_id = ANY(@teamIds) AND tp.participant_type = 'team'))
                 ORDER BY CASE WHEN tp.user_id = @userId THEN 0 ELSE 1 END, tp.created_at DESC
@@ -1961,7 +1961,7 @@ public static class TournamentEndpoints
                 UPDATE tournament_participants
                 SET status = 'checked_in', checked_in_at = NOW()
                 WHERE id = @participantId AND tournament_id = @id
-                  AND status IN ('pending', 'approved')
+                  AND status IN ('pending', 'approved', 'cancelled')
                 """,
                 new { participantId, id });
 
@@ -2019,7 +2019,7 @@ public static class TournamentEndpoints
 
             // Mark participant as disqualified (soft delete)
             await conn.ExecuteAsync(
-                "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected')",
+                "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                 new { pid = participantId });
 
             // Cascade-forfeit all pending bracket matches for the banned team

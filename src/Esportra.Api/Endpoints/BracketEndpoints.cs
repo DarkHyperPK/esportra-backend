@@ -69,16 +69,24 @@ public static class BracketEndpoints
             if (teams.Count < 2)
                 return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
 
-            // Validate teams are not banned/disqualified/cancelled
+            // Validate teams have at least one eligible participant row
             using var conn = db.CreateConnection();
             var teamIds = req.Teams.Select(t => t.Id).ToArray();
             var ineligibleTeams = await conn.QueryAsync<Guid>(
                 """
-                SELECT COALESCE(tp.team_id, tp.id) AS slot_id
-                FROM tournament_participants tp
-                WHERE tp.tournament_id = @tournamentId
-                  AND (tp.team_id = ANY(@teamIds) OR tp.id = ANY(@teamIds))
-                  AND tp.status::text IN ('rejected', 'cancelled', 'disqualified')
+                SELECT unnested_id AS slot_id
+                FROM UNNEST(@teamIds) AS unnested_id
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM tournament_participants tp
+                    WHERE tp.tournament_id = @tournamentId
+                      AND (tp.team_id = unnested_id OR tp.id = unnested_id)
+                      AND tp.status::text IN ('approved', 'checked_in', 'pending')
+                )
+                AND EXISTS (
+                    SELECT 1 FROM tournament_participants tp
+                    WHERE tp.tournament_id = @tournamentId
+                      AND (tp.team_id = unnested_id OR tp.id = unnested_id)
+                )
                 """,
                 new { tournamentId = req.TournamentId, teamIds });
 
