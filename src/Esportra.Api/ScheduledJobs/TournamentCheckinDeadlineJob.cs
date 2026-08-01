@@ -25,9 +25,9 @@ public sealed class TournamentCheckinDeadlineJob(
             """,
             new { tournamentId });
 
-        if (tournament is null || !tournament.AutoRemove)
+        if (tournament is null)
         {
-            logger.LogDebug("[TournamentCheckinDeadline] Tournament {Id} not eligible (missing or auto_remove disabled).", tournamentId);
+            logger.LogDebug("[TournamentCheckinDeadline] Tournament {Id} not eligible (missing or check-in not required).", tournamentId);
             return;
         }
 

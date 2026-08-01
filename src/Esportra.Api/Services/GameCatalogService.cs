@@ -310,11 +310,20 @@ public sealed partial class GameCatalogService(
             conn,
             tx);
 
+        var gameRow = await ResolveGameAsync(conn, tournament.Game, tx);
+        var gameFeatures = ParseObject(gameRow?.FeaturesJson);
+
         var mode = await ResolveModeAsync(conn, resolved.GameSlug, resolved.GameMode, resolved.TeamSize, tx);
+        var requiresGameAccountLink = EffectiveBoolFeature(gameFeatures, mode.FeaturesOverrideJson, "assistedReporting");
+
         if (mode.ParticipantMode == "solo")
         {
             if (teamId.HasValue)
                 throw new GameCatalogValidationException("This tournament mode uses solo registration. Do not submit a team registration.");
+
+            if (requiresGameAccountLink)
+                await ValidateRiotAccountLinkedAsync(conn, tx, new[] { userId });
+
             return;
         }
 
@@ -377,6 +386,15 @@ public sealed partial class GameCatalogService(
             """,
             new { rosterId }, tx)).AsList();
 
+        if (requiresGameAccountLink)
+        {
+            var playerUserIds = memberRows
+                .Where(IsRosterPlayer)
+                .Select(m => m.UserId)
+                .ToArray();
+            await ValidateRiotAccountLinkedAsync(conn, tx, playerUserIds);
+        }
+
         var modeRules = new RosterModeRules(
             mode.TeamSize,
             mode.AllowsSubstitutes,
@@ -387,9 +405,9 @@ public sealed partial class GameCatalogService(
 
         if (UsesRosterPoolSelection(mode))
         {
-            var gameRow = await ResolveGameAsync(conn, tournament.Game, tx)
+            var poolGameRow = gameRow
                 ?? throw new GameCatalogValidationException($"Unsupported game '{tournament.Game}'.");
-            var poolMode = await ResolveModeAsync(conn, resolved.GameSlug, gameRow.DefaultModeKey, null, tx);
+            var poolMode = await ResolveModeAsync(conn, resolved.GameSlug, poolGameRow.DefaultModeKey, null, tx);
 
             if (!RosterMatchesPoolSource(poolMode, roster.Format))
                 throw new GameCatalogValidationException(
@@ -857,6 +875,30 @@ public sealed partial class GameCatalogService(
             )
             """,
             new { gameSlug, structureKey }, tx);
+
+    private static async Task ValidateRiotAccountLinkedAsync(
+        IDbConnection conn,
+        IDbTransaction tx,
+        Guid[] userIds)
+    {
+        if (userIds.Length == 0) return;
+
+        var unlinkedUsernames = (await conn.QueryAsync<string>(
+            """
+            SELECT p.username
+            FROM public.profiles p
+            WHERE p.id = ANY(@userIds)
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.riot_accounts ra
+                  WHERE ra.user_id = p.id AND ra.puuid IS NOT NULL
+              )
+            """,
+            new { userIds }, tx)).AsList();
+
+        if (unlinkedUsernames.Count > 0)
+            throw new GameCatalogValidationException(
+                $"The following players must link their Riot account before registering: {string.Join(", ", unlinkedUsernames)}");
+    }
 
     private static bool MatchesGame(string? candidate, string expected) =>
         string.IsNullOrWhiteSpace(candidate) || string.Equals(candidate.Trim(), expected.Trim(), StringComparison.OrdinalIgnoreCase);

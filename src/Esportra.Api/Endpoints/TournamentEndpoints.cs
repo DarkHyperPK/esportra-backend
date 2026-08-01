@@ -7,6 +7,7 @@ using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Bracket;
 using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -114,7 +115,7 @@ public static class TournamentEndpoints
                t.organizer_id, t.venue_id, t.description,
                t.created_at, t.updated_at, t.region, t.currency,
                (SELECT COUNT(*) FROM tournament_participants tp
-                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
+                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
                o.name   AS organizer_name,
                o.slug   AS organization_slug,
                p.username      AS organizer_username,
@@ -206,7 +207,7 @@ public static class TournamentEndpoints
                            t.organizer_id, t.venue_id, t.description,
                            t.created_at, t.updated_at, t.region, t.currency,
                            (SELECT COUNT(*) FROM tournament_participants tp
-                            WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
+                            WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
                            o.name   AS organizer_name,
                            o.slug   AS organization_slug,
                            p.username      AS organizer_username,
@@ -306,7 +307,7 @@ public static class TournamentEndpoints
                                t.organizer_id, t.venue_id, t.description,
                                t.created_at, t.updated_at, t.region, t.currency,
                                (SELECT COUNT(*) FROM tournament_participants tp
-                                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
+                                WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
                                o.name AS organizer_name,
                                o.slug AS organization_slug,
                                p.username   AS organizer_username,
@@ -375,7 +376,7 @@ public static class TournamentEndpoints
             var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT t.*,
-                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled')) AS current_participants,
+                       (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')) AS current_participants,
                        (SELECT COUNT(*) FROM tournament_participants tp WHERE tp.tournament_id = t.id AND tp.status = 'checked_in') AS checked_in_count,
                        o.name       AS organization_name, o.slug AS organization_slug,
                        o.logo_url   AS organization_logo,  o.owner_id AS organization_owner_id,
@@ -1114,14 +1115,14 @@ public static class TournamentEndpoints
                         SELECT DISTINCT tp.id, tp.tournament_id
                         FROM tournament_participants tp
                         WHERE (tp.user_id = @userId OR tp.team_id = ANY(@teamIds))
-                          AND tp.status NOT IN ('cancelled', 'rejected')
+                          AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                         """,
                         new { userId = userCtx.UserIdGuid, teamIds });
                 }
                 else
                 {
                     rows = await conn.QueryAsync(
-                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
+                        "SELECT id, tournament_id FROM tournament_participants WHERE user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                         new { userId = userCtx.UserIdGuid });
                 }
 
@@ -1152,7 +1153,7 @@ public static class TournamentEndpoints
             else
             {
                 registeredIdGuids = await conn.QueryAsync<Guid>(
-                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status NOT IN ('cancelled', 'rejected')",
+                    "SELECT tournament_id FROM tournament_participants WHERE tournament_id = ANY(@ids) AND user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                     new { ids = idList, userId = userCtx.UserIdGuid });
             }
 
@@ -1218,7 +1219,7 @@ public static class TournamentEndpoints
                         SELECT COUNT(*)
                         FROM tournament_participants
                         WHERE tournament_id = @id
-                          AND status NOT IN ('rejected', 'cancelled')
+                          AND status NOT IN ('rejected', 'cancelled', 'disqualified')
                           AND COALESCE(source, 'open') = 'open'
                         """,
                         new { id }, txn);
@@ -1228,7 +1229,7 @@ public static class TournamentEndpoints
                 else
                 {
                     var currentCount = await conn.QuerySingleAsync<int>(
-                        "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled')",
+                        "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled', 'disqualified')",
                         new { id }, txn);
                     if (currentCount >= maxTeams.Value)
                     { txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
@@ -1515,7 +1516,7 @@ public static class TournamentEndpoints
 
             // Verify user is registered
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId) AND status NOT IN ('cancelled', 'rejected')",
+                "SELECT id FROM tournament_participants WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId) AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                 new { tournamentId = id, userId = userCtx.UserIdGuid });
             if (participant is null) return Results.NotFound(new { error = "You are not registered for this tournament." });
 
@@ -1683,7 +1684,7 @@ public static class TournamentEndpoints
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
                 WHERE tp.tournament_id = @id
-                  AND tp.status NOT IN ('cancelled', 'rejected')
+                  AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                   AND (tp.user_id = @userId OR tp.team_captain_id = @userId
                        OR (tp.team_id = ANY(@teamIds) AND tp.participant_type = 'team'))
                 ORDER BY CASE WHEN tp.user_id = @userId THEN 0 ELSE 1 END, tp.created_at DESC
@@ -1813,12 +1814,46 @@ public static class TournamentEndpoints
             return Results.Ok(new { removedCount = removed });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/tournaments/{id}/participants/{participantId}/check-in — organizer manual check-in ──
+        app.MapPost("/api/tournaments/{id}/participants/{participantId}/check-in", async (
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
+            var updated = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'checked_in', checked_in_at = NOW()
+                WHERE id = @participantId AND tournament_id = @id
+                  AND status IN ('pending', 'approved', 'cancelled')
+                """,
+                new { participantId, id });
+
+            return updated > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Participant not found or already checked in." });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
         app.MapPost("/api/tournaments/{id}/ban-participant", async (
             Guid id,
             [FromBody] BanParticipantRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            MatchFinalizationService finalizer,
+            IHubContext<BracketHub> bracketHub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1836,8 +1871,8 @@ public static class TournamentEndpoints
 
             // Get participant info
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT user_id, team_id FROM tournament_participants WHERE id = @pid",
-                new { pid = participantId });
+                "SELECT user_id, team_id FROM tournament_participants WHERE id = @pid AND tournament_id = @id",
+                new { pid = participantId, id });
             if (participant is null)
                 return Results.NotFound(new { error = "Participant not found" });
 
@@ -1860,8 +1895,100 @@ public static class TournamentEndpoints
 
             // Mark participant as disqualified (soft delete)
             await conn.ExecuteAsync(
-                "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected')",
+                "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
                 new { pid = participantId });
+
+            // Cascade-forfeit all pending bracket matches for the banned team
+            var bannedSlotId = banTeamId ?? participantId;
+            var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT id FROM public.brkt_versions
+                WHERE tournament_id = @id
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                new { id });
+
+            if (versionId.HasValue)
+            {
+                var pendingMatches = (await conn.QueryAsync<dynamic>(
+                    """
+                    SELECT id, team1_id, team2_id, best_of
+                    FROM public.brkt_matches
+                    WHERE version_id = @versionId
+                      AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
+                      AND status NOT IN ('completed', 'disputed')
+                    ORDER BY round_index ASC, match_number ASC
+                    """,
+                    new { versionId, bannedSlotId })).AsList();
+
+                foreach (var match in pendingMatches)
+                {
+                    Guid matchId = (Guid)match.id;
+                    Guid? team1 = (Guid?)match.team1_id;
+                    Guid? team2 = (Guid?)match.team2_id;
+                    Guid? opponent = team1 == bannedSlotId ? team2 : team1;
+
+                    if (opponent.HasValue)
+                    {
+                        int bestOf = (int)(match.best_of ?? 1);
+                        int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
+                        int t1Score = team1 == opponent ? winnerScore : 0;
+                        int t2Score = team2 == opponent ? winnerScore : 0;
+                        await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
+                    }
+                    else
+                    {
+                        await conn.ExecuteAsync(
+                            """
+                            UPDATE public.brkt_matches
+                            SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
+                                result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
+                            WHERE id = @matchId AND status != 'completed'
+                            """,
+                            new { matchId, bannedSlotId });
+                    }
+                }
+
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId, reason = "participant_banned", bannedSlotId },
+                        ct);
+            }
+
+            // Notify affected users
+            var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT name FROM tournaments WHERE id = @id", new { id });
+            var banReason = req.BanReason ?? "No reason provided";
+
+            var notifyUserIds = new List<Guid>();
+            if (banTeamId.HasValue)
+            {
+                var teamMembers = await conn.QueryAsync<Guid>(
+                    "SELECT user_id FROM team_members WHERE team_id = @teamId AND is_active = TRUE",
+                    new { teamId = banTeamId });
+                notifyUserIds.AddRange(teamMembers);
+            }
+            else if (banUserId.HasValue)
+            {
+                notifyUserIds.Add(banUserId.Value);
+            }
+
+            foreach (var uid in notifyUserIds)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, data)
+                    VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                    """,
+                    new
+                    {
+                        userId = uid,
+                        title = "Banned from Tournament",
+                        message = $"You have been banned from {tournamentName ?? "a tournament"}. Reason: {banReason}",
+                        data = $"{{\"tournament_id\":\"{id}\"}}"
+                    });
+            }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -2012,7 +2139,7 @@ public static class TournamentEndpoints
             // Build optional status filter — exclude rejected/cancelled by default
             var statusFilter = !string.IsNullOrEmpty(status)
                 ? "AND tp.status::text = @status"
-                : "AND tp.status NOT IN ('rejected', 'cancelled')";
+                : "AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')";
 
             // Fetch participants with team member roster details
             var flat = await conn.QueryAsync<dynamic>(

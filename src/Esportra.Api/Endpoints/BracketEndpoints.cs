@@ -69,31 +69,33 @@ public static class BracketEndpoints
             if (teams.Count < 2)
                 return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
 
-            // Validate team eligibility based on check-in requirement
+            // Validate teams have at least one eligible participant row
             using var conn = db.CreateConnection();
-            var checkInRequired = await SeedEligibility.IsCheckInRequiredAsync(conn, req.TournamentId);
-            var eligibleStatuses = SeedEligibility.ResolveStatuses(checkInRequired);
-
             var teamIds = req.Teams.Select(t => t.Id).ToArray();
-            // Bracket slots use team_id for teams and participant id for solos
             var ineligibleTeams = await conn.QueryAsync<Guid>(
                 """
-                SELECT COALESCE(tp.team_id, tp.id) AS slot_id
-                FROM tournament_participants tp
-                WHERE tp.tournament_id = @tournamentId
-                  AND (tp.team_id = ANY(@teamIds) OR tp.id = ANY(@teamIds))
-                  AND tp.status::text != ALL(@eligibleStatuses)
+                SELECT unnested_id AS slot_id
+                FROM UNNEST(@teamIds) AS unnested_id
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM tournament_participants tp
+                    WHERE tp.tournament_id = @tournamentId
+                      AND (tp.team_id = unnested_id OR tp.id = unnested_id)
+                      AND tp.status::text IN ('approved', 'checked_in', 'pending')
+                )
+                AND EXISTS (
+                    SELECT 1 FROM tournament_participants tp
+                    WHERE tp.tournament_id = @tournamentId
+                      AND (tp.team_id = unnested_id OR tp.id = unnested_id)
+                )
                 """,
-                new { tournamentId = req.TournamentId, teamIds, eligibleStatuses });
+                new { tournamentId = req.TournamentId, teamIds });
 
             var ineligibleList = ineligibleTeams.ToList();
             if (ineligibleList.Count > 0)
             {
                 return Results.BadRequest(new
                 {
-                    error = checkInRequired
-                        ? "Some teams have not checked in. Only checked-in teams can be seeded when check-in is required."
-                        : "Some teams are not eligible for seeding. Teams must be approved or checked in.",
+                    error = "Some teams are not eligible for seeding (banned, cancelled, or rejected).",
                     ineligibleTeamIds = ineligibleList
                 });
             }
