@@ -2034,42 +2034,50 @@ public static class TournamentEndpoints
 
             if (versionId.HasValue)
             {
-                var pendingMatches = (await conn.QueryAsync<dynamic>(
-                    """
-                    SELECT id, team1_id, team2_id, best_of
-                    FROM public.brkt_matches
-                    WHERE version_id = @versionId
-                      AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
-                      AND status NOT IN ('completed', 'disputed')
-                    ORDER BY round_index ASC, match_number ASC
-                    """,
-                    new { versionId, bannedSlotId })).AsList();
-
-                foreach (var match in pendingMatches)
+                // Iterate until no more pending matches exist for the banned team.
+                // Each forfeit may advance the banned team through loser edges (double elimination),
+                // creating new matches that also need forfeiting.
+                for (var forfeitPass = 0; forfeitPass < 20; forfeitPass++)
                 {
-                    Guid matchId = (Guid)match.id;
-                    Guid? team1 = (Guid?)match.team1_id;
-                    Guid? team2 = (Guid?)match.team2_id;
-                    Guid? opponent = team1 == bannedSlotId ? team2 : team1;
+                    var pendingMatches = (await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT id, team1_id, team2_id, best_of
+                        FROM public.brkt_matches
+                        WHERE version_id = @versionId
+                          AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
+                          AND status NOT IN ('completed', 'disputed')
+                        ORDER BY round_index ASC, match_number ASC
+                        """,
+                        new { versionId, bannedSlotId })).AsList();
 
-                    if (opponent.HasValue)
+                    if (pendingMatches.Count == 0) break;
+
+                    foreach (var match in pendingMatches)
                     {
-                        int bestOf = (int)(match.best_of ?? 1);
-                        int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
-                        int t1Score = team1 == opponent ? winnerScore : 0;
-                        int t2Score = team2 == opponent ? winnerScore : 0;
-                        await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
-                    }
-                    else
-                    {
-                        await conn.ExecuteAsync(
-                            """
-                            UPDATE public.brkt_matches
-                            SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
-                                result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
-                            WHERE id = @matchId AND status != 'completed'
-                            """,
-                            new { matchId, bannedSlotId });
+                        Guid matchId = (Guid)match.id;
+                        Guid? team1 = (Guid?)match.team1_id;
+                        Guid? team2 = (Guid?)match.team2_id;
+                        Guid? opponent = team1 == bannedSlotId ? team2 : team1;
+
+                        if (opponent.HasValue)
+                        {
+                            int bestOf = (int)(match.best_of ?? 1);
+                            int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
+                            int t1Score = team1 == opponent ? winnerScore : 0;
+                            int t2Score = team2 == opponent ? winnerScore : 0;
+                            await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
+                        }
+                        else
+                        {
+                            await conn.ExecuteAsync(
+                                """
+                                UPDATE public.brkt_matches
+                                SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
+                                    result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
+                                WHERE id = @matchId AND status != 'completed'
+                                """,
+                                new { matchId, bannedSlotId });
+                        }
                     }
                 }
 
