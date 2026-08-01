@@ -2128,6 +2128,32 @@ public static class TournamentEndpoints
                 }
             }
 
+            // Remove banned team from BR groups (battle royale tournaments)
+            if (banTeamId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM br_group_teams
+                    WHERE team_id = @teamId
+                      AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                          SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+                      ))
+                    """,
+                    new { teamId = banTeamId, tournamentId = id });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM br_group_teams
+                    WHERE participant_id = @participantId
+                      AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                          SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+                      ))
+                    """,
+                    new { participantId, tournamentId = id });
+            }
+
             // Notify affected users
             var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM tournaments WHERE id = @id", new { id });
