@@ -1938,6 +1938,38 @@ public static class TournamentEndpoints
             return Results.Ok(new { removedCount = removed });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/tournaments/{id}/participants/{participantId}/check-in — organizer manual check-in ──
+        app.MapPost("/api/tournaments/{id}/participants/{participantId}/check-in", async (
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
+            var updated = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'checked_in', checked_in_at = NOW()
+                WHERE id = @participantId AND tournament_id = @id
+                  AND status IN ('pending', 'approved')
+                """,
+                new { participantId, id });
+
+            return updated > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Participant not found or already checked in." });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
         app.MapPost("/api/tournaments/{id}/ban-participant", async (
             Guid id,
@@ -1995,7 +2027,7 @@ public static class TournamentEndpoints
             var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
                 SELECT id FROM public.brkt_versions
-                WHERE tournament_id = @id AND status = 'active'
+                WHERE tournament_id = @id
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 new { id });
@@ -2004,7 +2036,7 @@ public static class TournamentEndpoints
             {
                 var pendingMatches = (await conn.QueryAsync<dynamic>(
                     """
-                    SELECT id, team1_id, team2_id
+                    SELECT id, team1_id, team2_id, best_of
                     FROM public.brkt_matches
                     WHERE version_id = @versionId
                       AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
@@ -2022,7 +2054,11 @@ public static class TournamentEndpoints
 
                     if (opponent.HasValue)
                     {
-                        await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, ct: ct);
+                        int bestOf = (int)(match.best_of ?? 1);
+                        int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
+                        int t1Score = team1 == opponent ? winnerScore : 0;
+                        int t2Score = team2 == opponent ? winnerScore : 0;
+                        await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
                     }
                     else
                     {
