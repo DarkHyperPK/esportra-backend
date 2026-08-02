@@ -360,7 +360,7 @@ public static class BrGameEndpoints
                         }
 
                         var liveWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
-                            DateTimeOffset.UtcNow,
+                            scheduledAt ?? previousScheduledAt,
                             tournamentStart,
                             tournamentEnd,
                             "Starting a game");

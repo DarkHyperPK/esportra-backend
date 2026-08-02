@@ -1504,7 +1504,7 @@ public static partial class BRGroupEndpoints
                         }
 
                         var liveWindowError = TournamentTimelineValidator.ValidateTimestampWithinWindow(
-                            DateTimeOffset.UtcNow,
+                            previousLobbySchedule,
                             tournamentStart,
                             tournamentEnd,
                             "Starting a round");
