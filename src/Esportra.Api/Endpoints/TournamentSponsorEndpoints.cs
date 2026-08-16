@@ -455,7 +455,6 @@ public static class TournamentSponsorEndpoints
                 return Results.NotFound(new { error = "Tournament not found." });
         }
 
-        connection.Open();
         using var transaction = connection.BeginTransaction();
         var bannerAsset = await GetClaimableAssetAsync(connection, transaction, request.BannerAssetId, null, request.PlacementZone, "banner", userContext!.UserIdGuid, ct);
         var logoAsset = await GetClaimableAssetAsync(connection, transaction, request.LogoAssetId, null, request.PlacementZone, "logo", userContext.UserIdGuid, ct);
@@ -539,7 +538,6 @@ public static class TournamentSponsorEndpoints
             return Results.UnprocessableEntity(new { error = "Creative URLs must use HTTPS." });
 
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
         using var transaction = connection.BeginTransaction();
         var oldAssets = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
             "SELECT placement_zone AS PlacementZone, banner_asset_id AS BannerAssetId, logo_asset_id AS LogoAssetId FROM sponsor_placements WHERE id = @id FOR UPDATE",
@@ -613,7 +611,6 @@ public static class TournamentSponsorEndpoints
             return Results.UnprocessableEntity(new { error = $"Slot must be between 1 and {placementPolicy.Capacity}." });
 
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
         using var transaction = connection.BeginTransaction();
 
         var placement = await connection.QuerySingleOrDefaultAsync<ReviewPlacementRow>(new CommandDefinition(
@@ -708,7 +705,6 @@ public static class TournamentSponsorEndpoints
         if (!CanEditSponsors(userContext)) return Results.Forbid();
 
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
         using var transaction = connection.BeginTransaction();
         var assets = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
             """
@@ -875,7 +871,6 @@ public static class TournamentSponsorEndpoints
         if (!CanEditSponsors(userContext)) return Results.Forbid();
 
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
         using var transaction = connection.BeginTransaction();
 
         var placement = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
@@ -931,7 +926,6 @@ public static class TournamentSponsorEndpoints
         if (!CanEditSponsors(userContext)) return Results.Forbid();
 
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
         using var transaction = connection.BeginTransaction();
 
         var placement = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
@@ -969,7 +963,6 @@ public static class TournamentSponsorEndpoints
         if (!CanEditSponsors(userContext)) return Results.Forbid();
 
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
         using var transaction = connection.BeginTransaction();
 
         var assets = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
