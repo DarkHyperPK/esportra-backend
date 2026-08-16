@@ -338,7 +338,7 @@ public static class TournamentSponsorEndpoints
         using var grid = await connection.QueryMultipleAsync(new CommandDefinition(sql, parameters, cancellationToken: ct));
         var items = (await grid.ReadAsync<PlacementDto>()).AsList();
         var total = await grid.ReadSingleAsync<long>();
-        var counts = (await grid.ReadAsync<StatusCountRow>()).ToDictionary(row => row.Status, row => row.Count);
+        var counts = (await grid.ReadAsync<StatusCountRow>()).ToDictionary(row => row.Status, row => (int)row.Count);
 
         return Results.Ok(new PlacementPageDto(items, page, pageSize, total, counts));
     }
@@ -1119,14 +1119,30 @@ public static class TournamentSponsorEndpoints
         public string[]? SponsorGalleryImages { get; init; }
     }
 
-    private sealed record ReviewPlacementRow(
-        Guid SponsorId,
-        string? ReviewReason,
-        string? SponsorTier,
-        bool SponsorIsActive);
+    private sealed record ReviewPlacementRow
+    {
+        public Guid SponsorId { get; init; }
+        public string? ReviewReason { get; init; }
+        public string? SponsorTier { get; init; }
+        public bool SponsorIsActive { get; init; }
+    }
 
-    private sealed record StatusCountRow(string Status, int Count);
+    private sealed record StatusCountRow
+    {
+        public string Status { get; init; } = "";
+        public long Count { get; init; }
+    }
 
-    private sealed record PlacementAssetRow(string PlacementZone, Guid? BannerAssetId, Guid? LogoAssetId);
-    private sealed record PlacementCreativeAsset(Guid Id, string PublicUrl);
+    private sealed record PlacementAssetRow
+    {
+        public string PlacementZone { get; init; } = "";
+        public Guid? BannerAssetId { get; init; }
+        public Guid? LogoAssetId { get; init; }
+    }
+
+    private sealed record PlacementCreativeAsset
+    {
+        public Guid Id { get; init; }
+        public string PublicUrl { get; init; } = "";
+    }
 }
