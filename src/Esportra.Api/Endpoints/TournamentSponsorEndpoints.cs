@@ -74,6 +74,8 @@ public static class TournamentSponsorEndpoints
             .RequireAuthorization(Permissions.SponsorsEdit);
         app.MapGet("/api/admin/tournaments/{tournamentId:guid}/placements", GetTournamentPlacementsAdminAsync)
             .RequireAuthorization(Permissions.SponsorsEdit);
+        app.MapGet("/api/admin/placements/{id:guid}/audit-log", GetPlacementAuditLogAsync)
+            .RequireAuthorization(Permissions.SponsorsEdit);
     }
 
     // ─── Public: Tournament sponsors (consumed by frontend components) ───
@@ -511,6 +513,7 @@ public static class TournamentSponsorEndpoints
         }
 
         await ClaimAssetsAsync(connection, transaction, [request.BannerAssetId, request.LogoAssetId], ct);
+        await LogPlacementAuditAsync(connection, transaction, id.Value, request.SponsorId, request.TournamentId, request.PlacementZone, request.SlotNumber, "created", userContext!.UserIdGuid, null, ct);
         transaction.Commit();
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
 
@@ -715,16 +718,18 @@ public static class TournamentSponsorEndpoints
 
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
-        var assets = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
+        var deleted = await connection.QuerySingleOrDefaultAsync<DeletedPlacementRow>(new CommandDefinition(
             """
             DELETE FROM public.sponsor_placements WHERE id = @id
-            RETURNING banner_asset_id AS BannerAssetId, logo_asset_id AS LogoAssetId
+            RETURNING sponsor_id, tournament_id, placement_zone, slot_number, banner_asset_id, logo_asset_id
             """,
             new { id },
             transaction, cancellationToken: ct));
 
-        if (assets is null) return Results.NotFound();
+        if (deleted is null) return Results.NotFound();
+        var assets = new PlacementAssetRow { PlacementZone = deleted.PlacementZone ?? "", BannerAssetId = deleted.BannerAssetId, LogoAssetId = deleted.LogoAssetId };
         await QueueReplacedAssetsAsync(connection, transaction, assets, null, null, ct);
+        await LogPlacementAuditAsync(connection, transaction, id, deleted.SponsorId, deleted.TournamentId, deleted.PlacementZone ?? "", deleted.SlotNumber, "removed", userContext!.UserIdGuid, null, ct);
         transaction.Commit();
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
         return Results.NoContent();
@@ -917,6 +922,9 @@ public static class TournamentSponsorEndpoints
             await QueueReplacedAssetsAsync(connection, transaction, tempRow, null, null, ct);
         }
 
+        var auditInfo = await connection.QuerySingleAsync<(Guid SponsorId, Guid? TournamentId, int? SlotNumber)>(new CommandDefinition(
+            "SELECT sponsor_id, tournament_id, slot_number FROM sponsor_placements WHERE id = @id", new { id }, transaction, cancellationToken: ct));
+        await LogPlacementAuditAsync(connection, transaction, id, auditInfo.SponsorId, auditInfo.TournamentId, placement.PlacementZone, auditInfo.SlotNumber, "replaced", userContext.UserIdGuid, null, ct);
         transaction.Commit();
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
         return Results.NoContent();
@@ -954,6 +962,9 @@ public static class TournamentSponsorEndpoints
             new { id }, transaction, cancellationToken: ct));
 
         await QueueReplacedAssetsAsync(connection, transaction, placement, null, null, ct);
+        var auditInfo = await connection.QuerySingleAsync<(Guid SponsorId, Guid? TournamentId, int? SlotNumber)>(new CommandDefinition(
+            "SELECT sponsor_id, tournament_id, slot_number FROM sponsor_placements WHERE id = @id", new { id }, transaction, cancellationToken: ct));
+        await LogPlacementAuditAsync(connection, transaction, id, auditInfo.SponsorId, auditInfo.TournamentId, placement.PlacementZone, auditInfo.SlotNumber, "removed_creative", userContext!.UserIdGuid, null, ct);
         transaction.Commit();
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
         return Results.NoContent();
@@ -974,18 +985,44 @@ public static class TournamentSponsorEndpoints
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
 
-        var assets = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
-            "DELETE FROM public.sponsor_placements WHERE id = @id RETURNING placement_zone AS PlacementZone, banner_asset_id AS BannerAssetId, logo_asset_id AS LogoAssetId",
+        var deleted = await connection.QuerySingleOrDefaultAsync<DeletedPlacementRow>(new CommandDefinition(
+            "DELETE FROM public.sponsor_placements WHERE id = @id RETURNING sponsor_id, tournament_id, placement_zone, slot_number, banner_asset_id, logo_asset_id",
             new { id }, transaction, cancellationToken: ct));
-        if (assets is null) return Results.NotFound();
+        if (deleted is null) return Results.NotFound();
 
+        var assets = new PlacementAssetRow { PlacementZone = deleted.PlacementZone ?? "", BannerAssetId = deleted.BannerAssetId, LogoAssetId = deleted.LogoAssetId };
         await QueueReplacedAssetsAsync(connection, transaction, assets, null, null, ct);
+        await LogPlacementAuditAsync(connection, transaction, id, deleted.SponsorId, deleted.TournamentId, deleted.PlacementZone ?? "", deleted.SlotNumber, "unassigned", userContext!.UserIdGuid, null, ct);
         transaction.Commit();
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
         return Results.NoContent();
     }
 
     // ─── Internal types ──────────────────────────────────────────────────
+
+    private static async Task<IResult> GetPlacementAuditLogAsync(
+        Guid id,
+        HttpContext context,
+        IDbConnectionFactory connectionFactory,
+        CancellationToken ct)
+    {
+        var userContext = context.Items["UserContext"] as UserContext;
+        if (!CanEditSponsors(userContext)) return Results.Forbid();
+
+        using var connection = connectionFactory.CreateConnection();
+        var entries = await connection.QueryAsync<AuditLogEntry>(new CommandDefinition(
+            """
+            SELECT id, placement_id, sponsor_id, tournament_id, placement_zone, slot_number,
+                   action, performed_by, details, created_at
+            FROM public.sponsor_placement_audit_log
+            WHERE placement_id = @id
+            ORDER BY created_at DESC
+            LIMIT 100
+            """,
+            new { id },
+            cancellationToken: ct));
+        return Results.Ok(entries);
+    }
 
     private static bool CanEditSponsors(UserContext? userContext) =>
         userContext is not null
@@ -1139,9 +1176,49 @@ public static class TournamentSponsorEndpoints
         public Guid? LogoAssetId { get; init; }
     }
 
+    private sealed record DeletedPlacementRow
+    {
+        public Guid SponsorId { get; init; }
+        public Guid? TournamentId { get; init; }
+        public string? PlacementZone { get; init; }
+        public int? SlotNumber { get; init; }
+        public Guid? BannerAssetId { get; init; }
+        public Guid? LogoAssetId { get; init; }
+    }
+
     private sealed record PlacementCreativeAsset
     {
         public Guid Id { get; init; }
         public string PublicUrl { get; init; } = "";
+    }
+
+    private static Task LogPlacementAuditAsync(
+        System.Data.IDbConnection connection,
+        System.Data.IDbTransaction? transaction,
+        Guid placementId, Guid sponsorId, Guid? tournamentId,
+        string zone, int? slot, string action, Guid? performedBy,
+        object? details, CancellationToken ct) =>
+        connection.ExecuteAsync(new CommandDefinition(
+            """
+            INSERT INTO public.sponsor_placement_audit_log
+                (placement_id, sponsor_id, tournament_id, placement_zone, slot_number, action, performed_by, details)
+            VALUES (@placementId, @sponsorId, @tournamentId, @zone, @slot, @action, @performedBy, @details::jsonb)
+            """,
+            new { placementId, sponsorId, tournamentId, zone, slot, action, performedBy,
+                  details = details is null ? "{}" : System.Text.Json.JsonSerializer.Serialize(details) },
+            transaction, cancellationToken: ct));
+
+    private sealed record AuditLogEntry
+    {
+        public Guid Id { get; init; }
+        public Guid PlacementId { get; init; }
+        public Guid SponsorId { get; init; }
+        public Guid? TournamentId { get; init; }
+        public string PlacementZone { get; init; } = "";
+        public int? SlotNumber { get; init; }
+        public string Action { get; init; } = "";
+        public Guid? PerformedBy { get; init; }
+        public string? Details { get; init; }
+        public DateTimeOffset CreatedAt { get; init; }
     }
 }
