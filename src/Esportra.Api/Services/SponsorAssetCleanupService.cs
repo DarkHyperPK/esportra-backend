@@ -13,7 +13,7 @@ public sealed class SponsorAssetCleanupService(
     public async Task ProcessBatchAsync(CancellationToken ct)
     {
         using var connection = connectionFactory.CreateConnection();
-        connection.Open();
+        await PurgeExpiredPlacementsAsync(connection, ct);
         await EnqueueExpiredAssetsAsync(connection, ct);
         using var transaction = connection.BeginTransaction();
         var leaseOwner = $"{Environment.MachineName}:{Guid.NewGuid():N}";
@@ -36,6 +36,54 @@ public sealed class SponsorAssetCleanupService(
         transaction.Commit();
 
         foreach (var job in jobs) await ProcessJobAsync(connection, job, leaseOwner, ct);
+    }
+
+    private async Task PurgeExpiredPlacementsAsync(System.Data.IDbConnection connection, CancellationToken ct)
+    {
+        var expired = (await connection.QueryAsync<ExpiredPlacement>(new CommandDefinition(
+            """
+            DELETE FROM public.sponsor_placements
+            WHERE ends_at IS NOT NULL AND ends_at <= NOW()
+            RETURNING id, sponsor_id, tournament_id, placement_zone, slot_number, banner_asset_id, logo_asset_id
+            """, cancellationToken: ct))).AsList();
+
+        if (expired.Count == 0) return;
+        logger.LogInformation("Purged {Count} expired placement(s)", expired.Count);
+
+        foreach (var p in expired)
+        {
+            var assetIds = new[] { p.BannerAssetId, p.LogoAssetId }
+                .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
+            if (assetIds.Length > 0)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT INTO sponsor_asset_cleanup_jobs (asset_id, bucket, object_path)
+                    SELECT a.id, a.bucket, a.object_path FROM sponsor_placement_assets a
+                    WHERE a.id = ANY(@assetIds)
+                      AND NOT EXISTS (SELECT 1 FROM sponsor_placements sp WHERE sp.banner_asset_id = a.id OR sp.logo_asset_id = a.id)
+                    ON CONFLICT (bucket, object_path) WHERE completed_at IS NULL AND failed_at IS NULL DO NOTHING
+                    """, new { assetIds }, cancellationToken: ct));
+            }
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT INTO public.sponsor_placement_audit_log
+                    (placement_id, sponsor_id, tournament_id, placement_zone, slot_number, action, details)
+                VALUES (@Id, @SponsorId, @TournamentId, @PlacementZone, @SlotNumber, 'expired', '{}')
+                """, p, cancellationToken: ct));
+        }
+    }
+
+    private sealed record ExpiredPlacement
+    {
+        public Guid Id { get; init; }
+        public Guid SponsorId { get; init; }
+        public Guid? TournamentId { get; init; }
+        public string PlacementZone { get; init; } = "";
+        public int? SlotNumber { get; init; }
+        public Guid? BannerAssetId { get; init; }
+        public Guid? LogoAssetId { get; init; }
     }
 
     internal static Task EnqueueExpiredAssetsAsync(System.Data.IDbConnection connection, CancellationToken ct) =>
