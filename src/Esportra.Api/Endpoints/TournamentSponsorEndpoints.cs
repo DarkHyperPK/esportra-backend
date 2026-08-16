@@ -1204,8 +1204,17 @@ public static class TournamentSponsorEndpoints
                 (placement_id, sponsor_id, tournament_id, placement_zone, slot_number, action, performed_by, details)
             VALUES (@placementId, @sponsorId, @tournamentId, @zone, @slot, @action, @performedBy, @details::jsonb)
             """,
-            new { placementId, sponsorId, tournamentId, zone, slot, action, performedBy,
-                  details = details is null ? "{}" : System.Text.Json.JsonSerializer.Serialize(details) },
+            new
+            {
+                placementId,
+                sponsorId,
+                tournamentId,
+                zone,
+                slot,
+                action,
+                performedBy,
+                details = details is null ? "{}" : System.Text.Json.JsonSerializer.Serialize(details),
+            },
             transaction, cancellationToken: ct));
 
     private sealed record AuditLogEntry
