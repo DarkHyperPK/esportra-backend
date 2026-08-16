@@ -76,6 +76,8 @@ public static class TournamentSponsorEndpoints
             .RequireAuthorization(Permissions.SponsorsEdit);
         app.MapGet("/api/admin/placements/{id:guid}/audit-log", GetPlacementAuditLogAsync)
             .RequireAuthorization(Permissions.SponsorsEdit);
+        app.MapGet("/api/admin/placements/audit-log", GetAllAuditLogsAsync)
+            .RequireAuthorization(Permissions.SponsorsEdit);
     }
 
     // ─── Public: Tournament sponsors (consumed by frontend components) ───
@@ -1012,14 +1014,43 @@ public static class TournamentSponsorEndpoints
         using var connection = connectionFactory.CreateConnection();
         var entries = await connection.QueryAsync<AuditLogEntry>(new CommandDefinition(
             """
-            SELECT id, placement_id, sponsor_id, tournament_id, placement_zone, slot_number,
-                   action, performed_by, details, created_at
-            FROM public.sponsor_placement_audit_log
-            WHERE placement_id = @id
-            ORDER BY created_at DESC
+            SELECT a.id, a.placement_id, a.placement_zone, a.slot_number,
+                   a.action, a.details, a.created_at,
+                   s.name AS sponsor_name, t.name AS tournament_name, p.username AS performed_by_name
+            FROM public.sponsor_placement_audit_log a
+            LEFT JOIN public.sponsors s ON s.id = a.sponsor_id
+            LEFT JOIN public.tournaments t ON t.id = a.tournament_id
+            LEFT JOIN public.profiles p ON p.id = a.performed_by
+            WHERE a.placement_id = @id
+            ORDER BY a.created_at DESC
             LIMIT 100
             """,
             new { id },
+            cancellationToken: ct));
+        return Results.Ok(entries);
+    }
+
+    private static async Task<IResult> GetAllAuditLogsAsync(
+        HttpContext context,
+        IDbConnectionFactory connectionFactory,
+        CancellationToken ct)
+    {
+        var userContext = context.Items["UserContext"] as UserContext;
+        if (!CanEditSponsors(userContext)) return Results.Forbid();
+
+        using var connection = connectionFactory.CreateConnection();
+        var entries = await connection.QueryAsync<AuditLogEntry>(new CommandDefinition(
+            """
+            SELECT a.id, a.placement_id, a.placement_zone, a.slot_number,
+                   a.action, a.details, a.created_at,
+                   s.name AS sponsor_name, t.name AS tournament_name, p.username AS performed_by_name
+            FROM public.sponsor_placement_audit_log a
+            LEFT JOIN public.sponsors s ON s.id = a.sponsor_id
+            LEFT JOIN public.tournaments t ON t.id = a.tournament_id
+            LEFT JOIN public.profiles p ON p.id = a.performed_by
+            ORDER BY a.created_at DESC
+            LIMIT 200
+            """,
             cancellationToken: ct));
         return Results.Ok(entries);
     }
@@ -1221,13 +1252,13 @@ public static class TournamentSponsorEndpoints
     {
         public Guid Id { get; init; }
         public Guid PlacementId { get; init; }
-        public Guid SponsorId { get; init; }
-        public Guid? TournamentId { get; init; }
         public string PlacementZone { get; init; } = "";
         public int? SlotNumber { get; init; }
         public string Action { get; init; } = "";
-        public Guid? PerformedBy { get; init; }
         public string? Details { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
+        public string? SponsorName { get; init; }
+        public string? TournamentName { get; init; }
+        public string? PerformedByName { get; init; }
     }
 }
