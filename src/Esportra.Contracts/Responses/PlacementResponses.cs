@@ -1,31 +1,33 @@
 namespace Esportra.Contracts.Responses;
 
-public sealed record PlacementDto(
-    Guid Id,
-    Guid SponsorId,
-    Guid? TournamentId,
-    string PlacementZone,
-    int? SlotNumber,
-    string? BannerUrl,
-    Guid? BannerAssetId,
-    string? LogoUrl,
-    Guid? LogoAssetId,
-    string? Headline,
-    string? CtaText,
-    string? CtaUrl,
-    int Priority,
-    bool IsActive,
-    DateTimeOffset? StartsAt,
-    DateTimeOffset? EndsAt,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt,
-    string Lifecycle,
-    string? ReviewReason,
-    string SponsorName,
-    string? SponsorTier,
-    string? SponsorLogoUrl,
-    string? SponsorWebsiteUrl,
-    string? TournamentName);
+public sealed record PlacementDto
+{
+    public Guid Id { get; init; }
+    public Guid SponsorId { get; init; }
+    public Guid? TournamentId { get; init; }
+    public string PlacementZone { get; init; } = "";
+    public int? SlotNumber { get; init; }
+    public string? BannerUrl { get; init; }
+    public Guid? BannerAssetId { get; init; }
+    public string? LogoUrl { get; init; }
+    public Guid? LogoAssetId { get; init; }
+    public string? Headline { get; init; }
+    public string? CtaText { get; init; }
+    public string? CtaUrl { get; init; }
+    public int Priority { get; init; }
+    public bool IsActive { get; init; }
+    public DateTimeOffset? StartsAt { get; init; }
+    public DateTimeOffset? EndsAt { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+    public DateTimeOffset UpdatedAt { get; init; }
+    public string Lifecycle { get; init; } = "";
+    public string? ReviewReason { get; init; }
+    public string SponsorName { get; init; } = "";
+    public string? SponsorTier { get; init; }
+    public string? SponsorLogoUrl { get; init; }
+    public string? SponsorWebsiteUrl { get; init; }
+    public string? TournamentName { get; init; }
+}
 
 public sealed record PlacementPageDto(
     IReadOnlyList<PlacementDto> Items,
