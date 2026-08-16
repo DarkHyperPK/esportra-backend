@@ -50,20 +50,34 @@ public sealed class SponsorAssetCleanupService(
         if (expired.Count == 0) return;
         logger.LogInformation("Purged {Count} expired placement(s)", expired.Count);
 
+        var supabaseUrl = configuration["Supabase:Url"]?.TrimEnd('/');
+        var serviceKey = configuration["Supabase:ServiceKey"];
+
         foreach (var p in expired)
         {
             var assetIds = new[] { p.BannerAssetId, p.LogoAssetId }
                 .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
-            if (assetIds.Length > 0)
+
+            if (assetIds.Length > 0 && supabaseUrl is not null && serviceKey is not null)
             {
+                var assets = (await connection.QueryAsync<AssetPath>(new CommandDefinition(
+                    "SELECT bucket, object_path FROM sponsor_placement_assets WHERE id = ANY(@assetIds)",
+                    new { assetIds }, cancellationToken: ct))).AsList();
+
+                var client = httpClientFactory.CreateClient();
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", serviceKey);
+                client.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+                foreach (var asset in assets)
+                {
+                    var escapedPath = string.Join('/', asset.ObjectPath.Split('/').Select(Uri.EscapeDataString));
+                    using var response = await client.DeleteAsync(
+                        $"{supabaseUrl}/storage/v1/object/{Uri.EscapeDataString(asset.Bucket)}/{escapedPath}", ct);
+                }
+
                 await connection.ExecuteAsync(new CommandDefinition(
-                    """
-                    INSERT INTO sponsor_asset_cleanup_jobs (asset_id, bucket, object_path)
-                    SELECT a.id, a.bucket, a.object_path FROM sponsor_placement_assets a
-                    WHERE a.id = ANY(@assetIds)
-                      AND NOT EXISTS (SELECT 1 FROM sponsor_placements sp WHERE sp.banner_asset_id = a.id OR sp.logo_asset_id = a.id)
-                    ON CONFLICT (bucket, object_path) WHERE completed_at IS NULL AND failed_at IS NULL DO NOTHING
-                    """, new { assetIds }, cancellationToken: ct));
+                    "DELETE FROM sponsor_placement_assets WHERE id = ANY(@assetIds)",
+                    new { assetIds }, cancellationToken: ct));
             }
 
             await connection.ExecuteAsync(new CommandDefinition(
@@ -73,6 +87,12 @@ public sealed class SponsorAssetCleanupService(
                 VALUES (@Id, @SponsorId, @TournamentId, @PlacementZone, @SlotNumber, 'expired', '{}')
                 """, p, cancellationToken: ct));
         }
+    }
+
+    private sealed record AssetPath
+    {
+        public string Bucket { get; init; } = "";
+        public string ObjectPath { get; init; } = "";
     }
 
     private sealed record ExpiredPlacement
