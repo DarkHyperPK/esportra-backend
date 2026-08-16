@@ -497,8 +497,18 @@ public static class TournamentSponsorEndpoints
 
         if (id is null)
         {
+            var existingId = await connection.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
+                """
+                SELECT id FROM public.sponsor_placements
+                WHERE placement_zone = @PlacementZone
+                  AND (sponsor_id = @SponsorId OR slot_number = @SlotNumber)
+                  AND CASE WHEN @TournamentId IS NULL THEN tournament_id IS NULL ELSE tournament_id = @TournamentId END
+                LIMIT 1
+                """,
+                new { request.PlacementZone, request.SponsorId, request.SlotNumber, request.TournamentId },
+                transaction, cancellationToken: ct));
             transaction.Rollback();
-            return Results.Conflict(new { error = "The slot is occupied or this sponsor is already assigned to the zone." });
+            return Results.Conflict(new { error = "The slot is occupied or this sponsor is already assigned to the zone.", existingId });
         }
 
         await ClaimAssetsAsync(connection, transaction, [request.BannerAssetId, request.LogoAssetId], ct);
