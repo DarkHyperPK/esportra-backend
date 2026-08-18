@@ -48,6 +48,8 @@ public static class TournamentSponsorEndpoints
         app.MapGet("/api/placements/global", GetGlobalPlacementsAsync);
         app.MapGet("/api/sponsors/me/placements", GetMyPlacementsAsync)
             .RequireAuthorization("Authenticated");
+        app.MapGet("/api/sponsors/me/placements/history", GetMyPlacementHistoryAsync)
+            .RequireAuthorization("Authenticated");
 
         // Admin CRUD
         app.MapGet("/api/admin/placements", GetAllPlacementsAsync)
@@ -234,6 +236,36 @@ public static class TournamentSponsorEndpoints
                 cancellationToken: ct));
 
         return Results.Ok(rows);
+    }
+
+    private static async Task<IResult> GetMyPlacementHistoryAsync(
+        HttpContext context,
+        IDbConnectionFactory connectionFactory,
+        CancellationToken ct)
+    {
+        var userContext = context.Items["UserContext"] as UserContext;
+        if (userContext is null) return Results.Unauthorized();
+
+        using var connection = connectionFactory.CreateConnection();
+        var entries = await connection.QueryAsync<AuditLogEntry>(new CommandDefinition(
+            """
+            SELECT a.id, a.placement_id, a.placement_zone, a.slot_number,
+                   a.action, a.details, a.created_at,
+                   s.name AS sponsor_name, t.name AS tournament_name, p.username AS performed_by_name
+            FROM public.sponsor_placement_audit_log a
+            LEFT JOIN public.sponsors s ON s.id = a.sponsor_id
+            LEFT JOIN public.tournaments t ON t.id = a.tournament_id
+            LEFT JOIN public.profiles p ON p.id = a.performed_by
+            WHERE a.sponsor_id IN (
+                SELECT sponsor_id FROM public.sponsor_accounts
+                WHERE user_id = @userId AND status = 'active'
+            )
+            ORDER BY a.created_at DESC
+            LIMIT 100
+            """,
+            new { userId = userContext.UserIdGuid },
+            cancellationToken: ct));
+        return Results.Ok(entries);
     }
 
     private static async Task<IResult> GetAllPlacementsAsync(
