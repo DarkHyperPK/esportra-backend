@@ -586,7 +586,7 @@ public static class TournamentSponsorEndpoints
         using var connection = connectionFactory.CreateConnection();
         using var transaction = connection.BeginTransaction();
         var oldAssets = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
-            "SELECT placement_zone AS PlacementZone, banner_asset_id AS BannerAssetId, logo_asset_id AS LogoAssetId FROM sponsor_placements WHERE id = @id FOR UPDATE",
+            "SELECT placement_zone AS PlacementZone, banner_asset_id AS BannerAssetId, logo_asset_id AS LogoAssetId, sponsor_id AS SponsorId, tournament_id AS TournamentId, slot_number AS SlotNumber FROM sponsor_placements WHERE id = @id FOR UPDATE",
             new { id }, transaction, cancellationToken: ct));
         if (oldAssets is null) return Results.NotFound();
 
@@ -635,6 +635,7 @@ public static class TournamentSponsorEndpoints
         if (affected == 0) return Results.NotFound();
         await ClaimAssetsAsync(connection, transaction, [request.BannerAssetId, request.LogoAssetId], ct);
         await QueueReplacedAssetsAsync(connection, transaction, oldAssets, request.BannerAssetId, request.LogoAssetId, ct);
+        await LogPlacementAuditAsync(connection, transaction, id, oldAssets.SponsorId, oldAssets.TournamentId, oldAssets.PlacementZone, oldAssets.SlotNumber, "updated", userContext!.UserIdGuid, null, ct);
         transaction.Commit();
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
         return Results.NoContent();
@@ -726,6 +727,7 @@ public static class TournamentSponsorEndpoints
                 new { Id = id, request.TournamentId, request.PlacementZone, request.SlotNumber },
                 transaction,
                 cancellationToken: ct));
+            await LogPlacementAuditAsync(connection, transaction, id, placement.SponsorId, request.TournamentId, request.PlacementZone, request.SlotNumber, "resolved", userContext!.UserIdGuid, null, ct);
             transaction.Commit();
         }
         catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UniqueViolation)
@@ -901,6 +903,11 @@ public static class TournamentSponsorEndpoints
             cancellationToken: ct));
 
         if (affected == 0) return Results.NotFound();
+        var auditInfo = await connection.QuerySingleOrDefaultAsync<PlacementAssetRow>(new CommandDefinition(
+            "SELECT placement_zone AS PlacementZone, sponsor_id AS SponsorId, tournament_id AS TournamentId, slot_number AS SlotNumber, banner_asset_id AS BannerAssetId, logo_asset_id AS LogoAssetId FROM sponsor_placements WHERE id = @id",
+            new { id }, cancellationToken: ct));
+        if (auditInfo is not null)
+            await LogPlacementAuditAsync(connection, null, id, auditInfo.SponsorId, auditInfo.TournamentId, auditInfo.PlacementZone, auditInfo.SlotNumber, "metadata_updated", userContext!.UserIdGuid, null, ct);
         try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
         return Results.NoContent();
     }
@@ -1237,6 +1244,9 @@ public static class TournamentSponsorEndpoints
         public string PlacementZone { get; init; } = "";
         public Guid? BannerAssetId { get; init; }
         public Guid? LogoAssetId { get; init; }
+        public Guid SponsorId { get; init; }
+        public Guid? TournamentId { get; init; }
+        public int? SlotNumber { get; init; }
     }
 
     private sealed record DeletedPlacementRow
