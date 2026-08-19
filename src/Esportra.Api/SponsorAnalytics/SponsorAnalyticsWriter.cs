@@ -299,9 +299,13 @@ public sealed class SponsorAnalyticsWriter(
     private static string? NormalizePagePath(string? pagePath)
     {
         if (string.IsNullOrWhiteSpace(pagePath)) return null;
-        if (!Uri.TryCreate(pagePath, UriKind.Relative, out var parsed)) return null;
-        var value = parsed.GetComponents(UriComponents.Path, UriFormat.SafeUnescaped);
-        return value.StartsWith('/') ? value : $"/{value}";
+        var trimmed = pagePath.Trim();
+        if (trimmed.Length > 256) trimmed = trimmed[..256];
+        var queryIndex = trimmed.IndexOf('?');
+        if (queryIndex >= 0) trimmed = trimmed[..queryIndex];
+        var fragmentIndex = trimmed.IndexOf('#');
+        if (fragmentIndex >= 0) trimmed = trimmed[..fragmentIndex];
+        return trimmed.StartsWith('/') ? trimmed : $"/{trimmed}";
     }
 
     private sealed record ProfileRow(string? CountryCode, DateOnly? DateOfBirth);
