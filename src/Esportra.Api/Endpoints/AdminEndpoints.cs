@@ -837,7 +837,22 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
             using var conn = db.CreateConnection();
-            await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id });
+            using var txn = conn.BeginTransaction();
+            await conn.ExecuteAsync("DELETE FROM sponsor_placement_audit_log WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_asset_cleanup_jobs WHERE asset_id IN (SELECT sa.id FROM sponsor_placement_assets sa JOIN sponsor_placements sp ON sp.banner_asset_id = sa.id OR sp.logo_asset_id = sa.id WHERE sp.sponsor_id = @id)", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_placements WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_placement_assets WHERE uploaded_by IN (SELECT user_id FROM sponsor_accounts WHERE sponsor_id = @id)", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_accounts WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_daily_totals WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_placement_daily_stats WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_device_daily_stats WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_content_daily_stats WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_audience_daily_facts WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_audience_identities WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_analytics_events WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsor_impressions WHERE sponsor_id = @id", new { id }, txn);
+            await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id }, txn);
+            txn.Commit();
             return Results.Ok(new { success = true });
         }).RequireAuthorization(Permissions.SponsorsDelete);
 
