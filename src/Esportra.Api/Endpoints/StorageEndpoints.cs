@@ -42,7 +42,8 @@ public static class StorageEndpoints
         "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
         "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
         "system.assets.website", "system.assets.games", "game-assets",
-        "users.documents.kyc", "venue-images", "venues.images", "venues.layouts"
+        "users.documents.kyc", "venue-images", "venues.images", "venues.layouts",
+        "system.assets.partners"
     };
 
     // Buckets that users are allowed to delete from
