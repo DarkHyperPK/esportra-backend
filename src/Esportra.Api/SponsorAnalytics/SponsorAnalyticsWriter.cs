@@ -273,7 +273,7 @@ public sealed class SponsorAnalyticsWriter(
                 cancellationToken: cancellationToken));
             var country = SponsorAnalyticsPolicy.NormalizeCountry(profile?.CountryCode);
             var age = SponsorAnalyticsPolicy.CalculateAgeBand(
-                profile?.DateOfBirth.HasValue == true ? DateOnly.FromDateTime(profile.DateOfBirth.Value) : null,
+                profile?.DateOfBirth,
                 DateOnly.FromDateTime(now.UtcDateTime));
             return new DemographicSnapshot(
                 country, country is null ? "unknown" : "profile_self_reported",
@@ -311,7 +311,7 @@ public sealed class SponsorAnalyticsWriter(
     private sealed record ProfileRow
     {
         public string? CountryCode { get; init; }
-        public DateTime? DateOfBirth { get; init; }
+        public DateOnly? DateOfBirth { get; init; }
     }
     private sealed record DemographicSnapshot(
         string? CountryCode,

@@ -14,9 +14,11 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
         var previousStart = start.AddDays(-days);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
 
@@ -93,8 +95,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
         var rows = (await connection.QueryAsync<DailyRow>(new CommandDefinition(
@@ -121,8 +125,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
         var rows = (await connection.QueryAsync<PlacementRow>(new CommandDefinition(
@@ -152,8 +158,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
 
@@ -208,8 +216,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
 
