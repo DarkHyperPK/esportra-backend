@@ -27,6 +27,8 @@ public sealed record PlacementDto
     public string? SponsorLogoUrl { get; init; }
     public string? SponsorWebsiteUrl { get; init; }
     public string? TournamentName { get; init; }
+    public long TotalImpressions { get; init; }
+    public long TotalClicks { get; init; }
 }
 
 public sealed record PlacementPageDto(

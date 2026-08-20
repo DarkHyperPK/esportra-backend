@@ -335,10 +335,20 @@ public static class TournamentSponsorEndpoints
                                      END AS Lifecycle, p.review_reason AS ReviewReason,
                                      s.name AS SponsorName, s.tier AS SponsorTier,
                                      s.logo_url AS SponsorLogoUrl, s.website_url AS SponsorWebsiteUrl,
-                                     t.name AS TournamentName
+                                     t.name AS TournamentName,
+                                     COALESCE(stats.TotalImpressions, 0) AS TotalImpressions,
+                                     COALESCE(stats.TotalClicks, 0) AS TotalClicks
                             FROM public.sponsor_placements p
                             JOIN public.sponsors s ON s.id = p.sponsor_id
                             LEFT JOIN public.tournaments t ON t.id = p.tournament_id
+                            LEFT JOIN (
+                                SELECT sponsor_id, placement,
+                                       SUM(impressions) AS TotalImpressions,
+                                       SUM(clicks) AS TotalClicks
+                                FROM public.sponsor_placement_daily_stats
+                                WHERE stat_date >= NOW() - INTERVAL '30 days'
+                                GROUP BY sponsor_id, placement
+                            ) stats ON stats.sponsor_id = p.sponsor_id AND stats.placement = p.placement_zone
                             WHERE (@sponsorId IS NULL OR p.sponsor_id = @sponsorId)
                                 AND (@tournamentId IS NULL OR p.tournament_id = @tournamentId)
                                 AND (@zone IS NULL OR p.placement_zone = @zone)
@@ -410,10 +420,20 @@ public static class TournamentSponsorEndpoints
                                      END AS Lifecycle, p.review_reason AS ReviewReason,
                    s.name AS SponsorName, s.tier AS SponsorTier,
                    s.logo_url AS SponsorLogoUrl, s.website_url AS SponsorWebsiteUrl,
-                   t.name AS TournamentName
+                   t.name AS TournamentName,
+                   COALESCE(stats.TotalImpressions, 0) AS TotalImpressions,
+                   COALESCE(stats.TotalClicks, 0) AS TotalClicks
             FROM public.sponsor_placements p
             JOIN public.sponsors s ON s.id = p.sponsor_id
             LEFT JOIN public.tournaments t ON t.id = p.tournament_id
+            LEFT JOIN (
+                SELECT sponsor_id, placement,
+                       SUM(impressions) AS TotalImpressions,
+                       SUM(clicks) AS TotalClicks
+                FROM public.sponsor_placement_daily_stats
+                WHERE stat_date >= NOW() - INTERVAL '30 days'
+                GROUP BY sponsor_id, placement
+            ) stats ON stats.sponsor_id = p.sponsor_id AND stats.placement = p.placement_zone
             WHERE p.id = @id
             """,
             new { id },
@@ -804,10 +824,20 @@ public static class TournamentSponsorEndpoints
                                      END AS Lifecycle, p.review_reason AS ReviewReason,
                    s.name AS SponsorName, s.tier AS SponsorTier,
                    s.logo_url AS SponsorLogoUrl, s.website_url AS SponsorWebsiteUrl,
-                   t.name AS TournamentName
+                   t.name AS TournamentName,
+                   COALESCE(stats.TotalImpressions, 0) AS TotalImpressions,
+                   COALESCE(stats.TotalClicks, 0) AS TotalClicks
             FROM public.sponsor_placements p
             JOIN public.sponsors s ON s.id = p.sponsor_id
             LEFT JOIN public.tournaments t ON t.id = p.tournament_id
+            LEFT JOIN (
+                SELECT sponsor_id, placement,
+                       SUM(impressions) AS TotalImpressions,
+                       SUM(clicks) AS TotalClicks
+                FROM public.sponsor_placement_daily_stats
+                WHERE stat_date >= NOW() - INTERVAL '30 days'
+                GROUP BY sponsor_id, placement
+            ) stats ON stats.sponsor_id = p.sponsor_id AND stats.placement = p.placement_zone
             WHERE p.sponsor_id = @sponsorId
             ORDER BY p.created_at DESC
             """,
@@ -850,10 +880,20 @@ public static class TournamentSponsorEndpoints
                                      END AS Lifecycle, p.review_reason AS ReviewReason,
                    s.name AS SponsorName, s.tier AS SponsorTier,
                    s.logo_url AS SponsorLogoUrl, s.website_url AS SponsorWebsiteUrl,
-                   t.name AS TournamentName
+                   t.name AS TournamentName,
+                   COALESCE(stats.TotalImpressions, 0) AS TotalImpressions,
+                   COALESCE(stats.TotalClicks, 0) AS TotalClicks
             FROM public.sponsor_placements p
             JOIN public.sponsors s ON s.id = p.sponsor_id
             LEFT JOIN public.tournaments t ON t.id = p.tournament_id
+            LEFT JOIN (
+                SELECT sponsor_id, placement,
+                       SUM(impressions) AS TotalImpressions,
+                       SUM(clicks) AS TotalClicks
+                FROM public.sponsor_placement_daily_stats
+                WHERE stat_date >= NOW() - INTERVAL '30 days'
+                GROUP BY sponsor_id, placement
+            ) stats ON stats.sponsor_id = p.sponsor_id AND stats.placement = p.placement_zone
             WHERE p.tournament_id = @tournamentId
             ORDER BY p.placement_zone, p.slot_number
             """,
