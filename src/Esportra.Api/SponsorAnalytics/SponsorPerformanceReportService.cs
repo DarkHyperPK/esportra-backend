@@ -277,8 +277,8 @@ public sealed class SponsorPerformanceReportService(
             SELECT ss.tournament_id AS TournamentId,
                    t.name AS TournamentName,
                    ss.placement_zone AS PlacementZone,
-                   SUM(ss.impressions) AS Impressions,
-                   SUM(ss.clicks) AS Clicks
+                   COALESCE(SUM(ss.impressions), 0) AS Impressions,
+                   COALESCE(SUM(ss.clicks), 0) AS Clicks
             FROM public.sponsor_slot_daily_stats ss
             LEFT JOIN public.tournaments t ON t.id = ss.tournament_id
             WHERE ss.sponsor_id = @sponsorId
@@ -306,10 +306,22 @@ public sealed class SponsorPerformanceReportService(
 
     private sealed record TotalsRow(long Impressions, long Clicks);
     private sealed record DailyRow(DateOnly Date, long Impressions, long Clicks);
-    private sealed record PlacementRow(string Placement, long Impressions, long Clicks);
+    private sealed record PlacementRow
+    {
+        public string Placement { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
     private sealed record DeviceRow(string DeviceClass, long Impressions, long Clicks);
     private sealed record DailyDeviceRow(DateOnly Date, string DeviceClass, long Impressions, long Clicks);
     private sealed record TournamentRow(Guid TournamentId, string? TournamentName, long Impressions, long Clicks);
     private sealed record PageRow(string PagePath, long Impressions, long Clicks);
-    private sealed record SlotRow(Guid TournamentId, string? TournamentName, string PlacementZone, long Impressions, long Clicks);
+    private sealed record SlotRow
+    {
+        public Guid TournamentId { get; init; }
+        public string? TournamentName { get; init; }
+        public string PlacementZone { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
 }
