@@ -18,6 +18,10 @@ public static class StorageEndpoints
     {
         ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico"
     };
+    private static readonly HashSet<string> AllowedPlacementImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".jpg", ".jpeg", ".png", ".webp", ".avif"
+    };
     private static readonly HashSet<string> AllowedVideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mp4", ".mov", ".webm", ".avi"
@@ -37,15 +41,16 @@ public static class StorageEndpoints
         "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
         "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
         "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
-        "system.assets.partners", "system.assets.website", "system.assets.games", "game-assets",
-        "users.documents.kyc", "venue-images", "venues.images", "venues.layouts"
+        "system.assets.website", "system.assets.games", "game-assets",
+        "users.documents.kyc", "venue-images", "venues.images", "venues.layouts",
+        "system.assets.partners"
     };
 
     // Buckets that users are allowed to delete from
     private static readonly HashSet<string> AllowedDeleteBuckets = new(StringComparer.OrdinalIgnoreCase)
     {
         "users.avatars", "teams.logos", "organizer-banners", "organizer-media",
-        "system.assets.partners", "system.assets.website", "venue-images", "venues.images", "venues.layouts",
+        "system.assets.website", "venue-images", "venues.images", "venues.layouts",
         "tournaments.banners", "tournaments.media", "tournament-images"
     };
 
@@ -83,6 +88,15 @@ public static class StorageEndpoints
                 return Results.BadRequest(new { error = "File type not allowed. Accepted: images (jpg, png, gif, webp, svg), videos (mp4, mov, webm), and documents (pdf, pptx)." });
 
             var folder = form["folder"].FirstOrDefault() ?? "";
+
+            if (folder.Contains('%'))
+                return Results.BadRequest(new { error = "Invalid storage folder." });
+
+            if (IsPlacementAsset(bucket, folder)
+                && (!userCtx.Permissions.Contains(Permissions.SponsorsEdit, StringComparer.OrdinalIgnoreCase)
+                    || !AllowedPlacementImageExtensions.Contains(ext)
+                    || !file.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)))
+                return Results.Forbid();
 
             var uploadAllowed = await ValidateStorageUploadAsync(userCtx, bucket, folder, ctx.RequestServices);
             if (!uploadAllowed)
@@ -244,8 +258,14 @@ public static class StorageEndpoints
             if (!AllowedDeleteBuckets.Contains(bucket))
                 return Results.Forbid();
 
+            if (IsPlacementAsset(bucket, path))
+                return Results.Forbid();
+
             // Prevent path traversal
             if (path.Contains("..") || path.Contains('\0'))
+                return Results.BadRequest(new { error = "Invalid path." });
+
+            if (path.Contains('%'))
                 return Results.BadRequest(new { error = "Invalid path." });
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/')
@@ -344,6 +364,11 @@ public static class StorageEndpoints
                 || userCtx.Permissions.Contains(Permissions.UsersView, StringComparer.OrdinalIgnoreCase);
         }
 
+        if (IsPlacementAsset(bucket, normalizedFolder))
+        {
+            return userCtx.Permissions.Contains(Permissions.SponsorsEdit, StringComparer.OrdinalIgnoreCase);
+        }
+
         if (bucket.StartsWith("users.", StringComparison.OrdinalIgnoreCase))
         {
             if (normalizedFolder.StartsWith("Player-cards/", StringComparison.OrdinalIgnoreCase))
@@ -373,6 +398,11 @@ public static class StorageEndpoints
 
         return true;
     }
+
+    private static bool IsPlacementAsset(string bucket, string folder) =>
+        bucket.Equals("system.assets.partners", StringComparison.OrdinalIgnoreCase)
+        && folder.Replace('\\', '/').Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
+            ?.Equals("placements", StringComparison.OrdinalIgnoreCase) == true;
 
     private static string SanitizeTeamSlug(string teamName) =>
         Regex.Replace(teamName, @"[^a-z0-9]", "_", RegexOptions.IgnoreCase).ToLowerInvariant();

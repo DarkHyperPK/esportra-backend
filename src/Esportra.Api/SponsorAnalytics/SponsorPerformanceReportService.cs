@@ -14,9 +14,11 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
         var previousStart = start.AddDays(-days);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
 
@@ -93,8 +95,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
         var rows = (await connection.QueryAsync<DailyRow>(new CommandDefinition(
@@ -121,8 +125,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
         var rows = (await connection.QueryAsync<PlacementRow>(new CommandDefinition(
@@ -152,8 +158,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
 
@@ -208,8 +216,10 @@ public sealed class SponsorPerformanceReportService(
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
 
@@ -250,6 +260,65 @@ public sealed class SponsorPerformanceReportService(
                 ComputeCtr(d.Clicks, d.Impressions))).ToList());
     }
 
+    public async Task<SponsorAnalyticsSlotsResponse> GetSlotsAsync(
+        Guid sponsorId,
+        int days,
+        CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
+
+        using var connection = connectionFactory.CreateConnection();
+
+        var tournamentRows = (await connection.QueryAsync<SlotRow>(new CommandDefinition(
+            """
+            SELECT ss.tournament_id AS TournamentId,
+                   t.name AS TournamentName,
+                   ss.placement_zone AS PlacementZone,
+                   COALESCE(SUM(ss.impressions), 0) AS Impressions,
+                   COALESCE(SUM(ss.clicks), 0) AS Clicks
+            FROM public.sponsor_slot_daily_stats ss
+            LEFT JOIN public.tournaments t ON t.id = ss.tournament_id
+            WHERE ss.sponsor_id = @sponsorId
+              AND ss.stat_date >= @start AND ss.stat_date < @endExclusive
+            GROUP BY ss.tournament_id, t.name, ss.placement_zone
+            ORDER BY Impressions DESC
+            """,
+            new { sponsorId, start, endExclusive },
+            cancellationToken: cancellationToken))).AsList();
+
+        // Global placements (partner_showcase, homepage_ticker) have no tournament — pull from
+        // sponsor_placement_daily_stats for zones that are known to be global.
+        var globalRows = (await connection.QueryAsync<GlobalSlotRow>(new CommandDefinition(
+            """
+            SELECT placement AS PlacementZone,
+                   COALESCE(SUM(impressions), 0) AS Impressions,
+                   COALESCE(SUM(clicks), 0) AS Clicks
+            FROM public.sponsor_placement_daily_stats
+            WHERE sponsor_id = @sponsorId
+              AND stat_date >= @start AND stat_date < @endExclusive
+              AND placement IN ('partner_showcase', 'homepage_ticker')
+            GROUP BY placement
+            ORDER BY Impressions DESC
+            """,
+            new { sponsorId, start, endExclusive },
+            cancellationToken: cancellationToken))).AsList();
+
+        var slots = tournamentRows
+            .Select(r => new SponsorSlotStatsDto(
+                r.TournamentId, r.TournamentName, r.PlacementZone,
+                r.Impressions, r.Clicks, ComputeCtr(r.Clicks, r.Impressions)))
+            .Concat(globalRows.Select(r => new SponsorSlotStatsDto(
+                null, null, r.PlacementZone,
+                r.Impressions, r.Clicks, ComputeCtr(r.Clicks, r.Impressions))))
+            .ToList();
+
+        return new SponsorAnalyticsSlotsResponse(1, window, slots);
+    }
+
     internal static decimal ComputeCtr(long clicks, long impressions) =>
         impressions > 0 ? Math.Round((decimal)clicks / impressions * 100m, 2) : 0m;
 
@@ -258,9 +327,29 @@ public sealed class SponsorPerformanceReportService(
 
     private sealed record TotalsRow(long Impressions, long Clicks);
     private sealed record DailyRow(DateOnly Date, long Impressions, long Clicks);
-    private sealed record PlacementRow(string Placement, long Impressions, long Clicks);
+    private sealed record PlacementRow
+    {
+        public string Placement { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
     private sealed record DeviceRow(string DeviceClass, long Impressions, long Clicks);
     private sealed record DailyDeviceRow(DateOnly Date, string DeviceClass, long Impressions, long Clicks);
     private sealed record TournamentRow(Guid TournamentId, string? TournamentName, long Impressions, long Clicks);
     private sealed record PageRow(string PagePath, long Impressions, long Clicks);
+    private sealed record SlotRow
+    {
+        public Guid TournamentId { get; init; }
+        public string? TournamentName { get; init; }
+        public string PlacementZone { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
+
+    private sealed record GlobalSlotRow
+    {
+        public string PlacementZone { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
 }

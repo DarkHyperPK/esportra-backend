@@ -66,6 +66,17 @@ public static class TournamentEndpoints
         };
     }
 
+    private static string? ReconcileEffectiveStatus(string? status, DateTimeOffset? startDate, DateTimeOffset? endDate)
+    {
+        if (string.IsNullOrEmpty(status)) return null;
+        var now = DateTimeOffset.UtcNow;
+        if (status is "open" or "published" or "check_in" && startDate is not null && now >= startDate)
+            return "ongoing";
+        if (status is "ongoing" && endDate is not null && now >= endDate)
+            return "completed";
+        return status;
+    }
+
     /// Typed DTOfor tournament list rows — required so HybridCache (System.Text.Json) can
     /// serialize/deserialize the cached results. Dapper dynamic (ExpandoObject) is NOT
     /// serializable by STJ and causes 500s when HybridCache tries to write to Redis.
@@ -103,11 +114,23 @@ public static class TournamentEndpoints
         string? WinnerTeamName = null,
         string? VenueCity = null,
         string? VenueCountry = null,
-        string? GameBackgroundImage = null
+        string? GameBackgroundImage = null,
+        Guid? CardBadgePlacementId = null,
+        Guid? CardBadgeSponsorId = null,
+        string? CardBadgeSponsorName = null,
+        string? CardBadgeLogoUrl = null,
+        string? CardBadgeHeadline = null,
+        string? CardBadgeCtaUrl = null
     );
 
     private const string TournamentListSql = """
-        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+        SELECT t.id, t.name, t.slug, t.game,
+               CASE
+                   WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                   WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                   ELSE t.status::text
+               END AS status,
+               t.format, t.game_mode,
                t.start_date, t.end_date, t.registration_deadline,
                t.max_teams, t.min_teams, t.team_size,
                t.entry_fee, t.prize_pool,
@@ -123,7 +146,13 @@ public static class TournamentEndpoints
                COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                v.city   AS venue_city,
                v.country AS venue_country,
-               gm.background_image AS game_background_image
+               gm.background_image AS game_background_image,
+               badge.id AS card_badge_placement_id,
+               badge.sponsor_id AS card_badge_sponsor_id,
+               badge.sponsor_name AS card_badge_sponsor_name,
+               badge.logo_url AS card_badge_logo_url,
+               badge.headline AS card_badge_headline,
+               badge.cta_url AS card_badge_cta_url
         FROM tournaments t
         LEFT JOIN organizations o  ON o.id  = t.organization_id
         LEFT JOIN profiles      p  ON p.id  = t.organizer_id
@@ -132,6 +161,17 @@ public static class TournamentEndpoints
         LEFT JOIN profiles wp ON wp.id = wtp.user_id
         LEFT JOIN venues        v  ON v.id  = t.venue_id
         LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
+                LEFT JOIN LATERAL (
+                        SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                        FROM sponsor_placements sp
+                        JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                        WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge'
+                            AND sp.slot_number = 1 AND sp.is_active = true AND sp.review_reason IS NULL
+                            AND COALESCE(sp.logo_url, '') <> ''
+                            AND (sp.starts_at IS NULL OR sp.starts_at <= NOW())
+                            AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                        LIMIT 1
+                ) badge ON true
         WHERE t.deleted_at IS NULL
           AND (t.is_public = TRUE OR t.organizer_id = @organizerGuid)
           AND (@status IS NULL OR t.status::text = @status)
@@ -145,9 +185,12 @@ public static class TournamentEndpoints
           AND (@country IS NULL OR v.country ILIKE '%' || @country || '%')
           AND (@region  IS NULL OR t.region = @region)
           AND (@statusGroup IS NULL OR (
-               (@statusGroup = 'upcoming'  AND t.status::text IN ('published', 'open', 'check_in', 'closed'))
-            OR (@statusGroup = 'live'      AND t.status::text = 'ongoing')
-            OR (@statusGroup = 'completed' AND t.status::text = 'completed')
+               (@statusGroup = 'upcoming'  AND t.status::text IN ('published', 'open', 'check_in', 'closed')
+                                           AND (t.start_date IS NULL OR t.start_date > NOW()))
+            OR (@statusGroup = 'live'      AND (t.status::text = 'ongoing'
+                                           OR (t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW())))
+            OR (@statusGroup = 'completed' AND (t.status::text = 'completed'
+                                           OR (t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW())))
             OR (@statusGroup = 'cancelled'  AND t.status::text = 'cancelled')
           ))
         """;
@@ -199,7 +242,13 @@ public static class TournamentEndpoints
                 using var conn2 = db.CreateConnection();
                 var rows2 = (await conn2.QueryAsync<TournamentListRow>(
                     """
-                    SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                    SELECT t.id, t.name, t.slug, t.game,
+                           CASE
+                               WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                               WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                               ELSE t.status::text
+                           END AS status,
+                           t.format, t.game_mode,
                            t.start_date, t.end_date, t.registration_deadline,
                            t.max_teams, t.min_teams, t.team_size,
                            t.entry_fee, t.prize_pool,
@@ -215,7 +264,10 @@ public static class TournamentEndpoints
                            COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                            v.city   AS venue_city,
                            v.country AS venue_country,
-                           gm.background_image AS game_background_image
+                           gm.background_image AS game_background_image,
+                           badge.id AS card_badge_placement_id, badge.sponsor_id AS card_badge_sponsor_id,
+                           badge.sponsor_name AS card_badge_sponsor_name, badge.logo_url AS card_badge_logo_url,
+                           badge.headline AS card_badge_headline, badge.cta_url AS card_badge_cta_url
                     FROM tournaments t
                     LEFT JOIN organizations o  ON o.id  = t.organization_id
                     LEFT JOIN profiles      p  ON p.id  = t.organizer_id
@@ -224,6 +276,14 @@ public static class TournamentEndpoints
                     LEFT JOIN profiles wp ON wp.id = wtp.user_id
                     LEFT JOIN venues        v  ON v.id  = t.venue_id
                     LEFT JOIN games_metadata gm ON LOWER(gm.game_name) = LOWER(t.game)
+                                        LEFT JOIN LATERAL (
+                                                SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                                                FROM sponsor_placements sp JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                                                WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge' AND sp.slot_number = 1
+                                                    AND sp.is_active = true AND sp.review_reason IS NULL AND sp.logo_asset_id IS NOT NULL
+                                                    AND (sp.starts_at IS NULL OR sp.starts_at <= NOW()) AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                                                ORDER BY sp.priority DESC, sp.created_at ASC LIMIT 1
+                                        ) badge ON true
                     WHERE t.id = ANY(@idList) AND t.deleted_at IS NULL
                     ORDER BY t.start_date ASC
                     """,
@@ -299,7 +359,13 @@ public static class TournamentEndpoints
                     using var conn = db.CreateConnection();
                     return (await conn.QueryAsync<TournamentListRow>(
                         """
-                        SELECT t.id, t.name, t.slug, t.game, t.status::text AS status, t.format, t.game_mode,
+                        SELECT t.id, t.name, t.slug, t.game,
+                               CASE
+                                   WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                                   WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                                   ELSE t.status::text
+                               END AS status,
+                               t.format, t.game_mode,
                                t.start_date, t.end_date, t.registration_deadline,
                                t.max_teams, t.min_teams, t.team_size,
                                t.entry_fee, t.prize_pool,
@@ -314,7 +380,10 @@ public static class TournamentEndpoints
                                p.full_name  AS organizer_full_name,
                                COALESCE(wt.name, wtp.team_name, wp.username) AS winner_team_name,
                                v.city   AS venue_city,
-                               v.country AS venue_country
+                               v.country AS venue_country,
+                               badge.id AS card_badge_placement_id, badge.sponsor_id AS card_badge_sponsor_id,
+                               badge.sponsor_name AS card_badge_sponsor_name, badge.logo_url AS card_badge_logo_url,
+                               badge.headline AS card_badge_headline, badge.cta_url AS card_badge_cta_url
                         FROM tournaments t
                         LEFT JOIN organizations o ON o.id = t.organization_id
                         LEFT JOIN profiles      p ON p.id = t.organizer_id
@@ -322,9 +391,18 @@ public static class TournamentEndpoints
                         LEFT JOIN tournament_participants wtp ON wtp.id = t.winner_id
                         LEFT JOIN profiles wp ON wp.id = wtp.user_id
                         LEFT JOIN venues        v ON v.id  = t.venue_id
+                                                LEFT JOIN LATERAL (
+                                                        SELECT sp.id, sp.sponsor_id, s.name AS sponsor_name, sp.logo_url, sp.headline, sp.cta_url
+                                                        FROM sponsor_placements sp JOIN sponsors s ON s.id = sp.sponsor_id AND s.is_active = true
+                                                        WHERE sp.tournament_id = t.id AND sp.placement_zone = 'card_badge' AND sp.slot_number = 1
+                                                            AND sp.is_active = true AND sp.review_reason IS NULL AND sp.logo_asset_id IS NOT NULL
+                                                            AND (sp.starts_at IS NULL OR sp.starts_at <= NOW()) AND (sp.ends_at IS NULL OR sp.ends_at > NOW())
+                                                        ORDER BY sp.priority DESC, sp.created_at ASC LIMIT 1
+                                                ) badge ON true
                         WHERE t.is_public = TRUE
                           AND t.deleted_at IS NULL
                           AND t.status::text IN ('published', 'open', 'check_in')
+                          AND (t.start_date IS NULL OR t.start_date > NOW())
                         ORDER BY t.created_at DESC NULLS LAST, t.start_date ASC NULLS LAST
                         LIMIT 100
                         """)).AsList();
@@ -405,6 +483,20 @@ public static class TournamentEndpoints
 
             var tournamentId = (Guid)tournament.id;
             var organizerId = (Guid)tournament.organizer_id;
+
+            // Reconcile stale status based on time
+            var rawStatus = tournament.status?.ToString() as string;
+            var reconciledStatus = ReconcileEffectiveStatus(
+                rawStatus,
+                (DateTimeOffset?)tournament.start_date,
+                (DateTimeOffset?)tournament.end_date);
+            if (reconciledStatus is not null && reconciledStatus != rawStatus)
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE tournaments SET status = @newStatus::tournament_status, updated_at = NOW() WHERE id = @tournamentId",
+                    new { newStatus = reconciledStatus, tournamentId });
+                tournament.status = reconciledStatus;
+            }
 
             // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
             var allParticipants = await conn.QueryAsync<dynamic>(
@@ -1641,6 +1733,38 @@ public static class TournamentEndpoints
                 : Results.NotFound(new { error = "No eligible registration found for check-in." });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/tournaments/{id}/participants/{pid}/approve-check-in ─────
+        app.MapPost("/api/tournaments/{id}/participants/{pid}/approve-check-in", async (
+            Guid id,
+            Guid pid,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isOwner = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
+                new { id, userId = userCtx.UserIdGuid });
+            if (!isOwner) return Results.Forbid();
+
+            var updated = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'checked_in', checked_in_at = NOW()
+                WHERE id = @pid AND tournament_id = @id
+                  AND status IN ('approved', 'pending')
+                """,
+                new { pid, id });
+
+            return updated > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Participant not found or not eligible for check-in." });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/tournaments/{id}/my-status ────────────────────────────────
         // Consolidated endpoint: returns ban status, registration, team info for current user.
         app.MapGet("/api/tournaments/{id}/my-status", async (
@@ -1837,7 +1961,7 @@ public static class TournamentEndpoints
                 UPDATE tournament_participants
                 SET status = 'checked_in', checked_in_at = NOW()
                 WHERE id = @participantId AND tournament_id = @id
-                  AND status IN ('pending', 'approved', 'cancelled')
+                  AND status IN ('pending', 'approved')
                 """,
                 new { participantId, id });
 
@@ -1910,42 +2034,50 @@ public static class TournamentEndpoints
 
             if (versionId.HasValue)
             {
-                var pendingMatches = (await conn.QueryAsync<dynamic>(
-                    """
-                    SELECT id, team1_id, team2_id, best_of
-                    FROM public.brkt_matches
-                    WHERE version_id = @versionId
-                      AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
-                      AND status NOT IN ('completed', 'disputed')
-                    ORDER BY round_index ASC, match_number ASC
-                    """,
-                    new { versionId, bannedSlotId })).AsList();
-
-                foreach (var match in pendingMatches)
+                // Iterate until no more pending matches exist for the banned team.
+                // Each forfeit may advance the banned team through loser edges (double elimination),
+                // creating new matches that also need forfeiting.
+                for (var forfeitPass = 0; forfeitPass < 20; forfeitPass++)
                 {
-                    Guid matchId = (Guid)match.id;
-                    Guid? team1 = (Guid?)match.team1_id;
-                    Guid? team2 = (Guid?)match.team2_id;
-                    Guid? opponent = team1 == bannedSlotId ? team2 : team1;
+                    var pendingMatches = (await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT id, team1_id, team2_id, best_of
+                        FROM public.brkt_matches
+                        WHERE version_id = @versionId
+                          AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
+                          AND status NOT IN ('completed', 'disputed')
+                        ORDER BY round_index ASC, match_number ASC
+                        """,
+                        new { versionId, bannedSlotId })).AsList();
 
-                    if (opponent.HasValue)
+                    if (pendingMatches.Count == 0) break;
+
+                    foreach (var match in pendingMatches)
                     {
-                        int bestOf = (int)(match.best_of ?? 1);
-                        int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
-                        int t1Score = team1 == opponent ? winnerScore : 0;
-                        int t2Score = team2 == opponent ? winnerScore : 0;
-                        await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
-                    }
-                    else
-                    {
-                        await conn.ExecuteAsync(
-                            """
-                            UPDATE public.brkt_matches
-                            SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
-                                result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
-                            WHERE id = @matchId AND status != 'completed'
-                            """,
-                            new { matchId, bannedSlotId });
+                        Guid matchId = (Guid)match.id;
+                        Guid? team1 = (Guid?)match.team1_id;
+                        Guid? team2 = (Guid?)match.team2_id;
+                        Guid? opponent = team1 == bannedSlotId ? team2 : team1;
+
+                        if (opponent.HasValue)
+                        {
+                            int bestOf = (int)(match.best_of ?? 1);
+                            int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
+                            int t1Score = team1 == opponent ? winnerScore : 0;
+                            int t2Score = team2 == opponent ? winnerScore : 0;
+                            await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
+                        }
+                        else
+                        {
+                            await conn.ExecuteAsync(
+                                """
+                                UPDATE public.brkt_matches
+                                SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
+                                    result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
+                                WHERE id = @matchId AND status != 'completed'
+                                """,
+                                new { matchId, bannedSlotId });
+                        }
                     }
                 }
 
@@ -1954,6 +2086,72 @@ public static class TournamentEndpoints
                     .SendAsync(BracketHubEvents.MatchUpdated,
                         new { versionId, reason = "participant_banned", bannedSlotId },
                         ct);
+
+                // Check if all matches are now completed — declare winner if so
+                var pendingCount = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
+                    new { versionId });
+
+                if (pendingCount == 0)
+                {
+                    var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId });
+                    if (stageId.HasValue)
+                    {
+                        await conn.ExecuteAsync(
+                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+                            new { stageId });
+
+                        var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                            """
+                            SELECT winner_id FROM brkt_matches
+                            WHERE version_id = @versionId
+                              AND status = 'completed' AND winner_id IS NOT NULL
+                            ORDER BY round_index DESC, match_number DESC
+                            LIMIT 1
+                            """,
+                            new { versionId });
+
+                        if (gfWinnerId.HasValue)
+                        {
+                            await conn.ExecuteAsync(
+                                "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                                new { p_tournament_id = id, p_winner_id = gfWinnerId.Value });
+                        }
+                    }
+
+                    await bracketHub.Clients
+                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+                        .SendAsync(BracketHubEvents.StageCompleted,
+                            new { versionId, tournamentId = id },
+                            ct);
+                }
+            }
+
+            // Remove banned team from BR groups (battle royale tournaments)
+            if (banTeamId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM br_group_teams
+                    WHERE team_id = @teamId
+                      AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                          SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+                      ))
+                    """,
+                    new { teamId = banTeamId, tournamentId = id });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM br_group_teams
+                    WHERE participant_id = @participantId
+                      AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                          SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+                      ))
+                    """,
+                    new { participantId, tournamentId = id });
             }
 
             // Notify affected users
@@ -3426,7 +3624,12 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             var tournaments = await conn.QueryAsync<dynamic>(
                 """
-                SELECT DISTINCT t.id, t.name, t.slug, t.game, t.status::text AS status,
+                SELECT DISTINCT t.id, t.name, t.slug, t.game,
+                       CASE
+                           WHEN t.status::text IN ('open', 'published', 'check_in') AND t.start_date IS NOT NULL AND t.start_date <= NOW() THEN 'ongoing'
+                           WHEN t.status::text = 'ongoing' AND t.end_date IS NOT NULL AND t.end_date <= NOW() THEN 'completed'
+                           ELSE t.status::text
+                       END AS status,
                        t.start_date, t.logo_url, t.format,
                        tp.team_id, teams.name AS team_name, teams.logo_url AS team_logo
                 FROM public.team_members tm

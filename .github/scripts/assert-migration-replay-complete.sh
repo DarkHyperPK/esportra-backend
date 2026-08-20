@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Assert CI migration replay journaled every embedded DbUp script.
+#
+# Logic: every .sql file in Scripts/ must have a matching schemaversions entry.
+# The journal may contain extra entries (historically applied scripts that were
+# later deleted from the repo, e.g. removed season feature). That's expected.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -17,13 +21,30 @@ if ! command -v psql >/dev/null 2>&1; then
   sudo apt-get install -y postgresql-client
 fi
 
-EXPECTED="$(find "${SCRIPTS_DIR}" -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')"
-ACTUAL="$(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tAc \
-  'SELECT COUNT(*) FROM schemaversions;' | tr -d ' ')"
+EXPECTED_FILE="$(mktemp)"
+ACTUAL_FILE="$(mktemp)"
+MISSING_FILE="$(mktemp)"
+trap 'rm -f "${EXPECTED_FILE}" "${ACTUAL_FILE}" "${MISSING_FILE}"' EXIT
 
-if [[ "${ACTUAL}" != "${EXPECTED}" ]]; then
-  echo "ERROR: schemaversions count mismatch (expected ${EXPECTED}, got ${ACTUAL})" >&2
+# What we expect: every .sql file on disk
+find "${SCRIPTS_DIR}" -maxdepth 1 -name '*.sql' -printf '%f\n' | sort > "${EXPECTED_FILE}"
+
+# What's in the journal (strip the DbUp namespace prefix)
+psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tA \
+  -c "SELECT regexp_replace(scriptname, '^Esportra\.Infrastructure\.Migrations\.Scripts\.', '') FROM schemaversions ORDER BY 1;" \
+  | sed '/^[[:space:]]*$/d' | sort > "${ACTUAL_FILE}"
+
+# Check: every file on disk must be in the journal
+comm -23 "${EXPECTED_FILE}" "${ACTUAL_FILE}" > "${MISSING_FILE}"
+
+if [[ -s "${MISSING_FILE}" ]]; then
+  echo "ERROR: The following migration scripts were NOT applied:" >&2
+  cat "${MISSING_FILE}" >&2
+  echo "" >&2
+  echo "Expected $(wc -l < "${EXPECTED_FILE}" | tr -d ' ') scripts in journal, found $(wc -l < "${ACTUAL_FILE}" | tr -d ' ')." >&2
   exit 1
 fi
 
-echo "Migration replay complete: ${ACTUAL}/${EXPECTED} scripts journaled."
+DISK_COUNT="$(wc -l < "${EXPECTED_FILE}" | tr -d ' ')"
+JOURNAL_COUNT="$(wc -l < "${ACTUAL_FILE}" | tr -d ' ')"
+echo "Migration replay complete: all ${DISK_COUNT} scripts journaled (${JOURNAL_COUNT} total entries including historical)."

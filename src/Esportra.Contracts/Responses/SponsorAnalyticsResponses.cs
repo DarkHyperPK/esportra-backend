@@ -110,6 +110,36 @@ public sealed record SponsorDailyDeviceDto(
     long Clicks,
     decimal Ctr);
 
+// --- Slot analytics (per tournament × placement_zone) ---
+
+public sealed record SponsorAnalyticsSlotsResponse(
+    int SchemaVersion,
+    SponsorAnalyticsWindowDto Window,
+    IReadOnlyList<SponsorSlotStatsDto> Slots);
+
+public sealed record SponsorSlotStatsDto(
+    Guid? TournamentId,
+    string? TournamentName,
+    string PlacementZone,
+    long Impressions,
+    long Clicks,
+    decimal Ctr);
+
+// --- Admin fleet overview ---
+
+public sealed record SponsorFleetOverviewResponse(
+    IReadOnlyList<SponsorOverviewItemDto> Sponsors);
+
+public sealed record SponsorOverviewItemDto(
+    Guid Id,
+    string Name,
+    string? Tier,
+    string? LogoUrl,
+    long Impressions30d,
+    long Clicks30d,
+    decimal Ctr30d,
+    int ActivePlacements);
+
 // --- Export ---
 
 public sealed record SponsorAnalyticsExportResponse(

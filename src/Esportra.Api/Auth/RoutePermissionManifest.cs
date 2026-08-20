@@ -32,6 +32,10 @@ public static class RoutePermissionManifest
         P("GET",  "/api/partners/public"),
         P("GET",  "/api/sponsors/active"),
 
+        // Public sponsor placement reads
+        P("GET",  "/api/placements/global"),
+        P("GET",  "/api/tournaments/{id}/sponsors"),
+
         // Public reads — tournaments
         P("GET",  "/api/tournaments"),
         P("GET",  "/api/tournaments/{id}"),
@@ -96,6 +100,7 @@ public static class RoutePermissionManifest
         A("POST", "/api/auth/password-reset-completed"),
         A("POST", "/api/sponsor-invitations/accept"),
         A("GET",  "/api/sponsors/me/audience"),
+        A("GET",  "/api/sponsors/me/placements"),
         A("GET",  "/api/profiles/me"),
         A("PUT",  "/api/profiles/{*}"),
         A("GET",  "/api/me/roles"),
@@ -251,6 +256,7 @@ public static class RoutePermissionManifest
             [Permissions.UsersView, Permissions.UsersBan, Permissions.UsersEdit]),
 
         // Admin tournament management
+        Adm("GET", "/api/admin/tournaments/{id}/placements", [Permissions.SponsorsEdit]),
         Adm("*", "/api/admin/tournaments/{*}",
             [Permissions.TournamentsView, Permissions.TournamentsEdit, Permissions.TournamentsCancel]),
 
@@ -281,6 +287,11 @@ public static class RoutePermissionManifest
             [Permissions.ReportsView]),
 
         // Admin sponsors
+        Adm("POST", "/api/admin/placement-assets", [Permissions.SponsorsEdit]),
+        Adm("GET", "/api/admin/sponsors/{id}/placements", [Permissions.SponsorsEdit]),
+        Adm("*", "/api/admin/placements/{*}", [Permissions.SponsorsEdit]),
+        Adm("GET", "/api/admin/placements", [Permissions.SponsorsEdit]),
+        Adm("POST", "/api/admin/placements", [Permissions.SponsorsEdit]),
         Adm("POST",  "/api/sponsors/{*}", [Permissions.SponsorsCreate]),
         Adm("PUT",   "/api/sponsors/{*}", [Permissions.SponsorsEdit]),
         Adm("DELETE","/api/sponsors/{*}", [Permissions.SponsorsDelete]),

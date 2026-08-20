@@ -17,13 +17,13 @@ export PGPASSWORD="${PGPASSWORD:-migrationtest}"
 
 if [[ ! -f "${SCHEMA}" ]]; then
   echo "ERROR: Missing replay schema SQL: ${SCHEMA}" >&2
-  echo "Run: python .github/scripts/generate-post-baseline-replay-schema.py" >&2
+  echo "Regenerate: bash .github/scripts/dump-replay-schema.sh" >&2
   exit 1
 fi
 
 if [[ ! -f "${JOURNAL}" ]]; then
   echo "ERROR: Missing replay journal seed: ${JOURNAL}" >&2
-  echo "Run: python .github/scripts/generate-replay-journal-seed.py" >&2
+  echo "Regenerate: bash .github/scripts/dump-replay-schema.sh" >&2
   exit 1
 fi
 

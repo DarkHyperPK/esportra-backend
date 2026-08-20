@@ -93,7 +93,7 @@ public sealed class SponsorAnalyticsWriter(
                 demographics.AgeProvenance,
                 request.SchemaVersion,
                 ReceivedAt = now,
-                EventDate = DateOnly.FromDateTime(now.UtcDateTime),
+                EventDate = now.UtcDateTime.Date,
             }, transaction);
 
         if (sequence is null)
@@ -111,7 +111,7 @@ public sealed class SponsorAnalyticsWriter(
             demographics,
             deviceClass,
             pagePath,
-            DateOnly.FromDateTime(now.UtcDateTime));
+            now.UtcDateTime.Date);
         transaction.Commit();
         return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Accepted);
     }
@@ -169,7 +169,7 @@ public sealed class SponsorAnalyticsWriter(
         DemographicSnapshot demographics,
         string deviceClass,
         string? pagePath,
-        DateOnly factDate)
+        DateTime factDate)
     {
         await connection.ExecuteAsync(
             """
@@ -256,6 +256,23 @@ public sealed class SponsorAnalyticsWriter(
                 new { request.SponsorId, FactDate = factDate, request.TournamentId, PagePath = pagePath, request.EventType },
                 transaction);
         }
+
+        if (request.TournamentId is not null)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO public.sponsor_slot_daily_stats
+                    (sponsor_id, stat_date, tournament_id, placement_zone, impressions, clicks)
+                VALUES (@SponsorId, @FactDate, @TournamentId, @Placement,
+                        CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
+                        CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
+                ON CONFLICT (sponsor_id, stat_date, tournament_id, placement_zone) DO UPDATE SET
+                    impressions = sponsor_slot_daily_stats.impressions + EXCLUDED.impressions,
+                    clicks      = sponsor_slot_daily_stats.clicks      + EXCLUDED.clicks
+                """,
+                new { request.SponsorId, FactDate = factDate, request.TournamentId, request.Placement, request.EventType },
+                transaction);
+        }
     }
 
     private async Task<DemographicSnapshot> ResolveDemographicsAsync(
@@ -299,12 +316,20 @@ public sealed class SponsorAnalyticsWriter(
     private static string? NormalizePagePath(string? pagePath)
     {
         if (string.IsNullOrWhiteSpace(pagePath)) return null;
-        if (!Uri.TryCreate(pagePath, UriKind.Relative, out var parsed)) return null;
-        var value = parsed.GetComponents(UriComponents.Path, UriFormat.SafeUnescaped);
-        return value.StartsWith('/') ? value : $"/{value}";
+        var trimmed = pagePath.Trim();
+        if (trimmed.Length > 256) trimmed = trimmed[..256];
+        var queryIndex = trimmed.IndexOf('?');
+        if (queryIndex >= 0) trimmed = trimmed[..queryIndex];
+        var fragmentIndex = trimmed.IndexOf('#');
+        if (fragmentIndex >= 0) trimmed = trimmed[..fragmentIndex];
+        return trimmed.StartsWith('/') ? trimmed : $"/{trimmed}";
     }
 
-    private sealed record ProfileRow(string? CountryCode, DateOnly? DateOfBirth);
+    private sealed record ProfileRow
+    {
+        public string? CountryCode { get; init; }
+        public DateOnly? DateOfBirth { get; init; }
+    }
     private sealed record DemographicSnapshot(
         string? CountryCode,
         string CountryProvenance,

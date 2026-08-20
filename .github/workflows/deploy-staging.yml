@@ -65,11 +65,9 @@ jobs:
       - name: Run tests
         run: dotnet test --no-restore -c Release
 
-  # TEMPORARILY DISABLED: Migration replay needs CI fixtures updated
-  migration-replay-disabled:
-    name: Migration Replay (Disabled)
+  migration-replay:
+    name: Migration Lint & Replay
     runs-on: ubuntu-latest
-    if: false
     services:
       postgres:
         image: postgres:16
@@ -91,6 +89,11 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
+
+      - name: Lint migration scripts
+        run: |
+          python .github/scripts/lint-migrations.py
+          python .github/scripts/lint-prod-table-references.py
 
       - name: Apply replay fixture
         run: bash .github/scripts/apply-replay-bootstrap.sh
@@ -115,9 +118,21 @@ jobs:
           PGPASSWORD: migrationtest
           PGDATABASE: esportra_test
 
+      - name: Re-run migrations and assert idempotency
+        run: |
+          dotnet run --project src/Esportra.Migrator -c Release
+          bash .github/scripts/assert-migration-replay-complete.sh
+        env:
+          ConnectionStrings__Postgres: "Host=localhost;Port=5432;Database=esportra_test;Username=postgres;Password=migrationtest"
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: migrationtest
+          PGDATABASE: esportra_test
+
   promote:
     name: Promote to deploy/staging
-    needs: [build, lint, test]
+    needs: [build, lint, test, migration-replay]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +166,7 @@ jobs:
 
   notify-failure:
     name: Report failure
-    needs: [build, lint, test, promote, smoke]
+    needs: [build, lint, test, migration-replay, promote, smoke]
     if: failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:

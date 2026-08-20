@@ -1,0 +1,4 @@
+# Force LF line endings for files that CI generators compare byte-for-byte.
+*.sql text eol=lf
+*.sh text eol=lf
+*.py text eol=lf

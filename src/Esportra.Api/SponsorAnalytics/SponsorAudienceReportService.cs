@@ -17,7 +17,9 @@ public sealed class SponsorAudienceReportService(
             throw new ArgumentOutOfRangeException(nameof(days));
 
         var now = timeProvider.GetUtcNow();
-        var (start, endExclusive) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
         using var connection = connectionFactory.CreateConnection();
         var audience = (await connection.QueryAsync<AudienceRow>(new CommandDefinition(
             """
@@ -43,7 +45,7 @@ public sealed class SponsorAudienceReportService(
             cancellationToken: cancellationToken))).AsList();
 
         var total = audience.LongCount();
-        var window = new SponsorAnalyticsWindowDto(start, endExclusive, now);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
         var disclosure = new SponsorAnalyticsDisclosureDto("exact-aggregates-v2", false);
         if (total == 0)
             return Empty(days, window, disclosure);
