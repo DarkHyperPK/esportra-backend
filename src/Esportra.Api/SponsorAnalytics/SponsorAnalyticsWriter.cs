@@ -93,7 +93,7 @@ public sealed class SponsorAnalyticsWriter(
                 demographics.AgeProvenance,
                 request.SchemaVersion,
                 ReceivedAt = now,
-                EventDate = DateOnly.FromDateTime(now.UtcDateTime),
+                EventDate = now.UtcDateTime.Date,
             }, transaction);
 
         if (sequence is null)
@@ -111,7 +111,7 @@ public sealed class SponsorAnalyticsWriter(
             demographics,
             deviceClass,
             pagePath,
-            DateOnly.FromDateTime(now.UtcDateTime));
+            now.UtcDateTime.Date);
         transaction.Commit();
         return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Accepted);
     }
@@ -169,7 +169,7 @@ public sealed class SponsorAnalyticsWriter(
         DemographicSnapshot demographics,
         string deviceClass,
         string? pagePath,
-        DateOnly factDate)
+        DateTime factDate)
     {
         await connection.ExecuteAsync(
             """
@@ -274,7 +274,7 @@ public sealed class SponsorAnalyticsWriter(
             var country = SponsorAnalyticsPolicy.NormalizeCountry(profile?.CountryCode);
             var age = SponsorAnalyticsPolicy.CalculateAgeBand(
                 profile?.DateOfBirth,
-                DateOnly.FromDateTime(now.UtcDateTime));
+                now.UtcDateTime.Date);
             return new DemographicSnapshot(
                 country, country is null ? "unknown" : "profile_self_reported",
                 age, age is null ? "unknown" : "profile_self_reported");
@@ -308,7 +308,7 @@ public sealed class SponsorAnalyticsWriter(
         return trimmed.StartsWith('/') ? trimmed : $"/{trimmed}";
     }
 
-    private sealed record ProfileRow(string? CountryCode, DateOnly? DateOfBirth);
+    private sealed record ProfileRow(string? CountryCode, DateTime? DateOfBirth);
     private sealed record DemographicSnapshot(
         string? CountryCode,
         string CountryProvenance,
