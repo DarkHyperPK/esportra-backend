@@ -11,7 +11,8 @@ public sealed record PlacementZonePolicy(
     int MinimumHeight,
     double MinimumAspectRatio,
     double MaximumAspectRatio,
-    IReadOnlySet<string> AllowedTiers);
+    IReadOnlySet<string> AllowedTiers,
+    SponsorCreativeRole? SecondaryRole = null);
 
 public static class SponsorPlacementPolicy
 {
@@ -19,7 +20,7 @@ public static class SponsorPlacementPolicy
         new Dictionary<string, PlacementZonePolicy>(StringComparer.Ordinal)
         {
             ["homepage_ticker"] = Create("homepage_ticker", true, 10, SponsorCreativeRole.Logo, 240, 80, 0.5, 6, "partner", "standard", "diamond", "ascendant", "radiant"),
-            ["partner_showcase"] = Create("partner_showcase", true, 6, SponsorCreativeRole.Banner, 1200, 600, 1.5, 2, "radiant"),
+            ["partner_showcase"] = Create("partner_showcase", true, 6, SponsorCreativeRole.Banner, 1200, 600, 1.5, 2, SponsorCreativeRole.Logo, "radiant"),
             ["sidebar_partner"] = Create("sidebar_partner", false, 2, SponsorCreativeRole.Banner, 300, 400, 0.3, 0.85, "ascendant", "radiant"),
             ["wide_partner"] = Create("wide_partner", false, 4, SponsorCreativeRole.Banner, 600, 250, 1.5, 3.0, "ascendant", "radiant"),
             ["card_badge"] = Create("card_badge", false, 1, SponsorCreativeRole.Logo, 160, 48, 0.5, 6, "ascendant", "radiant"),
@@ -40,4 +41,7 @@ public static class SponsorPlacementPolicy
 
     private static PlacementZonePolicy Create(string zone, bool isGlobal, int capacity, SponsorCreativeRole role, int width, int height, double minRatio, double maxRatio, params string[] tiers) =>
         new(zone, isGlobal, capacity, role, width, height, minRatio, maxRatio, tiers.ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+    private static PlacementZonePolicy Create(string zone, bool isGlobal, int capacity, SponsorCreativeRole role, int width, int height, double minRatio, double maxRatio, SponsorCreativeRole secondaryRole, params string[] tiers) =>
+        new(zone, isGlobal, capacity, role, width, height, minRatio, maxRatio, tiers.ToHashSet(StringComparer.OrdinalIgnoreCase), secondaryRole);
 }

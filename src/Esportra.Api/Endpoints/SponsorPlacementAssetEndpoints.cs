@@ -37,13 +37,23 @@ public static class SponsorPlacementAssetEndpoints
             return Results.BadRequest(new { error = "Creative is required." });
         if (zone is null || !SponsorPlacementPolicy.TryGet(zone, out var policy))
             return Results.BadRequest(new { error = "Invalid placement zone." });
-        if (!Enum.TryParse<SponsorCreativeRole>(roleValue, true, out var role) || role != policy.RequiredRole)
-            return Results.BadRequest(new { error = $"{zone} requires a {policy.RequiredRole.ToString().ToLowerInvariant()} creative." });
+        if (!Enum.TryParse<SponsorCreativeRole>(roleValue, true, out var role))
+            return Results.BadRequest(new { error = "Invalid creative role." });
+
+        var isPrimary = role == policy.RequiredRole;
+        var isSecondary = policy.SecondaryRole.HasValue && role == policy.SecondaryRole.Value;
+        if (!isPrimary && !isSecondary)
+            return Results.BadRequest(new { error = $"{zone} does not accept a {role.ToString().ToLowerInvariant()} creative." });
+
+        // Secondary (logo) uploads use logo-appropriate dimension constraints, not the primary zone policy
+        var validationPolicy = isSecondary
+            ? policy with { MinimumWidth = 240, MinimumHeight = 80, MinimumAspectRatio = 0.5, MaximumAspectRatio = 6 }
+            : policy;
 
         SponsorCreativeValidationResult validated;
         try
         {
-            validated = await SponsorCreativeImageValidator.ValidateAsync(file, policy, ct);
+            validated = await SponsorCreativeImageValidator.ValidateAsync(file, validationPolicy, ct);
         }
         catch (Exception exception) when (exception is InvalidDataException or SixLabors.ImageSharp.ImageFormatException or NotSupportedException)
         {
