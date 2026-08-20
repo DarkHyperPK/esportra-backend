@@ -256,6 +256,23 @@ public sealed class SponsorAnalyticsWriter(
                 new { request.SponsorId, FactDate = factDate, request.TournamentId, PagePath = pagePath, request.EventType },
                 transaction);
         }
+
+        if (request.TournamentId is not null)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO public.sponsor_slot_daily_stats
+                    (sponsor_id, stat_date, tournament_id, placement_zone, impressions, clicks)
+                VALUES (@SponsorId, @FactDate, @TournamentId, @Placement,
+                        CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
+                        CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
+                ON CONFLICT (sponsor_id, stat_date, tournament_id, placement_zone) DO UPDATE SET
+                    impressions = sponsor_slot_daily_stats.impressions + EXCLUDED.impressions,
+                    clicks      = sponsor_slot_daily_stats.clicks      + EXCLUDED.clicks
+                """,
+                new { request.SponsorId, FactDate = factDate, request.TournamentId, request.Placement, request.EventType },
+                transaction);
+        }
     }
 
     private async Task<DemographicSnapshot> ResolveDemographicsAsync(

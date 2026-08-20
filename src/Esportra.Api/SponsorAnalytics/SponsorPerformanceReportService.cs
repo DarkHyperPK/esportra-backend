@@ -260,6 +260,44 @@ public sealed class SponsorPerformanceReportService(
                 ComputeCtr(d.Clicks, d.Impressions))).ToList());
     }
 
+    public async Task<SponsorAnalyticsSlotsResponse> GetSlotsAsync(
+        Guid sponsorId,
+        int days,
+        CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        var (startDate, endExclusiveDate) = SponsorAnalyticsPolicy.CreateWindow(days, now);
+        var start = startDate.ToDateTime(TimeOnly.MinValue);
+        var endExclusive = endExclusiveDate.ToDateTime(TimeOnly.MinValue);
+        var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
+
+        using var connection = connectionFactory.CreateConnection();
+        var rows = (await connection.QueryAsync<SlotRow>(new CommandDefinition(
+            """
+            SELECT ss.tournament_id AS TournamentId,
+                   t.name AS TournamentName,
+                   ss.placement_zone AS PlacementZone,
+                   SUM(ss.impressions) AS Impressions,
+                   SUM(ss.clicks) AS Clicks
+            FROM public.sponsor_slot_daily_stats ss
+            LEFT JOIN public.tournaments t ON t.id = ss.tournament_id
+            WHERE ss.sponsor_id = @sponsorId
+              AND ss.stat_date >= @start AND ss.stat_date < @endExclusive
+            GROUP BY ss.tournament_id, t.name, ss.placement_zone
+            ORDER BY Impressions DESC
+            """,
+            new { sponsorId, start, endExclusive },
+            cancellationToken: cancellationToken))).AsList();
+
+        return new SponsorAnalyticsSlotsResponse(
+            1,
+            window,
+            rows.Select(r => new SponsorSlotStatsDto(
+                r.TournamentId, r.TournamentName, r.PlacementZone,
+                r.Impressions, r.Clicks,
+                ComputeCtr(r.Clicks, r.Impressions))).ToList());
+    }
+
     internal static decimal ComputeCtr(long clicks, long impressions) =>
         impressions > 0 ? Math.Round((decimal)clicks / impressions * 100m, 2) : 0m;
 
@@ -273,4 +311,5 @@ public sealed class SponsorPerformanceReportService(
     private sealed record DailyDeviceRow(DateOnly Date, string DeviceClass, long Impressions, long Clicks);
     private sealed record TournamentRow(Guid TournamentId, string? TournamentName, long Impressions, long Clicks);
     private sealed record PageRow(string PagePath, long Impressions, long Clicks);
+    private sealed record SlotRow(Guid TournamentId, string? TournamentName, string PlacementZone, long Impressions, long Clicks);
 }

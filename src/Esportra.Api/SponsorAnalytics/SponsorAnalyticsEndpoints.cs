@@ -2,6 +2,7 @@ using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Contracts.Requests;
+using Esportra.Contracts.Responses;
 using Dapper;
 using Microsoft.AspNetCore.Mvc;
 
@@ -49,7 +50,13 @@ public static class SponsorAnalyticsEndpoints
         app.MapGet("/api/sponsors/me/analytics/exports/{exportId:guid}", GetPartnerExportStatusAsync)
             .RequireAuthorization("Authenticated");
 
+        // Partner slots endpoint (ascendant+)
+        app.MapGet("/api/sponsors/me/analytics/slots", GetPartnerSlotsAsync)
+            .RequireAuthorization("Authenticated");
+
         // Admin analytics endpoints
+        app.MapGet("/api/admin/sponsors/overview", GetAdminFleetOverviewAsync)
+            .RequireAuthorization("Admin");
         app.MapGet("/api/admin/sponsors/{sponsorId:guid}/audience", GetAdminAudienceAsync)
             .RequireAuthorization("Admin");
         app.MapGet("/api/admin/sponsors/{sponsorId:guid}/analytics/summary", GetAdminSummaryAsync)
@@ -61,6 +68,8 @@ public static class SponsorAnalyticsEndpoints
         app.MapGet("/api/admin/sponsors/{sponsorId:guid}/analytics/content", GetAdminContentAsync)
             .RequireAuthorization("Admin");
         app.MapGet("/api/admin/sponsors/{sponsorId:guid}/analytics/devices", GetAdminDevicesAsync)
+            .RequireAuthorization("Admin");
+        app.MapGet("/api/admin/sponsors/{sponsorId:guid}/analytics/slots", GetAdminSlotsAsync)
             .RequireAuthorization("Admin");
     }
 
@@ -163,6 +172,22 @@ public static class SponsorAnalyticsEndpoints
 
         context.Response.Headers.CacheControl = "private, no-store";
         return Results.Ok(await reports.GetContentAsync(access.SponsorId, days, cancellationToken));
+    }
+
+    private static async Task<IResult> GetPartnerSlotsAsync(
+        HttpContext context,
+        IDbConnectionFactory connectionFactory,
+        SponsorPerformanceReportService reports,
+        CancellationToken cancellationToken,
+        int days = 30)
+    {
+        var access = await ResolvePartnerAccessAsync(context, connectionFactory, "ascendant", cancellationToken);
+        if (access.Error is not null) return access.Error;
+        if (!SponsorAnalyticsPolicy.IsSupportedPeriod(days))
+            return Results.BadRequest(new { error = "days must be 7, 30, or 90." });
+
+        context.Response.Headers.CacheControl = "private, no-store";
+        return Results.Ok(await reports.GetSlotsAsync(access.SponsorId, days, cancellationToken));
     }
 
     private static async Task<IResult> GetPartnerDevicesAsync(
@@ -343,6 +368,60 @@ public static class SponsorAnalyticsEndpoints
         return Results.Ok(await reports.GetDevicesAsync(sponsorId, days, cancellationToken));
     }
 
+    private static async Task<IResult> GetAdminFleetOverviewAsync(
+        HttpContext context,
+        IDbConnectionFactory connectionFactory,
+        CancellationToken cancellationToken)
+    {
+        var error = ValidateAdminAccess(context);
+        if (error is not null) return error;
+
+        using var connection = connectionFactory.CreateConnection();
+        var rows = (await connection.QueryAsync<FleetOverviewRow>(new CommandDefinition(
+            """
+            SELECT s.id AS Id, s.name AS Name, s.tier AS Tier, s.logo_url AS LogoUrl,
+                   COALESCE(SUM(t.impressions), 0) AS Impressions30d,
+                   COALESCE(SUM(t.clicks), 0) AS Clicks30d,
+                   COUNT(DISTINCT p.id) FILTER (WHERE p.is_active) AS ActivePlacements
+            FROM public.sponsors s
+            LEFT JOIN public.sponsor_daily_totals t
+                   ON t.sponsor_id = s.id AND t.stat_date >= NOW() - INTERVAL '30 days'
+            LEFT JOIN public.sponsor_placements p ON p.sponsor_id = s.id
+            GROUP BY s.id, s.name, s.tier, s.logo_url
+            ORDER BY Impressions30d DESC
+            """,
+            cancellationToken: cancellationToken))).AsList();
+
+        var response = new SponsorFleetOverviewResponse(
+            rows.Select(r => new SponsorOverviewItemDto(
+                r.Id, r.Name, r.Tier, r.LogoUrl,
+                r.Impressions30d, r.Clicks30d,
+                SponsorPerformanceReportService.ComputeCtr(r.Clicks30d, r.Impressions30d),
+                (int)r.ActivePlacements)).ToList());
+
+        context.Response.Headers.CacheControl = "private, no-store";
+        return Results.Ok(response);
+    }
+
+    private static async Task<IResult> GetAdminSlotsAsync(
+        Guid sponsorId,
+        HttpContext context,
+        IDbConnectionFactory connectionFactory,
+        SponsorPerformanceReportService reports,
+        CancellationToken cancellationToken,
+        int days = 30)
+    {
+        var error = ValidateAdminAccess(context);
+        if (error is not null) return error;
+        if (!SponsorAnalyticsPolicy.IsSupportedPeriod(days))
+            return Results.BadRequest(new { error = "days must be 7, 30, or 90." });
+        if (!await SponsorExistsAsync(connectionFactory, sponsorId, cancellationToken))
+            return Results.NotFound();
+
+        context.Response.Headers.CacheControl = "private, no-store";
+        return Results.Ok(await reports.GetSlotsAsync(sponsorId, days, cancellationToken));
+    }
+
     // ─── Shared Helpers ──────────────────────────────────────────────────
 
     private static async Task<PartnerAccessResult> ResolvePartnerAccessAsync(
@@ -404,5 +483,16 @@ public static class SponsorAnalyticsEndpoints
     {
         public Guid SponsorId { get; init; }
         public string Tier { get; init; } = string.Empty;
+    }
+
+    private sealed record FleetOverviewRow
+    {
+        public Guid Id { get; init; }
+        public string Name { get; init; } = string.Empty;
+        public string? Tier { get; init; }
+        public string? LogoUrl { get; init; }
+        public long Impressions30d { get; init; }
+        public long Clicks30d { get; init; }
+        public long ActivePlacements { get; init; }
     }
 }
