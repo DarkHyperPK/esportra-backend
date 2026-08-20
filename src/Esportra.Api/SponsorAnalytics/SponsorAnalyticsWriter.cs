@@ -308,7 +308,11 @@ public sealed class SponsorAnalyticsWriter(
         return trimmed.StartsWith('/') ? trimmed : $"/{trimmed}";
     }
 
-    private sealed record ProfileRow(string? CountryCode, DateTime? DateOfBirth);
+    private sealed record ProfileRow
+    {
+        public string? CountryCode { get; init; }
+        public DateTime? DateOfBirth { get; init; }
+    }
     private sealed record DemographicSnapshot(
         string? CountryCode,
         string CountryProvenance,
