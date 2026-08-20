@@ -112,11 +112,16 @@ public static class BracketEndpoints
                     """
                     SELECT config->>'swiss_groups' AS swiss_groups,
                            config->>'swiss_rounds' AS swiss_rounds
-                    FROM tournament_stages WHERE id = @stageId
+                    FROM tournament_stages
+                    WHERE id = @stageId
+                      AND tournament_id = @tournamentId
                     """,
-                    new { stageId = swissStageId });
+                    new { stageId = swissStageId, tournamentId = req.TournamentId });
 
-                if (!int.TryParse(row?.SwissGroups, out var sg) || sg < 1)
+                if (row is null)
+                    return Results.NotFound(new { error = "Stage not found." });
+
+                if (!int.TryParse(row.SwissGroups, out var sg) || sg < 1)
                     return Results.BadRequest(new
                     {
                         error = "Stage config is missing a valid swiss_groups value. Set it on the stage before generating."
