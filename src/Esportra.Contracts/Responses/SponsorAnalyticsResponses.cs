@@ -118,7 +118,7 @@ public sealed record SponsorAnalyticsSlotsResponse(
     IReadOnlyList<SponsorSlotStatsDto> Slots);
 
 public sealed record SponsorSlotStatsDto(
-    Guid TournamentId,
+    Guid? TournamentId,
     string? TournamentName,
     string PlacementZone,
     long Impressions,

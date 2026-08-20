@@ -12,6 +12,7 @@ public sealed record PlacementDto
     public string? LogoUrl { get; init; }
     public Guid? LogoAssetId { get; init; }
     public string? Headline { get; init; }
+    public string? Description { get; init; }
     public string? CtaText { get; init; }
     public string? CtaUrl { get; init; }
     public int Priority { get; init; }
@@ -71,6 +72,7 @@ public sealed record GlobalPlacementDto(
     string? BannerUrl,
     string? LogoUrl,
     string? Headline,
+    string? Description,
     string? CtaText,
     string? CtaUrl,
     int Priority,

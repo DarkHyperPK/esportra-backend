@@ -272,7 +272,8 @@ public sealed class SponsorPerformanceReportService(
         var window = new SponsorAnalyticsWindowDto(startDate, endExclusiveDate, now);
 
         using var connection = connectionFactory.CreateConnection();
-        var rows = (await connection.QueryAsync<SlotRow>(new CommandDefinition(
+
+        var tournamentRows = (await connection.QueryAsync<SlotRow>(new CommandDefinition(
             """
             SELECT ss.tournament_id AS TournamentId,
                    t.name AS TournamentName,
@@ -289,13 +290,33 @@ public sealed class SponsorPerformanceReportService(
             new { sponsorId, start, endExclusive },
             cancellationToken: cancellationToken))).AsList();
 
-        return new SponsorAnalyticsSlotsResponse(
-            1,
-            window,
-            rows.Select(r => new SponsorSlotStatsDto(
+        // Global placements (partner_showcase, homepage_ticker) have no tournament — pull from
+        // sponsor_placement_daily_stats for zones that are known to be global.
+        var globalRows = (await connection.QueryAsync<GlobalSlotRow>(new CommandDefinition(
+            """
+            SELECT placement AS PlacementZone,
+                   COALESCE(SUM(impressions), 0) AS Impressions,
+                   COALESCE(SUM(clicks), 0) AS Clicks
+            FROM public.sponsor_placement_daily_stats
+            WHERE sponsor_id = @sponsorId
+              AND stat_date >= @start AND stat_date < @endExclusive
+              AND placement IN ('partner_showcase', 'homepage_ticker')
+            GROUP BY placement
+            ORDER BY Impressions DESC
+            """,
+            new { sponsorId, start, endExclusive },
+            cancellationToken: cancellationToken))).AsList();
+
+        var slots = tournamentRows
+            .Select(r => new SponsorSlotStatsDto(
                 r.TournamentId, r.TournamentName, r.PlacementZone,
-                r.Impressions, r.Clicks,
-                ComputeCtr(r.Clicks, r.Impressions))).ToList());
+                r.Impressions, r.Clicks, ComputeCtr(r.Clicks, r.Impressions)))
+            .Concat(globalRows.Select(r => new SponsorSlotStatsDto(
+                null, null, r.PlacementZone,
+                r.Impressions, r.Clicks, ComputeCtr(r.Clicks, r.Impressions))))
+            .ToList();
+
+        return new SponsorAnalyticsSlotsResponse(1, window, slots);
     }
 
     internal static decimal ComputeCtr(long clicks, long impressions) =>
@@ -320,6 +341,13 @@ public sealed class SponsorPerformanceReportService(
     {
         public Guid TournamentId { get; init; }
         public string? TournamentName { get; init; }
+        public string PlacementZone { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
+
+    private sealed record GlobalSlotRow
+    {
         public string PlacementZone { get; init; } = string.Empty;
         public long Impressions { get; init; }
         public long Clicks { get; init; }

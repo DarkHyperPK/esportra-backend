@@ -165,6 +165,7 @@ public static class TournamentSponsorEndpoints
                  SELECT p.id AS Id, p.sponsor_id AS SponsorId, p.placement_zone AS PlacementZone,
                      p.slot_number AS SlotNumber,
                    p.banner_url AS BannerUrl, p.logo_url AS LogoUrl, p.headline AS Headline,
+                   p.description AS Description,
                    p.cta_text AS CtaText, p.cta_url AS CtaUrl, p.priority AS Priority,
                    s.name AS SponsorName, s.tier AS SponsorTier,
                    s.logo_url AS SponsorLogoUrl, s.banner_image_url AS SponsorBannerUrl,
@@ -319,7 +320,7 @@ public static class TournamentSponsorEndpoints
                             SELECT p.id AS Id, p.sponsor_id AS SponsorId, p.tournament_id AS TournamentId,
                                      p.placement_zone AS PlacementZone, p.slot_number AS SlotNumber, p.banner_url AS BannerUrl,
                                      p.banner_asset_id AS BannerAssetId, p.logo_url AS LogoUrl, p.logo_asset_id AS LogoAssetId,
-                                     p.headline AS Headline, p.cta_text AS CtaText,
+                                     p.headline AS Headline, p.description AS Description, p.cta_text AS CtaText,
                                      p.cta_url AS CtaUrl, p.priority AS Priority, p.is_active AS IsActive,
                                      p.starts_at AS StartsAt, p.ends_at AS EndsAt, p.created_at AS CreatedAt,
                                      p.updated_at AS UpdatedAt,
@@ -473,7 +474,7 @@ public static class TournamentSponsorEndpoints
         if (request.Priority is < -1000 or > 1000)
             return Results.UnprocessableEntity(new { error = "Priority must be between -1000 and 1000." });
 
-        if (!IsCopyLengthValid(request.Headline, 120) || !IsCopyLengthValid(request.CtaText, 60) || !IsCopyLengthValid(request.CtaUrl, 2048))
+        if (!IsCopyLengthValid(request.Headline, 120) || !IsCopyLengthValid(request.CtaText, 60) || !IsCopyLengthValid(request.CtaUrl, 2048) || !IsCopyLengthValid(request.Description, 2000))
             return Results.UnprocessableEntity(new { error = "Placement copy exceeds the allowed length." });
 
         if (!TryNormalizeMediaUrl(request.BannerUrl, out var bannerUrl)
@@ -521,11 +522,11 @@ public static class TournamentSponsorEndpoints
             """
             INSERT INTO public.sponsor_placements
                 (sponsor_id, tournament_id, placement_zone, slot_number, banner_url, banner_asset_id, logo_url, logo_asset_id,
-                 headline, cta_text, cta_url, priority, is_active,
+                 headline, description, cta_text, cta_url, priority, is_active,
                  assigned_by, starts_at, ends_at)
             VALUES
                 (@SponsorId, @TournamentId, @PlacementZone, @SlotNumber, @BannerUrl, @BannerAssetId, @LogoUrl, @LogoAssetId,
-                 @Headline, @CtaText, @CtaUrl, @Priority, @IsActive,
+                 @Headline, @Description, @CtaText, @CtaUrl, @Priority, @IsActive,
                  @AssignedBy, @StartsAt, @EndsAt)
             ON CONFLICT DO NOTHING
             RETURNING id
@@ -541,6 +542,7 @@ public static class TournamentSponsorEndpoints
                 LogoUrl = logoAsset?.PublicUrl ?? logoUrl,
                 request.LogoAssetId,
                 request.Headline,
+                request.Description,
                 request.CtaText,
                 CtaUrl = destinationUrl,
                 request.Priority,
@@ -596,7 +598,7 @@ public static class TournamentSponsorEndpoints
         if (request.Priority is < -1000 or > 1000)
             return Results.UnprocessableEntity(new { error = "Priority must be between -1000 and 1000." });
 
-        if (!IsCopyLengthValid(request.Headline, 120) || !IsCopyLengthValid(request.CtaText, 60) || !IsCopyLengthValid(request.CtaUrl, 2048))
+        if (!IsCopyLengthValid(request.Headline, 120) || !IsCopyLengthValid(request.CtaText, 60) || !IsCopyLengthValid(request.CtaUrl, 2048) || !IsCopyLengthValid(request.Description, 2000))
             return Results.UnprocessableEntity(new { error = "Placement copy exceeds the allowed length." });
 
         if (!TryNormalizeMediaUrl(request.BannerUrl, out var bannerUrl)
@@ -626,6 +628,7 @@ public static class TournamentSponsorEndpoints
                 logo_url = @LogoUrl,
                 logo_asset_id = @LogoAssetId,
                 headline = @Headline,
+                description = @Description,
                 cta_text = @CtaText,
                 cta_url = @CtaUrl,
                 priority = COALESCE(@Priority, priority),
@@ -643,6 +646,7 @@ public static class TournamentSponsorEndpoints
                 LogoUrl = logoAsset?.PublicUrl ?? logoUrl,
                 request.LogoAssetId,
                 request.Headline,
+                request.Description,
                 request.CtaText,
                 CtaUrl = destinationUrl,
                 request.Priority,
