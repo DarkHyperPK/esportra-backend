@@ -100,11 +100,38 @@ public static class BracketEndpoints
                 });
             }
 
+            int? swissGroups = null;
+            int? swissRounds = null;
+
+            if (req.Format.Equals("swiss", StringComparison.OrdinalIgnoreCase))
+            {
+                if (req.StageId is not Guid swissStageId)
+                    return Results.BadRequest(new { error = "StageId is required to generate a Swiss bracket." });
+
+                var row = await conn.QuerySingleOrDefaultAsync<SwissStageConfigRow>(
+                    """
+                    SELECT config->>'swiss_groups' AS swiss_groups,
+                           config->>'swiss_rounds' AS swiss_rounds
+                    FROM tournament_stages WHERE id = @stageId
+                    """,
+                    new { stageId = swissStageId });
+
+                if (!int.TryParse(row?.SwissGroups, out var sg) || sg < 1)
+                    return Results.BadRequest(new
+                    {
+                        error = "Stage config is missing a valid swiss_groups value. Set it on the stage before generating."
+                    });
+
+                swissGroups = sg;
+                if (int.TryParse(row?.SwissRounds, out var sr) && sr > 0)
+                    swissRounds = sr;
+            }
+
             var config = new BracketConfig(
                 DailyStartTime: req.DailyStartTime,
                 TournamentStartDate: req.TournamentStartDate,
-                SwissGroups: req.SwissGroups,
-                SwissRounds: req.SwissRounds);
+                SwissGroups: swissGroups,
+                SwissRounds: swissRounds);
 
             // Validate per-round BO configuration
             var effectiveBoMode = req.BoMode ?? "per_stage";
@@ -1205,3 +1232,5 @@ public static class BracketEndpoints
         });
     }
 }
+
+file sealed record SwissStageConfigRow(string? SwissGroups, string? SwissRounds);
