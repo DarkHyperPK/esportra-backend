@@ -138,6 +138,25 @@ public static class BracketEndpoints
                 SwissGroups: swissGroups,
                 SwissRounds: swissRounds);
 
+            // For round_robin, read group_count from stage config — the authoritative source.
+            // Falls back to req.BracketSize so existing callers without a StageId still work.
+            int? effectiveBracketSize = req.BracketSize;
+
+            if (req.Format.Equals("round_robin", StringComparison.OrdinalIgnoreCase) && req.StageId is Guid rrStageId)
+            {
+                var gcStr = await conn.ExecuteScalarAsync<string>(
+                    """
+                    SELECT config->>'group_count'
+                    FROM tournament_stages
+                    WHERE id = @stageId
+                      AND tournament_id = @tournamentId
+                    """,
+                    new { stageId = rrStageId, tournamentId = req.TournamentId });
+
+                if (int.TryParse(gcStr, out var gc) && gc > 0)
+                    effectiveBracketSize = gc;
+            }
+
             // Validate per-round BO configuration
             var effectiveBoMode = req.BoMode ?? "per_stage";
 
@@ -178,7 +197,7 @@ public static class BracketEndpoints
                 req.TournamentId,
                 req.StageId,
                 roundConfig,
-                req.BracketSize,
+                effectiveBracketSize,
                 req.AdvancementCount,
                 config);
 
