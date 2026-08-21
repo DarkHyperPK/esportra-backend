@@ -47,7 +47,7 @@ public sealed class PlacementResolutionService(
 
         var finalStage = await conn.QuerySingleOrDefaultAsync<dynamic>(
             """
-            SELECT id, format, config, settings
+            SELECT id, format, config
             FROM tournament_stages
             WHERE tournament_id = @tournamentId
             ORDER BY stage_order DESC
