@@ -65,10 +65,10 @@ public sealed class PlacementResolutionService(
         {
             "single_elimination" => await ResolveSingleEliminationAsync(conn, stageId, ct),
             "double_elimination" => await ResolveDoubleEliminationAsync(conn, stageId, ct),
-            "round_robin"        => await ResolveStandingsAsync(conn, stageId, ct),
-            "swiss"              => await ResolveStandingsAsync(conn, stageId, ct),
-            "battle_royale"      => await ResolveBattleRoyaleAsync(conn, stageId, stageConfig, ct),
-            _                    => await ResolveSingleEliminationAsync(conn, stageId, ct),
+            "round_robin" => await ResolveStandingsAsync(conn, stageId, ct),
+            "swiss" => await ResolveStandingsAsync(conn, stageId, ct),
+            "battle_royale" => await ResolveBattleRoyaleAsync(conn, stageId, stageConfig, ct),
+            _ => await ResolveSingleEliminationAsync(conn, stageId, ct),
         };
 
         if (orderedTeams.Count == 0) return [];

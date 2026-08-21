@@ -7,10 +7,10 @@ public static class PrizeDistributionTemplates
         {
             "single_elimination" => SingleElimination(teamCount),
             "double_elimination" => DoubleElimination(teamCount),
-            "round_robin"        => RoundRobin(teamCount),
-            "swiss"              => Swiss(teamCount),
-            "battle_royale"      => BattleRoyale(teamCount),
-            _                    => Default(teamCount),
+            "round_robin" => RoundRobin(teamCount),
+            "swiss" => Swiss(teamCount),
+            "battle_royale" => BattleRoyale(teamCount),
+            _ => Default(teamCount),
         };
 
     private static List<PrizeDistributionTemplate> SingleElimination(int teamCount) =>
@@ -137,10 +137,10 @@ public static class PrizeDistributionTemplates
     {
         int topPaid = teamCount switch
         {
-            <= 8  => 4,
+            <= 8 => 4,
             <= 16 => 6,
             <= 32 => 8,
-            _     => 10,
+            _ => 10,
         };
 
         return
@@ -170,10 +170,10 @@ public static class PrizeDistributionTemplates
     {
         int topPaid = teamCount switch
         {
-            <= 10  => 3,
-            <= 20  => 6,
-            <= 40  => 10,
-            _      => 16,
+            <= 10 => 3,
+            <= 20 => 6,
+            <= 40 => 10,
+            _ => 16,
         };
 
         return

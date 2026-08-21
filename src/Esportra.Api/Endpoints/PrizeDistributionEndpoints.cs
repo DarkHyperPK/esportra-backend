@@ -142,28 +142,28 @@ public static class PrizeDistributionEndpoints
 
             if (row is null) return Results.NotFound();
 
-            string format    = (string?)row.final_format ?? "single_elimination";
-            int teamCount    = (int?)row.max_teams ?? 8;
+            string format = (string?)row.final_format ?? "single_elimination";
+            int teamCount = (int?)row.max_teams ?? 8;
             decimal prizePool = (decimal?)row.prize_pool ?? 0m;
-            string currency  = (string?)row.currency ?? "USD";
+            string currency = (string?)row.currency ?? "USD";
 
             var templates = prizeService.GetTemplates(format, teamCount);
 
             var response = templates.Select(t => new
             {
-                name        = t.Name,
+                name = t.Name,
                 description = t.Description,
                 format,
-                team_count  = teamCount,
+                team_count = teamCount,
                 distribution = t.Config,
                 preview = t.Config.Placements.Select(p => new
                 {
-                    position     = p.Position,
-                    label        = p.Label,
-                    percentage   = p.Percentage,
+                    position = p.Position,
+                    label = p.Label,
+                    percentage = p.Percentage,
                     shared_count = p.SharedCount,
-                    band_total   = Math.Round(prizePool * p.Percentage / 100m, 2),
-                    per_team     = Math.Round(prizePool * p.Percentage / 100m / p.SharedCount, 2),
+                    band_total = Math.Round(prizePool * p.Percentage / 100m, 2),
+                    per_team = Math.Round(prizePool * p.Percentage / 100m / p.SharedCount, 2),
                     currency,
                 }),
             });
@@ -207,16 +207,16 @@ public static class PrizeDistributionEndpoints
                 var rewards = ParseRewards((string?)p.prize_rewards);
                 return new
                 {
-                    team_id         = (Guid)p.team_id,
-                    team_name       = (string?)p.team_name,
-                    team_logo       = (string?)p.team_logo,
-                    placement       = (int)p.placement,
+                    team_id = (Guid)p.team_id,
+                    team_name = (string?)p.team_name,
+                    team_logo = (string?)p.team_logo,
+                    placement = (int)p.placement,
                     placement_label = (string?)p.placement_label,
-                    prize_amount    = (decimal?)p.prize_amount ?? 0m,
+                    prize_amount = (decimal?)p.prize_amount ?? 0m,
                     currency,
                     rewards,
-                    is_tied         = (bool?)p.is_tied ?? false,
-                    resolved_at     = (DateTime?)p.resolved_at,
+                    is_tied = (bool?)p.is_tied ?? false,
+                    resolved_at = (DateTime?)p.resolved_at,
                 };
             });
 
@@ -251,12 +251,12 @@ public static class PrizeDistributionEndpoints
                 resolved_count = placements.Count,
                 placements = placements.Select(p => new
                 {
-                    team_id         = p.TeamId,
-                    team_name       = p.TeamName,
-                    placement       = p.Placement,
+                    team_id = p.TeamId,
+                    team_name = p.TeamName,
+                    placement = p.Placement,
                     placement_label = p.PlacementLabel,
-                    prize_amount    = p.PrizeAmount,
-                    is_tied         = p.IsTied,
+                    prize_amount = p.PrizeAmount,
+                    is_tied = p.IsTied,
                 }),
             });
         }).RequireAuthorization("Authenticated");
@@ -300,18 +300,18 @@ public static class PrizeDistributionEndpoints
                 disclaimer = PlatformDisclaimer.OrganizerManagedRewards,
                 distributions = rows.Select(r => new
                 {
-                    id              = (Guid)r.id,
-                    team_id         = (Guid)r.team_id,
-                    team_name       = (string?)r.team_name,
-                    placement       = (int)r.placement,
+                    id = (Guid)r.id,
+                    team_id = (Guid)r.team_id,
+                    team_name = (string?)r.team_name,
+                    placement = (int)r.placement,
                     placement_label = (string?)r.placement_label,
-                    reward_index    = (int)r.reward_index,
-                    reward_title    = (string?)r.reward_title,
-                    reward_type     = (string?)r.reward_type,
-                    status          = (string?)r.status,
-                    notes           = (string?)r.notes,
-                    distributed_by  = (Guid?)r.distributed_by,
-                    distributed_at  = (DateTime?)r.distributed_at,
+                    reward_index = (int)r.reward_index,
+                    reward_title = (string?)r.reward_title,
+                    reward_type = (string?)r.reward_type,
+                    status = (string?)r.status,
+                    notes = (string?)r.notes,
+                    distributed_by = (Guid?)r.distributed_by,
+                    distributed_at = (DateTime?)r.distributed_at,
                 }),
             };
 
@@ -367,17 +367,17 @@ public static class PrizeDistributionEndpoints
 
             return Results.Ok(new
             {
-                id              = (Guid)updated.id,
-                team_id         = (Guid)updated.team_id,
-                placement       = (int)updated.placement,
-                reward_index    = (int)updated.reward_index,
-                reward_title    = (string?)updated.reward_title,
-                reward_type     = (string?)updated.reward_type,
-                status          = (string?)updated.status,
-                notes           = (string?)updated.notes,
-                distributed_by  = (Guid?)updated.distributed_by,
-                distributed_at  = (DateTime?)updated.distributed_at,
-                platform_note   = "This status update is a courtesy record only. " +
+                id = (Guid)updated.id,
+                team_id = (Guid)updated.team_id,
+                placement = (int)updated.placement,
+                reward_index = (int)updated.reward_index,
+                reward_title = (string?)updated.reward_title,
+                reward_type = (string?)updated.reward_type,
+                status = (string?)updated.status,
+                notes = (string?)updated.notes,
+                distributed_by = (Guid?)updated.distributed_by,
+                distributed_at = (DateTime?)updated.distributed_at,
+                platform_note = "This status update is a courtesy record only. " +
                                   "The platform is not responsible for the fulfillment of organizer-managed rewards.",
             });
         }).RequireAuthorization("Authenticated");
@@ -427,27 +427,27 @@ public static class PrizeDistributionEndpoints
 
             return Results.Ok(new
             {
-                tournament_id           = id,
-                payout_method           = payoutMethod,
-                manual_payout_notes     = (string?)tournament.manual_payout_notes,
-                currency                = (string?)tournament.currency ?? "USD",
-                gateway_available       = false,
+                tournament_id = id,
+                payout_method = payoutMethod,
+                manual_payout_notes = (string?)tournament.manual_payout_notes,
+                currency = (string?)tournament.currency ?? "USD",
+                gateway_available = false,
                 payouts = rows.Select(r => new
                 {
-                    id                   = (Guid)r.id,
-                    team_id              = (Guid)r.team_id,
-                    team_name            = (string?)r.team_name,
-                    placement            = (int)r.placement,
-                    placement_label      = (string?)r.placement_label,
-                    amount               = (decimal)r.amount,
-                    currency             = (string?)r.currency ?? "USD",
-                    payment_method       = (string?)r.payment_method,
+                    id = (Guid)r.id,
+                    team_id = (Guid)r.team_id,
+                    team_name = (string?)r.team_name,
+                    placement = (int)r.placement,
+                    placement_label = (string?)r.placement_label,
+                    amount = (decimal)r.amount,
+                    currency = (string?)r.currency ?? "USD",
+                    payment_method = (string?)r.payment_method,
                     manual_payment_notes = (string?)r.manual_payment_notes,
-                    status               = (string?)r.status,
-                    initiated_at         = (DateTime?)r.initiated_at,
-                    paid_at              = (DateTime?)r.paid_at,
-                    failed_reason        = (string?)r.failed_reason,
-                    updated_at           = (DateTime?)r.updated_at,
+                    status = (string?)r.status,
+                    initiated_at = (DateTime?)r.initiated_at,
+                    paid_at = (DateTime?)r.paid_at,
+                    failed_reason = (string?)r.failed_reason,
+                    updated_at = (DateTime?)r.updated_at,
                 }),
             });
         }).RequireAuthorization("Authenticated");
@@ -501,17 +501,17 @@ public static class PrizeDistributionEndpoints
 
             return Results.Ok(new
             {
-                id                   = (Guid)updated.id,
-                team_id              = (Guid)updated.team_id,
-                placement            = (int)updated.placement,
-                amount               = (decimal)updated.amount,
-                currency             = (string?)updated.currency ?? "USD",
-                payment_method       = (string?)updated.payment_method,
+                id = (Guid)updated.id,
+                team_id = (Guid)updated.team_id,
+                placement = (int)updated.placement,
+                amount = (decimal)updated.amount,
+                currency = (string?)updated.currency ?? "USD",
+                payment_method = (string?)updated.payment_method,
                 manual_payment_notes = (string?)updated.manual_payment_notes,
-                status               = (string?)updated.status,
-                paid_at              = (DateTime?)updated.paid_at,
-                failed_reason        = (string?)updated.failed_reason,
-                updated_at           = (DateTime?)updated.updated_at,
+                status = (string?)updated.status,
+                paid_at = (DateTime?)updated.paid_at,
+                failed_reason = (string?)updated.failed_reason,
+                updated_at = (DateTime?)updated.updated_at,
             });
         }).RequireAuthorization("Authenticated");
     }
@@ -574,9 +574,9 @@ public sealed record PlacementEntryRequest(
 public sealed record RewardEntryRequest(
     string Type,                       // RewardType constant
     string Title,                      // displayed name, e.g. "Gaming PC"
-    string? Description   = null,
+    string? Description = null,
     decimal? EstimatedValue = null,
-    int Quantity          = 1,
+    int Quantity = 1,
     string? FulfillmentNotes = null);  // e.g. "Contact organizer via Discord"
 
 public sealed record UpdateRewardDistributionRequest(

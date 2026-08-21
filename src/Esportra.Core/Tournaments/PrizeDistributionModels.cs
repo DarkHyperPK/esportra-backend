@@ -3,12 +3,12 @@ namespace Esportra.Core.Tournaments;
 // Reward types. "cash" is platform-tracked; all others are organizer-managed.
 public static class RewardType
 {
-    public const string Cash             = "cash";
-    public const string InGameCurrency   = "in_game_currency";
-    public const string PhysicalProduct  = "physical_product";
-    public const string DigitalProduct   = "digital_product";
-    public const string Trophy           = "trophy";
-    public const string Other            = "other";
+    public const string Cash = "cash";
+    public const string InGameCurrency = "in_game_currency";
+    public const string PhysicalProduct = "physical_product";
+    public const string DigitalProduct = "digital_product";
+    public const string Trophy = "trophy";
+    public const string Other = "other";
 
     public static bool IsOrganizerManaged(string type) =>
         !string.Equals(type, Cash, StringComparison.OrdinalIgnoreCase);
@@ -20,9 +20,9 @@ public static class RewardType
 public sealed record PrizeReward(
     string Type,                       // RewardType constant
     string Title,                      // e.g. "Gaming PC", "5000 V-Bucks"
-    string? Description  = null,       // optional extra detail
+    string? Description = null,       // optional extra detail
     decimal? EstimatedValue = null,    // optional USD estimate for display
-    int Quantity         = 1,
+    int Quantity = 1,
     string? FulfillmentNotes = null);  // e.g. "DM organizer on Discord to claim"
 
 public static class PrizeRewardExtensions
