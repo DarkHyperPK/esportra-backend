@@ -2329,6 +2329,8 @@ public static class TournamentEndpoints
                     format = stage.format,
                     stage_order = stage.stage_order,
                     best_of = stage.best_of,
+                    bo_mode = stage.bo_mode,
+                    round_bo_overrides = stage.round_bo_overrides,
                     capacity = stage.capacity,
                     advancement_count = stage.advancement_count,
                     config = stage.config,
