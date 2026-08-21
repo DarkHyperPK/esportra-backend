@@ -231,7 +231,7 @@ public static class PrizeDistributionEndpoints
         // ── POST /api/tournaments/{id}/placements/resolve ─────────────────────
         app.MapPost("/api/tournaments/{id}/placements/resolve", async (
             Guid id,
-            [FromQuery] bool force,
+            [FromQuery] bool force = false,
             HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
