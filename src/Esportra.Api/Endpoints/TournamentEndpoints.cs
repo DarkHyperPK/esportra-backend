@@ -2330,7 +2330,9 @@ public static class TournamentEndpoints
                     stage_order = stage.stage_order,
                     best_of = stage.best_of,
                     bo_mode = stage.bo_mode,
-                    round_bo_overrides = stage.round_bo_overrides,
+                    round_bo_overrides = stage.round_bo_overrides is string rbo
+                        ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(rbo)
+                        : null,
                     capacity = stage.capacity,
                     advancement_count = stage.advancement_count,
                     config = stage.config,
@@ -2339,6 +2341,7 @@ public static class TournamentEndpoints
                     created_at = stage.created_at,
                     updated_at = stage.updated_at,
                     progress_label = progressLabel,
+                    scheduling_config = stage.scheduling_config,
                 });
             }
 
