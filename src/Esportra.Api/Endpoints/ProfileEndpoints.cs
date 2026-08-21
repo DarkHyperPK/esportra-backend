@@ -154,7 +154,7 @@ public static class ProfileEndpoints
             try
             {
                 row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, is_verified, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
+                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
                     parameters);
             }
             catch (PostgresException ex) when (ex.SqlState == "23505")
@@ -202,7 +202,6 @@ public static class ProfileEndpoints
         app.MapGet("/api/profiles/search", async (
             [FromQuery] string? q,
             [FromQuery] string? email,
-            [FromQuery] bool? verified,
             IDbConnectionFactory db) =>
         {
             using var conn = db.CreateConnection();
@@ -220,10 +219,6 @@ public static class ProfileEndpoints
                 conditions.Add("LOWER(email) = LOWER(@email)");
                 p.Add("email", email.Trim());
             }
-            if (verified == true)
-            {
-                conditions.Add("is_verified = TRUE");
-            }
 
             var where = conditions.Count > 0
                 ? "WHERE " + string.Join(" AND ", conditions)
@@ -231,7 +226,7 @@ public static class ProfileEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT id, username, email, full_name, avatar_url, is_verified
+                SELECT id, username, email, full_name, avatar_url
                 FROM profiles
                 {where}
                 ORDER BY username
@@ -711,16 +706,17 @@ public static class ProfileEndpoints
         var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
             includePrivateFields
                 ? """
-                  SELECT id, username, full_name, avatar_url, is_verified, bio, location,
+                  SELECT id, username, full_name, avatar_url, bio, location,
                          social_links, country_code, card_image_url, banner_url,
                          riot_tag, steam_tag, role, base_role, is_admin, admin_roles,
                          is_suspended, suspension_until, suspension_reason, suspension_type,
-                         date_of_birth, created_at, updated_at
+                         date_of_birth, created_at, updated_at,
+                         (country_code IS NOT NULL AND date_of_birth IS NOT NULL) AS profile_complete
                   FROM profiles
                   WHERE id = @id
                   """
                 : """
-                  SELECT id, username, full_name, avatar_url, is_verified, bio, location,
+                  SELECT id, username, full_name, avatar_url, bio, location,
                          social_links, country_code, card_image_url, banner_url,
                          riot_tag, steam_tag, created_at, updated_at
                   FROM profiles

@@ -109,7 +109,6 @@ public static class TeamEndpoints
                                'avatar_url', p.avatar_url,
                                'card_image_url', p.card_image_url,
                                'role',       tm.role,
-                               'verified',   p.is_verified,
                                'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
                            ) ORDER BY tm.display_order, tm.role, p.username
@@ -150,7 +149,6 @@ public static class TeamEndpoints
                                'avatar_url', p.avatar_url,
                                'card_image_url', p.card_image_url,
                                'role',       tm.role,
-                               'verified',   p.is_verified,
                                'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
                            ) ORDER BY tm.display_order, tm.role, p.username
@@ -761,28 +759,6 @@ public static class TeamEndpoints
 
             await conn.ExecuteAsync("DELETE FROM team_invitations WHERE id = @id", new { id = inviteId });
             return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
-
-        // ── GET /api/profiles/verified ────────────────────────────────────────
-        // Used by the team invite modal to search for verified players.
-        app.MapGet("/api/profiles/verified", async (
-            string? q,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var users = await conn.QueryAsync<dynamic>(
-                """
-                SELECT id, username, full_name, avatar_url, is_verified
-                FROM profiles
-                WHERE is_verified = TRUE
-                  AND (@q IS NULL OR username ILIKE '%' || @q || '%' OR full_name ILIKE '%' || @q || '%')
-                ORDER BY username
-                LIMIT 50
-                """,
-                new { q });
-
-            return Results.Ok(users);
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/batch ─────────────────────────────────────────────

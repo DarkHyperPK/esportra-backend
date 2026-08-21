@@ -466,7 +466,7 @@ public static class FeatureFlagEndpoints
                 "role" => userCtx.Roles.Contains(value.GetString() ?? "", StringComparer.OrdinalIgnoreCase),
                 "is_admin" => userCtx.AdminRoles.Length > 0 == value.GetBoolean(),
                 "is_super_admin" => userCtx.IsSuperAdmin == value.GetBoolean(),
-                _ => true // Unknown conditions (country, is_verified) require DB lookup - skip for now
+                _ => true // Unknown conditions (e.g. country) require DB lookup - skip for now
             };
 
             if (!matches)
