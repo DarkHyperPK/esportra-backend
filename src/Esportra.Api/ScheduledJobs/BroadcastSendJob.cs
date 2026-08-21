@@ -272,13 +272,6 @@ public sealed class BroadcastSendJob(
             p.Add("country", country.GetString());
         }
 
-        if (segment.TryGetValue("is_verified", out var isVerified))
-        {
-            conditions.Add(isVerified.GetBoolean()
-                ? "p.is_verified = TRUE"
-                : "(p.is_verified IS NULL OR p.is_verified = FALSE)");
-        }
-
         var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
         return (await conn.QueryAsync<TargetUser>(
             $"SELECT {selectFields} FROM profiles p {where} LIMIT 50000", p)).ToList();

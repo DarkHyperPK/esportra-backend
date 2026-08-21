@@ -9,6 +9,7 @@ appsettings.Production.json
 **/appsettings.local.json
 .env
 .env.local
+INFRASTRUCTURE.md
 
 # IDE
 .vs/

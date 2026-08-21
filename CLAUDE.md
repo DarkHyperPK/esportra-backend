@@ -113,6 +113,37 @@ Security is blocking, not advisory. Never weaken protections to unblock developm
 - Target 80%+ coverage on domain logic, validation, auth, failure paths
 - TDD: write test (RED) → implement (GREEN) → refactor (IMPROVE)
 
+## Agents
+
+Custom agents defined in `.claude/agents/` for specialized tasks:
+
+| Agent | Description | Tools |
+|-------|-------------|-------|
+| `code-quality-reviewer` | Reviews code for clarity, simplicity, and maintainability. Focuses on readability, naming, structure, and duplication. Reports findings as HIGH/MEDIUM/LOW priority. | Glob, Grep, Read |
+| `refactoring-planner` | Plans safe, incremental refactoring steps. Outputs prerequisite checks, ordered steps with verification, commit points, and risks. Never mixes behavior changes with refactoring. | Glob, Grep, Read |
+| `security-reviewer` | Reviews code for security vulnerabilities and policy violations. Covers injection, auth gaps, data exposure, secrets handling, and input validation. Reports as CRITICAL/HIGH/MEDIUM/LOW severity. | Glob, Grep, Read |
+
+## Skills
+
+Custom skills defined in `.claude/skills/` for guided workflows:
+
+| Skill | Description | When to Use |
+|-------|-------------|-------------|
+| `clean-architecture` | Patterns for maintainable, testable code organization. Covers dependency direction, single responsibility, explicit dependencies, and file organization. | Creating new features, deciding where code lives, designing interfaces, refactoring tangled code |
+| `secure-development` | Security-first development practices for APIs and data handling. Covers input validation, parameterized queries, authorization, error handling, and secrets management. | Building endpoints, handling user input, auth/authz work, sensitive data, external integrations |
+| `root-cause-diagnosis` | Full multi-angle root-cause diagnosis protocol. Traces the complete data path, audits assumptions with evidence, distinguishes defects from intended workflow. | Bug reports, regressions, errors, unexpected behavior, investigating "why does X fail?" |
+
+## Rules
+
+Always-active rules defined in `.claude/rules/` that govern all code changes:
+
+| Rule | Purpose |
+|------|---------|
+| `clean-code.md` | Write code that's easy to read, change, and delete. Functions < 50 lines, params ≤ 4, names reveal intent, no comments unless WHY is non-obvious. |
+| `enterprise-code.md` | Code must be robust by design. Bans compensating helpers, duplicated state, string round-trips, symptom patches, and architecture bypasses. Requires single source of truth, normalize at boundary, atomicity, root-cause discipline. |
+| `refactoring.md` | Refactor to improve structure without changing behavior. Small steps, run tests after each, commit frequently. Never refactor while fixing a bug or without test coverage. |
+| `security.md` | Blocking security rules. Parameterized queries, RLS on every table, framework auth handlers, no hardcoded secrets, no PII in logs, safe client errors. Violations must be fixed before proceeding. |
+
 ## Parked (Do Not Implement)
 
 - CS2 integration

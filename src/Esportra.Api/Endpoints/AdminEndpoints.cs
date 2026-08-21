@@ -380,7 +380,6 @@ public static class AdminEndpoints
             [FromQuery] string? country = null,
             [FromQuery] string? joined_from = null,
             [FromQuery] string? joined_to = null,
-            [FromQuery] string? verified = null,
             [FromQuery] string? has_team = null,
             [FromQuery] string? sort_by = null,
             [FromQuery] string? sort_dir = null,
@@ -422,11 +421,6 @@ public static class AdminEndpoints
             if (!string.IsNullOrWhiteSpace(joined_to) && DateTimeOffset.TryParse(joined_to, out var jt))
             { joinedTo = jt.AddDays(1); conditions.Add("p.created_at < @joinedTo"); }
 
-            if (verified == "true")
-                conditions.Add("p.is_verified = TRUE");
-            else if (verified == "false")
-                conditions.Add("(p.is_verified IS NULL OR p.is_verified = FALSE)");
-
             if (has_team == "true")
                 conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
             else if (has_team == "false")
@@ -452,10 +446,15 @@ public static class AdminEndpoints
                     p.created_at,
                     p.country_code,
                     p.date_of_birth,
-                    p.is_verified,
                     p.updated_at,
                     p.steam_tag,
-                    p.riot_tag
+                    p.riot_tag,
+                    CASE
+                        WHEN p.role = 'organizer' AND EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)   THEN 'verified_organizer'
+                        WHEN p.role = 'venue_owner' AND EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE) THEN 'verified_venue_owner'
+                        WHEN EXISTS (SELECT 1 FROM auth.users au WHERE au.id = p.id AND au.email_confirmed_at IS NOT NULL)                                                   THEN 'email_verified'
+                        ELSE 'unverified'
+                    END AS verification_status
                 FROM profiles p
                 {where}
                 ORDER BY p.{sortColumn} {sortDirection}
@@ -495,7 +494,7 @@ public static class AdminEndpoints
                     u.created_at,
                     u.country_code,
                     u.date_of_birth,
-                    u.is_verified,
+                    u.verification_status,
                     u.updated_at,
                     roles = rolesMap.ContainsKey(uid) ? rolesMap[uid].ToArray() : Array.Empty<string>()
                 };
@@ -3073,12 +3072,18 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT id, username, email, full_name, avatar_url, bio, location, country_code,
-                       date_of_birth, riot_tag, social_links, card_image_url,
-                       banner_url, is_verified, is_admin, admin_roles, is_suspended,
-                       suspension_reason, suspension_type, suspension_until, settings,
-                       created_at, updated_at
-                FROM profiles WHERE id = @userId
+                SELECT p.id, p.username, p.email, p.full_name, p.avatar_url, p.bio, p.location, p.country_code,
+                       p.date_of_birth, p.riot_tag, p.social_links, p.card_image_url,
+                       p.banner_url, p.is_admin, p.admin_roles, p.is_suspended,
+                       p.suspension_reason, p.suspension_type, p.suspension_until, p.settings,
+                       p.created_at, p.updated_at,
+                       CASE
+                           WHEN p.role = 'organizer'   AND EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE) THEN 'verified_organizer'
+                           WHEN p.role = 'venue_owner' AND EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE) THEN 'verified_venue_owner'
+                           WHEN EXISTS (SELECT 1 FROM auth.users au WHERE au.id = p.id AND au.email_confirmed_at IS NOT NULL) THEN 'email_verified'
+                           ELSE 'unverified'
+                       END AS verification_status
+                FROM profiles p WHERE p.id = @userId
                 """,
                 new { userId });
             if (profile is null) return Results.NotFound(new { error = "User not found" });
@@ -4139,7 +4144,6 @@ public static class AdminEndpoints
             [FromQuery] string? country = null,
             [FromQuery] string? joined_from = null,
             [FromQuery] string? joined_to = null,
-            [FromQuery] string? verified = null,
             [FromQuery] string? has_team = null,
             [FromQuery] string? sort_by = null,
             [FromQuery] string? sort_dir = null,
@@ -4194,11 +4198,6 @@ public static class AdminEndpoints
                 conditions.Add("p.created_at < @joinedTo");
                 parameters.Add("joinedTo", jt.AddDays(1));
             }
-
-            if (verified == "true")
-                conditions.Add("p.is_verified = TRUE");
-            else if (verified == "false")
-                conditions.Add("(p.is_verified IS NULL OR p.is_verified = FALSE)");
 
             if (has_team == "true")
                 conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
@@ -7437,7 +7436,7 @@ public static class AdminEndpoints
                 "user" => await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
                     SELECT p.id, p.username, p.full_name, p.email, p.avatar_url,
-                           p.is_suspended, p.is_verified, p.created_at,
+                           p.is_suspended, p.created_at,
                            (SELECT COUNT(*) FROM tournaments t WHERE t.organizer_id = p.id) AS tournament_count,
                            (SELECT string_agg(ur.role, ', ') FROM user_roles ur WHERE ur.user_id = p.id AND ur.is_active) AS roles
                     FROM profiles p

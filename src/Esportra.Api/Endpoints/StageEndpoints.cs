@@ -8,6 +8,7 @@ using Esportra.Core.Bracket;
 using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
 
 namespace Esportra.Api.Endpoints;
 
@@ -403,6 +404,8 @@ public static class StageEndpoints
             IDbConnectionFactory db,
             StandingsService standings,
             TournamentWinnerService winnerService,
+            PlacementResolutionService placementResolution,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
@@ -495,6 +498,16 @@ public static class StageEndpoints
                     await conn.ExecuteAsync(
                         "UPDATE tournaments SET status = 'completed' WHERE id = @tournamentId",
                         new { tournamentId });
+                }
+
+                try
+                {
+                    await placementResolution.ResolveAsync(tournamentId, force: false, ct);
+                }
+                catch (Exception ex)
+                {
+                    loggerFactory.CreateLogger("PrizeDistribution")
+                        .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", tournamentId);
                 }
 
                 return Results.Ok(new { success = true, advancedCount = 0, isFinalStage = true });

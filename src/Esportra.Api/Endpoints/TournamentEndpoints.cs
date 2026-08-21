@@ -56,6 +56,13 @@ public static class TournamentEndpoints
         return fallback.ToJsonString();
     }
 
+    private static string? SerializeJson(object? value)
+    {
+        if (value is null) return null;
+        if (value is string s) return string.IsNullOrWhiteSpace(s) ? null : s;
+        return JsonSerializer.Serialize(value);
+    }
+
     private static string? NormalizeTournamentStatusGroup(string? statusGroup)
     {
         if (string.IsNullOrWhiteSpace(statusGroup)) return null;
@@ -643,21 +650,25 @@ public static class TournamentEndpoints
                     """
                     INSERT INTO tournaments (
                         name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
-                        entry_fee, prize_pool, start_date, end_date, registration_deadline,
+                        entry_fee, prize_pool, prize_distribution, start_date, end_date, registration_deadline,
                         status, banner_url, logo_url, organization_id, venue_id, is_public,
                         check_in_required, check_in_deadline, auto_remove_unchecked,
                         rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region,
-                        reserved_invite_slots, invite_expiry_days
+                        reserved_invite_slots, invite_expiry_days,
+                        payout_method, manual_payout_notes
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @gameMode, @maxTeams, 2, @teamSize,
-                        @entryFee, @prizePool, @startDate, @endDate, @registrationDeadline,
+                        @entryFee, @prizePool,
+                        CASE WHEN @prizeDistribution IS NOT NULL THEN @prizeDistribution::jsonb ELSE '[]'::jsonb END,
+                        @startDate, @endDate, @registrationDeadline,
                         @status::tournament_status, @bannerUrl, @logoUrl, @organizationId, @venueId, @isPublic,
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
                         @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion,
-                        @reservedInviteSlots, @inviteExpiryDays
+                        @reservedInviteSlots, @inviteExpiryDays,
+                        @payoutMethod, @manualPayoutNotes
                     )
                     RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
-                             entry_fee, prize_pool, start_date, end_date, registration_deadline,
+                             entry_fee, prize_pool, prize_distribution, start_date, end_date, registration_deadline,
                              status, banner_url, logo_url, organization_id, venue_id, is_public,
                              check_in_required, check_in_deadline, auto_remove_unchecked,
                              rewards, stream_url, settings, organizer_id, created_at, rules, payment_instructions, region, currency
@@ -674,6 +685,7 @@ public static class TournamentEndpoints
                         teamSize = catalog.TeamSize,
                         entryFee = req.EntryFee ?? 0m,
                         prizePool = req.PrizePool ?? 0m,
+                        prizeDistribution = SerializeJson(req.PrizeDistribution),
                         startDate = req.StartDate,
                         endDate = req.EndDate ?? req.StartDate.AddHours(2),
                         registrationDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
@@ -697,6 +709,8 @@ public static class TournamentEndpoints
                         serverRegion = req.ServerRegion,
                         reservedInviteSlots = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings),
                         inviteExpiryDays = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365),
+                        payoutMethod = req.PayoutMethod is "gateway" ? "gateway" : "manual",
+                        manualPayoutNotes = req.ManualPayoutNotes,
                     },
                     tx);
 
@@ -734,9 +748,14 @@ public static class TournamentEndpoints
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO tournament_stages
-                            (tournament_id, name, format, stage_order, best_of, capacity, advancement_count)
+                            (tournament_id, name, format, stage_order, best_of, bo_mode,
+                             round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
                         VALUES
-                            (@tournamentId, @name, @format, @stageOrder, @bestOf, @capacity, @advancementCount)
+                            (@tournamentId, @name, @format, @stageOrder, @bestOf, @boMode,
+                             CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                             @capacity, @advancementCount,
+                             CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
+                             @startsAt, @endsAt)
                         """,
                         stagesToInsert.Select((s, i) => new
                         {
@@ -745,10 +764,19 @@ public static class TournamentEndpoints
                             format = s.Format,
                             stageOrder = s.StageOrder ?? i,
                             bestOf = s.BestOf ?? 1,
+                            boMode = s.BoMode ?? "per_stage",
+                            roundBoOverrides = s.RoundBoOverrides is { Count: > 0 }
+                                ? JsonSerializer.Serialize(s.RoundBoOverrides)
+                                : (string?)null,
                             capacity = string.Equals(s.Format, "battle_royale", StringComparison.OrdinalIgnoreCase)
                                 ? s.Capacity ?? req.MaxTeams
                                 : s.Capacity,
                             advancementCount = s.AdvancementCount,
+                            config = s.Config is not null ? JsonSerializer.Serialize(s.Config) : (string?)null,
+                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa)
+                                ? sa : (DateTimeOffset?)null,
+                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea)
+                                ? ea : (DateTimeOffset?)null,
                         }),
                         tx);
                 }
@@ -799,6 +827,7 @@ public static class TournamentEndpoints
             GameCatalogService gameCatalog,
             TournamentWinnerService winnerService,
             TournamentAuthorizationService tournamentAuth,
+            PlacementResolutionService placementResolution,
             HybridCache cache,
             CancellationToken ct) =>
         {
@@ -932,8 +961,11 @@ public static class TournamentEndpoints
                     region               = COALESCE(@region, region),
                     currency             = COALESCE(@currency, currency),
                     settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
+                    prize_distribution   = CASE WHEN @prizeDistribution IS NOT NULL THEN @prizeDistribution::jsonb ELSE prize_distribution END,
                     reserved_invite_slots = COALESCE(@reservedInviteSlots, reserved_invite_slots),
                     invite_expiry_days   = COALESCE(@inviteExpiryDays, invite_expiry_days),
+                    payout_method        = COALESCE(@payoutMethod, payout_method),
+                    manual_payout_notes  = COALESCE(@manualPayoutNotes, manual_payout_notes),
                     deleted_at           = CASE WHEN @clearDeletedAt THEN NULL ELSE COALESCE(@deletedAt, deleted_at) END,
                     updated_at           = NOW()
                 WHERE id = @id
@@ -972,10 +1004,13 @@ public static class TournamentEndpoints
                     region = req.Region,
                     currency = req.Currency,
                     settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto),
+                    prizeDistribution = SerializeJson(req.PrizeDistribution),
                     reservedInviteSlots = reservedSlotsForUpdate,
                     inviteExpiryDays = req.InviteExpiryDays.HasValue
                                              ? Math.Clamp(req.InviteExpiryDays.Value, 1, 365)
                                              : (int?)null,
+                    payoutMethod = req.PayoutMethod is "gateway" or "manual" ? req.PayoutMethod : null,
+                    manualPayoutNotes = req.ManualPayoutNotes,
                     deletedAt = req.DeletedAt,
                     clearDeletedAt = req.ClearDeletedAt,
                 });
@@ -1074,6 +1109,18 @@ public static class TournamentEndpoints
                     catch
                     {
                         // If trigger still blocks, don't fail the status change
+                    }
+
+                    try
+                    {
+                        await placementResolution.ResolveAsync(id, force: false, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Non-blocking: placement resolution failure must not fail tournament completion
+                        var loggerFactory = ctx.RequestServices.GetRequiredService<ILoggerFactory>();
+                        loggerFactory.CreateLogger("PrizeDistribution")
+                            .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", id);
                     }
                 }
             }
@@ -4941,7 +4988,10 @@ public sealed record CreateTournamentRequest(
     string? ServerRegion = null,
     string? TournamentType = null,
     int? ReservedInviteSlots = null,
-    int? InviteExpiryDays = null);
+    int? InviteExpiryDays = null,
+    object? PrizeDistribution = null,
+    string? PayoutMethod = null,
+    string? ManualPayoutNotes = null);
 
 public sealed record StageRequest(
     string Name,
@@ -4949,7 +4999,12 @@ public sealed record StageRequest(
     int? StageOrder = null,
     int? BestOf = 1,
     int? Capacity = null,
-    int? AdvancementCount = null);
+    int? AdvancementCount = null,
+    string? BoMode = null,
+    Dictionary<string, int>? RoundBoOverrides = null,
+    object? Config = null,
+    string? StartsAt = null,
+    string? EndsAt = null);
 
 public sealed record UpdateTournamentRequest(
     string? Name = null,
@@ -4981,7 +5036,10 @@ public sealed record UpdateTournamentRequest(
     string? Currency = null,
     string? WinnerTeamName = null,
     int? ReservedInviteSlots = null,
-    int? InviteExpiryDays = null);
+    int? InviteExpiryDays = null,
+    object? PrizeDistribution = null,
+    string? PayoutMethod = null,
+    string? ManualPayoutNotes = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId = null,
