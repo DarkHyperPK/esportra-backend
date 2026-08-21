@@ -207,35 +207,8 @@ public static class PrizeDistributionEndpoints
             string disclaimer = ResolveDisclaimer(config);
             bool hasOrganizerRewards = HasOrganizerManagedRewards(config);
 
-            if (persistedRows.Count > 0)
-            {
-                var result = persistedRows.Select(p =>
-                {
-                    var rewards = ParseRewards((string?)p.prize_rewards);
-                    return new
-                    {
-                        team_id = (Guid)p.team_id,
-                        team_name = (string?)p.team_name,
-                        team_logo = (string?)p.team_logo,
-                        placement = (int)p.placement,
-                        placement_label = (string?)p.placement_label,
-                        prize_amount = (decimal?)p.prize_amount ?? 0m,
-                        currency,
-                        rewards,
-                        is_tied = (bool?)p.is_tied ?? false,
-                        resolved_at = (DateTime?)p.resolved_at,
-                    };
-                });
-
-                return Results.Ok(new
-                {
-                    placements = result,
-                    disclaimer,
-                    has_organizer_managed_rewards = hasOrganizerRewards,
-                });
-            }
-
-            // No persisted placements — compute live with short cache to prevent DoS
+            // Always compute live standings (cached 10s) so positions reflect current bracket state.
+            // Persisted rows provide locked prize amounts and rewards after organizer resolves.
             var livePlacements = await cache.GetOrCreateAsync(
                 $"tournament:{id}:live-placements",
                 async (_) =>
@@ -255,23 +228,35 @@ public static class PrizeDistributionEndpoints
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(10) },
                 cancellationToken: ct);
 
-            var liveResult = (livePlacements ?? []).Select(p => new
+            // Build a lookup from persisted rows for prize/reward/logo data
+            var persistedLookup = persistedRows.ToDictionary(
+                p => (Guid)p.team_id,
+                p => p);
+
+            var result = (livePlacements ?? []).Select(p =>
             {
-                team_id = p.TeamId,
-                team_name = p.TeamName,
-                team_logo = (string?)null,
-                placement = p.Placement,
-                placement_label = p.PlacementLabel,
-                prize_amount = p.PrizeAmount,
-                currency,
-                rewards = p.Rewards,
-                is_tied = p.IsTied,
-                resolved_at = (DateTime?)null,
+                var persisted = persistedLookup.GetValueOrDefault(p.TeamId);
+                var rewards = persisted is not null
+                    ? ParseRewards((string?)persisted.prize_rewards)
+                    : p.Rewards.Select(r => (object)new { type = r.Type, title = r.Title, description = r.Description, estimated_value = r.EstimatedValue, quantity = r.Quantity }).ToList();
+                return new
+                {
+                    team_id = p.TeamId,
+                    team_name = p.TeamName,
+                    team_logo = persisted is not null ? (string?)persisted.team_logo : null,
+                    placement = p.Placement,
+                    placement_label = p.PlacementLabel,
+                    prize_amount = persisted is not null ? ((decimal?)persisted.prize_amount ?? 0m) : p.PrizeAmount,
+                    currency,
+                    rewards,
+                    is_tied = p.IsTied,
+                    resolved_at = persisted is not null ? (DateTime?)persisted.resolved_at : null,
+                };
             });
 
             return Results.Ok(new
             {
-                placements = liveResult,
+                placements = result,
                 disclaimer,
                 has_organizer_managed_rewards = hasOrganizerRewards,
             });
