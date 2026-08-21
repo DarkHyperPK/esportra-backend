@@ -301,100 +301,110 @@ public sealed class PlacementResolutionService(
         bool force,
         CancellationToken ct)
     {
-        if (force)
+        if (conn.State != ConnectionState.Open)
+            ((System.Data.Common.DbConnection)conn).Open();
+
+        using var tx = conn.BeginTransaction();
+        try
         {
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_placements WHERE tournament_id = @tournamentId",
-                new { tournamentId });
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_reward_distributions WHERE tournament_id = @tournamentId",
-                new { tournamentId });
-            await conn.ExecuteAsync(
-                "DELETE FROM tournament_cash_payouts WHERE tournament_id = @tournamentId",
-                new { tournamentId });
-        }
-
-        foreach (var p in placements)
-        {
-            var rewardsJson = JsonSerializer.Serialize(p.Rewards);
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO tournament_placements
-                    (tournament_id, team_id, placement, placement_label, prize_amount, prize_rewards, is_tied)
-                VALUES
-                    (@tournamentId, @teamId, @placement, @label, @amount, @rewards::jsonb, @isTied)
-                ON CONFLICT (tournament_id, team_id) DO UPDATE SET
-                    placement       = EXCLUDED.placement,
-                    placement_label = EXCLUDED.placement_label,
-                    prize_amount    = EXCLUDED.prize_amount,
-                    prize_rewards   = EXCLUDED.prize_rewards,
-                    is_tied         = EXCLUDED.is_tied,
-                    resolved_at     = NOW()
-                """,
-                new
-                {
-                    tournamentId,
-                    teamId = p.TeamId,
-                    placement = p.Placement,
-                    label = p.PlacementLabel,
-                    amount = p.PrizeAmount,
-                    rewards = rewardsJson,
-                    isTied = p.IsTied,
-                });
-
-            // Seed one reward-distribution tracking row per organizer-managed reward.
-            // These let organizers mark each reward as distributed/claimed/cancelled.
-            var orgRewards = p.Rewards
-                .Select((r, i) => (Reward: r, Index: i))
-                .Where(x => RewardType.IsOrganizerManaged(x.Reward.Type))
-                .ToList();
-
-            foreach (var (reward, rewardIndex) in orgRewards)
+            if (force)
             {
                 await conn.ExecuteAsync(
-                    """
-                    INSERT INTO tournament_reward_distributions
-                        (tournament_id, team_id, placement, reward_index, reward_title, reward_type, status)
-                    VALUES
-                        (@tournamentId, @teamId, @placement, @rewardIndex, @rewardTitle, @rewardType, 'pending')
-                    ON CONFLICT (tournament_id, team_id, reward_index) DO NOTHING
-                    """,
-                    new
-                    {
-                        tournamentId,
-                        teamId = p.TeamId,
-                        placement = p.Placement,
-                        rewardIndex,
-                        rewardTitle = reward.Title,
-                        rewardType = reward.Type,
-                    });
+                    "DELETE FROM tournament_placements WHERE tournament_id = @tournamentId",
+                    new { tournamentId }, tx);
+                await conn.ExecuteAsync(
+                    "DELETE FROM tournament_reward_distributions WHERE tournament_id = @tournamentId",
+                    new { tournamentId }, tx);
+                await conn.ExecuteAsync(
+                    "DELETE FROM tournament_cash_payouts WHERE tournament_id = @tournamentId",
+                    new { tournamentId }, tx);
             }
 
-            // Seed one cash payout row for teams with a non-zero prize amount.
-            // Gateway fields remain NULL until a payment gateway is integrated.
-            if (p.PrizeAmount > 0)
+            foreach (var p in placements)
             {
+                var rewardsJson = JsonSerializer.Serialize(p.Rewards);
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO tournament_cash_payouts
-                        (tournament_id, team_id, placement, amount, currency,
-                         payment_method, manual_payment_notes, status)
+                    INSERT INTO tournament_placements
+                        (tournament_id, team_id, placement, placement_label, prize_amount, prize_rewards, is_tied)
                     VALUES
-                        (@tournamentId, @teamId, @placement, @amount, @currency,
-                         @paymentMethod, @manualPaymentNotes, 'requested')
-                    ON CONFLICT (tournament_id, team_id) DO NOTHING
+                        (@tournamentId, @teamId, @placement, @label, @amount, @rewards::jsonb, @isTied)
+                    ON CONFLICT (tournament_id, team_id) DO UPDATE SET
+                        placement       = EXCLUDED.placement,
+                        placement_label = EXCLUDED.placement_label,
+                        prize_amount    = EXCLUDED.prize_amount,
+                        prize_rewards   = EXCLUDED.prize_rewards,
+                        is_tied         = EXCLUDED.is_tied,
+                        resolved_at     = NOW()
                     """,
                     new
                     {
                         tournamentId,
                         teamId = p.TeamId,
                         placement = p.Placement,
+                        label = p.PlacementLabel,
                         amount = p.PrizeAmount,
-                        currency,
-                        paymentMethod = payoutMethod,
-                        manualPaymentNotes = manualPayoutNotes,
-                    });
+                        rewards = rewardsJson,
+                        isTied = p.IsTied,
+                    }, tx);
+
+                var orgRewards = p.Rewards
+                    .Select((r, i) => (Reward: r, Index: i))
+                    .Where(x => RewardType.IsOrganizerManaged(x.Reward.Type))
+                    .ToList();
+
+                foreach (var (reward, rewardIndex) in orgRewards)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO tournament_reward_distributions
+                            (tournament_id, team_id, placement, reward_index, reward_title, reward_type, status)
+                        VALUES
+                            (@tournamentId, @teamId, @placement, @rewardIndex, @rewardTitle, @rewardType, 'pending')
+                        ON CONFLICT (tournament_id, team_id, reward_index) DO NOTHING
+                        """,
+                        new
+                        {
+                            tournamentId,
+                            teamId = p.TeamId,
+                            placement = p.Placement,
+                            rewardIndex,
+                            rewardTitle = reward.Title,
+                            rewardType = reward.Type,
+                        }, tx);
+                }
+
+                if (p.PrizeAmount > 0)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO tournament_cash_payouts
+                            (tournament_id, team_id, placement, amount, currency,
+                             payment_method, manual_payment_notes, status)
+                        VALUES
+                            (@tournamentId, @teamId, @placement, @amount, @currency,
+                             @paymentMethod, @manualPaymentNotes, 'requested')
+                        ON CONFLICT (tournament_id, team_id) DO NOTHING
+                        """,
+                        new
+                        {
+                            tournamentId,
+                            teamId = p.TeamId,
+                            placement = p.Placement,
+                            amount = p.PrizeAmount,
+                            currency,
+                            paymentMethod = payoutMethod,
+                            manualPaymentNotes = manualPayoutNotes,
+                        }, tx);
+                }
             }
+
+            tx.Commit();
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
         }
     }
 

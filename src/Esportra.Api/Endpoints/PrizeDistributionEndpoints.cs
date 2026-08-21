@@ -1,10 +1,12 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Middleware;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -177,6 +179,7 @@ public static class PrizeDistributionEndpoints
             Guid id,
             IDbConnectionFactory db,
             PlacementResolutionService resolutionService,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
@@ -232,9 +235,27 @@ public static class PrizeDistributionEndpoints
                 });
             }
 
-            // No persisted placements yet — compute live from bracket data without persisting
-            var live = await resolutionService.ComputeCurrentAsync(id, ct);
-            var liveResult = live.Select(p => new
+            // No persisted placements — compute live with short cache to prevent DoS
+            var livePlacements = await cache.GetOrCreateAsync(
+                $"tournament:{id}:live-placements",
+                async (_) =>
+                {
+                    var live = await resolutionService.ComputeCurrentAsync(id, ct);
+                    return live.Select(p => new LivePlacementDto
+                    {
+                        TeamId = p.TeamId,
+                        TeamName = p.TeamName,
+                        Placement = p.Placement,
+                        PlacementLabel = p.PlacementLabel,
+                        PrizeAmount = p.PrizeAmount,
+                        Rewards = p.Rewards,
+                        IsTied = p.IsTied,
+                    }).ToList();
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(10) },
+                cancellationToken: ct);
+
+            var liveResult = (livePlacements ?? []).Select(p => new
             {
                 team_id = p.TeamId,
                 team_name = p.TeamName,
@@ -254,7 +275,7 @@ public static class PrizeDistributionEndpoints
                 disclaimer,
                 has_organizer_managed_rewards = hasOrganizerRewards,
             });
-        });
+        }).WithMetadata(new RateLimitPolicyMetadata("strict"));
 
         // ── POST /api/tournaments/{id}/placements/resolve ─────────────────────
         app.MapPost("/api/tournaments/{id}/placements/resolve", async (
@@ -263,6 +284,7 @@ public static class PrizeDistributionEndpoints
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
             PlacementResolutionService resolutionService,
+            HybridCache cache,
             CancellationToken ct,
             [FromQuery] bool force = false) =>
         {
@@ -273,6 +295,8 @@ public static class PrizeDistributionEndpoints
                 return Results.Forbid();
 
             var placements = await resolutionService.ResolveAsync(id, force, ct);
+
+            await cache.RemoveAsync($"tournament:{id}:live-placements", ct);
 
             return Results.Ok(new
             {
@@ -582,6 +606,19 @@ public static class PrizeDistributionEndpoints
         }
         catch { return []; }
     }
+}
+
+// ── Cached DTO (HybridCache requires concrete, serializable types) ───────────
+
+internal sealed class LivePlacementDto
+{
+    public Guid TeamId { get; init; }
+    public string? TeamName { get; init; }
+    public int Placement { get; init; }
+    public string? PlacementLabel { get; init; }
+    public decimal PrizeAmount { get; init; }
+    public List<PrizeReward> Rewards { get; init; } = [];
+    public bool IsTied { get; init; }
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
