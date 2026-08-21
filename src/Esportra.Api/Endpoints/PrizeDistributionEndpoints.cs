@@ -175,7 +175,9 @@ public static class PrizeDistributionEndpoints
         // Public standings with prize amounts, reward lists, and disclaimer.
         app.MapGet("/api/tournaments/{id}/placements", async (
             Guid id,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            PlacementResolutionService resolutionService,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
 
@@ -185,7 +187,7 @@ public static class PrizeDistributionEndpoints
 
             if (tournament is null) return Results.NotFound();
 
-            var placements = await conn.QueryAsync<dynamic>(
+            var persistedRows = (await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.placement, tp.placement_label, tp.prize_amount,
                        tp.prize_rewards, tp.is_tied, tp.resolved_at,
@@ -195,34 +197,60 @@ public static class PrizeDistributionEndpoints
                 WHERE tp.tournament_id = @id
                 ORDER BY tp.placement
                 """,
-                new { id });
+                new { id })).AsList();
 
             string currency = (string?)tournament.currency ?? "USD";
             var config = ParseConfig((string?)tournament.prize_distribution);
             string disclaimer = ResolveDisclaimer(config);
             bool hasOrganizerRewards = HasOrganizerManagedRewards(config);
 
-            var result = placements.Select(p =>
+            if (persistedRows.Count > 0)
             {
-                var rewards = ParseRewards((string?)p.prize_rewards);
-                return new
+                var result = persistedRows.Select(p =>
                 {
-                    team_id = (Guid)p.team_id,
-                    team_name = (string?)p.team_name,
-                    team_logo = (string?)p.team_logo,
-                    placement = (int)p.placement,
-                    placement_label = (string?)p.placement_label,
-                    prize_amount = (decimal?)p.prize_amount ?? 0m,
-                    currency,
-                    rewards,
-                    is_tied = (bool?)p.is_tied ?? false,
-                    resolved_at = (DateTime?)p.resolved_at,
-                };
+                    var rewards = ParseRewards((string?)p.prize_rewards);
+                    return new
+                    {
+                        team_id = (Guid)p.team_id,
+                        team_name = (string?)p.team_name,
+                        team_logo = (string?)p.team_logo,
+                        placement = (int)p.placement,
+                        placement_label = (string?)p.placement_label,
+                        prize_amount = (decimal?)p.prize_amount ?? 0m,
+                        currency,
+                        rewards,
+                        is_tied = (bool?)p.is_tied ?? false,
+                        resolved_at = (DateTime?)p.resolved_at,
+                    };
+                });
+
+                return Results.Ok(new
+                {
+                    placements = result,
+                    disclaimer,
+                    has_organizer_managed_rewards = hasOrganizerRewards,
+                });
+            }
+
+            // No persisted placements yet — compute live from bracket data without persisting
+            var live = await resolutionService.ComputeCurrentAsync(id, ct);
+            var liveResult = live.Select(p => new
+            {
+                team_id = p.TeamId,
+                team_name = p.TeamName,
+                team_logo = (string?)null,
+                placement = p.Placement,
+                placement_label = p.PlacementLabel,
+                prize_amount = p.PrizeAmount,
+                currency,
+                rewards = p.Rewards,
+                is_tied = p.IsTied,
+                resolved_at = (DateTime?)null,
             });
 
             return Results.Ok(new
             {
-                placements = result,
+                placements = liveResult,
                 disclaimer,
                 has_organizer_managed_rewards = hasOrganizerRewards,
             });

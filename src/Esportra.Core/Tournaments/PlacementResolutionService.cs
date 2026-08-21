@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Database;
@@ -39,11 +40,31 @@ public sealed class PlacementResolutionService(
             }
         }
 
+        var computation = await ComputeInternalAsync(conn, tournamentId, ct);
+        if (computation is null || computation.Placements.Count == 0) return [];
+
+        await PersistAsync(conn, tournamentId, computation.Placements,
+            computation.Currency, computation.PayoutMethod, computation.ManualPayoutNotes, force, ct);
+        return computation.Placements;
+    }
+
+    public async Task<List<ResolvedPlacement>> ComputeCurrentAsync(
+        Guid tournamentId,
+        CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        var result = await ComputeInternalAsync(conn, tournamentId, ct);
+        return result?.Placements ?? [];
+    }
+
+    private async Task<ComputationResult?> ComputeInternalAsync(
+        IDbConnection conn, Guid tournamentId, CancellationToken ct)
+    {
         var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
             "SELECT id, prize_pool, prize_distribution, currency, payout_method, manual_payout_notes FROM tournaments WHERE id = @tournamentId",
             new { tournamentId });
 
-        if (tournament is null) return [];
+        if (tournament is null) return null;
 
         var finalStage = await conn.QuerySingleOrDefaultAsync<dynamic>(
             """
@@ -55,7 +76,7 @@ public sealed class PlacementResolutionService(
             """,
             new { tournamentId });
 
-        if (finalStage is null) return [];
+        if (finalStage is null) return null;
 
         string format = (string?)finalStage.format ?? "single_elimination";
         Guid stageId = (Guid)finalStage.id;
@@ -71,7 +92,7 @@ public sealed class PlacementResolutionService(
             _ => await ResolveSingleEliminationAsync(conn, stageId, ct),
         };
 
-        if (orderedTeams.Count == 0) return [];
+        if (orderedTeams.Count == 0) return null;
 
         decimal prizePool = (decimal?)tournament.prize_pool ?? 0m;
         string currency = (string?)tournament.currency ?? "USD";
@@ -79,30 +100,21 @@ public sealed class PlacementResolutionService(
         string? manualPayoutNotes = (string?)tournament.manual_payout_notes;
         PrizeDistributionConfig? config = ParseDistributionConfig((string?)tournament.prize_distribution);
 
-        List<ResolvedPlacement> resolved;
-
-        if (config is null || config.Placements.Count == 0)
-        {
-            // No config — assign placements with zero prize
-            resolved = orderedTeams
+        List<ResolvedPlacement> resolved = config is null || config.Placements.Count == 0
+            ? orderedTeams
                 .Select(t => new ResolvedPlacement(
                     t.TeamId, t.TeamName, t.Placement,
                     OrdinalLabel(t.Placement), 0m, [], t.Placement > 1))
-                .ToList();
-        }
-        else
-        {
-            resolved = prizeService.CalculateAmounts(config, prizePool, orderedTeams
+                .ToList()
+            : prizeService.CalculateAmounts(config, prizePool, orderedTeams
                 .Select(t => (t.TeamId, t.TeamName, t.Placement))
                 .ToList());
-        }
 
-        await PersistAsync(conn, tournamentId, resolved, currency, payoutMethod, manualPayoutNotes, force, ct);
-        return resolved;
+        return new ComputationResult(resolved, currency, payoutMethod, manualPayoutNotes);
     }
 
     private async Task<List<TeamPlacement>> ResolveSingleEliminationAsync(
-        System.Data.IDbConnection conn, Guid stageId, CancellationToken ct)
+        IDbConnection conn, Guid stageId, CancellationToken ct)
     {
         // Query all completed matches ordered by round descending.
         // Grand final (round_index max, bracket_type = 'final') gives 1st and 2nd.
@@ -174,7 +186,7 @@ public sealed class PlacementResolutionService(
     }
 
     private async Task<List<TeamPlacement>> ResolveDoubleEliminationAsync(
-        System.Data.IDbConnection conn, Guid stageId, CancellationToken ct)
+        IDbConnection conn, Guid stageId, CancellationToken ct)
     {
         var matches = (await conn.QueryAsync<dynamic>(
             """
@@ -257,7 +269,7 @@ public sealed class PlacementResolutionService(
     }
 
     private async Task<List<TeamPlacement>> ResolveStandingsAsync(
-        System.Data.IDbConnection conn, Guid stageId, CancellationToken ct)
+        IDbConnection conn, Guid stageId, CancellationToken ct)
     {
         var standingsList = await standings.CalculateStandingsAsync(stageId, ct: ct);
         return standingsList
@@ -266,7 +278,7 @@ public sealed class PlacementResolutionService(
     }
 
     private async Task<List<TeamPlacement>> ResolveBattleRoyaleAsync(
-        System.Data.IDbConnection conn, Guid stageId, object? stageConfig, CancellationToken ct)
+        IDbConnection conn, Guid stageId, object? stageConfig, CancellationToken ct)
     {
         var tiebreaker = BrConfigService.ResolveTiebreaker(stageConfig);
         var rows = await BrLeaderboardRepository.ListForStageAsync(conn, stageId, tiebreaker);
@@ -280,7 +292,7 @@ public sealed class PlacementResolutionService(
     }
 
     private async Task PersistAsync(
-        System.Data.IDbConnection conn,
+        IDbConnection conn,
         Guid tournamentId,
         List<ResolvedPlacement> placements,
         string currency,
@@ -432,4 +444,10 @@ public sealed class PlacementResolutionService(
     };
 
     private sealed record TeamPlacement(Guid TeamId, string TeamName, int Placement);
+
+    private sealed record ComputationResult(
+        List<ResolvedPlacement> Placements,
+        string Currency,
+        string PayoutMethod,
+        string? ManualPayoutNotes);
 }
