@@ -161,21 +161,19 @@ public static class StageEndpoints
             [FromBody] SyncMapPoolsRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, tournamentId, ct: ct))
+                return Results.Forbid();
+
             try
             {
                 using var conn = db.CreateConnection();
-
-                // Verify ownership
-                var isOwner = await conn.ExecuteScalarAsync<bool>(
-                    "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
-                    new { tournamentId, userId = userCtx.UserIdGuid });
-                if (!isOwner) return Results.Forbid();
 
                 await conn.ExecuteAsync(
                     "DELETE FROM tournament_map_pools WHERE tournament_id = @tournamentId",
