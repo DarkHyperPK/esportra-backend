@@ -4996,7 +4996,7 @@ public sealed record StageRequest(
     int? Capacity = null,
     int? AdvancementCount = null,
     string? BoMode = null,
-    Dictionary<int, int>? RoundBoOverrides = null,
+    Dictionary<string, int>? RoundBoOverrides = null,
     object? Config = null,
     string? StartsAt = null,
     string? EndsAt = null);
