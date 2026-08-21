@@ -231,12 +231,12 @@ public static class PrizeDistributionEndpoints
         // ── POST /api/tournaments/{id}/placements/resolve ─────────────────────
         app.MapPost("/api/tournaments/{id}/placements/resolve", async (
             Guid id,
-            [FromQuery] bool force = false,
             HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
             PlacementResolutionService resolutionService,
-            CancellationToken ct) =>
+            CancellationToken ct,
+            [FromQuery] bool force = false) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
