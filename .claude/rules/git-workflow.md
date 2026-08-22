@@ -31,9 +31,11 @@ The rule bans **direct commits to main**, not **promoting staging to main**. Sta
 - Force-pushing to `main`
 - Bypassing staging entirely for new changes
 - Fast-forward merges to `main` (`git merge staging` without `--no-ff`) — always use `--no-ff`
+- Pushing to any branch other than `staging` or `main` — only these two trigger CI
 
 ## Branch Hygiene
 
 - Default working branch: `staging`
 - Commit to `staging`, push to `staging`
 - Production release: merge `staging` → `main` → push `main`
+- **Never push to feature branches, worktree branches, or arbitrary remote refs** — only `staging` and `main` are CI-connected
