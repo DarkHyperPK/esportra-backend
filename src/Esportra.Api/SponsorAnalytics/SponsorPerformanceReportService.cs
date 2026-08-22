@@ -325,7 +325,11 @@ public sealed class SponsorPerformanceReportService(
     internal static decimal ComputeChangePercent(long current, long previous) =>
         previous > 0 ? Math.Round((current - previous) / (decimal)previous * 100m, 1) : 0m;
 
-    private sealed record TotalsRow(long Impressions, long Clicks);
+    private sealed record TotalsRow
+    {
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
     private sealed record DailyRow(DateOnly Date, long Impressions, long Clicks);
     private sealed record PlacementRow
     {
@@ -333,10 +337,26 @@ public sealed class SponsorPerformanceReportService(
         public long Impressions { get; init; }
         public long Clicks { get; init; }
     }
-    private sealed record DeviceRow(string DeviceClass, long Impressions, long Clicks);
+    private sealed record DeviceRow
+    {
+        public string DeviceClass { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
     private sealed record DailyDeviceRow(DateOnly Date, string DeviceClass, long Impressions, long Clicks);
-    private sealed record TournamentRow(Guid TournamentId, string? TournamentName, long Impressions, long Clicks);
-    private sealed record PageRow(string PagePath, long Impressions, long Clicks);
+    private sealed record TournamentRow
+    {
+        public Guid TournamentId { get; init; }
+        public string? TournamentName { get; init; }
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
+    private sealed record PageRow
+    {
+        public string PagePath { get; init; } = string.Empty;
+        public long Impressions { get; init; }
+        public long Clicks { get; init; }
+    }
     private sealed record SlotRow
     {
         public Guid TournamentId { get; init; }
