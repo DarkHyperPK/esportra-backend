@@ -87,6 +87,7 @@ public static class SponsorAnalyticsEndpoints
         {
             SponsorAnalyticsWriteResult.Accepted => Results.Ok(new { accepted = true, duplicate = false }),
             SponsorAnalyticsWriteResult.Duplicate => Results.Ok(new { accepted = true, duplicate = true }),
+            SponsorAnalyticsWriteResult.BotFiltered => Results.Ok(new { accepted = true, filtered = true }),
             SponsorAnalyticsWriteResult.SponsorNotFound => Results.Ok(new { accepted = false }),
             _ => Results.BadRequest(new { error = "Invalid sponsor analytics event.", code = result.Reason }),
         };
