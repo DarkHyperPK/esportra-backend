@@ -48,7 +48,7 @@ public sealed class SponsorAnalyticsWriter(
         var identityLookup = identity.CreateLookup(request.SponsorId, identityKind, identityMaterial);
 
         using var connection = connectionFactory.CreateConnection();
-        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        using var transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted);
 
         var sponsorExists = await connection.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM public.sponsors WHERE id = @id AND is_active = TRUE)",
