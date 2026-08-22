@@ -306,38 +306,6 @@ public static class AdminEndpoints
             return Results.Ok(sponsors);
         });
 
-        // ── GET /api/sponsors/{id}/stats ──────────────────────────────────────
-        app.MapGet("/api/sponsors/{id}/stats", async (
-            Guid id,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE event_type = 'impression')   AS impressions,
-                    COUNT(*) FILTER (WHERE event_type = 'click')        AS clicks,
-                    COUNT(DISTINCT visitor_id)                          AS unique_visitors
-                FROM sponsor_impressions
-                WHERE sponsor_id = @id
-                """, new { id });
-
-            long impressions = stats?.impressions ?? 0;
-            long clicks = stats?.clicks ?? 0;
-            var ctr = impressions > 0
-                ? $"{Math.Round((double)clicks / impressions * 100, 2)}%"
-                : "0%";
-
-            return Results.Ok(new
-            {
-                impressions,
-                clicks,
-                unique_visitors = (long)(stats?.unique_visitors ?? 0),
-                ctr,
-            });
-        });
-
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,
@@ -849,7 +817,6 @@ public static class AdminEndpoints
             await conn.ExecuteAsync("DELETE FROM sponsor_audience_daily_facts WHERE sponsor_id = @id", new { id }, txn);
             await conn.ExecuteAsync("DELETE FROM sponsor_audience_identities WHERE sponsor_id = @id", new { id }, txn);
             await conn.ExecuteAsync("DELETE FROM sponsor_analytics_events WHERE sponsor_id = @id", new { id }, txn);
-            await conn.ExecuteAsync("DELETE FROM sponsor_impressions WHERE sponsor_id = @id", new { id }, txn);
             await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id }, txn);
             txn.Commit();
             return Results.Ok(new { success = true });
