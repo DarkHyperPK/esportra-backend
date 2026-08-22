@@ -47,6 +47,17 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     serverOptions.ListenAnyIP(8080);
 });
 
+builder.WebHost.UseSentry(o =>
+{
+    o.Dsn = builder.Configuration["Sentry:Dsn"] ?? "";
+    o.TracesSampleRate = 0.1;
+    o.SendDefaultPii = false;
+    o.MinimumBreadcrumbLevel = LogLevel.Information;
+    o.MinimumEventLevel = LogLevel.Error;
+    // Don't capture 404s or auth failures as Sentry events
+    o.AddExceptionFilterForType<UnauthorizedAccessException>();
+});
+
 // ── Supabase JWT configuration ────────────────────────────────────────────────
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
     ?? throw new InvalidOperationException("Supabase:JwtSecret is required.");
