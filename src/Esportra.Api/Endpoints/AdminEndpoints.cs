@@ -509,13 +509,13 @@ public static class AdminEndpoints
                 totalUsers = (long)row.total_users,
                 activeVenues = (long)row.active_venues,
                 activeTournaments = (long)row.active_tournaments,
-                totalRevenue = 0,
                 pendingVerifications = (long)row.pending_verifications,
                 totalBookings = 0,
                 newUsersToday = (long)row.new_users_today,
                 pendingPartners = 0,
                 pendingVenues = (long)row.pending_venues,
-                pendingLicenses = (long)row.pending_licenses
+                pendingLicenses = (long)row.pending_licenses,
+                paymentsAvailable = false
             });
         }).RequireAuthorization("Admin");
 
@@ -596,7 +596,7 @@ public static class AdminEndpoints
                         (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications,
                         (SELECT COUNT(*) FROM venues WHERE status = 'pending_review' AND deleted_at IS NULL) AS pending_venues,
                         (SELECT COUNT(*) FROM licenses WHERE status = 'pending') AS pending_licenses,
-                        (SELECT COUNT(*) FROM disputes WHERE status = 'open') AS pending_disputes,
+                        (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open') AS pending_disputes,
 
                         -- Completed
                         (SELECT COUNT(*) FROM tournaments WHERE status = 'completed') AS completed_tournaments,
@@ -2793,7 +2793,7 @@ public static class AdminEndpoints
                         "broadcaster" => "ESP-BR",
                         _ => "ESP-XX"
                     };
-                    existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                    existingLicenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
@@ -2920,7 +2920,7 @@ public static class AdminEndpoints
                             "broadcaster" => "ESP-BR",
                             _ => "ESP-XX"
                         };
-                        existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                        existingLicenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
 
                         await conn.ExecuteAsync(
                             """
@@ -3163,7 +3163,7 @@ public static class AdminEndpoints
                     "broadcaster" => "ESP-BR",
                     _ => "ESP-XX"
                 };
-                licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                licenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
 
                 await conn.ExecuteAsync(
                     """
@@ -3359,7 +3359,7 @@ public static class AdminEndpoints
 
             foreach (var userId in userIds)
             {
-                var licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                var licenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
 
                 // Check if a revoked/suspended license already exists for this user+type
                 var existingId = await conn.QuerySingleOrDefaultAsync<string>(
@@ -7452,12 +7452,12 @@ public static class AdminEndpoints
 
                 "dispute" => await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT d.id, d.status, d.priority, d.created_at,
+                    SELECT d.id, d.status, d.created_at, d.dispute_reason,
                            t.name AS tournament_name, t.id AS tournament_id,
                            p.username AS reporter_name, p.id AS reporter_id
-                    FROM disputes d
+                    FROM tournament_disputes d
                     LEFT JOIN tournaments t ON t.id = d.tournament_id
-                    LEFT JOIN profiles p ON p.id = d.reporter_id
+                    LEFT JOIN profiles p ON p.id = d.raised_by_user_id
                     WHERE d.id = @id
                     """, new { id }),
 
@@ -7504,14 +7504,16 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Pending counts with stale detection (3+ days)
+            // Pending counts with stale detection (3+ days).
+            // Disputes read the real tournament_disputes table — urgency is staleness (7+ days open), there is no priority column.
             var pendingCounts = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
                     (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS verifications,
                     (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days') AS verifications_stale,
-                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress')) AS disputes,
-                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress') AND priority = 'high') AS disputes_high_priority,
+                    (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open') AS disputes,
+                    (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open' AND created_at < NOW() - INTERVAL '7 days') AS disputes_stale,
+                    (SELECT COUNT(*) FROM ghost_approvals WHERE status = 'pending') AS ghost_approvals,
                     (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active') AS alerts,
                     (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical') AS alerts_critical,
                     (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending') AS moderation,
@@ -7520,7 +7522,7 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND requested_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
                 """);
 
-            // Quick stats
+            // Quick stats. Presence is an honest heuristic: distinct admins with recent audit activity.
             var stats = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
@@ -7528,7 +7530,28 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS users_growth,
                     (SELECT COUNT(*) FROM tournaments) AS tournaments_total,
                     (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_growth,
-                    (SELECT COUNT(DISTINCT user_id) FROM admin_session_audit WHERE created_at >= NOW() - INTERVAL '15 minutes') AS active_now
+                    (SELECT COUNT(DISTINCT admin_id) FROM audit_logs WHERE created_at >= NOW() - INTERVAL '15 minutes') AS admins_active_recently
+                """);
+
+            // Sponsor fleet KPIs (30-day window, mirrors /api/admin/sponsors/overview)
+            var sponsorKpis = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    COALESCE(SUM(t.impressions), 0) AS impressions_30d,
+                    COALESCE(SUM(t.clicks), 0) AS clicks_30d,
+                    (SELECT COUNT(*) FROM sponsors WHERE is_active) AS active_sponsors
+                FROM sponsor_daily_totals t
+                WHERE t.stat_date >= CURRENT_DATE - INTERVAL '30 days'
+                """);
+
+            // System health: kill switches, unresolved anomalies, enabled feature flags
+            var systemHealth = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch AND lower(value) IN ('true', '1', 'on')) AS kill_switches_armed,
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch) AS kill_switches_total,
+                    (SELECT COUNT(*) FROM anomaly_events WHERE is_resolved = FALSE) AS anomalies_unresolved,
+                    (SELECT COUNT(*) FROM feature_flags WHERE is_enabled) AS feature_flags_enabled
                 """);
 
             // Signups per day for last 7 days
@@ -7569,6 +7592,9 @@ public static class AdminEndpoints
             {
                 pending_counts = pendingCounts,
                 stats,
+                sponsor_kpis = sponsorKpis,
+                system_health = systemHealth,
+                payments_available = false,
                 signups_7d = signups7d,
                 recent_activity = recentActivity,
                 oldest_pending = oldestPending
