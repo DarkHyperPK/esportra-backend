@@ -334,9 +334,34 @@ public static class TeamEndpoints
             if (isOwner)
                 return Results.BadRequest(new { error = "Transfer captaincy before leaving." });
 
-            await conn.ExecuteAsync(
-                "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
-                new { id, userId = userCtx.UserIdGuid });
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                await conn.ExecuteAsync(
+                    "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
+                    new { id, userId = userCtx.UserIdGuid }, tx);
+
+                // Remove lineup memberships so the leaver doesn't linger as a ghost in rosters
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM team_roster_members trm
+                    USING team_rosters tr
+                    WHERE trm.roster_id = tr.id AND tr.team_id = @id AND trm.user_id = @userId
+                    """,
+                    new { id, userId = userCtx.UserIdGuid }, tx);
+
+                // Drop stale pending invitations for this user on this team
+                await conn.ExecuteAsync(
+                    "DELETE FROM team_invitations WHERE team_id = @id AND invited_user_id = @userId AND status = 'pending'",
+                    new { id, userId = userCtx.UserIdGuid }, tx);
+
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -375,6 +400,11 @@ public static class TeamEndpoints
 
                 var affected = await conn.ExecuteAsync(
                     "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
+                    new { id, userId }, tx);
+
+                // Drop stale pending invitations for this user on this team
+                await conn.ExecuteAsync(
+                    "DELETE FROM team_invitations WHERE team_id = @id AND invited_user_id = @userId AND status = 'pending'",
                     new { id, userId }, tx);
 
                 tx.Commit();
@@ -937,6 +967,9 @@ public static class TeamEndpoints
                        ) FILTER (WHERE rm.user_id IS NOT NULL), '[]') AS members
                 FROM team_rosters r
                 LEFT JOIN team_roster_members rm ON rm.roster_id = r.id
+                    AND EXISTS (
+                        SELECT 1 FROM team_members tm
+                        WHERE tm.team_id = r.team_id AND tm.user_id = rm.user_id AND tm.is_active = TRUE)
                 LEFT JOIN profiles p ON p.id = rm.user_id
                 WHERE r.team_id = @id
                 GROUP BY r.id, r.name, r.game, r.format, r.team_size
