@@ -1,9 +1,11 @@
 using Dapper;
+using Esportra.Api.Auth;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Infrastructure.Email;
 using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Esportra.Api.Endpoints;
 
@@ -20,6 +22,7 @@ public static class VenueStaffEndpoints
             IDbConnectionFactory db,
             ISupabaseAdminClient supabase,
             IEmailService email,
+            IOptions<RecoveryOptions> recoveryOptions,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
@@ -93,7 +96,7 @@ public static class VenueStaffEndpoints
             // 7. Send recovery link so staff can set their password
             try
             {
-                var link = await supabase.GenerateRecoveryLinkAsync(normalizedEmail, ct);
+                var link = await supabase.GenerateRecoveryLinkAsync(normalizedEmail, recoveryOptions.Value.MainRedirectUrl, ct);
                 await email.SendAsync(normalizedEmail, EmailType.StaffInvite, new
                 {
                     venueName,
@@ -380,6 +383,7 @@ public static class VenueStaffEndpoints
             IDbConnectionFactory db,
             ISupabaseAdminClient supabase,
             IEmailService email,
+            IOptions<RecoveryOptions> recoveryOptions,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
@@ -408,7 +412,7 @@ public static class VenueStaffEndpoints
 
             try
             {
-                var link = await supabase.GenerateRecoveryLinkAsync((string)invite.email, ct);
+                var link = await supabase.GenerateRecoveryLinkAsync((string)invite.email, recoveryOptions.Value.MainRedirectUrl, ct);
                 await email.SendAsync((string)invite.email, EmailType.StaffInvite, new
                 {
                     venueName,
