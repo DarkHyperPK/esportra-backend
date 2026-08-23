@@ -22,8 +22,7 @@ public sealed class PasswordRecoveryService(
         try
         {
             var link = await adminClient.GenerateRecoveryLinkAsync(email, redirectUrl, cancellationToken);
-            var resetUrl = $"{redirectUrl}?token_hash={Uri.EscapeDataString(link.TokenHash)}&type=recovery";
-            await emailService.SendAsync(email, EmailType.PasswordReset, new { resetUrl }, cancellationToken);
+            await emailService.SendAsync(email, EmailType.PasswordReset, new { resetUrl = link.ActionLink }, cancellationToken);
             return;
         }
         catch
