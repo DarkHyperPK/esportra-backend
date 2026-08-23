@@ -273,7 +273,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             "DELETE FROM public.match_map_veto_actions WHERE match_id = @matchId",
             new { matchId });
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     // ── Ban (with FSM + optimistic lock) ─────────────────────────────────────
@@ -298,7 +299,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         // D4: Optimistic lock — only update if action_number hasn't changed
         await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, userId, "ban");
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     public async Task<MatchMapVeto> BanMapForTeamTokenAsync(
@@ -316,7 +318,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
 
         await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, null, "ban");
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     // ── Pick (with FSM + optimistic lock) ────────────────────────────────────
@@ -336,7 +339,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         var next = NextActionFor(veto);
         await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, userId, "pick", isPick: true);
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     public async Task<MatchMapVeto> PickMapForTeamTokenAsync(
@@ -354,7 +358,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         var next = NextActionFor(veto);
         await AdvanceOrCompleteAsync(matchId, veto, next, col, mapId, null, null, "pick", isPick: true);
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     // ── Pick side (with FSM + optimistic lock) ───────────────────────────────
@@ -434,7 +439,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         var next = NextActionFor(veto);
         await SetNextActionAsync(matchId, veto, next);
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     public async Task<MatchMapVeto> PickSideForTeamTokenAsync(
@@ -506,7 +512,8 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
         var next = NextActionFor(veto);
         await SetNextActionAsync(matchId, veto, next);
 
-        return (await GetAsync(matchId, ct))!;
+        return await GetAsync(matchId, ct)
+            ?? throw new InvalidOperationException($"Veto for match {matchId} not found after write.");
     }
 
     // ── Reset ────────────────────────────────────────────────────────────────

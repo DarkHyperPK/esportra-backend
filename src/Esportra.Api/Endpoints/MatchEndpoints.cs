@@ -62,6 +62,9 @@ public static class MatchEndpoints
 
                 if (match is null) return Results.NotFound(new { error = "Match not found" });
 
+                if (match.team1_id is null || match.team2_id is null)
+                    return Results.BadRequest(new { error = "Match teams have not been assigned yet." });
+
                 // 2. Get scanning user's Riot account (puuid + region)
                 var scanner = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
@@ -482,6 +485,9 @@ public static class MatchEndpoints
             if (match is null)
                 return Results.NotFound(new { error = "Match not found" });
 
+            if (match.team1_id is null || match.team2_id is null)
+                return Results.BadRequest(new { error = "Match teams have not been assigned yet." });
+
             // 3. Determine winner/loser
             var winnerId = (Guid)report.winner_team_id;
             var loserId = winnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
@@ -562,6 +568,9 @@ public static class MatchEndpoints
                     new { matchId });
                 if (m is not null && m.team1_score is not null && m.team2_score is not null)
                 {
+                    if (m.team1_id is null || m.team2_id is null)
+                        return Results.BadRequest(new { error = "Match teams have not been assigned yet." });
+
                     if ((int)m.team1_score == (int)m.team2_score)
                         return Results.BadRequest(new { error = "Scores are tied — a winner can't be determined automatically." });
 
