@@ -52,6 +52,26 @@ public sealed class SupabaseAdminClient(
         return await GenerateLinkAsync("recovery", email, redirectUrl, ct);
     }
 
+    public async Task<SupabaseUser?> VerifyOtpAsync(string tokenHash, string type, CancellationToken ct = default)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/auth/v1/verify");
+        req.Headers.Add("apikey", _svcKey);
+        req.Content = JsonContent.Create(new { token_hash = tokenHash, type });
+
+        var res = await http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode) return null;
+
+        var body = await res.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        var userId = root.TryGetProperty("user", out var u) && u.TryGetProperty("id", out var id)
+            ? id.GetString() : null;
+        var email = root.TryGetProperty("user", out var u2) && u2.TryGetProperty("email", out var em)
+            ? em.GetString() : null;
+
+        return userId is not null ? new SupabaseUser(userId, email ?? "") : null;
+    }
+
     public async Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default)
     {
         return await GenerateLinkAsync("invite", email, redirectUrl, ct);

@@ -4,6 +4,7 @@ using Esportra.Api.Auth;
 using Esportra.Api.Middleware;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Requests;
 using Esportra.Api.Hubs;
 using Esportra.Api.ScheduledJobs;
 using Hangfire;
@@ -23,9 +24,50 @@ public static class AuthEndpoints
             .RequireAuthorization("Authenticated")
             .WithMetadata(new RateLimitPolicyMetadata("auth"));
 
-        app.MapPost("/api/auth/set-password", () => Results.Json(
-            new { error = "This password reset flow is no longer supported." },
-            statusCode: StatusCodes.Status410Gone));
+        app.MapPost("/api/auth/set-password", SetPasswordAsync)
+            .WithMetadata(new RateLimitPolicyMetadata("auth"));
+    }
+
+    internal static async Task<IResult> SetPasswordAsync(
+        SetPasswordRequest request,
+        ISupabaseAdminClient supabase,
+        AccountSecurityService accountSecurity,
+        IHubContext<NotificationHub> notificationHub,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 8)
+            return Results.BadRequest(new { error = "Password must be at least 8 characters." });
+
+        if (string.IsNullOrWhiteSpace(request.TokenHash))
+            return Results.BadRequest(new { error = "Recovery token is required." });
+
+        var user = await supabase.VerifyOtpAsync(
+            request.TokenHash, request.Type ?? "recovery", cancellationToken);
+
+        if (user is null)
+            return Results.BadRequest(new { error = "Invalid or expired recovery token." });
+
+        await supabase.UpdateUserAsync(user.Id, new { password = request.Password }, cancellationToken);
+        await supabase.LogoutUserAsync(user.Id, cancellationToken);
+
+        var userId = Guid.Parse(user.Id);
+        var state = await accountSecurity.RevokeAllAsync(userId, "password_reset", cancellationToken);
+
+        try
+        {
+            await notificationHub.Clients
+                .Group(NotificationHub.UserGroup(user.Id))
+                .SendAsync(
+                    NotificationHubEvents.ForceLogout,
+                    new { reason = "password_reset" },
+                    cancellationToken);
+        }
+        catch
+        {
+            // Epoch revocation is authoritative; realtime notification is best effort.
+        }
+
+        return Results.Ok(new { success = true });
     }
 
     internal static async Task<IResult> CompletePasswordResetAsync(
