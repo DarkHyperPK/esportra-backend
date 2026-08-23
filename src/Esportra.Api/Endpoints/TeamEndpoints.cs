@@ -967,9 +967,6 @@ public static class TeamEndpoints
                        ) FILTER (WHERE rm.user_id IS NOT NULL), '[]') AS members
                 FROM team_rosters r
                 LEFT JOIN team_roster_members rm ON rm.roster_id = r.id
-                    AND EXISTS (
-                        SELECT 1 FROM team_members tm
-                        WHERE tm.team_id = r.team_id AND tm.user_id = rm.user_id AND tm.is_active = TRUE)
                 LEFT JOIN profiles p ON p.id = rm.user_id
                 WHERE r.team_id = @id
                 GROUP BY r.id, r.name, r.game, r.format, r.team_size
