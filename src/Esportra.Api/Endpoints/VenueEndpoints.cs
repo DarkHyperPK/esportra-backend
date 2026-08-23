@@ -319,9 +319,14 @@ public static class VenueEndpoints
             string? status,
             int limit = 50,
             int offset = 0,
+            HttpContext ctx = default!,
             IDbConnectionFactory db = null!,
             CancellationToken ct = default) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VenuesView)) return Results.Forbid();
+
             limit = Math.Clamp(limit, 1, 100);
             offset = Math.Max(offset, 0);
             using var conn = db.CreateConnection();
@@ -343,9 +348,14 @@ public static class VenueEndpoints
         app.MapPut("/api/admin/venues/{id}", async (
             Guid id,
             [FromBody] UpdateVenueRequest req,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
+            HttpContext ctx = default!,
+            IDbConnectionFactory db = null!,
+            CancellationToken ct = default) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VenuesEdit)) return Results.Forbid();
+
             using var conn = db.CreateConnection();
 
             var setClauses = new List<string>();

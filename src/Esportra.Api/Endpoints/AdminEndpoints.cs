@@ -349,6 +349,7 @@ public static class AdminEndpoints
             [FromQuery] string? joined_from = null,
             [FromQuery] string? joined_to = null,
             [FromQuery] string? has_team = null,
+            [FromQuery] string? verified = null,
             [FromQuery] string? sort_by = null,
             [FromQuery] string? sort_dir = null,
             CancellationToken ct = default) =>
@@ -393,6 +394,13 @@ public static class AdminEndpoints
                 conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
             else if (has_team == "false")
                 conditions.Add("NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+
+            // "Verified" = holds an approved, active licensed role (organizer / venue_owner / …).
+            // NOT platform-wide verification — licenses are issued through the license system.
+            if (verified == "true")
+                conditions.Add("EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
+            else if (verified == "false")
+                conditions.Add("NOT EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
 
             var where = conditions.Count > 0
                 ? "WHERE " + string.Join(" AND ", conditions)
@@ -1782,6 +1790,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -2683,6 +2692,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -2875,7 +2885,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationApprove)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
@@ -2972,6 +2982,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesView)) return Results.Forbid();
 
             try
             {
@@ -3130,7 +3141,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesCreate)) return Results.Forbid();
             var licenseType = (req.LicenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (licenseType is not ("organizer" or "venue_owner" or "broadcaster"))
                 return Results.BadRequest(new { error = "Invalid license type." });
@@ -3208,7 +3219,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesRevoke)) return Results.Forbid();
             var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
                 return Results.BadRequest(new { success = false, error = "Invalid license type." });
@@ -3259,7 +3270,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesReinstate)) return Results.Forbid();
             var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
                 return Results.BadRequest(new { success = false, error = "Invalid license type." });
@@ -3319,7 +3330,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesCreate)) return Results.Forbid();
 
             AdminBackfillLicensesRequest? req = null;
             try { req = await ctx.Request.ReadFromJsonAsync<AdminBackfillLicensesRequest>(ct); } catch { }
@@ -3414,6 +3425,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var deleted = await conn.ExecuteAsync(
@@ -3434,6 +3446,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var deleted = await conn.ExecuteAsync(
@@ -4945,7 +4958,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5010,7 +5023,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5037,7 +5050,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsAcknowledge)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5059,7 +5072,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsResolve)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5121,7 +5134,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsBulkAcknowledge)) return Results.Forbid();
 
             if (req.AlertIds is null || req.AlertIds.Length == 0)
                 return Results.BadRequest(new { error = "No alert IDs provided" });
@@ -5464,7 +5477,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5500,7 +5513,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             // Validate IP format
             if (string.IsNullOrWhiteSpace(req.IpAddress) ||
@@ -5569,7 +5582,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5675,7 +5688,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5722,7 +5735,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5755,7 +5768,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             // Wrap the read-check-update sequence in a transaction to prevent TOCTOU races
@@ -5832,7 +5845,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5885,7 +5898,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsCreate)) return Results.Forbid();
 
             // ── Validation ───────────────────────────────────────────────────
             if (string.IsNullOrWhiteSpace(req.Name))
@@ -6006,7 +6019,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsEdit)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6108,7 +6121,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6138,7 +6151,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsRun)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6260,7 +6273,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsView)) return Results.Forbid();
 
             if (page < 1) page = 1;
             if (limit < 1) limit = 20;
@@ -6311,7 +6324,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprView)) return Results.Forbid();
 
             if (page < 1) page = 1;
             if (limit < 1) limit = 1;
@@ -6379,7 +6392,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprProcess)) return Results.Forbid();
 
             if (req.Action is not ("approve" or "reject"))
                 return Results.BadRequest(new { error = "Action must be 'approve' or 'reject'." });
@@ -6592,7 +6605,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6631,7 +6644,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprAudit)) return Results.Forbid();
 
             if (page < 1) page = 1;
             if (limit < 1) limit = 1;
@@ -6914,7 +6927,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains(AdminRoles.SuperAdmin)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.SystemSettings)) return Results.Forbid();
 
             // Validate severity if provided
             if (req.Severity is not null &&
@@ -7033,7 +7046,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains(AdminRoles.SuperAdmin)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.SystemSettings)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
