@@ -355,11 +355,36 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
-            await conn.ExecuteAsync(
-                "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
-                new { id, userId });
+            var ownerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT owner_id FROM teams WHERE id = @id", new { id });
+            if (ownerId is null) return Results.NotFound(new { error = "Team not found." });
+            if (userId == ownerId)
+                return Results.BadRequest(new { error = "The team captain cannot be removed. Transfer captaincy first." });
 
-            return Results.Ok(new { success = true });
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                // Remove lineup memberships so the user doesn't linger as a ghost in rosters
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM team_roster_members trm
+                    USING team_rosters tr
+                    WHERE trm.roster_id = tr.id AND tr.team_id = @id AND trm.user_id = @userId
+                    """,
+                    new { id, userId }, tx);
+
+                var affected = await conn.ExecuteAsync(
+                    "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
+                    new { id, userId }, tx);
+
+                tx.Commit();
+                return Results.Ok(new { success = true, removed = affected > 0 });
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/transfer-captain ─────────────────────────────
