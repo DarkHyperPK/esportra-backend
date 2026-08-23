@@ -89,6 +89,9 @@ public static class MatchZyEndpoints
                     return Results.NotFound(new { error = "Match not found" });
                 }
 
+                if (match.team1_id is null || match.team2_id is null)
+                    return Results.BadRequest(new { error = "Match teams have not been assigned yet." });
+
                 Guid team1Id = (Guid)match.team1_id;
                 Guid team2Id = (Guid)match.team2_id;
                 int bestOf = Convert.ToInt32(match.best_of ?? 1);
@@ -514,7 +517,8 @@ public static class MatchZyEndpoints
 
             Guid? winnerId = null;
             Guid? loserId = null;
-            if (match is not null && !string.IsNullOrEmpty(winnerLabel))
+            if (match is not null && !string.IsNullOrEmpty(winnerLabel)
+                && match.team1_id is not null && match.team2_id is not null)
             {
                 Guid team1Id = (Guid)match.team1_id;
                 Guid team2Id = (Guid)match.team2_id;
@@ -594,6 +598,12 @@ public static class MatchZyEndpoints
             if ((string?)match.status == "completed")
             {
                 logger.LogInformation("MatchZy series_end: match {MatchId} already completed, skipping duplicate event", matchId);
+                return;
+            }
+
+            if (match.team1_id is null || match.team2_id is null)
+            {
+                logger.LogWarning("MatchZy series_end: match {MatchId} has unassigned team slots, skipping", matchId);
                 return;
             }
 
