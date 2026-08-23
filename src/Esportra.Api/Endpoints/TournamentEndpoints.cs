@@ -1895,17 +1895,16 @@ public static class TournamentEndpoints
             [FromBody] UpdateBannerRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOrganizer) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             await conn.ExecuteAsync(
                 "UPDATE tournaments SET banner_url = @url, updated_at = NOW() WHERE id = @id",
