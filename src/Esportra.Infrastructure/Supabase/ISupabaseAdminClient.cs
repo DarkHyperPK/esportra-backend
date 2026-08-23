@@ -8,11 +8,8 @@ public interface ISupabaseAdminClient
     /// <summary>Update a user's metadata or email in Supabase Auth.</summary>
     Task UpdateUserAsync(string userId, object updates, CancellationToken ct = default);
 
-    /// <summary>
-    /// Generate a recovery link token_hash for the given email.
-    /// Returns the token_hash (not the full action_link — keeps users on our domain).
-    /// </summary>
-    Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, CancellationToken ct = default);
+    /// <summary>Generate a recovery action link for the given email.</summary>
+    Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, string redirectUrl, CancellationToken ct = default);
 
     Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default);
 

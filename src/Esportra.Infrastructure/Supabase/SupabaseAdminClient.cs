@@ -47,10 +47,9 @@ public sealed class SupabaseAdminClient(
             throw new InvalidOperationException($"UpdateUser failed: {await res.Content.ReadAsStringAsync(ct)}");
     }
 
-    public async Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, CancellationToken ct = default)
+    public async Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, string redirectUrl, CancellationToken ct = default)
     {
-        return await GenerateLinkAsync("recovery", email,
-            config["FrontendUrl"]?.TrimEnd('/') ?? "https://esportra.com", ct);
+        return await GenerateLinkAsync("recovery", email, redirectUrl, ct);
     }
 
     public async Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default)
