@@ -134,8 +134,9 @@ public static class VetoEndpoints
                     });
                 }
 
-                // S2: Only organizer or captain can init
-                var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct);
+                // S2: Only organizer, platform admin, or captain can init
+                var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct)
+                    || StaffAuthHelper.IsPlatformAdmin(userCtx);
                 if (!isOrg)
                 {
                     bool isCaptain = false;
