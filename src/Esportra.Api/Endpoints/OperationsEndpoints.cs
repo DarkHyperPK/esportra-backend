@@ -108,67 +108,8 @@ public static class OperationsEndpoints
             return Results.Ok(new { success = true, key });
         });
 
-        group.MapPost("/impersonation/start", async (
-            [FromBody] StartImpersonationRequest req,
-            HttpContext ctx,
-            GhostModeTokenService ghostMode,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
-            try
-            {
-                var result = await ghostMode.StartAsync(ctx, userCtx, req.TargetUserId, req.Reason, req.Scopes, ct);
-                return Results.Ok(result);
-            }
-            catch (ArgumentException ex)
-            {
-                return Results.BadRequest(new { error = ex.Message });
-            }
-            catch (KeyNotFoundException ex)
-            {
-                return Results.NotFound(new { error = ex.Message });
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Results.BadRequest(new { error = ex.Message });
-            }
-        });
-
-        app.MapPost("/api/operations/impersonation/end", async (
-            HttpContext ctx,
-            GhostModeTokenService ghostMode,
-            OperationsAuditService audit,
-            CancellationToken ct) =>
-        {
-            var ghost = ctx.Items["GhostMode"] as GhostModeContext;
-            if (ghost is null) return Results.BadRequest(new { error = "No active Ghost Mode session is attached to this request." });
-
-            await ghostMode.EndAsync(ctx, ghost, ct);
-            var adminCtx = new UserContext
-            {
-                UserId = ghost.AdminId.ToString(),
-                Email = "ghost-mode-admin",
-                AdminRoles = [AdminRoles.SuperAdmin],
-                Permissions = [Permissions.ImpersonationStop]
-            };
-            await audit.WriteFromHttpAsync(
-                ctx,
-                adminCtx,
-                "impersonation.stop",
-                "user",
-                ghost.TargetUserId.ToString(),
-                new
-                {
-                    before = new { active = true, session_id = ghost.SessionId },
-                    after = new { active = false, session_id = ghost.SessionId }
-                },
-                "critical",
-                ct);
-
-            return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
+        // NOTE: the parallel /operations/impersonation path was removed (Phase 3 prune).
+        // GhostModeEndpoints (/api/admin/ghost/*) is the single impersonation system.
 
         return app;
     }
@@ -192,7 +133,3 @@ public static class OperationsEndpoints
 
 public sealed record UpdateSystemConfigRequest(JsonElement Value, string? Reason);
 
-public sealed record StartImpersonationRequest(
-    [property: JsonPropertyName("targetUserId")] Guid TargetUserId,
-    string Reason,
-    string[]? Scopes = null);

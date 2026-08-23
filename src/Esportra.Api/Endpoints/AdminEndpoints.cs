@@ -549,168 +549,9 @@ public static class AdminEndpoints
             return Results.Ok(stats);
         }).RequireAuthorization("Admin");
 
-        // ── GET /api/admin/system-stats ─────────────────────────────────────────
-        // Replaces supabase.rpc('get_system_stats') + fallback count queries
-        app.MapGet("/api/admin/system-stats", async (
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var stats = await conn.QuerySingleAsync<dynamic>(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM profiles) AS total_users,
-                    (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
-                    (SELECT COUNT(*) FROM venues) AS total_venues,
-                    (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool
-                """);
-            return Results.Ok(stats);
-        }).RequireAuthorization("Admin");
 
-        // ── GET /api/admin/dashboard-stats ──────────────────────────────────────
-        // Enhanced stats with growth metrics and pending action counts
-        app.MapGet("/api/admin/dashboard-stats", async (
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var row = await conn.QuerySingleAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT
-                        -- Core counts
-                        (SELECT COUNT(*) FROM profiles) AS total_users,
-                        (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
-                        (SELECT COUNT(*) FROM venues WHERE deleted_at IS NULL) AS total_venues,
-                        (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool,
 
-                        -- Today
-                        (SELECT COUNT(*) FROM profiles WHERE created_at >= CURRENT_DATE) AS signups_today,
-                        (SELECT COUNT(*) FROM tournaments WHERE created_at >= CURRENT_DATE) AS tournaments_created_today,
 
-                        -- This week
-                        (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS signups_this_week,
-                        (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_this_week,
-
-                        -- Last week (for comparison)
-                        (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days') AS signups_last_week,
-                        (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days') AS tournaments_last_week,
-
-                        -- Active
-                        (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments,
-                        (SELECT COUNT(DISTINCT id) FROM profiles WHERE updated_at >= NOW() - INTERVAL '24 hours') AS active_users_24h,
-
-                        -- Pending actions
-                        (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications,
-                        (SELECT COUNT(*) FROM venues WHERE status = 'pending_review' AND deleted_at IS NULL) AS pending_venues,
-                        (SELECT COUNT(*) FROM licenses WHERE status = 'pending') AS pending_licenses,
-                        (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open') AS pending_disputes,
-
-                        -- Completed
-                        (SELECT COUNT(*) FROM tournaments WHERE status = 'completed') AS completed_tournaments,
-                        (SELECT COUNT(*) FROM venue_bookings) AS total_bookings
-                    """,
-                    cancellationToken: ct));
-
-            // Cast dynamic fields to compute growth percentages
-            var dict = (IDictionary<string, object>)row;
-            var signupsThisWeek = Convert.ToDecimal(dict["signups_this_week"]);
-            var signupsLastWeek = Convert.ToDecimal(dict["signups_last_week"]);
-            var tournamentsThisWeek = Convert.ToDecimal(dict["tournaments_this_week"]);
-            var tournamentsLastWeek = Convert.ToDecimal(dict["tournaments_last_week"]);
-
-            var signupsGrowth = signupsLastWeek > 0
-                ? Math.Round((signupsThisWeek - signupsLastWeek) / signupsLastWeek * 100, 1)
-                : 0m;
-            var tournamentsGrowth = tournamentsLastWeek > 0
-                ? Math.Round((tournamentsThisWeek - tournamentsLastWeek) / tournamentsLastWeek * 100, 1)
-                : 0m;
-
-            return Results.Ok(new
-            {
-                totalUsers = dict["total_users"],
-                totalTournaments = dict["total_tournaments"],
-                totalVenues = dict["total_venues"],
-                totalPrizePool = dict["total_prize_pool"],
-                signupsToday = dict["signups_today"],
-                tournamentsCreatedToday = dict["tournaments_created_today"],
-                signupsThisWeek = dict["signups_this_week"],
-                tournamentsThisWeek = dict["tournaments_this_week"],
-                signupsLastWeek = dict["signups_last_week"],
-                tournamentsLastWeek = dict["tournaments_last_week"],
-                activeTournaments = dict["active_tournaments"],
-                activeUsers24h = dict["active_users_24h"],
-                pendingVerifications = dict["pending_verifications"],
-                pendingVenues = dict["pending_venues"],
-                pendingLicenses = dict["pending_licenses"],
-                pendingDisputes = dict["pending_disputes"],
-                completedTournaments = dict["completed_tournaments"],
-                totalBookings = dict["total_bookings"],
-                signupsGrowth = signupsGrowth,
-                tournamentsGrowth = tournamentsGrowth
-            });
-        }).RequireAuthorization("Admin");
-
-        // ── GET /api/admin/activity-feed ────────────────────────────────────────
-        // Recent staff audit log entries for the admin dashboard
-        app.MapGet("/api/admin/activity-feed", async (
-            [FromQuery] int limit,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            var clampedLimit = Math.Clamp(limit <= 0 ? 20 : limit, 1, 50);
-            using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT sal.id, sal.actor_id, p.username AS actor_name, p.avatar_url AS actor_avatar,
-                           sal.action, sal.target_type, sal.target_id, sal.created_at
-                    FROM staff_audit_log sal
-                    LEFT JOIN profiles p ON p.id = sal.actor_id
-                    ORDER BY sal.created_at DESC
-                    LIMIT @limit
-                    """,
-                    parameters: new { limit = clampedLimit },
-                    cancellationToken: ct));
-            return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
-
-        // ── GET /api/admin/trends ───────────────────────────────────────────────
-        // Daily signup and tournament creation counts for chart rendering
-        app.MapGet("/api/admin/trends", async (
-            [FromQuery] int days,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            var clampedDays = Math.Clamp(days <= 0 ? 30 : days, 7, 90);
-            using var conn = db.CreateConnection();
-
-            var signupRows = await conn.QueryAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT d::date AS date, COUNT(p.id) AS count
-                    FROM generate_series(CURRENT_DATE - (@days::int) * INTERVAL '1 day', CURRENT_DATE, '1 day') d
-                    LEFT JOIN profiles p ON p.created_at::date = d::date
-                    GROUP BY d::date
-                    ORDER BY d::date
-                    """,
-                    parameters: new { days = clampedDays },
-                    cancellationToken: ct));
-
-            var tournamentRows = await conn.QueryAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT d::date AS date, COUNT(t.id) AS count
-                    FROM generate_series(CURRENT_DATE - (@days::int) * INTERVAL '1 day', CURRENT_DATE, '1 day') d
-                    LEFT JOIN tournaments t ON t.created_at::date = d::date
-                    GROUP BY d::date
-                    ORDER BY d::date
-                    """,
-                    parameters: new { days = clampedDays },
-                    cancellationToken: ct));
-
-            return Results.Ok(new { userSignups = signupRows, tournamentCreations = tournamentRows });
-        }).RequireAuthorization("Admin");
 
         // ── CRUD: Sponsors ──────────────────────────────────────────────────────
         app.MapPost("/api/sponsors", async (
@@ -4905,41 +4746,6 @@ public static class AdminEndpoints
             return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
         }).RequireAuthorization("Admin");
 
-        // Also query staff_audit_log for legacy entries
-        // ── GET /api/admin/entity-history-legacy/{targetType}/{targetId} ──────────
-        app.MapGet("/api/admin/entity-history-legacy/{targetType}/{targetId}", async (
-            string targetType,
-            Guid targetId,
-            HttpContext ctx,
-            IDbConnectionFactory db,
-            [FromQuery] int limit = 20,
-            CancellationToken ct = default) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
-
-            var normalizedType = targetType.ToLowerInvariant();
-
-            using var conn = db.CreateConnection();
-
-            var sql = """
-                SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
-                       sal.action AS action_type, sal.target_type,
-                       sal.target_id, sal.details, sal.created_at
-                FROM staff_audit_log sal
-                LEFT JOIN profiles p ON p.id = sal.actor_id
-                WHERE sal.target_type = @targetType AND sal.target_id = @targetId
-                ORDER BY sal.created_at DESC
-                LIMIT @limit
-                """;
-
-            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType = normalizedType, targetId, limit = Math.Clamp(limit, 1, 50) }, cancellationToken: ct));
-            DapperJsonbHelper.FixJsonb(rows);
-
-            return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
 
         // ══════════════════════════════════════════════════════════════════════════
         // ── ADMIN ALERTS ──────────────────────────────────────────────────────────
@@ -7241,145 +7047,8 @@ public static class AdminEndpoints
         // ── Phase 15: Dashboard Customization ─────────────────────────────────
         // ══════════════════════════════════════════════════════════════════════
 
-        // ── GET /api/admin/dashboard/widgets ──────────────────────────────────
-        // Returns the static catalog of all available dashboard widgets.
-        app.MapGet("/api/admin/dashboard/widgets", (HttpContext ctx) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
 
-            var catalog = new[]
-            {
-                new { id = "stats-overview",       name = "Platform Statistics",             description = "Key platform metrics at a glance",                  category = "platform",    defaultRefreshInterval = 30  },
-                new { id = "user-growth",           name = "User Growth Chart",               description = "New user registrations over time",                   category = "analytics",   defaultRefreshInterval = 300 },
-                new { id = "tournament-activity",   name = "Tournament Activity",             description = "Active and upcoming tournament summary",             category = "tournaments", defaultRefreshInterval = 60  },
-                new { id = "revenue-summary",       name = "Revenue Summary",                 description = "Earnings and transaction overview",                  category = "finance",     defaultRefreshInterval = 300 },
-                new { id = "moderation-queue",      name = "Moderation Queue Status",         description = "Pending reports and moderation actions",             category = "moderation",  defaultRefreshInterval = 60  },
-                new { id = "anomaly-alerts",        name = "Anomaly Alerts",                  description = "Security anomalies and suspicious activity",         category = "security",    defaultRefreshInterval = 30  },
-                new { id = "online-users",          name = "Online Users Count",              description = "Currently active users on the platform",             category = "platform",    defaultRefreshInterval = 30  },
-                new { id = "recent-registrations",  name = "Recent Tournament Registrations", description = "Latest tournament sign-ups",                         category = "tournaments", defaultRefreshInterval = 60  },
-                new { id = "pending-gdpr",          name = "Pending GDPR Requests",           description = "Outstanding data subject requests",                  category = "compliance",  defaultRefreshInterval = 300 },
-                new { id = "system-health",         name = "System Health Status",            description = "API health, latency, and error rates",               category = "platform",    defaultRefreshInterval = 60  },
-            };
 
-            return Results.Ok(catalog);
-        }).RequireAuthorization("Admin");
-
-        // ── GET /api/admin/dashboard/preferences ──────────────────────────────
-        // Returns the calling admin's saved dashboard layout, or a default if none exists.
-        app.MapGet("/api/admin/dashboard/preferences", async (
-            IDbConnectionFactory db,
-            HttpContext ctx,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
-
-            using var conn = db.CreateConnection();
-
-            var raw = await conn.QueryFirstOrDefaultAsync<string>(
-                new CommandDefinition(
-                    "SELECT layout FROM admin_dashboard_preferences WHERE user_id = @userId",
-                    new { userId = userCtx.UserIdGuid },
-                    cancellationToken: ct));
-
-            if (raw is null)
-            {
-                // No saved prefs — build and return the default layout
-                var widgetIds = new[]
-                {
-                    "stats-overview", "user-growth", "tournament-activity", "revenue-summary",
-                    "moderation-queue", "anomaly-alerts", "online-users", "recent-registrations",
-                    "pending-gdpr", "system-health"
-                };
-                var defaultRefreshIntervals = new Dictionary<string, int>
-                {
-                    ["stats-overview"] = 30,
-                    ["user-growth"] = 300,
-                    ["tournament-activity"] = 60,
-                    ["revenue-summary"] = 300,
-                    ["moderation-queue"] = 60,
-                    ["anomaly-alerts"] = 30,
-                    ["online-users"] = 30,
-                    ["recent-registrations"] = 60,
-                    ["pending-gdpr"] = 300,
-                    ["system-health"] = 60,
-                };
-                var defaultLayout = widgetIds
-                    .Select((id, i) => new DashboardWidgetConfig(id, i, true, defaultRefreshIntervals[id]))
-                    .ToArray();
-                return Results.Ok(new { layout = defaultLayout, isDefault = true });
-            }
-
-            DashboardWidgetConfig[]? prefs = null;
-            try
-            {
-                prefs = JsonSerializer.Deserialize<DashboardWidgetConfig[]>(raw,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-            catch (JsonException) { /* corrupt JSONB — fall back to default */ }
-
-            if (prefs is null || prefs.Length == 0)
-                return Results.Ok(new { layout = (object)Array.Empty<DashboardWidgetConfig>(), isDefault = true });
-
-            return Results.Ok(new { layout = prefs, isDefault = false });
-        }).RequireAuthorization("Admin");
-
-        // ── PUT /api/admin/dashboard/preferences ──────────────────────────────
-        // Upserts the calling admin's dashboard layout.
-        app.MapPut("/api/admin/dashboard/preferences", async (
-            [FromBody] SaveDashboardPreferencesRequest req,
-            IDbConnectionFactory db,
-            HttpContext ctx,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
-
-            if (req.Layout is null)
-                return Results.BadRequest(new { error = "Layout is required." });
-            if (req.Layout.Length > 20)
-                return Results.BadRequest(new { error = "Layout may contain at most 20 widgets." });
-
-            var validWidgetIds = new HashSet<string>
-            {
-                "stats-overview", "user-growth", "tournament-activity", "revenue-summary",
-                "moderation-queue", "anomaly-alerts", "online-users", "recent-registrations",
-                "pending-gdpr", "system-health"
-            };
-            var seen = new HashSet<string>();
-            for (var i = 0; i < req.Layout.Length; i++)
-            {
-                var w = req.Layout[i];
-                if (string.IsNullOrWhiteSpace(w.WidgetId))
-                    return Results.BadRequest(new { error = $"Widget at index {i} has an empty WidgetId." });
-                if (!validWidgetIds.Contains(w.WidgetId))
-                    return Results.BadRequest(new { error = $"Unknown widget ID: '{w.WidgetId}'." });
-                if (!seen.Add(w.WidgetId))
-                    return Results.BadRequest(new { error = $"Duplicate widget ID: '{w.WidgetId}'." });
-                if (w.Position < 0)
-                    return Results.BadRequest(new { error = $"Widget '{w.WidgetId}' has a negative Position." });
-            }
-
-            var layoutJson = JsonSerializer.Serialize(req.Layout);
-
-            using var conn = db.CreateConnection();
-
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                INSERT INTO admin_dashboard_preferences (user_id, layout, updated_at)
-                VALUES (@userId, @layout::jsonb, NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET layout = EXCLUDED.layout, updated_at = NOW()
-                """,
-                new { userId = userCtx.UserIdGuid, layout = layoutJson },
-                cancellationToken: ct));
-
-            return Results.Ok(new { saved = true });
-        }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/entities/{type}/{id}/preview ───────────────────────
         // Minimal entity data for slide-over previews in cross-linking system
@@ -7404,8 +7073,10 @@ public static class AdminEndpoints
                 "venue" => Permissions.VenuesView,
                 "dispute" => Permissions.DisputesView,
                 "organization" => Permissions.OrganizationsView,
-                _ => "admin:view"
+                _ => null
             };
+            if (requiredPermission is null)
+                return Results.NotFound(new { error = $"Unknown entity type. Supported: user, license, tournament, team, venue, dispute, organization." });
             if (!userCtx.Permissions.Contains(requiredPermission))
                 return Results.Forbid();
 
