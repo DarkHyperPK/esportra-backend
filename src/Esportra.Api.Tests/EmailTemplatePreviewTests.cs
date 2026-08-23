@@ -44,7 +44,7 @@ public sealed class EmailTemplatePreviewTests
             "https://esportra.com/staff/accept?token=demo").Html);
 
         Save("04-tournament-invite", EmailTemplates.TournamentInvite(
-            "CaptainOne", "Winter Invitational 2026", "WINTER-X42", 
+            "CaptainOne", "Winter Invitational 2026", "WINTER-X42",
             "https://esportra.com/tournaments/winter-invitational", "Feb 10, 2026").Html);
 
         var (partnerSub, partnerHtml) = EmailTemplates.PartnerInvite(
