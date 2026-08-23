@@ -3,30 +3,42 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@700;800&family=Inter:wght@400;600&display=swap" rel="stylesheet" />
   <title>You've been invited to Esportra</title>
 </head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:Inter,Segoe UI,sans-serif;color:#e5e7eb;">
+<body style="margin:0;padding:0;background:#050505;font-family:'Inter','Segoe UI',Arial,sans-serif;color:#d1d5db;">
   <div style="display:none;max-height:0;overflow:hidden;">You've been invited to join Esportra.</div>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#050505;">
     <tr><td align="center" style="padding:32px 16px;">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#111111;border-radius:12px;border:1px solid #1f2937;overflow:hidden;">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#0a0a0c;border:1px solid #1f2937;overflow:hidden;">
         <tr>
-          <td style="background:linear-gradient(135deg,#e11d48,#be123c);padding:24px 32px;text-align:center;">
-            <img src="https://api.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="120" style="display:inline-block;border:0;" />
+          <td style="padding:22px 32px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td align="left">
+                  <img src="https://api.esportra.com/storage/v1/object/public/system.assets.website/eSportra-Logo/eSPORTRA-white-transparent.png" alt="Esportra" width="104" style="display:inline-block;border:0;outline:none;" />
+                </td>
+                <td align="right">
+                  <span style="font-family:'Consolas','Monaco',monospace;font-size:9px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;color:#6b7280;">// ESPORTRA</span>
+                </td>
+              </tr>
+            </table>
           </td>
         </tr>
-        <tr><td style="padding:32px;">
-          <h1 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#f9fafb;">You've been invited</h1>
-          <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#d1d5db;">You have been invited to join Esportra. Click the button below to accept your invitation and set up your account.</p>
-          <div style="text-align:center;margin:24px 0;">
-            <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:linear-gradient(135deg,#e11d48,#be123c);color:#fff;font-weight:600;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none;">Accept Invitation</a>
-          </div>
+        <tr><td style="height:2px;line-height:2px;font-size:0;background:#f43f5e;">&nbsp;</td></tr>
+        <tr><td style="padding:36px 40px;">
+          <p style="margin:0 0 14px;font-family:'Consolas','Monaco',monospace;font-size:10px;font-weight:bold;letter-spacing:4px;text-transform:uppercase;color:#fb7185;">// Account invite</p>
+          <h1 style="margin:0 0 16px;font-family:'Poppins','Segoe UI',Arial,sans-serif;font-size:24px;line-height:1.25;font-weight:800;letter-spacing:-0.5px;text-transform:uppercase;color:#f9fafb;">You've been invited</h1>
+          <p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:#d1d5db;">An Esportra account has been created for you. Click below to accept the invitation and set your password.</p>
+          <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#ffffff;color:#0a0a0c;font-family:'Consolas','Monaco',monospace;font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;padding:14px 32px;text-decoration:none;margin-top:16px;">Accept Invitation</a>
           <hr style="border:none;border-top:1px solid #1f2937;margin:24px 0;" />
-          <p style="margin:0;font-size:13px;color:#6b7280;">If you weren't expecting this invitation, you can safely ignore this email.</p>
+          <p style="margin:0;font-size:13px;color:#6b7280;">If you weren't expecting this invite, you can safely ignore this email.</p>
         </td></tr>
         <tr>
-          <td style="padding:16px 32px;border-top:1px solid #1f2937;text-align:center;">
-            <p style="margin:0;font-size:12px;color:#6b7280;">© 2026 Esportra. All rights reserved.</p>
+          <td style="padding:20px 32px;border-top:1px solid #1f2937;">
+            <p style="margin:0;font-family:'Consolas','Monaco',monospace;font-size:10px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:#6b7280;">&copy; 2026 Esportra &mdash; All rights reserved</p>
+            <p style="margin:6px 0 0;font-size:12px;color:#6b7280;">Questions? <a href="mailto:support@esportra.com" style="color:#fb7185;text-decoration:none;">support@esportra.com</a></p>
           </td>
         </tr>
       </table>

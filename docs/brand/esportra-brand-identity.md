@@ -1,6 +1,6 @@
 # Esportra Brand Identity Guide
 
-**For:** Social Media Graphics & External Creative Assets  
+**For:** Social Media Graphics, External Creative Assets & In-Product UI  
 **Last Updated:** July 2026
 
 ---
@@ -246,6 +246,55 @@ Primary: `#Esportra`
 Secondary: `#EsportraTournaments` `#CompeteOnEsportra`
 
 Game-specific: Combine with game tags (e.g., `#Esportra #VALORANT`)
+
+---
+
+## In-Product UI Design System
+
+The frontend follows a single opinionated visual language codified in the
+frontend repo's `UI_DESIGN_GUIDE.md` (reference surfaces: Create Tournament
+wizard and the About-page JACK IN button). Summary of the binding rules:
+
+### Product color system
+
+| Token | Hex | Used for |
+|-------|-----|----------|
+| Matte black | `#0a0a0c` | Default surface (`matte-black` Tailwind token). |
+| White | `#ffffff` / `#f9fafb` | CTA fill, foreground; `#f9fafb` for headlines on dark. |
+| Rose pink | `#f43f5e` | Sole accent — hover/active fills, slide-up panels, ticks, indices. |
+
+Neutral grays for depth (never decoration): body `#d1d5db`, muted `#a1a1aa`,
+captions/inactive `#6b7280`, hairline borders `#1f2937`, container borders
+`white/10`, outlined ghost buttons `white/25`.
+
+**Off-brand:** the legacy `esports-*` tokens — especially `esports-accent`
+(`#00d4ff`, electric cyan). Cyan/blue is not an Esportra accent anywhere in
+product UI.
+
+### Binding UI rules
+
+1. **One CTA pattern:** JackButton (white fill, matte-black label, rose panel
+   slides up on hover, text flips white). No other primary button style.
+2. **One page background:** the ambient radial system (`.esportra-ambient-page`)
+   over the app base — no ad-hoc noise/blur stacks.
+3. **Sharp corners everywhere** except the floating navbar pill.
+4. **Type roles:** Poppins black uppercase tight-tracking headlines, Inter body,
+   mono bold uppercase wide-tracked labels/eyebrows.
+5. **No icon tiles:** icons are functional, bare, inline (`h-4 w-4`) — never
+   decorative squares in grids.
+6. **No containers-in-containers:** hierarchy via type scale and hairlines,
+   not nested boxes; no uniform equal-card grids for content lists.
+7. **Inline meta labels** (`NOTE —` / `CAUTION —`) instead of boxed callouts.
+8. Motion: ease `[0.22, 1, 0.36, 1]`, ≤500 ms interactive feedback.
+
+### Editorial / documentation surfaces
+
+Docs and guides use a typography-first open composition (reference:
+Help Center page): flush full-height nav rail (hairline divider, rose index
+numeral + tick on the active row), hairline-separated chapters opened by
+oversized ghost numerals (~7–8rem at 7% white), indexed manual steps
+(`NN.M` mono rose), navigation paths as bare mono text behind a rose `→`,
+and single-line stats with rose separators.
 
 ---
 
