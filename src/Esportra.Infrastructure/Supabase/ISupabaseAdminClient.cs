@@ -14,6 +14,9 @@ public interface ISupabaseAdminClient
     /// </summary>
     Task<GeneratedLink> GenerateRecoveryLinkAsync(string email, CancellationToken ct = default);
 
+    /// <summary>Verify a token_hash via GoTrue /auth/v1/verify. Returns the user if valid, null otherwise.</summary>
+    Task<SupabaseUser?> VerifyOtpAsync(string tokenHash, string type, CancellationToken ct = default);
+
     Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default);
 
     /// <summary>
