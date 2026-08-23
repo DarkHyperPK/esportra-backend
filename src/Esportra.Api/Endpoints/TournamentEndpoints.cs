@@ -1786,17 +1786,16 @@ public static class TournamentEndpoints
             Guid pid,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var updated = await conn.ExecuteAsync(
                 """
@@ -1918,18 +1917,16 @@ public static class TournamentEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            // Verify organizer
-            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOrganizer) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var regs = await conn.QueryAsync<dynamic>(
                 """
@@ -1952,18 +1949,16 @@ public static class TournamentEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            // Verify caller owns this tournament
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var checkInEnabled = await conn.ExecuteScalarAsync<bool>(
                 "SELECT COALESCE(check_in_required, false) FROM tournaments WHERE id = @id",
@@ -1990,17 +1985,16 @@ public static class TournamentEndpoints
             Guid participantId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var updated = await conn.ExecuteAsync(
                 """
@@ -2022,6 +2016,7 @@ public static class TournamentEndpoints
             [FromBody] BanParticipantRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             MatchFinalizationService finalizer,
             IHubContext<BracketHub> bracketHub,
             CancellationToken ct) =>
@@ -2029,15 +2024,12 @@ public static class TournamentEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
+
             using var conn = db.CreateConnection();
 
             var participantId = Guid.Parse(req.ParticipantId);
-
-            // Verify caller owns this tournament
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
 
             // Get participant info
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -3244,6 +3236,7 @@ public static class TournamentEndpoints
             Guid disputeId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3255,17 +3248,13 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Verify caller is the tournament organizer for this dispute
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM tournament_disputes d
-                    JOIN tournaments t ON t.id = d.tournament_id
-                    WHERE d.id = @disputeId AND t.organizer_id = @userId
-                )
-                """,
-                new { disputeId, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+            var tournamentId = await conn.ExecuteScalarAsync<Guid?>(
+                "SELECT tournament_id FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+            if (tournamentId is null) return Results.NotFound();
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, tournamentId.Value, ct: ct))
+                return Results.Forbid();
 
             var setClauses = new List<string>();
             var parameters = new DynamicParameters();
@@ -4169,18 +4158,16 @@ public static class TournamentEndpoints
             [FromBody] AddMapToPoolRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            // Verify caller owns this tournament
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             await conn.ExecuteAsync(
                 "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@id, @mapId) ON CONFLICT DO NOTHING",
@@ -4194,18 +4181,16 @@ public static class TournamentEndpoints
             Guid mapId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            // Verify caller owns this tournament
-            var isOwner = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOwner) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             await conn.ExecuteAsync(
                 "DELETE FROM tournament_map_pools WHERE tournament_id = @id AND map_id = @mapId",
@@ -4346,17 +4331,16 @@ public static class TournamentEndpoints
             [FromBody] UpdateAnnouncementRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOrganizer) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var updated = await conn.QuerySingleOrDefaultAsync<object>(
                 """
@@ -4379,17 +4363,16 @@ public static class TournamentEndpoints
             Guid announcementId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            using var conn = db.CreateConnection();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
-            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id AND organizer_id = @userId)",
-                new { id, userId = userCtx.UserIdGuid });
-            if (!isOrganizer) return Results.Forbid();
+            using var conn = db.CreateConnection();
 
             var rows = await conn.ExecuteAsync(
                 "DELETE FROM tournament_announcements WHERE id = @announcementId AND tournament_id = @id",
