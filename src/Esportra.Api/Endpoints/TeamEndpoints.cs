@@ -967,6 +967,9 @@ public static class TeamEndpoints
                        ) FILTER (WHERE rm.user_id IS NOT NULL), '[]') AS members
                 FROM team_rosters r
                 LEFT JOIN team_roster_members rm ON rm.roster_id = r.id
+                    AND EXISTS (
+                        SELECT 1 FROM team_members tm
+                        WHERE tm.team_id = r.team_id AND tm.user_id = rm.user_id AND tm.is_active = TRUE)
                 LEFT JOIN profiles p ON p.id = rm.user_id
                 WHERE r.team_id = @id
                 GROUP BY r.id, r.name, r.game, r.format, r.team_size
@@ -1120,6 +1123,18 @@ public static class TeamEndpoints
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
 
             var userIdGuid = Guid.Parse(req.UserId);
+
+            // Domain invariant: a player cannot join a roster without being an active team member
+            var isTeamMember = await conn.QuerySingleOrDefaultAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM team_members
+                    WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
+                )
+                """,
+                new { teamId = id, userId = userIdGuid });
+            if (!isTeamMember)
+                return Results.BadRequest(new { error = "Player must be a team member before joining a roster." });
 
             var alreadyOnRoster = await conn.QuerySingleAsync<bool>(
                 """

@@ -100,6 +100,7 @@ Security is blocking, not advisory. Never weaken protections to unblock developm
 - **Private buckets:** store path reference, generate signed URLs for viewing
 - **No secrets in code** — environment variables only
 - **Conventional commits:** `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `perf:` — first line < 72 chars
+- **Session-scoped commits only (hard rule)** — never stage, commit, or push unrelated changes. Stage explicitly by file path (`git add -- <files>`), never `git add .` / `git add -A`. Only files modified for the current session's task may be committed; pre-existing dirty/untracked files stay untouched.
 
 ## Testing
 
