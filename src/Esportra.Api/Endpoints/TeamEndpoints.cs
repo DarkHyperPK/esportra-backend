@@ -7,6 +7,7 @@ using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
+using Esportra.Infrastructure.Email;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -502,6 +503,7 @@ public static class TeamEndpoints
             [FromBody] TeamInviteRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IEmailService emailService,
             IConfiguration config,
             CancellationToken ct) =>
         {
@@ -596,7 +598,18 @@ public static class TeamEndpoints
 
                 if (emailInfo?.email is not null)
                 {
-                    // Team invite notification is handled in-app only
+                    var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                    await emailService.SendAsync(
+                        (string)emailInfo.email,
+                        EmailType.TeamInvite,
+                        new
+                        {
+                            inviteeName = (string?)emailInfo.invitee_name ?? "there",
+                            teamName = (string?)emailInfo.team_name ?? "a team",
+                            captainName = (string?)emailInfo.captain_name ?? "A teammate",
+                            acceptUrl = $"{frontendUrl}/player/teams"
+                        },
+                        ct);
                 }
             }
             catch { /* email failure should not block invite creation */ }
@@ -1376,6 +1389,8 @@ public static class TeamEndpoints
             [FromBody] BatchRosterInviteRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IEmailService emailService,
+            IConfiguration config,
             IHubContext<NotificationHub> hub) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1410,6 +1425,36 @@ public static class TeamEndpoints
                     """,
                     new { teamId = id, rosterId, userId = inviteeUserIdGuid, email = invitee.Email, invitedBy = userCtx.UserIdGuid });
                 sent++;
+
+                try
+                {
+                    var emailInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT p.username AS invitee_name, t.name AS team_name, cap.username AS captain_name
+                        FROM profiles p
+                        CROSS JOIN teams t
+                        LEFT JOIN profiles cap ON cap.id = @captainId
+                        WHERE p.id = @inviteeId AND t.id = @teamId
+                        """,
+                        new { inviteeId = inviteeUserIdGuid, teamId = id, captainId = userCtx.UserIdGuid });
+
+                    if (invitee.Email is not null)
+                    {
+                        var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                        await emailService.SendAsync(
+                            invitee.Email,
+                            EmailType.TeamInvite,
+                            new
+                            {
+                                inviteeName = (string?)emailInfo?.invitee_name ?? "there",
+                                teamName = (string?)emailInfo?.team_name ?? "a team",
+                                captainName = (string?)emailInfo?.captain_name ?? "A teammate",
+                                acceptUrl = $"{frontendUrl}/player/teams"
+                            },
+                            default);
+                    }
+                }
+                catch { }
             }
 
             return Results.Ok(new { sent });
