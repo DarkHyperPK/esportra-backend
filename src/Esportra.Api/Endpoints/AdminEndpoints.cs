@@ -508,13 +508,36 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM profiles) AS total_users,
                     (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
                     (SELECT COUNT(*) FROM venues) AS total_venues,
-                    (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool,
                     (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS new_users_this_week,
                     (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS new_tournaments_this_week,
                     (SELECT COUNT(*) FROM venue_bookings) AS total_bookings,
                     (SELECT COUNT(*) FROM tournaments WHERE status = 'completed') AS completed_tournaments
                 """);
-            return Results.Ok(stats);
+
+            // Prize pools are multi-currency — never sum across currencies.
+            // Grouped per currency; missing currency values land in 'unspecified'.
+            var prizePoolsByCurrency = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT COALESCE(NULLIF(currency, ''), 'unspecified') AS currency,
+                       SUM(prize_pool) AS total,
+                       COUNT(*) AS tournament_count
+                FROM tournaments
+                WHERE prize_pool IS NOT NULL AND prize_pool > 0
+                GROUP BY COALESCE(NULLIF(currency, ''), 'unspecified')
+                ORDER BY total DESC
+                """, cancellationToken: ct));
+
+            return Results.Ok(new
+            {
+                total_users = (long)stats.total_users,
+                total_tournaments = (long)stats.total_tournaments,
+                total_venues = (long)stats.total_venues,
+                prize_pools_by_currency = prizePoolsByCurrency,
+                new_users_this_week = (long)stats.new_users_this_week,
+                new_tournaments_this_week = (long)stats.new_tournaments_this_week,
+                total_bookings = (long)stats.total_bookings,
+                completed_tournaments = (long)stats.completed_tournaments
+            });
         }).RequireAuthorization("Admin");
 
 
