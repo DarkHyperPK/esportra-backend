@@ -2875,6 +2875,14 @@ public static class AdminEndpoints
                 new { userId });
             if (profile is null) return Results.NotFound(new { error = "User not found" });
 
+            // Dapper returns jsonb as a raw string when mapping to dynamic — deserialize
+            // so the API payload carries a real JSON object, not a double-encoded string.
+            if (profile is IDictionary<string, object?> profileDict && profileDict["social_links"] is string socialLinksJson && socialLinksJson.Length > 0)
+            {
+                try { profileDict["social_links"] = JsonSerializer.Deserialize<JsonElement>(socialLinksJson); }
+                catch (JsonException) { /* keep raw string on malformed json */ }
+            }
+
             async Task<IEnumerable<dynamic>> SafeQueryAsync(string segment, string sql, object? param = null)
             {
                 try
