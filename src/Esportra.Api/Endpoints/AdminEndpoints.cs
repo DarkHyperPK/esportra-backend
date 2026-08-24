@@ -236,8 +236,8 @@ public static class AdminEndpoints
                     "SELECT COALESCE(full_name, username, id::text) FROM profiles WHERE id = @userId", new { userId });
                 var result = await DeleteUserAsync(userId, conn, supabase, ct);
                 // AuditService uses its own connection — safe to call after conn operations
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Delete, TargetType.User,
                     userId, targetName ?? userId.ToString(), ct: ct);
                 await EvictUserContextAsync(cache, userId, ctx, ct);
@@ -694,8 +694,8 @@ public static class AdminEndpoints
                 logger.LogWarning(ex, "Cache eviction failed for suspended user {UserId}", userId);
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Suspend, TargetType.User,
                 userId, targetName ?? userId.ToString(),
                 new
@@ -745,8 +745,8 @@ public static class AdminEndpoints
                 // Non-critical — suspension columns are cleared in DB
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Unsuspend, TargetType.User,
                 userId, targetName ?? userId.ToString(), ct: ct);
             return Results.Ok(new { success = true });
@@ -831,8 +831,8 @@ public static class AdminEndpoints
                 // Audit each deletion
                 foreach (var userId in safeIds)
                 {
-                    await audit.LogAsync(
-                        userCtx.UserIdGuid, userCtx.Email,
+                    await audit.LogFromHttp(
+                        ctx, userCtx,
                         ActionType.Delete, TargetType.User,
                         userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
                         new { bulk = true, batchSize = safeIds.Length }, ct: ct);
@@ -902,8 +902,8 @@ public static class AdminEndpoints
                 : new { bulk = true, batchSize = safeIds.Length };
             foreach (var userId in safeIds)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     actionType, TargetType.User,
                     userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
                     auditDetails, ct: ct);
@@ -1300,8 +1300,8 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "A role with this name or key already exists." });
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Create, TargetType.System,
                 roleId, req.Name,
                 new { role_key = req.Key, permission_count = req.PermissionIds.Length },
@@ -1411,8 +1411,8 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "A role with this name already exists." });
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Update, TargetType.System,
                 roleId, req.Name,
                 new
@@ -1486,8 +1486,8 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "Cannot delete role: users were assigned after your check." });
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Delete, TargetType.System,
                 roleId, (string)existingRole.name,
                 new { role_key = (string)existingRole.key },
@@ -1801,8 +1801,8 @@ public static class AdminEndpoints
                 _ => ActionType.Update
             };
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 actionType, TargetType.Tournament,
                 id, (string?)existing.name ?? id.ToString(),
                 new
@@ -1892,8 +1892,8 @@ public static class AdminEndpoints
             // Audit each affected tournament
             foreach (var id in req.TournamentIds)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     actionType, TargetType.Tournament,
                     id, targetTournaments.GetValueOrDefault(id, id.ToString()),
                     new { bulk = true, batchSize = req.TournamentIds.Length, action = req.Action }, ct: ct);
@@ -2192,63 +2192,108 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true, banLifted = true, participantRestored = restored });
         }).RequireAuthorization("Admin");
         app.MapGet("/api/admin/audit-logs", async (
-            Guid? organizationId,
             [FromQuery] string? search = null,
+            [FromQuery] string? action = null,
             [FromQuery] string? target_type = null,
+            [FromQuery] string? source = null,
+            [FromQuery] string? severity = null,
+            [FromQuery] string? actor = null,
             [FromQuery] string? from = null,
             [FromQuery] string? to = null,
-            int page = 1,
-            int limit = 50,
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 50,
             HttpContext ctx = default!,
             IDbConnectionFactory db = default!,
             CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
+            page = Math.Max(page, 1);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            var conditions = new List<string>();
-            conditions.Add("(@organizationId IS NULL OR sal.organization_id = @organizationId)");
-
-            if (!string.IsNullOrWhiteSpace(search))
-                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR sal.action ILIKE @search ESCAPE '\\' OR sal.target_type ILIKE @search ESCAPE '\\')");
-            if (!string.IsNullOrWhiteSpace(target_type))
-                conditions.Add("sal.target_type = @target_type");
-
+            var searchPattern = string.IsNullOrWhiteSpace(search) ? null : $"%{search.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
+            var actorPattern = string.IsNullOrWhiteSpace(actor) ? null : $"%{actor.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
+            var actionPrefix = string.IsNullOrWhiteSpace(action) ? null : action.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
             DateTimeOffset? fromDate = null;
             DateTimeOffset? toDate = null;
-            if (!string.IsNullOrWhiteSpace(from) && DateTimeOffset.TryParse(from, out var fd))
-            {
-                fromDate = fd;
-                conditions.Add("sal.created_at >= @fromDate");
-            }
-            if (!string.IsNullOrWhiteSpace(to) && DateTimeOffset.TryParse(to, out var td))
-            {
-                toDate = td;
-                conditions.Add("sal.created_at <= @toDate");
-            }
+            if (!string.IsNullOrWhiteSpace(from) && DateTimeOffset.TryParse(from, out var fd)) fromDate = fd;
+            if (!string.IsNullOrWhiteSpace(to) && DateTimeOffset.TryParse(to, out var td)) toDate = td.AddDays(1);
 
-            var where = "WHERE " + string.Join(" AND ", conditions);
-
-            var sql = $"""
-                SELECT sal.*, p.username AS actor_name
-                FROM staff_audit_log sal
-                LEFT JOIN profiles p ON p.id = sal.actor_id
-                {where}
-                ORDER BY sal.created_at DESC
-                LIMIT @limit OFFSET @offset
+            // Unified audit stream: staff/org actions + platform admin actions, normalized.
+            // Target names are resolved at write time into details (matchup/tournament_name/etc.)
+            // and surfaced as the human-readable target label with UUID fallback.
+            const string unionSql = """
+                SELECT * FROM (
+                    SELECT 'staff'::text AS source,
+                           sal.id::text AS id,
+                           sal.created_at,
+                           COALESCE(p.username, 'unknown') AS actor_name,
+                           sal.actor_id::text AS actor_id,
+                           sal.action AS action_type,
+                           sal.target_type,
+                           sal.target_id::text AS target_id,
+                           COALESCE(sal.details->>'matchup', sal.details->>'match_label', sal.details->>'tournament_name', sal.details->>'target_label', sal.target_id::text) AS target_name,
+                           sal.details::text AS details,
+                           COALESCE(sal.ip_address::text, '') AS ip_address,
+                           COALESCE(sal.user_agent, '') AS user_agent,
+                           COALESCE(sal.severity, 'info') AS severity
+                    FROM staff_audit_log sal
+                    LEFT JOIN profiles p ON p.id = sal.actor_id
+                    UNION ALL
+                    SELECT 'platform'::text,
+                           al.id::text,
+                           al.created_at,
+                           COALESCE(p.username, al.admin_name, 'system'),
+                           al.admin_id::text,
+                           al.action_type,
+                           al.target_type,
+                           al.target_id::text,
+                           COALESCE(al.target_name, al.target_id::text),
+                           al.details::text,
+                           COALESCE(al.ip_address::text, ''),
+                           COALESCE(al.user_agent, ''),
+                           COALESCE(al.severity, 'info')
+                    FROM audit_logs al
+                    LEFT JOIN profiles p ON p.id = al.admin_id
+                ) u
+                WHERE (@searchPattern::text IS NULL OR u.actor_name ILIKE @searchPattern ESCAPE '\'
+                          OR u.action_type ILIKE @searchPattern ESCAPE '\'
+                          OR u.target_name ILIKE @searchPattern ESCAPE '\'
+                          OR u.target_id ILIKE @searchPattern ESCAPE '\')
+                  AND (@actionPrefix::text IS NULL OR u.action_type ILIKE @actionPrefix || '%')
+                  AND (@targetType::text IS NULL OR u.target_type = @targetType)
+                  AND (@source::text IS NULL OR u.source = @source)
+                  AND (@severity::text IS NULL OR u.severity = @severity)
+                  AND (@actorPattern::text IS NULL OR u.actor_name ILIKE @actorPattern ESCAPE '\')
+                  AND (@fromDate::timestamptz IS NULL OR u.created_at >= @fromDate)
+                  AND (@toDate::timestamptz IS NULL OR u.created_at <= @toDate)
                 """;
 
-            var rows = await conn.QueryAsync<dynamic>(sql,
-                new { organizationId, search = EscapeLike(search), target_type, fromDate, toDate, limit, offset = (page - 1) * limit });
+            var parameters = new
+            {
+                searchPattern,
+                actionPrefix,
+                targetType = target_type,
+                source,
+                severity,
+                actorPattern,
+                fromDate,
+                toDate,
+                limit,
+                offset = (page - 1) * limit
+            };
 
-            var countSql = $"SELECT COUNT(*) FROM staff_audit_log sal LEFT JOIN profiles p ON p.id = sal.actor_id {where}";
-            var total = await conn.ExecuteScalarAsync<int>(countSql,
-                new { organizationId, search = EscapeLike(search), target_type, fromDate, toDate });
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                $"{unionSql} ORDER BY u.created_at DESC LIMIT @limit OFFSET @offset",
+                parameters, cancellationToken: ct));
 
-            return Results.Ok(new { data = rows, count = total });
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                $"SELECT COUNT(*) FROM ({unionSql}) counted",
+                parameters, cancellationToken: ct));
+
+            return Results.Ok(new { data = rows, count = total, page, limit });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/audit-logs ─────────────────────────────────────────
@@ -3233,8 +3278,8 @@ public static class AdminEndpoints
 
             if (issued > 0)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Create, TargetType.System,
                     userCtx.UserIdGuid, $"license backfill ({licenseType})",
                     new { license_type = licenseType, issued_count = issued },
@@ -3272,8 +3317,8 @@ public static class AdminEndpoints
 
             if (deleted > 0)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Delete, TargetType.User,
                     requestId, $"verification request ({meta.requested_role}) for {meta.username}",
                     new { verification_request_id = requestId, role = (string)meta.requested_role },
@@ -3313,8 +3358,8 @@ public static class AdminEndpoints
 
             if (deleted > 0)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Delete, TargetType.User,
                     licenseId, $"license {meta.license_id} ({meta.license_type}) for {meta.username}",
                     new { license_id = (string)meta.license_id, license_type = (string)meta.license_type },
@@ -5252,8 +5297,8 @@ public static class AdminEndpoints
             }
 
             // Audit the session revocation
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Logout, TargetType.User,
                 userId, targetName,
                 new { reason = req.Reason, revokedBy = userCtx.Email, action = "session_revoke" },
@@ -5380,8 +5425,8 @@ public static class AdminEndpoints
                     expiresAt = expiresAt?.UtcDateTime
                 }, cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Create, TargetType.System,
                     (Guid)entry!.id, "ip_allowlist",
                     new { ip_address = ipAddress, label },
@@ -5488,8 +5533,8 @@ public static class AdminEndpoints
             var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
                 new CommandDefinition(sql, parameters, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Update, TargetType.System,
                 id, "ip_allowlist",
                 new
@@ -5550,8 +5595,8 @@ public static class AdminEndpoints
                 "DELETE FROM admin_ip_allowlist WHERE id = @id",
                 new { id }, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Delete, TargetType.System,
                 id, "ip_allowlist",
                 new { ip_address = (string)existing.ip_address, label = (string)existing.label },
@@ -5656,8 +5701,8 @@ public static class AdminEndpoints
 
             txn.Commit();
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.SettingsUpdate, TargetType.System,
                 userCtx.UserIdGuid, "ip_allowlist_toggle",
                 new { enabled = newEnabled },
@@ -5810,8 +5855,8 @@ public static class AdminEndpoints
                 createdBy = userCtx.UserIdGuid
             }, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Create, TargetType.System,
                 id, req.Name.Trim(),
                 new { reportType = req.ReportType, frequency = req.Frequency },
@@ -5913,8 +5958,8 @@ public static class AdminEndpoints
             var sql = $"UPDATE report_schedules SET {string.Join(", ", sets)} WHERE id = @id";
             await conn.ExecuteAsync(new CommandDefinition(sql, p, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Update, TargetType.System,
                 id, id.ToString(),
                 new { updated = sets },
@@ -5965,8 +6010,8 @@ public static class AdminEndpoints
             await conn.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Delete, TargetType.System,
                 id, name,
                 ct: ct);
@@ -6053,8 +6098,8 @@ public static class AdminEndpoints
                     "UPDATE report_schedules SET last_run_at = NOW() WHERE id = @id",
                     new { id }, cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Create, TargetType.System,
                     id, $"manual_run:{reportType}",
                     new { runId, rowCount },
@@ -6255,8 +6300,8 @@ public static class AdminEndpoints
                     """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "" },
                     cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Reject, TargetType.User,
                     targetUserId, targetUserId.ToString(),
                     new { gdpr_request_id = id, request_type = requestType },
@@ -6359,8 +6404,8 @@ public static class AdminEndpoints
                         """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "", downloadUrl = dataUri },
                         cancellationToken: ct));
 
-                    await audit.LogAsync(
-                        userCtx.UserIdGuid, userCtx.Email,
+                    await audit.LogFromHttp(
+                        ctx, userCtx,
                         ActionType.Approve, TargetType.User,
                         targetUserId, targetUserId.ToString(),
                         new { gdpr_request_id = id, request_type = "export" },
@@ -6405,8 +6450,8 @@ public static class AdminEndpoints
                     """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "" },
                     cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Delete, TargetType.User,
                     targetUserId, anonUsername,
                     new { gdpr_request_id = id, request_type = "deletion", action = "anonymized" },

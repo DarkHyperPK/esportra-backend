@@ -32,7 +32,9 @@ public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> 
         string targetName,
         object? details = null,
         AuditSeverity? severityOverride = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? ip = null,
+        string? userAgent = null)
     {
         try
         {
@@ -40,11 +42,13 @@ public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> 
 
             await conn.ExecuteAsync(@"
                 INSERT INTO public.audit_logs
-                    (admin_id, admin_name, action_type, target_type, target_id, target_name, details, severity, created_at)
+                    (admin_id, admin_name, action_type, target_type, target_id, target_name, details, severity, ip_address, user_agent, created_at)
                 VALUES
-                    (@adminId, @adminName, @actionType, @targetType, @targetId, @targetName, @details::jsonb, @severity, now())",
+                    (@adminId, @adminName, @actionType, @targetType, @targetId, @targetName, @details::jsonb, @severity, @ip::inet, @userAgent, now())",
                 new
                 {
+                    ip,
+                    userAgent,
                     adminId,
                     adminName,
                     actionType = action.ToString().ToLowerInvariant(),
@@ -71,7 +75,9 @@ public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> 
         string targetName,
         object? details = null,
         AuditSeverity severity = AuditSeverity.Low,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? ip = null,
+        string? userAgent = null)
     {
         try
         {
@@ -79,11 +85,13 @@ public sealed class AuditService(IDbConnectionFactory db, ILogger<AuditService> 
 
             await conn.ExecuteAsync(@"
                 INSERT INTO public.audit_logs
-                    (admin_id, admin_name, action_type, target_type, target_id, target_name, details, severity, created_at)
+                    (admin_id, admin_name, action_type, target_type, target_id, target_name, details, severity, ip_address, user_agent, created_at)
                 VALUES
-                    (@adminId, @adminName, @actionType, @targetType, @targetId, @targetName, @details::jsonb, @severity, now())",
+                    (@adminId, @adminName, @actionType, @targetType, @targetId, @targetName, @details::jsonb, @severity, @ip::inet, @userAgent, now())",
                 new
                 {
+                    ip,
+                    userAgent,
                     adminId,
                     adminName,
                     actionType,
