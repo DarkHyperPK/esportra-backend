@@ -7200,7 +7200,7 @@ public static class AdminEndpoints
             var systemHealth = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch AND lower(value::text) IN ('true', '1', 'on')) AS kill_switches_armed,
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch AND lower(value #>> '{}') IN ('true', '1', 'on')) AS kill_switches_armed,
                     (SELECT COUNT(*) FROM system_config WHERE is_kill_switch) AS kill_switches_total,
                     (SELECT COUNT(*) FROM anomaly_events WHERE is_resolved = FALSE) AS anomalies_unresolved,
                     (SELECT COUNT(*) FROM feature_flags WHERE is_enabled) AS feature_flags_enabled
