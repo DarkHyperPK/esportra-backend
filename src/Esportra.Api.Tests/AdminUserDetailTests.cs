@@ -33,7 +33,7 @@ public class AdminUserDetailTests
     public void EntityHistoryEndpoint_CastsAuditTargetIdsToText()
     {
         var source = File.ReadAllText(FindAdminEndpointsFile());
-        Assert.Contains("target_id = @targetId", source, StringComparison.Ordinal);
+        Assert.Contains("target_id = @targetIdText", source, StringComparison.Ordinal);
         Assert.Contains("lower(target_type) = @targetType", source, StringComparison.Ordinal);
     }
 

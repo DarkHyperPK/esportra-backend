@@ -4805,14 +4805,14 @@ public static class AdminEndpoints
             var countSql = """
                 SELECT COUNT(*) FROM (
                     SELECT id FROM audit_logs
-                    WHERE lower(target_type) = @targetType AND target_id = @targetId
+                    WHERE lower(target_type) = @targetType AND target_id = @targetIdText
                     UNION ALL
                     SELECT id FROM staff_audit_log
-                    WHERE lower(target_type) = @targetType AND target_id = @targetId
+                    WHERE lower(target_type) = @targetType AND target_id = @targetIdText
                 ) combined
                 """;
             var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-                countSql, new { targetType = normalizedType, targetId = targetId }, cancellationToken: ct));
+                countSql, new { targetType = normalizedType, targetIdText = targetId.ToString() }, cancellationToken: ct));
 
             var sql = """
                 SELECT id, admin_id, admin_name, action_type, target_type,
@@ -4821,7 +4821,7 @@ public static class AdminEndpoints
                     SELECT id, admin_id, admin_name, action_type, target_type,
                            target_id::text AS target_id, target_name, details, severity, created_at
                     FROM audit_logs
-                    WHERE lower(target_type) = @targetType AND target_id = @targetId
+                    WHERE lower(target_type) = @targetType AND target_id = @targetIdText
                     UNION ALL
                     SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
                            sal.action AS action_type, sal.target_type,
@@ -4829,14 +4829,14 @@ public static class AdminEndpoints
                            NULL AS severity, sal.created_at
                     FROM staff_audit_log sal
                     LEFT JOIN profiles p ON p.id = sal.actor_id
-                    WHERE lower(sal.target_type) = @targetType AND sal.target_id = @targetId
+                    WHERE lower(sal.target_type) = @targetType AND sal.target_id = @targetIdText
                 ) combined
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType = normalizedType, targetId = targetId, limit = clampedLimit, offset }, cancellationToken: ct));
+                sql, new { targetType = normalizedType, targetIdText = targetId.ToString(), limit = clampedLimit, offset }, cancellationToken: ct));
             DapperJsonbHelper.FixJsonb(rows);
 
             return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
