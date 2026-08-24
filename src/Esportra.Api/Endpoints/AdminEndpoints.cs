@@ -4805,10 +4805,10 @@ public static class AdminEndpoints
             var countSql = """
                 SELECT COUNT(*) FROM (
                     SELECT id FROM audit_logs
-                    WHERE lower(target_type) = @targetType AND target_id = @targetIdText
+                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                     UNION ALL
                     SELECT id FROM staff_audit_log
-                    WHERE lower(target_type) = @targetType AND target_id = @targetIdText
+                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                 ) combined
                 """;
             var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
@@ -4821,7 +4821,7 @@ public static class AdminEndpoints
                     SELECT id, admin_id, admin_name, action_type, target_type,
                            target_id::text AS target_id, target_name, details, severity, created_at
                     FROM audit_logs
-                    WHERE lower(target_type) = @targetType AND target_id = @targetIdText
+                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
                     UNION ALL
                     SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
                            sal.action AS action_type, sal.target_type,
@@ -4829,7 +4829,7 @@ public static class AdminEndpoints
                            NULL AS severity, sal.created_at
                     FROM staff_audit_log sal
                     LEFT JOIN profiles p ON p.id = sal.actor_id
-                    WHERE lower(sal.target_type) = @targetType AND sal.target_id = @targetIdText
+                    WHERE lower(sal.target_type) = @targetType AND sal.target_id::text = @targetIdText
                 ) combined
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
@@ -5180,7 +5180,7 @@ public static class AdminEndpoints
                 """
                 (
                   EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.admin_id)
-                  OR EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.target_id)
+                  OR EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id::text = al.target_id)
                 )
                 """
             };
