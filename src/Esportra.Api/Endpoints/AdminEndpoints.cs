@@ -247,8 +247,8 @@ public static class AdminEndpoints
             var actionResult = req.Action switch
             {
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
-                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ct),
-                "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, userCtx, ct),
+            "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ctx, audit, ct),
+            "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, userCtx, ct),
                 _ => Results.BadRequest(new { error = $"Unknown action: {req.Action}" })
             };
 
@@ -1974,6 +1974,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.DisputesView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
@@ -2585,7 +2586,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationApprove)) return Results.Forbid();
             if (req.Status is not ("approved" or "rejected"))
                 return Results.BadRequest(new { error = "Status must be approved or rejected." });
 
@@ -4781,14 +4782,14 @@ public static class AdminEndpoints
             var countSql = """
                 SELECT COUNT(*) FROM (
                     SELECT id FROM audit_logs
-                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
+                    WHERE lower(target_type) = @targetType AND target_id = @targetId
                     UNION ALL
                     SELECT id FROM staff_audit_log
-                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
+                    WHERE lower(target_type) = @targetType AND target_id = @targetId
                 ) combined
                 """;
             var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-                countSql, new { targetType = normalizedType, targetIdText = targetId.ToString() }, cancellationToken: ct));
+                countSql, new { targetType = normalizedType, targetId = targetId }, cancellationToken: ct));
 
             var sql = """
                 SELECT id, admin_id, admin_name, action_type, target_type,
@@ -4797,7 +4798,7 @@ public static class AdminEndpoints
                     SELECT id, admin_id, admin_name, action_type, target_type,
                            target_id::text AS target_id, target_name, details, severity, created_at
                     FROM audit_logs
-                    WHERE lower(target_type) = @targetType AND target_id::text = @targetIdText
+                    WHERE lower(target_type) = @targetType AND target_id = @targetId
                     UNION ALL
                     SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
                            sal.action AS action_type, sal.target_type,
@@ -4805,14 +4806,14 @@ public static class AdminEndpoints
                            NULL AS severity, sal.created_at
                     FROM staff_audit_log sal
                     LEFT JOIN profiles p ON p.id = sal.actor_id
-                    WHERE lower(sal.target_type) = @targetType AND sal.target_id::text = @targetIdText
+                    WHERE lower(sal.target_type) = @targetType AND sal.target_id = @targetId
                 ) combined
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset
                 """;
 
             var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType = normalizedType, targetIdText = targetId.ToString(), limit = clampedLimit, offset }, cancellationToken: ct));
+                sql, new { targetType = normalizedType, targetId = targetId, limit = clampedLimit, offset }, cancellationToken: ct));
             DapperJsonbHelper.FixJsonb(rows);
 
             return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
@@ -5672,8 +5673,7 @@ public static class AdminEndpoints
                     return Results.BadRequest(new { error = "Cannot enable with no active IPs." });
 
                 // Check that the caller's IP is in the allowlist
-                var clientIp = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
-                    ?? ctx.Connection.RemoteIpAddress?.ToString();
+                var clientIp = ctx.Connection.RemoteIpAddress?.ToString();
 
                 if (string.IsNullOrEmpty(clientIp))
                     return Results.BadRequest(new { error = "Cannot determine your IP address." });
@@ -6641,9 +6641,8 @@ public static class AdminEndpoints
             if (string.IsNullOrWhiteSpace(req.ConsentType) || !allowedConsentTypes.Contains(req.ConsentType))
                 return Results.BadRequest(new { error = $"ConsentType must be one of: {string.Join(", ", allowedConsentTypes)}." });
 
-            // Resolve real client IP — trust X-Forwarded-For behind a proxy
-            var ip = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()
-                     ?? ctx.Connection.RemoteIpAddress?.ToString();
+            // Resolve real client IP — ForwardedHeaders middleware normalizes RemoteIpAddress
+            var ip = ctx.Connection.RemoteIpAddress?.ToString();
 
             var userAgent = ctx.Request.Headers["User-Agent"].FirstOrDefault();
             var version = string.IsNullOrWhiteSpace(req.Version) ? "1.0" : req.Version;
@@ -7509,19 +7508,33 @@ public static class AdminEndpoints
         ManageUserRequest req,
         System.Data.IDbConnection conn,
         UserContext callerCtx,
+        HttpContext httpCtx,
+        AuditService audit,
         CancellationToken ct)
     {
         var role = req.RoleKey ?? req.Role;
         if (string.IsNullOrWhiteSpace(role))
             return Results.BadRequest(new { error = "Role is required for assign_role action." });
 
+        // Self-assignment of ANY role is blocked — privilege escalation vector.
+        if (userId == callerCtx.UserIdGuid)
+            return Results.Json(
+                new { error = "You cannot change your own roles. Ask another admin." },
+                statusCode: 403);
+
         var isAdmin = string.Equals(req.RoleType, "admin", StringComparison.OrdinalIgnoreCase);
 
         if (isAdmin)
         {
-            if (SuperAdminOnlyRoles.Contains(role) && !callerCtx.IsSuperAdmin)
+            // Admin-role assignment is a superadmin-only, audited operation — matching
+            // POST /api/admin/admin-user-roles. users:edit alone must NEVER grant admin roles.
+            if (!callerCtx.IsSuperAdmin)
                 return Results.Json(
-                    new { error = "Only super_admin can assign this role." },
+                    new { error = "Only super_admin can assign admin roles." },
+                    statusCode: 403);
+            if (!callerCtx.Permissions.Contains(Permissions.AdminUsersAssignRole))
+                return Results.Json(
+                    new { error = "Missing admin_users:assign_role permission." },
                     statusCode: 403);
 
             // Resolve admin role id from admin_roles table by key
@@ -7537,6 +7550,9 @@ public static class AdminEndpoints
                 ON CONFLICT DO NOTHING
                 """,
                 new { userId, roleId });
+
+            await audit.LogFromHttp(httpCtx, callerCtx, ActionType.RoleChange, TargetType.User,
+                userId, $"admin role '{role}' assigned", new { role, role_type = "admin" }, AuditSeverity.High, ct);
         }
         else
         {
@@ -7547,6 +7563,9 @@ public static class AdminEndpoints
                 ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
                 """,
                 new { userId, role });
+
+            await audit.LogFromHttp(httpCtx, callerCtx, ActionType.RoleChange, TargetType.User,
+                userId, $"role '{role}' assigned", new { role, role_type = "user" }, null, ct);
         }
 
         return Results.Ok(new { success = true, role });
