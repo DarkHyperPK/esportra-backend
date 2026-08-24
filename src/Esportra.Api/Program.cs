@@ -372,6 +372,7 @@ builder.Services.AddScoped<StaffTournamentAuditService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.SelfPlayMatchRoomService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.CheckinWalkoverProcessor>();
 builder.Services.AddScoped<Esportra.Api.Services.CheckinWalkoverNotifier>();
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<OperationsAuditService>();
 builder.Services.AddScoped<GhostModeTokenService>();

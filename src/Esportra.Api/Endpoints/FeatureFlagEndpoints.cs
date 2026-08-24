@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -97,6 +98,7 @@ public static class FeatureFlagEndpoints
                 LEFT JOIN profiles p ON p.id = f.created_by
                 ORDER BY f.created_at DESC
                 """);
+            DapperJsonbHelper.FixJsonb(flags);
             return Results.Ok(flags);
         }).RequireAuthorization("Admin");
 
@@ -215,6 +217,7 @@ public static class FeatureFlagEndpoints
                 WHERE flag_id = @id
                 ORDER BY priority DESC
                 """, new { id });
+            DapperJsonbHelper.FixJsonb(rules);
             return Results.Ok(rules);
         }).RequireAuthorization("Admin");
 
@@ -335,6 +338,7 @@ public static class FeatureFlagEndpoints
                 WHERE o.flag_id = @id
                 ORDER BY o.created_at DESC
                 """, new { id });
+            DapperJsonbHelper.FixJsonb(overrides);
             return Results.Ok(overrides);
         }).RequireAuthorization("Admin");
 

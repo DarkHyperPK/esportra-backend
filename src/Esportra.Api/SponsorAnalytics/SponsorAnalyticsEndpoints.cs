@@ -381,14 +381,16 @@ public static class SponsorAnalyticsEndpoints
         var rows = (await connection.QueryAsync<FleetOverviewRow>(new CommandDefinition(
             """
             SELECT s.id AS Id, s.name AS Name, s.tier AS Tier, s.logo_url AS LogoUrl,
-                   COALESCE(SUM(t.impressions), 0) AS Impressions30d,
-                   COALESCE(SUM(t.clicks), 0) AS Clicks30d,
+                   COALESCE(t.imp, 0) AS Impressions30d,
+                   COALESCE(t.clk, 0) AS Clicks30d,
                    COUNT(DISTINCT p.id) FILTER (WHERE p.is_active) AS ActivePlacements
             FROM public.sponsors s
-            LEFT JOIN public.sponsor_daily_totals t
-                   ON t.sponsor_id = s.id AND t.stat_date >= NOW() - INTERVAL '30 days'
+            LEFT JOIN (SELECT sponsor_id, SUM(impressions) AS imp, SUM(clicks) AS clk
+                       FROM public.sponsor_daily_totals
+                       WHERE stat_date >= CURRENT_DATE - INTERVAL '30 days'
+                       GROUP BY sponsor_id) t ON t.sponsor_id = s.id
             LEFT JOIN public.sponsor_placements p ON p.sponsor_id = s.id
-            GROUP BY s.id, s.name, s.tier, s.logo_url
+            GROUP BY s.id, s.name, s.tier, s.logo_url, t.imp, t.clk
             ORDER BY Impressions30d DESC
             """,
             cancellationToken: cancellationToken))).AsList();
