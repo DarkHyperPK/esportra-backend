@@ -247,8 +247,8 @@ public static class AdminEndpoints
             var actionResult = req.Action switch
             {
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
-            "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ctx, audit, ct),
-            "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, userCtx, ct),
+                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ctx, audit, ct),
+                "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, userCtx, ct),
                 _ => Results.BadRequest(new { error = $"Unknown action: {req.Action}" })
             };
 
