@@ -2860,7 +2860,7 @@ public static class AdminEndpoints
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT p.id, p.username, p.email, p.full_name, p.avatar_url, p.bio, p.location, p.country_code,
-                       p.date_of_birth, p.riot_tag, p.social_links, p.card_image_url,
+                       p.date_of_birth, p.riot_tag, p.steam_tag, p.social_links, p.card_image_url,
                        p.banner_url, p.is_admin, p.admin_roles, p.is_suspended,
                        p.suspension_reason, p.suspension_type, p.suspension_until, p.settings,
                        p.created_at, p.updated_at,
@@ -3135,6 +3135,7 @@ public static class AdminEndpoints
         app.MapPost("/api/admin/licenses/backfill", async (
             HttpContext ctx,
             IDbConnectionFactory db,
+            AuditService audit,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3222,6 +3223,16 @@ public static class AdminEndpoints
                 issued++;
             }
 
+            if (issued > 0)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Create, TargetType.System,
+                    userCtx.UserIdGuid, $"license backfill ({licenseType})",
+                    new { license_type = licenseType, issued_count = issued },
+                    AuditSeverity.High, ct);
+            }
+
             return Results.Ok(new { issued });
         }).RequireAuthorization("Admin");
 
@@ -3230,6 +3241,7 @@ public static class AdminEndpoints
             Guid requestId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            AuditService audit,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3237,9 +3249,28 @@ public static class AdminEndpoints
             if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            var meta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT vr.requested_role, COALESCE(p.username, p.email, vr.id::text) AS username
+                FROM verification_requests vr
+                LEFT JOIN profiles p ON p.id = vr.user_id
+                WHERE vr.id = @id
+                """, new { id = requestId });
+            if (meta is null) return Results.NotFound(new { error = "Verification request not found" });
+
             var deleted = await conn.ExecuteAsync(
                 "DELETE FROM verification_requests WHERE id = @id",
                 new { id = requestId });
+
+            if (deleted > 0)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Delete, TargetType.User,
+                    requestId, $"verification request ({meta.requested_role}) for {meta.username}",
+                    new { verification_request_id = requestId, role = (string)meta.requested_role },
+                    AuditSeverity.High, ct);
+            }
 
             return deleted > 0
                 ? Results.Ok(new { success = true })
@@ -3251,6 +3282,7 @@ public static class AdminEndpoints
             Guid licenseId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            AuditService audit,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3258,9 +3290,28 @@ public static class AdminEndpoints
             if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            var meta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT l.license_id, l.license_type, COALESCE(p.username, p.email, l.user_id::text) AS username
+                FROM licenses l
+                LEFT JOIN profiles p ON p.id = l.user_id
+                WHERE l.id = @id
+                """, new { id = licenseId });
+            if (meta is null) return Results.NotFound(new { error = "License not found" });
+
             var deleted = await conn.ExecuteAsync(
                 "DELETE FROM licenses WHERE id = @id",
                 new { id = licenseId });
+
+            if (deleted > 0)
+            {
+                await audit.LogAsync(
+                    userCtx.UserIdGuid, userCtx.Email,
+                    ActionType.Delete, TargetType.User,
+                    licenseId, $"license {meta.license_id} ({meta.license_type}) for {meta.username}",
+                    new { license_id = (string)meta.license_id, license_type = (string)meta.license_type },
+                    AuditSeverity.High, ct);
+            }
 
             return deleted > 0
                 ? Results.Ok(new { success = true })
@@ -7206,6 +7257,41 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM feature_flags WHERE is_enabled) AS feature_flags_enabled
                 """);
 
+            // Chart series — 14-day gapless daily counts
+            var signups14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day, COUNT(p.id) AS count
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN profiles p ON p.created_at::date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
+            var tournaments14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day, COUNT(t.id) AS count
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN tournaments t ON t.created_at::date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
+            var disputes14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day, COUNT(td.id) AS count
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN tournament_disputes td ON td.created_at::date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
+            var sponsorDaily14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day,
+                       COALESCE(SUM(s.impressions), 0) AS impressions,
+                       COALESCE(SUM(s.clicks), 0) AS clicks
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN sponsor_daily_totals s ON s.stat_date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
             // Signups per day for last 7 days
             var signups7d = await conn.QueryAsync<dynamic>(
                 """
@@ -7248,6 +7334,13 @@ public static class AdminEndpoints
                 system_health = systemHealth,
                 payments_available = false,
                 signups_7d = signups7d,
+                charts = new
+                {
+                    signups_14d = signups14d,
+                    tournaments_14d = tournaments14d,
+                    disputes_14d = disputes14d,
+                    sponsor_daily_14d = sponsorDaily14d
+                },
                 recent_activity = recentActivity,
                 oldest_pending = oldestPending
             });
