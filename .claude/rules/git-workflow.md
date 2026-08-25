@@ -6,6 +6,18 @@ These rules are **blocking** — violations are immediate failures.
 
 All code changes must land on `staging` first. `main` is production — it only receives changes promoted from `staging`.
 
+## Push Consent (HARD RULES)
+
+- **Never `git push` unless the user explicitly asks for a push in the current conversation.** Never push to finish a task, trigger CI, or back up work.
+- A push request must name the target branch. If the user says "push" without naming a branch, STOP and ask which branch. Never infer it from the current checkout or habit — not even `staging`.
+- **Pushing IS deploying.** CI listens to exactly two refs:
+  - `git push origin staging` → STAGING deployment
+  - `git push origin main` → PRODUCTION deployment
+  State the consequence before pushing and treat every push to these refs as a deploy event.
+- Never force-push and never delete remote branches unless explicitly asked.
+
+Exception: the "only staging/main" restrictions below do not block a push when the user has explicitly named that other branch in their request.
+
 ## Committing and Developing
 
 - All new commits go to `staging` (or a feature branch that merges into staging).
@@ -36,6 +48,6 @@ The rule bans **direct commits to main**, not **promoting staging to main**. Sta
 ## Branch Hygiene
 
 - Default working branch: `staging`
-- Commit to `staging`, push to `staging`
-- Production release: merge `staging` → `main` → push `main`
-- **Never push to feature branches, worktree branches, or arbitrary remote refs** — only `staging` and `main` are CI-connected
+- Commit to `staging`, push to `staging` — but only when the user asks, and only with the branch named (see Push Consent above)
+- Production release: merge `staging` → `main` → push `main`, only on explicit request
+- **Never push to feature branches, worktree branches, or arbitrary remote refs unprompted** — only `staging` and `main` are CI-connected
