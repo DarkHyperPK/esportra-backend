@@ -258,7 +258,7 @@ public static class LeaderboardEndpoints
                     ) AS rank
                 FROM filtered
             )
-            SELECT rank, team_id, name, logo_url, country_code, regions,
+            SELECT rank, team_id, name, logo_url, country_code, regions_csv,
                    matches_played, wins, losses,
                    ROUND(COALESCE(wins * 100.0 / NULLIF(matches_played, 0), 0), 1) AS win_rate,
                    tournaments_played, tournaments_won, placement_points, best_placement, rp

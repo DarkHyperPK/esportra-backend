@@ -204,6 +204,7 @@ public sealed class LeaderboardStatsService(IDbConnectionFactory db, ILogger<Lea
 
         await conn.ExecuteAsync(new CommandDefinition(
             "DELETE FROM public.leaderboard_team_stats;",
+            transaction: tx,
             cancellationToken: ct));
 
         var written = await conn.ExecuteAsync(new CommandDefinition(insertSql, new
