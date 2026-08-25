@@ -384,6 +384,9 @@ builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapServi
 builder.Services.AddScoped<Esportra.Core.Tournaments.PrizeDistributionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.PlacementResolutionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.LeaderboardStatsService>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>(sp =>
+    sp.GetRequiredService<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>());
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
@@ -497,7 +500,7 @@ using (var scope = app.Services.CreateScope())
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
         "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
-        "leaderboard-refresh", j => j.ExecuteAsync(CancellationToken.None), "*/2 * * * *");
+        "leaderboard-refresh", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
 
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         j => j.ExecuteAsync(CancellationToken.None));

@@ -5,8 +5,18 @@ namespace Esportra.Api.ScheduledJobs;
 
 /// <summary>
 /// Rebuilds the persisted leaderboard_team_stats table and invalidates the
-/// public leaderboard cache. Runs every 2 minutes (cheap full recompute) plus
-/// once at startup so a fresh deployment is populated immediately.
+/// public leaderboard cache.
+///
+/// Invoked by:
+///   • event triggers (match finalized / winner set / placements resolved) via
+///     LeaderboardRefreshTrigger → BackgroundJob.Enqueue — second-level freshness
+///   • startup enqueue — backfills after deploys/downtime
+///   • hourly Hangfire cron — self-healing sweep for anything a future write
+///     path forgets to trigger
+///
+/// A source-data fingerprint makes duplicate triggers free: when nothing has
+/// changed since the last completed rebuild, the job exits without touching
+/// the table. Only genuinely new data pays for a rebuild.
 /// </summary>
 public sealed class LeaderboardRefreshJob(
     LeaderboardStatsService stats,
@@ -17,7 +27,18 @@ public sealed class LeaderboardRefreshJob(
     {
         try
         {
+            var fingerprint = await stats.GetSourceFingerprintAsync(ct);
+            if (fingerprint is not null && fingerprint == await stats.GetLastFingerprintAsync(ct))
+            {
+                logger.LogDebug("[Leaderboard] Sources unchanged; skipping rebuild.");
+                return;
+            }
+
             await stats.RecomputeAsync(ct);
+
+            if (fingerprint is not null)
+                await stats.MarkRecomputedAsync(fingerprint, ct);
+
             try
             {
                 await cache.RemoveByTagAsync("leaderboard", ct);

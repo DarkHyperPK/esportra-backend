@@ -1,15 +1,20 @@
 using System.Data;
 using Dapper;
+using Microsoft.Extensions.Logging;
 
 namespace Esportra.Api.Services;
 
 public sealed class TournamentWinnerService
 {
     private readonly ILogger<TournamentWinnerService> _logger;
+    private readonly IEnumerable<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>? _leaderboardHooks;
 
-    public TournamentWinnerService(ILogger<TournamentWinnerService> logger)
+    public TournamentWinnerService(
+        ILogger<TournamentWinnerService> logger,
+        IEnumerable<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>? leaderboardHooks = null)
     {
         _logger = logger;
+        _leaderboardHooks = leaderboardHooks;
     }
 
     public async Task SetWinnerAsync(
@@ -31,6 +36,9 @@ public sealed class TournamentWinnerService
             tournamentId,
             winnerId,
             reason);
+
+        await Esportra.Core.Tournaments.LeaderboardSourceChangeHooks.FireAsync(
+            _leaderboardHooks, _logger, $"winner-set:{tournamentId}", ct);
     }
 
     public async Task ClearWinnerAsync(
@@ -52,5 +60,8 @@ public sealed class TournamentWinnerService
             tournamentId,
             reopenCompleted,
             reason);
+
+        await Esportra.Core.Tournaments.LeaderboardSourceChangeHooks.FireAsync(
+            _leaderboardHooks, _logger, $"winner-clear:{tournamentId}", ct);
     }
 }

@@ -227,6 +227,49 @@ public sealed class LeaderboardStatsService(IDbConnectionFactory db, ILogger<Lea
         return written;
     }
 
+    /// <summary>
+    /// Fingerprint of all leaderboard source data (counts + latest write stamps).
+    /// Identical fingerprints mean nothing the leaderboard reads has changed, so a
+    /// refresh run can exit as a no-op — this collapses burst triggers and makes
+    /// the hourly self-healing sweep free while data is static.
+    /// </summary>
+    public async Task<string?> GetSourceFingerprintAsync(CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        return await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+            """
+            SELECT
+                (SELECT COUNT(*)::text FROM public.brkt_matches WHERE status = 'completed') || '|' ||
+                (SELECT COALESCE(MAX(updated_at)::text, '-') FROM public.brkt_matches WHERE status = 'completed') || '|' ||
+                (SELECT COUNT(*)::text FROM public.tournaments WHERE status = 'completed' AND deleted_at IS NULL) || '|' ||
+                (SELECT COALESCE(MAX(updated_at)::text, '-') FROM public.tournaments WHERE status = 'completed' AND deleted_at IS NULL) || '|' ||
+                (SELECT COUNT(*)::text FROM public.tournament_placements)
+            """,
+            cancellationToken: ct));
+    }
+
+    /// <summary>Reads the last stored fingerprint (null if never recomputed).</summary>
+    public async Task<string?> GetLastFingerprintAsync(CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        return await conn.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT last_fingerprint FROM public.leaderboard_refresh_state WHERE id = 1",
+            cancellationToken: ct));
+    }
+
+    /// <summary>Persists the fingerprint after a successful rebuild.</summary>
+    public async Task MarkRecomputedAsync(string fingerprint, CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        await conn.ExecuteAsync(new CommandDefinition(
+            """
+            UPDATE public.leaderboard_refresh_state
+            SET last_fingerprint = @fingerprint, last_completed_at = NOW()
+            WHERE id = 1
+            """,
+            new { fingerprint }, cancellationToken: ct));
+    }
+
     public sealed record TeamLeaderboardSummary(
         int Wins,
         int Losses,

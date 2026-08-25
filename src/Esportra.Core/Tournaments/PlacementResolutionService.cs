@@ -10,8 +10,11 @@ namespace Esportra.Core.Tournaments;
 public sealed class PlacementResolutionService(
     IDbConnectionFactory db,
     StandingsService standings,
-    PrizeDistributionService prizeService)
+    PrizeDistributionService prizeService,
+    Microsoft.Extensions.Logging.ILogger<PlacementResolutionService> logger,
+    IEnumerable<ILeaderboardSourceChangeHook>? leaderboardHooks = null)
 {
+
     public async Task<List<ResolvedPlacement>> ResolveAsync(
         Guid tournamentId,
         bool force = false,
@@ -45,6 +48,11 @@ public sealed class PlacementResolutionService(
 
         await PersistAsync(conn, tournamentId, computation.Placements,
             computation.Currency, computation.PayoutMethod, computation.ManualPayoutNotes, force, ct);
+
+        // Leaderboard source data changed (non-fatal).
+        await LeaderboardSourceChangeHooks.FireAsync(
+            leaderboardHooks, logger, $"placements:{tournamentId}", ct);
+
         return computation.Placements;
     }
 
