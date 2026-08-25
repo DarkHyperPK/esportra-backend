@@ -47,6 +47,17 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     serverOptions.ListenAnyIP(8080);
 });
 
+builder.WebHost.UseSentry(o =>
+{
+    o.Dsn = builder.Configuration["Sentry:Dsn"] ?? "";
+    o.TracesSampleRate = 0.1;
+    o.SendDefaultPii = false;
+    o.MinimumBreadcrumbLevel = LogLevel.Information;
+    o.MinimumEventLevel = LogLevel.Error;
+    // Don't capture 404s or auth failures as Sentry events
+    o.AddExceptionFilterForType<UnauthorizedAccessException>();
+});
+
 // ── Supabase JWT configuration ────────────────────────────────────────────────
 var jwtSecret = builder.Configuration["Supabase:JwtSecret"]
     ?? throw new InvalidOperationException("Supabase:JwtSecret is required.");
@@ -361,6 +372,7 @@ builder.Services.AddScoped<StaffTournamentAuditService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.SelfPlayMatchRoomService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.CheckinWalkoverProcessor>();
 builder.Services.AddScoped<Esportra.Api.Services.CheckinWalkoverNotifier>();
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<OperationsAuditService>();
 builder.Services.AddScoped<GhostModeTokenService>();
@@ -565,6 +577,7 @@ app.UseAuthentication();
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseSessionRevocation(); // Block revoked sessions via server-side blacklist
 app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
+app.UseMiddleware<Esportra.Api.Features.FeatureGateMiddleware>(); // Block API surfaces of features switched off in Admin Centre (409 envelope, 30s cache)
 app.UseGhostMode();        // Validate and audit short-lived impersonation tokens
 app.UseAdminMutationAudit(); // Pre-audit destructive admin mutations before endpoint execution
 app.UseRateLimit();        // Redis sliding-window rate limiter

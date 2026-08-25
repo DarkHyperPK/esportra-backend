@@ -116,17 +116,45 @@ public static class SponsorEndpoints
                     """,
                     new { sid = parsedSponsorId });
 
-                var history = dailyStats.Select(r => new
+                // 5. Daily distinct audience (per-day unique viewers) for the same 90-day window
+                var dailyUniques = (await conn.QueryAsync<UniqueAudienceRow>(new CommandDefinition(
+                    """
+                    SELECT fact_date AS Date,
+                           COUNT(DISTINCT audience_id) AS Uniques
+                    FROM public.sponsor_audience_daily_facts
+                    WHERE sponsor_id = @sid
+                      AND event_type = 'impression'
+                      AND fact_date >= CURRENT_DATE - INTERVAL '90 days'
+                    GROUP BY fact_date
+                    """,
+                    new { sid = parsedSponsorId },
+                    cancellationToken: ct))).AsList();
+
+                var uniquesByDate = dailyUniques.ToDictionary(r => r.Date.ToString("yyyy-MM-dd"), r => r.Uniques);
+
+                var history = dailyStats.Select(r =>
                 {
-                    date = r.stat_date is DateOnly d
+                    var date = r.stat_date is DateOnly d
                         ? d.ToString("yyyy-MM-dd")
-                        : ((DateTime)r.stat_date).ToString("yyyy-MM-dd"),
-                    impressions = (long)r.impressions,
-                    uniqueImpressions = 0L,
-                    clicks = (long)r.clicks,
+                        : ((DateTime)r.stat_date).ToString("yyyy-MM-dd");
+                    return new
+                    {
+                        date,
+                        impressions = (long)r.impressions,
+                        uniqueImpressions = uniquesByDate.GetValueOrDefault(date),
+                        clicks = (long)r.clicks,
+                    };
                 }).ToList();
 
-                var totalUniqueImpressions = history.Sum(h => h.uniqueImpressions);
+                // All-time distinct audience across every recorded day
+                var totalUniqueImpressions = await conn.ExecuteScalarAsync<long>(new CommandDefinition(
+                    """
+                    SELECT COUNT(DISTINCT audience_id)
+                    FROM public.sponsor_audience_daily_facts
+                    WHERE sponsor_id = @sid AND event_type = 'impression'
+                    """,
+                    new { sid = parsedSponsorId },
+                    cancellationToken: ct));
 
                 return Results.Ok(new
                 {
@@ -496,5 +524,11 @@ public static class SponsorEndpoints
             end_date = dict.TryGetValue("end_date", out var ed) ? ed?.ToString() : null,
             created_at = r.created_at?.ToString("o") ?? "",
         };
+    }
+
+    private sealed record UniqueAudienceRow
+    {
+        public DateOnly Date { get; init; }
+        public long Uniques { get; init; }
     }
 }

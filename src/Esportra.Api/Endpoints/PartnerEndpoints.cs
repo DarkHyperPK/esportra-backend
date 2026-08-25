@@ -22,6 +22,11 @@ public static class PartnerEndpoints
         {
             using var conn = db.CreateConnection();
 
+            // URL scheme validation — blocks javascript:/data: injection into admin-rendered links
+            if (!Uri.TryCreate(req.CompanyWebsite, UriKind.Absolute, out var siteUri) ||
+                (siteUri.Scheme != Uri.UriSchemeHttps && siteUri.Scheme != Uri.UriSchemeHttp))
+                return Results.BadRequest(new { error = "Company website must be a valid http(s) URL." });
+
             // Duplicate check by email
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM partner_applications WHERE contact_email = @email AND status NOT IN ('rejected', 'archived') LIMIT 1",

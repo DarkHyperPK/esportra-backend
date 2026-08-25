@@ -9,7 +9,7 @@ namespace Esportra.Api.Services;
 /// Writes org-scoped audit entries when owners or assigned staff act on tournaments.
 /// Captain/player actions are not logged here — callers must only invoke after staff auth passes.
 /// </summary>
-public sealed class StaffTournamentAuditService(ILogger<StaffTournamentAuditService> logger)
+public sealed class StaffTournamentAuditService(ILogger<StaffTournamentAuditService> logger, IHttpContextAccessor httpContextAccessor)
 {
     public Task TryLogMatchActionAsync(
         IDbConnection conn,
@@ -175,13 +175,15 @@ public sealed class StaffTournamentAuditService(ILogger<StaffTournamentAuditServ
 
             await conn.ExecuteAsync(
                 """
-                INSERT INTO staff_audit_log (organization_id, actor_id, action, target_type, target_id, details)
-                VALUES (@orgId, @actorId, @action, @targetType, @targetId, @details::jsonb)
+                INSERT INTO staff_audit_log (organization_id, actor_id, action, target_type, target_id, details, ip_address, user_agent)
+                VALUES (@orgId, @actorId, @action, @targetType, @targetId, @details::jsonb, @ip::inet, @userAgent)
                 """,
                 new
                 {
                     orgId = resolved.Value.OrgId,
                     actorId = actorUserId,
+                    ip = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString(),
+                    userAgent = httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString(),
                     action,
                     targetType,
                     targetId,

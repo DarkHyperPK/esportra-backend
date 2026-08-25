@@ -236,8 +236,8 @@ public static class AdminEndpoints
                     "SELECT COALESCE(full_name, username, id::text) FROM profiles WHERE id = @userId", new { userId });
                 var result = await DeleteUserAsync(userId, conn, supabase, ct);
                 // AuditService uses its own connection — safe to call after conn operations
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Delete, TargetType.User,
                     userId, targetName ?? userId.ToString(), ct: ct);
                 await EvictUserContextAsync(cache, userId, ctx, ct);
@@ -247,7 +247,7 @@ public static class AdminEndpoints
             var actionResult = req.Action switch
             {
                 "update-role" => await UpdateUserRoleAsync(userId, req.Role, conn, ct),
-                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ct),
+                "assign_role" => await AssignRoleToUserAsync(userId, req, conn, userCtx, ctx, audit, ct),
                 "revoke_role" => await RevokeRoleFromUserAsync(userId, req, conn, userCtx, ct),
                 _ => Results.BadRequest(new { error = $"Unknown action: {req.Action}" })
             };
@@ -306,38 +306,6 @@ public static class AdminEndpoints
             return Results.Ok(sponsors);
         });
 
-        // ── GET /api/sponsors/{id}/stats ──────────────────────────────────────
-        app.MapGet("/api/sponsors/{id}/stats", async (
-            Guid id,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE event_type = 'impression')   AS impressions,
-                    COUNT(*) FILTER (WHERE event_type = 'click')        AS clicks,
-                    COUNT(DISTINCT visitor_id)                          AS unique_visitors
-                FROM sponsor_impressions
-                WHERE sponsor_id = @id
-                """, new { id });
-
-            long impressions = stats?.impressions ?? 0;
-            long clicks = stats?.clicks ?? 0;
-            var ctr = impressions > 0
-                ? $"{Math.Round((double)clicks / impressions * 100, 2)}%"
-                : "0%";
-
-            return Results.Ok(new
-            {
-                impressions,
-                clicks,
-                unique_visitors = (long)(stats?.unique_visitors ?? 0),
-                ctr,
-            });
-        });
-
         // Replaces: invite-sponsor Edge Function
         app.MapPost("/api/sponsors/invite", async (
             [FromBody] InviteSponsorRequest req,
@@ -381,6 +349,7 @@ public static class AdminEndpoints
             [FromQuery] string? joined_from = null,
             [FromQuery] string? joined_to = null,
             [FromQuery] string? has_team = null,
+            [FromQuery] string? verified = null,
             [FromQuery] string? sort_by = null,
             [FromQuery] string? sort_dir = null,
             CancellationToken ct = default) =>
@@ -425,6 +394,13 @@ public static class AdminEndpoints
                 conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
             else if (has_team == "false")
                 conditions.Add("NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+
+            // "Verified" = holds an approved, active licensed role (organizer / venue_owner / …).
+            // NOT platform-wide verification — licenses are issued through the license system.
+            if (verified == "true")
+                conditions.Add("EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
+            else if (verified == "false")
+                conditions.Add("NOT EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
 
             var where = conditions.Count > 0
                 ? "WHERE " + string.Join(" AND ", conditions)
@@ -518,38 +494,6 @@ public static class AdminEndpoints
         }).RequireAuthorization("Admin");
 
 
-        // ── GET /api/admin/stats ──────────────────────────────────────────────
-        // Dashboard summary stats
-        app.MapGet("/api/admin/stats", async (
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var row = await conn.QuerySingleAsync<dynamic>(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM profiles) AS total_users,
-                    (SELECT COUNT(*) FROM venues) AS active_venues,
-                    (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments,
-                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications,
-                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '1 day') AS new_users_today,
-                    (SELECT COUNT(*) FROM venues WHERE status = 'pending_review' AND deleted_at IS NULL) AS pending_venues,
-                    (SELECT COUNT(*) FROM licenses WHERE status = 'pending') AS pending_licenses
-                """);
-            return Results.Ok(new
-            {
-                totalUsers = (long)row.total_users,
-                activeVenues = (long)row.active_venues,
-                activeTournaments = (long)row.active_tournaments,
-                totalRevenue = 0,
-                pendingVerifications = (long)row.pending_verifications,
-                totalBookings = 0,
-                newUsersToday = (long)row.new_users_today,
-                pendingPartners = 0,
-                pendingVenues = (long)row.pending_venues,
-                pendingLicenses = (long)row.pending_licenses
-            });
-        }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/analytics ────────────────────────────────────────────
         // Replaces 8 parallel supabase count queries
@@ -564,177 +508,41 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM profiles) AS total_users,
                     (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
                     (SELECT COUNT(*) FROM venues) AS total_venues,
-                    (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool,
                     (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS new_users_this_week,
                     (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS new_tournaments_this_week,
                     (SELECT COUNT(*) FROM venue_bookings) AS total_bookings,
                     (SELECT COUNT(*) FROM tournaments WHERE status = 'completed') AS completed_tournaments
                 """);
-            return Results.Ok(stats);
-        }).RequireAuthorization("Admin");
 
-        // ── GET /api/admin/system-stats ─────────────────────────────────────────
-        // Replaces supabase.rpc('get_system_stats') + fallback count queries
-        app.MapGet("/api/admin/system-stats", async (
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var stats = await conn.QuerySingleAsync<dynamic>(
+            // Prize pools are multi-currency — never sum across currencies.
+            // Grouped per currency; missing currency values land in 'unspecified'.
+            var prizePoolsByCurrency = await conn.QueryAsync<dynamic>(new CommandDefinition(
                 """
-                SELECT
-                    (SELECT COUNT(*) FROM profiles) AS total_users,
-                    (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
-                    (SELECT COUNT(*) FROM venues) AS total_venues,
-                    (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool
-                """);
-            return Results.Ok(stats);
-        }).RequireAuthorization("Admin");
-
-        // ── GET /api/admin/dashboard-stats ──────────────────────────────────────
-        // Enhanced stats with growth metrics and pending action counts
-        app.MapGet("/api/admin/dashboard-stats", async (
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            using var conn = db.CreateConnection();
-            var row = await conn.QuerySingleAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT
-                        -- Core counts
-                        (SELECT COUNT(*) FROM profiles) AS total_users,
-                        (SELECT COUNT(*) FROM tournaments) AS total_tournaments,
-                        (SELECT COUNT(*) FROM venues WHERE deleted_at IS NULL) AS total_venues,
-                        (SELECT COALESCE(SUM(COALESCE(prize_pool, 0)), 0) FROM tournaments) AS total_prize_pool,
-
-                        -- Today
-                        (SELECT COUNT(*) FROM profiles WHERE created_at >= CURRENT_DATE) AS signups_today,
-                        (SELECT COUNT(*) FROM tournaments WHERE created_at >= CURRENT_DATE) AS tournaments_created_today,
-
-                        -- This week
-                        (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS signups_this_week,
-                        (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_this_week,
-
-                        -- Last week (for comparison)
-                        (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days') AS signups_last_week,
-                        (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days') AS tournaments_last_week,
-
-                        -- Active
-                        (SELECT COUNT(*) FROM tournaments WHERE status IN ('open', 'check_in', 'ongoing')) AS active_tournaments,
-                        (SELECT COUNT(DISTINCT id) FROM profiles WHERE updated_at >= NOW() - INTERVAL '24 hours') AS active_users_24h,
-
-                        -- Pending actions
-                        (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications,
-                        (SELECT COUNT(*) FROM venues WHERE status = 'pending_review' AND deleted_at IS NULL) AS pending_venues,
-                        (SELECT COUNT(*) FROM licenses WHERE status = 'pending') AS pending_licenses,
-                        (SELECT COUNT(*) FROM disputes WHERE status = 'open') AS pending_disputes,
-
-                        -- Completed
-                        (SELECT COUNT(*) FROM tournaments WHERE status = 'completed') AS completed_tournaments,
-                        (SELECT COUNT(*) FROM venue_bookings) AS total_bookings
-                    """,
-                    cancellationToken: ct));
-
-            // Cast dynamic fields to compute growth percentages
-            var dict = (IDictionary<string, object>)row;
-            var signupsThisWeek = Convert.ToDecimal(dict["signups_this_week"]);
-            var signupsLastWeek = Convert.ToDecimal(dict["signups_last_week"]);
-            var tournamentsThisWeek = Convert.ToDecimal(dict["tournaments_this_week"]);
-            var tournamentsLastWeek = Convert.ToDecimal(dict["tournaments_last_week"]);
-
-            var signupsGrowth = signupsLastWeek > 0
-                ? Math.Round((signupsThisWeek - signupsLastWeek) / signupsLastWeek * 100, 1)
-                : 0m;
-            var tournamentsGrowth = tournamentsLastWeek > 0
-                ? Math.Round((tournamentsThisWeek - tournamentsLastWeek) / tournamentsLastWeek * 100, 1)
-                : 0m;
+                SELECT COALESCE(NULLIF(currency, ''), 'unspecified') AS currency,
+                       SUM(prize_pool) AS total,
+                       COUNT(*) AS tournament_count
+                FROM tournaments
+                WHERE prize_pool IS NOT NULL AND prize_pool > 0
+                GROUP BY COALESCE(NULLIF(currency, ''), 'unspecified')
+                ORDER BY total DESC
+                """, cancellationToken: ct));
 
             return Results.Ok(new
             {
-                totalUsers = dict["total_users"],
-                totalTournaments = dict["total_tournaments"],
-                totalVenues = dict["total_venues"],
-                totalPrizePool = dict["total_prize_pool"],
-                signupsToday = dict["signups_today"],
-                tournamentsCreatedToday = dict["tournaments_created_today"],
-                signupsThisWeek = dict["signups_this_week"],
-                tournamentsThisWeek = dict["tournaments_this_week"],
-                signupsLastWeek = dict["signups_last_week"],
-                tournamentsLastWeek = dict["tournaments_last_week"],
-                activeTournaments = dict["active_tournaments"],
-                activeUsers24h = dict["active_users_24h"],
-                pendingVerifications = dict["pending_verifications"],
-                pendingVenues = dict["pending_venues"],
-                pendingLicenses = dict["pending_licenses"],
-                pendingDisputes = dict["pending_disputes"],
-                completedTournaments = dict["completed_tournaments"],
-                totalBookings = dict["total_bookings"],
-                signupsGrowth = signupsGrowth,
-                tournamentsGrowth = tournamentsGrowth
+                total_users = (long)stats.total_users,
+                total_tournaments = (long)stats.total_tournaments,
+                total_venues = (long)stats.total_venues,
+                prize_pools_by_currency = prizePoolsByCurrency,
+                new_users_this_week = (long)stats.new_users_this_week,
+                new_tournaments_this_week = (long)stats.new_tournaments_this_week,
+                total_bookings = (long)stats.total_bookings,
+                completed_tournaments = (long)stats.completed_tournaments
             });
         }).RequireAuthorization("Admin");
 
-        // ── GET /api/admin/activity-feed ────────────────────────────────────────
-        // Recent staff audit log entries for the admin dashboard
-        app.MapGet("/api/admin/activity-feed", async (
-            [FromQuery] int limit,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            var clampedLimit = Math.Clamp(limit <= 0 ? 20 : limit, 1, 50);
-            using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT sal.id, sal.actor_id, p.username AS actor_name, p.avatar_url AS actor_avatar,
-                           sal.action, sal.target_type, sal.target_id, sal.created_at
-                    FROM staff_audit_log sal
-                    LEFT JOIN profiles p ON p.id = sal.actor_id
-                    ORDER BY sal.created_at DESC
-                    LIMIT @limit
-                    """,
-                    parameters: new { limit = clampedLimit },
-                    cancellationToken: ct));
-            return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
 
-        // ── GET /api/admin/trends ───────────────────────────────────────────────
-        // Daily signup and tournament creation counts for chart rendering
-        app.MapGet("/api/admin/trends", async (
-            [FromQuery] int days,
-            IDbConnectionFactory db,
-            CancellationToken ct) =>
-        {
-            var clampedDays = Math.Clamp(days <= 0 ? 30 : days, 7, 90);
-            using var conn = db.CreateConnection();
 
-            var signupRows = await conn.QueryAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT d::date AS date, COUNT(p.id) AS count
-                    FROM generate_series(CURRENT_DATE - (@days::int) * INTERVAL '1 day', CURRENT_DATE, '1 day') d
-                    LEFT JOIN profiles p ON p.created_at::date = d::date
-                    GROUP BY d::date
-                    ORDER BY d::date
-                    """,
-                    parameters: new { days = clampedDays },
-                    cancellationToken: ct));
 
-            var tournamentRows = await conn.QueryAsync<dynamic>(
-                new CommandDefinition(
-                    """
-                    SELECT d::date AS date, COUNT(t.id) AS count
-                    FROM generate_series(CURRENT_DATE - (@days::int) * INTERVAL '1 day', CURRENT_DATE, '1 day') d
-                    LEFT JOIN tournaments t ON t.created_at::date = d::date
-                    GROUP BY d::date
-                    ORDER BY d::date
-                    """,
-                    parameters: new { days = clampedDays },
-                    cancellationToken: ct));
-
-            return Results.Ok(new { userSignups = signupRows, tournamentCreations = tournamentRows });
-        }).RequireAuthorization("Admin");
 
         // ── CRUD: Sponsors ──────────────────────────────────────────────────────
         app.MapPost("/api/sponsors", async (
@@ -849,7 +657,6 @@ public static class AdminEndpoints
             await conn.ExecuteAsync("DELETE FROM sponsor_audience_daily_facts WHERE sponsor_id = @id", new { id }, txn);
             await conn.ExecuteAsync("DELETE FROM sponsor_audience_identities WHERE sponsor_id = @id", new { id }, txn);
             await conn.ExecuteAsync("DELETE FROM sponsor_analytics_events WHERE sponsor_id = @id", new { id }, txn);
-            await conn.ExecuteAsync("DELETE FROM sponsor_impressions WHERE sponsor_id = @id", new { id }, txn);
             await conn.ExecuteAsync("DELETE FROM sponsors WHERE id = @id", new { id }, txn);
             txn.Commit();
             return Results.Ok(new { success = true });
@@ -910,8 +717,8 @@ public static class AdminEndpoints
                 logger.LogWarning(ex, "Cache eviction failed for suspended user {UserId}", userId);
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Suspend, TargetType.User,
                 userId, targetName ?? userId.ToString(),
                 new
@@ -961,8 +768,8 @@ public static class AdminEndpoints
                 // Non-critical — suspension columns are cleared in DB
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Unsuspend, TargetType.User,
                 userId, targetName ?? userId.ToString(), ct: ct);
             return Results.Ok(new { success = true });
@@ -1047,8 +854,8 @@ public static class AdminEndpoints
                 // Audit each deletion
                 foreach (var userId in safeIds)
                 {
-                    await audit.LogAsync(
-                        userCtx.UserIdGuid, userCtx.Email,
+                    await audit.LogFromHttp(
+                        ctx, userCtx,
                         ActionType.Delete, TargetType.User,
                         userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
                         new { bulk = true, batchSize = safeIds.Length }, ct: ct);
@@ -1118,8 +925,8 @@ public static class AdminEndpoints
                 : new { bulk = true, batchSize = safeIds.Length };
             foreach (var userId in safeIds)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     actionType, TargetType.User,
                     userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
                     auditDetails, ct: ct);
@@ -1516,8 +1323,8 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "A role with this name or key already exists." });
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Create, TargetType.System,
                 roleId, req.Name,
                 new { role_key = req.Key, permission_count = req.PermissionIds.Length },
@@ -1627,8 +1434,8 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "A role with this name already exists." });
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Update, TargetType.System,
                 roleId, req.Name,
                 new
@@ -1702,8 +1509,8 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "Cannot delete role: users were assigned after your check." });
             }
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Delete, TargetType.System,
                 roleId, (string)existingRole.name,
                 new { role_key = (string)existingRole.key },
@@ -1815,6 +1622,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -2016,8 +1824,8 @@ public static class AdminEndpoints
                 _ => ActionType.Update
             };
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 actionType, TargetType.Tournament,
                 id, (string?)existing.name ?? id.ToString(),
                 new
@@ -2107,8 +1915,8 @@ public static class AdminEndpoints
             // Audit each affected tournament
             foreach (var id in req.TournamentIds)
             {
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     actionType, TargetType.Tournament,
                     id, targetTournaments.GetValueOrDefault(id, id.ToString()),
                     new { bulk = true, batchSize = req.TournamentIds.Length, action = req.Action }, ct: ct);
@@ -2189,6 +1997,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.DisputesView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
@@ -2407,63 +2216,108 @@ public static class AdminEndpoints
             return Results.Ok(new { success = true, banLifted = true, participantRestored = restored });
         }).RequireAuthorization("Admin");
         app.MapGet("/api/admin/audit-logs", async (
-            Guid? organizationId,
             [FromQuery] string? search = null,
+            [FromQuery] string? action = null,
             [FromQuery] string? target_type = null,
+            [FromQuery] string? source = null,
+            [FromQuery] string? severity = null,
+            [FromQuery] string? actor = null,
             [FromQuery] string? from = null,
             [FromQuery] string? to = null,
-            int page = 1,
-            int limit = 50,
+            [FromQuery] int page = 1,
+            [FromQuery] int limit = 50,
             HttpContext ctx = default!,
             IDbConnectionFactory db = default!,
             CancellationToken ct = default) =>
         {
             limit = Math.Clamp(limit, 1, 100);
+            page = Math.Max(page, 1);
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
-            var conditions = new List<string>();
-            conditions.Add("(@organizationId IS NULL OR sal.organization_id = @organizationId)");
-
-            if (!string.IsNullOrWhiteSpace(search))
-                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR sal.action ILIKE @search ESCAPE '\\' OR sal.target_type ILIKE @search ESCAPE '\\')");
-            if (!string.IsNullOrWhiteSpace(target_type))
-                conditions.Add("sal.target_type = @target_type");
-
+            var searchPattern = string.IsNullOrWhiteSpace(search) ? null : $"%{search.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
+            var actorPattern = string.IsNullOrWhiteSpace(actor) ? null : $"%{actor.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%";
+            var actionPrefix = string.IsNullOrWhiteSpace(action) ? null : action.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
             DateTimeOffset? fromDate = null;
             DateTimeOffset? toDate = null;
-            if (!string.IsNullOrWhiteSpace(from) && DateTimeOffset.TryParse(from, out var fd))
-            {
-                fromDate = fd;
-                conditions.Add("sal.created_at >= @fromDate");
-            }
-            if (!string.IsNullOrWhiteSpace(to) && DateTimeOffset.TryParse(to, out var td))
-            {
-                toDate = td;
-                conditions.Add("sal.created_at <= @toDate");
-            }
+            if (!string.IsNullOrWhiteSpace(from) && DateTimeOffset.TryParse(from, out var fd)) fromDate = fd;
+            if (!string.IsNullOrWhiteSpace(to) && DateTimeOffset.TryParse(to, out var td)) toDate = td.AddDays(1);
 
-            var where = "WHERE " + string.Join(" AND ", conditions);
-
-            var sql = $"""
-                SELECT sal.*, p.username AS actor_name
-                FROM staff_audit_log sal
-                LEFT JOIN profiles p ON p.id = sal.actor_id
-                {where}
-                ORDER BY sal.created_at DESC
-                LIMIT @limit OFFSET @offset
+            // Unified audit stream: staff/org actions + platform admin actions, normalized.
+            // Target names are resolved at write time into details (matchup/tournament_name/etc.)
+            // and surfaced as the human-readable target label with UUID fallback.
+            const string unionSql = """
+                SELECT * FROM (
+                    SELECT 'staff'::text AS source,
+                           sal.id::text AS id,
+                           sal.created_at,
+                           COALESCE(p.username, 'unknown') AS actor_name,
+                           sal.actor_id::text AS actor_id,
+                           sal.action AS action_type,
+                           sal.target_type,
+                           sal.target_id::text AS target_id,
+                           COALESCE(sal.details->>'matchup', sal.details->>'match_label', sal.details->>'tournament_name', sal.details->>'target_label', sal.target_id::text) AS target_name,
+                           sal.details::text AS details,
+                           COALESCE(sal.ip_address::text, '') AS ip_address,
+                           COALESCE(sal.user_agent, '') AS user_agent,
+                           COALESCE(sal.severity, 'info') AS severity
+                    FROM staff_audit_log sal
+                    LEFT JOIN profiles p ON p.id = sal.actor_id
+                    UNION ALL
+                    SELECT 'platform'::text,
+                           al.id::text,
+                           al.created_at,
+                           COALESCE(p.username, al.admin_name, 'system'),
+                           al.admin_id::text,
+                           al.action_type,
+                           al.target_type,
+                           al.target_id::text,
+                           COALESCE(al.target_name, al.target_id::text),
+                           al.details::text,
+                           COALESCE(al.ip_address::text, ''),
+                           COALESCE(al.user_agent, ''),
+                           COALESCE(al.severity, 'info')
+                    FROM audit_logs al
+                    LEFT JOIN profiles p ON p.id = al.admin_id
+                ) u
+                WHERE (@searchPattern::text IS NULL OR u.actor_name ILIKE @searchPattern ESCAPE '\'
+                          OR u.action_type ILIKE @searchPattern ESCAPE '\'
+                          OR u.target_name ILIKE @searchPattern ESCAPE '\'
+                          OR u.target_id ILIKE @searchPattern ESCAPE '\')
+                  AND (@actionPrefix::text IS NULL OR u.action_type ILIKE @actionPrefix || '%')
+                  AND (@targetType::text IS NULL OR u.target_type = @targetType)
+                  AND (@source::text IS NULL OR u.source = @source)
+                  AND (@severity::text IS NULL OR u.severity = @severity)
+                  AND (@actorPattern::text IS NULL OR u.actor_name ILIKE @actorPattern ESCAPE '\')
+                  AND (@fromDate::timestamptz IS NULL OR u.created_at >= @fromDate)
+                  AND (@toDate::timestamptz IS NULL OR u.created_at <= @toDate)
                 """;
 
-            var rows = await conn.QueryAsync<dynamic>(sql,
-                new { organizationId, search = EscapeLike(search), target_type, fromDate, toDate, limit, offset = (page - 1) * limit });
+            var parameters = new
+            {
+                searchPattern,
+                actionPrefix,
+                targetType = target_type,
+                source,
+                severity,
+                actorPattern,
+                fromDate,
+                toDate,
+                limit,
+                offset = (page - 1) * limit
+            };
 
-            var countSql = $"SELECT COUNT(*) FROM staff_audit_log sal LEFT JOIN profiles p ON p.id = sal.actor_id {where}";
-            var total = await conn.ExecuteScalarAsync<int>(countSql,
-                new { organizationId, search = EscapeLike(search), target_type, fromDate, toDate });
+            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                $"{unionSql} ORDER BY u.created_at DESC LIMIT @limit OFFSET @offset",
+                parameters, cancellationToken: ct));
 
-            return Results.Ok(new { data = rows, count = total });
+            var total = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+                $"SELECT COUNT(*) FROM ({unionSql}) counted",
+                parameters, cancellationToken: ct));
+
+            return Results.Ok(new { data = rows, count = total, page, limit });
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/audit-logs ─────────────────────────────────────────
@@ -2716,6 +2570,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var rows = await conn.QueryAsync<dynamic>(
@@ -2754,7 +2609,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationApprove)) return Results.Forbid();
             if (req.Status is not ("approved" or "rejected"))
                 return Results.BadRequest(new { error = "Status must be approved or rejected." });
 
@@ -2826,7 +2681,7 @@ public static class AdminEndpoints
                         "broadcaster" => "ESP-BR",
                         _ => "ESP-XX"
                     };
-                    existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                    existingLicenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO licenses (user_id, license_id, license_type, status, issued_at, expires_at)
@@ -2908,7 +2763,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationApprove)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             await conn.ExecuteAsync(
@@ -2953,7 +2808,7 @@ public static class AdminEndpoints
                             "broadcaster" => "ESP-BR",
                             _ => "ESP-XX"
                         };
-                        existingLicenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                        existingLicenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
 
                         await conn.ExecuteAsync(
                             """
@@ -3005,6 +2860,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesView)) return Results.Forbid();
 
             try
             {
@@ -3073,7 +2929,7 @@ public static class AdminEndpoints
             var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT p.id, p.username, p.email, p.full_name, p.avatar_url, p.bio, p.location, p.country_code,
-                       p.date_of_birth, p.riot_tag, p.social_links, p.card_image_url,
+                       p.date_of_birth, p.riot_tag, p.steam_tag, p.social_links, p.card_image_url,
                        p.banner_url, p.is_admin, p.admin_roles, p.is_suspended,
                        p.suspension_reason, p.suspension_type, p.suspension_until, p.settings,
                        p.created_at, p.updated_at,
@@ -3087,6 +2943,14 @@ public static class AdminEndpoints
                 """,
                 new { userId });
             if (profile is null) return Results.NotFound(new { error = "User not found" });
+
+            // Dapper returns jsonb as a raw string when mapping to dynamic — deserialize
+            // so the API payload carries a real JSON object, not a double-encoded string.
+            if (profile is IDictionary<string, object?> profileDict && profileDict["social_links"] is string socialLinksJson && socialLinksJson.Length > 0)
+            {
+                try { profileDict["social_links"] = JsonSerializer.Deserialize<JsonElement>(socialLinksJson); }
+                catch (JsonException) { /* keep raw string on malformed json */ }
+            }
 
             async Task<IEnumerable<dynamic>> SafeQueryAsync(string segment, string sql, object? param = null)
             {
@@ -3163,7 +3027,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesCreate)) return Results.Forbid();
             var licenseType = (req.LicenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (licenseType is not ("organizer" or "venue_owner" or "broadcaster"))
                 return Results.BadRequest(new { error = "Invalid license type." });
@@ -3196,7 +3060,7 @@ public static class AdminEndpoints
                     "broadcaster" => "ESP-BR",
                     _ => "ESP-XX"
                 };
-                licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                licenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
 
                 await conn.ExecuteAsync(
                     """
@@ -3241,7 +3105,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesRevoke)) return Results.Forbid();
             var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
                 return Results.BadRequest(new { success = false, error = "Invalid license type." });
@@ -3292,7 +3156,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesReinstate)) return Results.Forbid();
             var normalizedType = (licenseType ?? string.Empty).Trim().ToLowerInvariant();
             if (normalizedType is not ("organizer" or "venue_owner" or "broadcaster"))
                 return Results.BadRequest(new { success = false, error = "Invalid license type." });
@@ -3348,11 +3212,12 @@ public static class AdminEndpoints
         app.MapPost("/api/admin/licenses/backfill", async (
             HttpContext ctx,
             IDbConnectionFactory db,
+            AuditService audit,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Permissions.Contains(Permissions.UsersEdit)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesCreate)) return Results.Forbid();
 
             AdminBackfillLicensesRequest? req = null;
             try { req = await ctx.Request.ReadFromJsonAsync<AdminBackfillLicensesRequest>(ct); } catch { }
@@ -3392,7 +3257,7 @@ public static class AdminEndpoints
 
             foreach (var userId in userIds)
             {
-                var licenseId = $"{prefix}-{Random.Shared.Next(100000, 999999)}";
+                var licenseId = $"{prefix}-{Guid.NewGuid().ToString("N")[..10].ToUpper()}";
 
                 // Check if a revoked/suspended license already exists for this user+type
                 var existingId = await conn.QuerySingleOrDefaultAsync<string>(
@@ -3435,6 +3300,16 @@ public static class AdminEndpoints
                 issued++;
             }
 
+            if (issued > 0)
+            {
+                await audit.LogFromHttp(
+                    ctx, userCtx,
+                    ActionType.Create, TargetType.System,
+                    userCtx.UserIdGuid, $"license backfill ({licenseType})",
+                    new { license_type = licenseType, issued_count = issued },
+                    AuditSeverity.High, ct);
+            }
+
             return Results.Ok(new { issued });
         }).RequireAuthorization("Admin");
 
@@ -3443,15 +3318,36 @@ public static class AdminEndpoints
             Guid requestId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            AuditService audit,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.VerificationDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            var meta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT vr.requested_role, COALESCE(p.username, p.email, vr.id::text) AS username
+                FROM verification_requests vr
+                LEFT JOIN profiles p ON p.id = vr.user_id
+                WHERE vr.id = @id
+                """, new { id = requestId });
+            if (meta is null) return Results.NotFound(new { error = "Verification request not found" });
+
             var deleted = await conn.ExecuteAsync(
                 "DELETE FROM verification_requests WHERE id = @id",
                 new { id = requestId });
+
+            if (deleted > 0)
+            {
+                await audit.LogFromHttp(
+                    ctx, userCtx,
+                    ActionType.Delete, TargetType.User,
+                    requestId, $"verification request ({meta.requested_role}) for {meta.username}",
+                    new { verification_request_id = requestId, role = (string)meta.requested_role },
+                    AuditSeverity.High, ct);
+            }
 
             return deleted > 0
                 ? Results.Ok(new { success = true })
@@ -3463,15 +3359,36 @@ public static class AdminEndpoints
             Guid licenseId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            AuditService audit,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.LicensesDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            var meta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT l.license_id, l.license_type, COALESCE(p.username, p.email, l.user_id::text) AS username
+                FROM licenses l
+                LEFT JOIN profiles p ON p.id = l.user_id
+                WHERE l.id = @id
+                """, new { id = licenseId });
+            if (meta is null) return Results.NotFound(new { error = "License not found" });
+
             var deleted = await conn.ExecuteAsync(
                 "DELETE FROM licenses WHERE id = @id",
                 new { id = licenseId });
+
+            if (deleted > 0)
+            {
+                await audit.LogFromHttp(
+                    ctx, userCtx,
+                    ActionType.Delete, TargetType.User,
+                    licenseId, $"license {meta.license_id} ({meta.license_type}) for {meta.username}",
+                    new { license_id = (string)meta.license_id, license_type = (string)meta.license_type },
+                    AuditSeverity.High, ct);
+            }
 
             return deleted > 0
                 ? Results.Ok(new { success = true })
@@ -4925,41 +4842,6 @@ public static class AdminEndpoints
             return Results.Ok(new { data = rows, total, page, limit = clampedLimit });
         }).RequireAuthorization("Admin");
 
-        // Also query staff_audit_log for legacy entries
-        // ── GET /api/admin/entity-history-legacy/{targetType}/{targetId} ──────────
-        app.MapGet("/api/admin/entity-history-legacy/{targetType}/{targetId}", async (
-            string targetType,
-            Guid targetId,
-            HttpContext ctx,
-            IDbConnectionFactory db,
-            [FromQuery] int limit = 20,
-            CancellationToken ct = default) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
-
-            var normalizedType = targetType.ToLowerInvariant();
-
-            using var conn = db.CreateConnection();
-
-            var sql = """
-                SELECT sal.id, sal.actor_id AS admin_id, p.username AS admin_name,
-                       sal.action AS action_type, sal.target_type,
-                       sal.target_id, sal.details, sal.created_at
-                FROM staff_audit_log sal
-                LEFT JOIN profiles p ON p.id = sal.actor_id
-                WHERE sal.target_type = @targetType AND sal.target_id = @targetId
-                ORDER BY sal.created_at DESC
-                LIMIT @limit
-                """;
-
-            var rows = await conn.QueryAsync<dynamic>(new CommandDefinition(
-                sql, new { targetType = normalizedType, targetId, limit = Math.Clamp(limit, 1, 50) }, cancellationToken: ct));
-            DapperJsonbHelper.FixJsonb(rows);
-
-            return Results.Ok(rows);
-        }).RequireAuthorization("Admin");
 
         // ══════════════════════════════════════════════════════════════════════════
         // ── ADMIN ALERTS ──────────────────────────────────────────────────────────
@@ -4978,7 +4860,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5043,7 +4925,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5070,7 +4952,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsAcknowledge)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5092,7 +4974,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsResolve)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5154,7 +5036,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.AlertsBulkAcknowledge)) return Results.Forbid();
 
             if (req.AlertIds is null || req.AlertIds.Length == 0)
                 return Results.BadRequest(new { error = "No alert IDs provided" });
@@ -5298,7 +5180,7 @@ public static class AdminEndpoints
                 """
                 (
                   EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.admin_id)
-                  OR EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = al.target_id)
+                  OR EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id::text = al.target_id)
                 )
                 """
             };
@@ -5439,8 +5321,8 @@ public static class AdminEndpoints
             }
 
             // Audit the session revocation
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Logout, TargetType.User,
                 userId, targetName,
                 new { reason = req.Reason, revokedBy = userCtx.Email, action = "session_revoke" },
@@ -5497,7 +5379,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5533,7 +5415,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             // Validate IP format
             if (string.IsNullOrWhiteSpace(req.IpAddress) ||
@@ -5567,8 +5449,8 @@ public static class AdminEndpoints
                     expiresAt = expiresAt?.UtcDateTime
                 }, cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Create, TargetType.System,
                     (Guid)entry!.id, "ip_allowlist",
                     new { ip_address = ipAddress, label },
@@ -5602,7 +5484,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5675,8 +5557,8 @@ public static class AdminEndpoints
             var updated = await conn.QueryFirstOrDefaultAsync<dynamic>(
                 new CommandDefinition(sql, parameters, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Update, TargetType.System,
                 id, "ip_allowlist",
                 new
@@ -5708,7 +5590,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5737,8 +5619,8 @@ public static class AdminEndpoints
                 "DELETE FROM admin_ip_allowlist WHERE id = @id",
                 new { id }, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Delete, TargetType.System,
                 id, "ip_allowlist",
                 new { ip_address = (string)existing.ip_address, label = (string)existing.label },
@@ -5755,7 +5637,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5788,7 +5670,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
             using var conn = db.CreateConnection();
             // Wrap the read-check-update sequence in a transaction to prevent TOCTOU races
@@ -5814,8 +5696,7 @@ public static class AdminEndpoints
                     return Results.BadRequest(new { error = "Cannot enable with no active IPs." });
 
                 // Check that the caller's IP is in the allowlist
-                var clientIp = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
-                    ?? ctx.Connection.RemoteIpAddress?.ToString();
+                var clientIp = ctx.Connection.RemoteIpAddress?.ToString();
 
                 if (string.IsNullOrEmpty(clientIp))
                     return Results.BadRequest(new { error = "Cannot determine your IP address." });
@@ -5843,8 +5724,8 @@ public static class AdminEndpoints
 
             txn.Commit();
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.SettingsUpdate, TargetType.System,
                 userCtx.UserIdGuid, "ip_allowlist_toggle",
                 new { enabled = newEnabled },
@@ -5865,7 +5746,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -5918,7 +5799,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsCreate)) return Results.Forbid();
 
             // ── Validation ───────────────────────────────────────────────────
             if (string.IsNullOrWhiteSpace(req.Name))
@@ -5997,8 +5878,8 @@ public static class AdminEndpoints
                 createdBy = userCtx.UserIdGuid
             }, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Create, TargetType.System,
                 id, req.Name.Trim(),
                 new { reportType = req.ReportType, frequency = req.Frequency },
@@ -6039,7 +5920,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsEdit)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6100,8 +5981,8 @@ public static class AdminEndpoints
             var sql = $"UPDATE report_schedules SET {string.Join(", ", sets)} WHERE id = @id";
             await conn.ExecuteAsync(new CommandDefinition(sql, p, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Update, TargetType.System,
                 id, id.ToString(),
                 new { updated = sets },
@@ -6141,7 +6022,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsDelete)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6152,8 +6033,8 @@ public static class AdminEndpoints
             await conn.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM report_schedules WHERE id = @id", new { id }, cancellationToken: ct));
 
-            await audit.LogAsync(
-                userCtx.UserIdGuid, userCtx.Email,
+            await audit.LogFromHttp(
+                ctx, userCtx,
                 ActionType.Delete, TargetType.System,
                 id, name,
                 ct: ct);
@@ -6171,7 +6052,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsRun)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6240,8 +6121,8 @@ public static class AdminEndpoints
                     "UPDATE report_schedules SET last_run_at = NOW() WHERE id = @id",
                     new { id }, cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Create, TargetType.System,
                     id, $"manual_run:{reportType}",
                     new { runId, rowCount },
@@ -6293,7 +6174,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.ReportsView)) return Results.Forbid();
 
             if (page < 1) page = 1;
             if (limit < 1) limit = 20;
@@ -6344,7 +6225,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprView)) return Results.Forbid();
 
             if (page < 1) page = 1;
             if (limit < 1) limit = 1;
@@ -6412,7 +6293,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprProcess)) return Results.Forbid();
 
             if (req.Action is not ("approve" or "reject"))
                 return Results.BadRequest(new { error = "Action must be 'approve' or 'reject'." });
@@ -6442,8 +6323,8 @@ public static class AdminEndpoints
                     """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "" },
                     cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Reject, TargetType.User,
                     targetUserId, targetUserId.ToString(),
                     new { gdpr_request_id = id, request_type = requestType },
@@ -6546,8 +6427,8 @@ public static class AdminEndpoints
                         """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "", downloadUrl = dataUri },
                         cancellationToken: ct));
 
-                    await audit.LogAsync(
-                        userCtx.UserIdGuid, userCtx.Email,
+                    await audit.LogFromHttp(
+                        ctx, userCtx,
                         ActionType.Approve, TargetType.User,
                         targetUserId, targetUserId.ToString(),
                         new { gdpr_request_id = id, request_type = "export" },
@@ -6592,8 +6473,8 @@ public static class AdminEndpoints
                     """, new { id, adminId = userCtx.UserIdGuid, notes = req.Notes ?? "" },
                     cancellationToken: ct));
 
-                await audit.LogAsync(
-                    userCtx.UserIdGuid, userCtx.Email,
+                await audit.LogFromHttp(
+                    ctx, userCtx,
                     ActionType.Delete, TargetType.User,
                     targetUserId, anonUsername,
                     new { gdpr_request_id = id, request_type = "deletion", action = "anonymized" },
@@ -6625,7 +6506,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprView)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -6664,7 +6545,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains("super_admin")) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.GdprAudit)) return Results.Forbid();
 
             if (page < 1) page = 1;
             if (limit < 1) limit = 1;
@@ -6783,9 +6664,8 @@ public static class AdminEndpoints
             if (string.IsNullOrWhiteSpace(req.ConsentType) || !allowedConsentTypes.Contains(req.ConsentType))
                 return Results.BadRequest(new { error = $"ConsentType must be one of: {string.Join(", ", allowedConsentTypes)}." });
 
-            // Resolve real client IP — trust X-Forwarded-For behind a proxy
-            var ip = ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()
-                     ?? ctx.Connection.RemoteIpAddress?.ToString();
+            // Resolve real client IP — ForwardedHeaders middleware normalizes RemoteIpAddress
+            var ip = ctx.Connection.RemoteIpAddress?.ToString();
 
             var userAgent = ctx.Request.Headers["User-Agent"].FirstOrDefault();
             var version = string.IsNullOrWhiteSpace(req.Version) ? "1.0" : req.Version;
@@ -6947,7 +6827,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains(AdminRoles.SuperAdmin)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.SystemSettings)) return Results.Forbid();
 
             // Validate severity if provided
             if (req.Severity is not null &&
@@ -7066,7 +6946,7 @@ public static class AdminEndpoints
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Contains(AdminRoles.SuperAdmin)) return Results.Forbid();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.SystemSettings)) return Results.Forbid();
 
             using var conn = db.CreateConnection();
 
@@ -7261,145 +7141,8 @@ public static class AdminEndpoints
         // ── Phase 15: Dashboard Customization ─────────────────────────────────
         // ══════════════════════════════════════════════════════════════════════
 
-        // ── GET /api/admin/dashboard/widgets ──────────────────────────────────
-        // Returns the static catalog of all available dashboard widgets.
-        app.MapGet("/api/admin/dashboard/widgets", (HttpContext ctx) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
 
-            var catalog = new[]
-            {
-                new { id = "stats-overview",       name = "Platform Statistics",             description = "Key platform metrics at a glance",                  category = "platform",    defaultRefreshInterval = 30  },
-                new { id = "user-growth",           name = "User Growth Chart",               description = "New user registrations over time",                   category = "analytics",   defaultRefreshInterval = 300 },
-                new { id = "tournament-activity",   name = "Tournament Activity",             description = "Active and upcoming tournament summary",             category = "tournaments", defaultRefreshInterval = 60  },
-                new { id = "revenue-summary",       name = "Revenue Summary",                 description = "Earnings and transaction overview",                  category = "finance",     defaultRefreshInterval = 300 },
-                new { id = "moderation-queue",      name = "Moderation Queue Status",         description = "Pending reports and moderation actions",             category = "moderation",  defaultRefreshInterval = 60  },
-                new { id = "anomaly-alerts",        name = "Anomaly Alerts",                  description = "Security anomalies and suspicious activity",         category = "security",    defaultRefreshInterval = 30  },
-                new { id = "online-users",          name = "Online Users Count",              description = "Currently active users on the platform",             category = "platform",    defaultRefreshInterval = 30  },
-                new { id = "recent-registrations",  name = "Recent Tournament Registrations", description = "Latest tournament sign-ups",                         category = "tournaments", defaultRefreshInterval = 60  },
-                new { id = "pending-gdpr",          name = "Pending GDPR Requests",           description = "Outstanding data subject requests",                  category = "compliance",  defaultRefreshInterval = 300 },
-                new { id = "system-health",         name = "System Health Status",            description = "API health, latency, and error rates",               category = "platform",    defaultRefreshInterval = 60  },
-            };
 
-            return Results.Ok(catalog);
-        }).RequireAuthorization("Admin");
-
-        // ── GET /api/admin/dashboard/preferences ──────────────────────────────
-        // Returns the calling admin's saved dashboard layout, or a default if none exists.
-        app.MapGet("/api/admin/dashboard/preferences", async (
-            IDbConnectionFactory db,
-            HttpContext ctx,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
-
-            using var conn = db.CreateConnection();
-
-            var raw = await conn.QueryFirstOrDefaultAsync<string>(
-                new CommandDefinition(
-                    "SELECT layout FROM admin_dashboard_preferences WHERE user_id = @userId",
-                    new { userId = userCtx.UserIdGuid },
-                    cancellationToken: ct));
-
-            if (raw is null)
-            {
-                // No saved prefs — build and return the default layout
-                var widgetIds = new[]
-                {
-                    "stats-overview", "user-growth", "tournament-activity", "revenue-summary",
-                    "moderation-queue", "anomaly-alerts", "online-users", "recent-registrations",
-                    "pending-gdpr", "system-health"
-                };
-                var defaultRefreshIntervals = new Dictionary<string, int>
-                {
-                    ["stats-overview"] = 30,
-                    ["user-growth"] = 300,
-                    ["tournament-activity"] = 60,
-                    ["revenue-summary"] = 300,
-                    ["moderation-queue"] = 60,
-                    ["anomaly-alerts"] = 30,
-                    ["online-users"] = 30,
-                    ["recent-registrations"] = 60,
-                    ["pending-gdpr"] = 300,
-                    ["system-health"] = 60,
-                };
-                var defaultLayout = widgetIds
-                    .Select((id, i) => new DashboardWidgetConfig(id, i, true, defaultRefreshIntervals[id]))
-                    .ToArray();
-                return Results.Ok(new { layout = defaultLayout, isDefault = true });
-            }
-
-            DashboardWidgetConfig[]? prefs = null;
-            try
-            {
-                prefs = JsonSerializer.Deserialize<DashboardWidgetConfig[]>(raw,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-            catch (JsonException) { /* corrupt JSONB — fall back to default */ }
-
-            if (prefs is null || prefs.Length == 0)
-                return Results.Ok(new { layout = (object)Array.Empty<DashboardWidgetConfig>(), isDefault = true });
-
-            return Results.Ok(new { layout = prefs, isDefault = false });
-        }).RequireAuthorization("Admin");
-
-        // ── PUT /api/admin/dashboard/preferences ──────────────────────────────
-        // Upserts the calling admin's dashboard layout.
-        app.MapPut("/api/admin/dashboard/preferences", async (
-            [FromBody] SaveDashboardPreferencesRequest req,
-            IDbConnectionFactory db,
-            HttpContext ctx,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.AdminRoles.Any()) return Results.Forbid();
-
-            if (req.Layout is null)
-                return Results.BadRequest(new { error = "Layout is required." });
-            if (req.Layout.Length > 20)
-                return Results.BadRequest(new { error = "Layout may contain at most 20 widgets." });
-
-            var validWidgetIds = new HashSet<string>
-            {
-                "stats-overview", "user-growth", "tournament-activity", "revenue-summary",
-                "moderation-queue", "anomaly-alerts", "online-users", "recent-registrations",
-                "pending-gdpr", "system-health"
-            };
-            var seen = new HashSet<string>();
-            for (var i = 0; i < req.Layout.Length; i++)
-            {
-                var w = req.Layout[i];
-                if (string.IsNullOrWhiteSpace(w.WidgetId))
-                    return Results.BadRequest(new { error = $"Widget at index {i} has an empty WidgetId." });
-                if (!validWidgetIds.Contains(w.WidgetId))
-                    return Results.BadRequest(new { error = $"Unknown widget ID: '{w.WidgetId}'." });
-                if (!seen.Add(w.WidgetId))
-                    return Results.BadRequest(new { error = $"Duplicate widget ID: '{w.WidgetId}'." });
-                if (w.Position < 0)
-                    return Results.BadRequest(new { error = $"Widget '{w.WidgetId}' has a negative Position." });
-            }
-
-            var layoutJson = JsonSerializer.Serialize(req.Layout);
-
-            using var conn = db.CreateConnection();
-
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                INSERT INTO admin_dashboard_preferences (user_id, layout, updated_at)
-                VALUES (@userId, @layout::jsonb, NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET layout = EXCLUDED.layout, updated_at = NOW()
-                """,
-                new { userId = userCtx.UserIdGuid, layout = layoutJson },
-                cancellationToken: ct));
-
-            return Results.Ok(new { saved = true });
-        }).RequireAuthorization("Admin");
 
         // ── GET /api/admin/entities/{type}/{id}/preview ───────────────────────
         // Minimal entity data for slide-over previews in cross-linking system
@@ -7424,8 +7167,10 @@ public static class AdminEndpoints
                 "venue" => Permissions.VenuesView,
                 "dispute" => Permissions.DisputesView,
                 "organization" => Permissions.OrganizationsView,
-                _ => "admin:view"
+                _ => null
             };
+            if (requiredPermission is null)
+                return Results.NotFound(new { error = $"Unknown entity type. Supported: user, license, tournament, team, venue, dispute, organization." });
             if (!userCtx.Permissions.Contains(requiredPermission))
                 return Results.Forbid();
 
@@ -7485,12 +7230,12 @@ public static class AdminEndpoints
 
                 "dispute" => await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT d.id, d.status, d.priority, d.created_at,
+                    SELECT d.id, d.status, d.created_at, d.dispute_reason,
                            t.name AS tournament_name, t.id AS tournament_id,
                            p.username AS reporter_name, p.id AS reporter_id
-                    FROM disputes d
+                    FROM tournament_disputes d
                     LEFT JOIN tournaments t ON t.id = d.tournament_id
-                    LEFT JOIN profiles p ON p.id = d.reporter_id
+                    LEFT JOIN profiles p ON p.id = d.raised_by_user_id
                     WHERE d.id = @id
                     """, new { id }),
 
@@ -7537,14 +7282,16 @@ public static class AdminEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Pending counts with stale detection (3+ days)
+            // Pending counts with stale detection (3+ days).
+            // Disputes read the real tournament_disputes table — urgency is staleness (7+ days open), there is no priority column.
             var pendingCounts = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
                     (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS verifications,
                     (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days') AS verifications_stale,
-                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress')) AS disputes,
-                    (SELECT COUNT(*) FROM disputes WHERE status IN ('open', 'in_progress') AND priority = 'high') AS disputes_high_priority,
+                    (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open') AS disputes,
+                    (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open' AND created_at < NOW() - INTERVAL '7 days') AS disputes_stale,
+                    (SELECT COUNT(*) FROM ghost_approvals WHERE status = 'pending') AS ghost_approvals,
                     (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active') AS alerts,
                     (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical') AS alerts_critical,
                     (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending') AS moderation,
@@ -7553,7 +7300,7 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND requested_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
                 """);
 
-            // Quick stats
+            // Quick stats. Presence is an honest heuristic: distinct admins with recent audit activity.
             var stats = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
@@ -7561,8 +7308,64 @@ public static class AdminEndpoints
                     (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS users_growth,
                     (SELECT COUNT(*) FROM tournaments) AS tournaments_total,
                     (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_growth,
-                    (SELECT COUNT(DISTINCT user_id) FROM admin_session_audit WHERE created_at >= NOW() - INTERVAL '15 minutes') AS active_now
+                    (SELECT COUNT(DISTINCT admin_id) FROM audit_logs WHERE created_at >= NOW() - INTERVAL '15 minutes') AS admins_active_recently
                 """);
+
+            // Sponsor fleet KPIs (30-day window, mirrors /api/admin/sponsors/overview)
+            var sponsorKpis = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    COALESCE(SUM(t.impressions), 0) AS impressions_30d,
+                    COALESCE(SUM(t.clicks), 0) AS clicks_30d,
+                    (SELECT COUNT(*) FROM sponsors WHERE is_active) AS active_sponsors
+                FROM sponsor_daily_totals t
+                WHERE t.stat_date >= CURRENT_DATE - INTERVAL '30 days'
+                """);
+
+            // System health: kill switches, unresolved anomalies, enabled feature flags
+            var systemHealth = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch AND lower(value #>> '{}') IN ('true', '1', 'on')) AS kill_switches_armed,
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch) AS kill_switches_total,
+                    (SELECT COUNT(*) FROM anomaly_events WHERE is_resolved = FALSE) AS anomalies_unresolved,
+                    (SELECT COUNT(*) FROM feature_flags WHERE is_enabled) AS feature_flags_enabled
+                """);
+
+            // Chart series — 14-day gapless daily counts
+            var signups14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day, COUNT(p.id) AS count
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN profiles p ON p.created_at::date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
+            var tournaments14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day, COUNT(t.id) AS count
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN tournaments t ON t.created_at::date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
+            var disputes14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day, COUNT(td.id) AS count
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN tournament_disputes td ON td.created_at::date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
+
+            var sponsorDaily14d = await conn.QueryAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT d::date AS day,
+                       COALESCE(SUM(s.impressions), 0) AS impressions,
+                       COALESCE(SUM(s.clicks), 0) AS clicks
+                FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') d
+                LEFT JOIN sponsor_daily_totals s ON s.stat_date = d::date
+                GROUP BY d ORDER BY d
+                """, cancellationToken: ct));
 
             // Signups per day for last 7 days
             var signups7d = await conn.QueryAsync<dynamic>(
@@ -7602,7 +7405,17 @@ public static class AdminEndpoints
             {
                 pending_counts = pendingCounts,
                 stats,
+                sponsor_kpis = sponsorKpis,
+                system_health = systemHealth,
+                payments_available = false,
                 signups_7d = signups7d,
+                charts = new
+                {
+                    signups_14d = signups14d,
+                    tournaments_14d = tournaments14d,
+                    disputes_14d = disputes14d,
+                    sponsor_daily_14d = sponsorDaily14d
+                },
                 recent_activity = recentActivity,
                 oldest_pending = oldestPending
             });
@@ -7718,19 +7531,33 @@ public static class AdminEndpoints
         ManageUserRequest req,
         System.Data.IDbConnection conn,
         UserContext callerCtx,
+        HttpContext httpCtx,
+        AuditService audit,
         CancellationToken ct)
     {
         var role = req.RoleKey ?? req.Role;
         if (string.IsNullOrWhiteSpace(role))
             return Results.BadRequest(new { error = "Role is required for assign_role action." });
 
+        // Self-assignment of ANY role is blocked — privilege escalation vector.
+        if (userId == callerCtx.UserIdGuid)
+            return Results.Json(
+                new { error = "You cannot change your own roles. Ask another admin." },
+                statusCode: 403);
+
         var isAdmin = string.Equals(req.RoleType, "admin", StringComparison.OrdinalIgnoreCase);
 
         if (isAdmin)
         {
-            if (SuperAdminOnlyRoles.Contains(role) && !callerCtx.IsSuperAdmin)
+            // Admin-role assignment is a superadmin-only, audited operation — matching
+            // POST /api/admin/admin-user-roles. users:edit alone must NEVER grant admin roles.
+            if (!callerCtx.IsSuperAdmin)
                 return Results.Json(
-                    new { error = "Only super_admin can assign this role." },
+                    new { error = "Only super_admin can assign admin roles." },
+                    statusCode: 403);
+            if (!callerCtx.Permissions.Contains(Permissions.AdminUsersAssignRole))
+                return Results.Json(
+                    new { error = "Missing admin_users:assign_role permission." },
                     statusCode: 403);
 
             // Resolve admin role id from admin_roles table by key
@@ -7746,6 +7573,9 @@ public static class AdminEndpoints
                 ON CONFLICT DO NOTHING
                 """,
                 new { userId, roleId });
+
+            await audit.LogFromHttp(httpCtx, callerCtx, ActionType.RoleChange, TargetType.User,
+                userId, $"admin role '{role}' assigned", new { role, role_type = "admin" }, AuditSeverity.High, ct);
         }
         else
         {
@@ -7756,6 +7586,9 @@ public static class AdminEndpoints
                 ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
                 """,
                 new { userId, role });
+
+            await audit.LogFromHttp(httpCtx, callerCtx, ActionType.RoleChange, TargetType.User,
+                userId, $"role '{role}' assigned", new { role, role_type = "user" }, null, ct);
         }
 
         return Results.Ok(new { success = true, role });

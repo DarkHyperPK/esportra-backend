@@ -23,12 +23,42 @@ public sealed class SponsorAnalyticsIdentity(IOptions<SponsorAnalyticsOptions> o
         return HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes(value));
     }
 
+    private static readonly string[] BotSignatures =
+    [
+        "bot", "crawler", "spider", "slurp", "curl/", "wget", "python-",
+        "go-http-client", "java/", "okhttp", "headlesschrome", "lighthouse",
+        "pagespeed", "pingdom", "uptimerobot", "betteruptime", "statuscake",
+        "facebookexternalhit", "discordapp", "twitterbot", "linkedin",
+        "whatsapp", "telegrambot", "embedly", "preview", "monitoring",
+        "axios/", "node-fetch", "postman",
+    ];
+
+    public static bool IsBot(string userAgent)
+    {
+        var normalized = userAgent.ToLowerInvariant();
+        return BotSignatures.Any(normalized.Contains);
+    }
+
     public static string CoarseClientClass(string userAgent)
     {
         var normalized = userAgent.ToLowerInvariant();
-        if (normalized.Contains("ipad") || normalized.Contains("tablet")) return "tablet-web";
-        if (normalized.Contains("mobile") || normalized.Contains("android") || normalized.Contains("iphone")) return "mobile-web";
-        if (normalized.Contains("mozilla") || normalized.Contains("chrome") || normalized.Contains("safari")) return "desktop-web";
+        if (IsBot(normalized)) return "bot";
+        if (normalized.Contains("ipad")) return "ipad";
+        if (normalized.Contains("iphone") || normalized.Contains("ipod")) return "iphone";
+
+        if (normalized.Contains("android"))
+            return normalized.Contains("mobile") ? "android-phone" : "android-tablet";
+
+        if (normalized.Contains("windows")) return "windows-pc";
+        if (normalized.Contains("mac os x") || normalized.Contains("macintosh")) return "mac";
+        if (normalized.Contains("cros") || normalized.Contains("linux")
+            || normalized.Contains("x11") || normalized.Contains("ubuntu")
+            || normalized.Contains("fedora")) return "linux-pc";
+
+        if (normalized.Contains("mozilla") || normalized.Contains("chrome") || normalized.Contains("safari")
+            || normalized.Contains("firefox") || normalized.Contains("edg") || normalized.Contains("opera")
+            || normalized.Contains("gecko/")) return "desktop-web";
+
         return "unknown-web";
     }
 }

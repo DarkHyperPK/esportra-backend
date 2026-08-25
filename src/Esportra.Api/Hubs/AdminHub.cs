@@ -58,13 +58,13 @@ public sealed class AdminHub : Hub
         }
     }
 
-    private static async Task<PendingCounts> GetPendingCounts(System.Data.IDbConnection conn)
+    private async Task<PendingCounts> GetPendingCounts(System.Data.IDbConnection conn)
     {
         var verifications = await SafeCount(conn,
             "SELECT COUNT(*) FROM verification_requests WHERE status = 'pending'");
 
         var disputes = await SafeCount(conn,
-            "SELECT COUNT(*) FROM disputes WHERE status = 'open'");
+            "SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open'");
 
         var ghostApprovals = await SafeCount(conn,
             "SELECT COUNT(*) FROM ghost_approvals WHERE status = 'pending'");
@@ -75,14 +75,15 @@ public sealed class AdminHub : Hub
         return new PendingCounts(verifications, disputes, ghostApprovals, alerts);
     }
 
-    private static async Task<int> SafeCount(System.Data.IDbConnection conn, string sql)
+    private async Task<int> SafeCount(System.Data.IDbConnection conn, string sql)
     {
         try
         {
             return await conn.ExecuteScalarAsync<int>(sql);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Admin dashboard count query failed: {Sql}", sql);
             return 0;
         }
     }
@@ -95,18 +96,6 @@ public static class AdminHubEvents
 {
     /// <summary>Pending counts updated (verifications, disputes, alerts).</summary>
     public const string PendingCountsUpdated = "PendingCountsUpdated";
-
-    /// <summary>New verification request submitted.</summary>
-    public const string NewVerificationRequest = "NewVerificationRequest";
-
-    /// <summary>New dispute opened.</summary>
-    public const string NewDispute = "NewDispute";
-
-    /// <summary>New ghost mode approval request.</summary>
-    public const string NewGhostApproval = "NewGhostApproval";
-
-    /// <summary>New alert triggered.</summary>
-    public const string NewAlert = "NewAlert";
 }
 
 /// <summary>Pending action counts for admin dashboard.</summary>

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -13,6 +14,67 @@ public static class FeatureFlagEndpoints
 {
     public static void MapFeatureFlagEndpoints(this WebApplication app)
     {
+        // Curated platform feature registry for the Admin Centre catalog view.
+        // Joins FeatureCatalog metadata with live feature_flags state so the UI can
+        // toggle each feature through the standard PUT /feature-flags/{id} endpoint.
+        app.MapGet("/api/admin/features/catalog", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.FeatureFlagsView)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<(Guid Id, string Key, bool IsEnabled)>(
+                new CommandDefinition(
+                    "SELECT id, key, is_enabled FROM feature_flags WHERE key = ANY(@keys)",
+                    new { keys = Features.FeatureCatalog.All.Select(f => f.Key).ToArray() },
+                    cancellationToken: ct));
+
+            var stateByKey = rows.ToDictionary(r => r.Key, r => (Enabled: r.IsEnabled, FlagId: r.Id));
+
+            var catalog = Features.FeatureCatalog.All.Select(meta =>
+            {
+                var hasState = stateByKey.TryGetValue(meta.Key, out var state);
+                return new
+                {
+                    key = meta.Key,
+                    name = meta.Name,
+                    description = meta.Description,
+                    category = meta.Category,
+                    enabled = hasState ? state.Enabled : true,
+                    flagId = hasState ? (Guid?)state.FlagId : null,
+                    seeded = hasState
+                };
+            });
+
+            return Results.Ok(new { features = catalog });
+        }).RequireAuthorization(Permissions.FeatureFlagsView);
+
+        // Public: resolved on/off state for every registry feature. Clients use this
+        // to hide entry points; the middleware independently blocks the APIs.
+        app.MapGet("/api/features/status", async (
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<(string Key, bool? IsEnabled)>(
+                new CommandDefinition(
+                    "SELECT key, is_enabled FROM feature_flags WHERE key = ANY(@keys)",
+                    new { keys = Features.FeatureCatalog.All.Select(f => f.Key).ToArray() },
+                    cancellationToken: ct));
+
+            var enabledByKey = rows.ToDictionary(r => r.Key, r => r.IsEnabled ?? true);
+            var status = Features.FeatureCatalog.All.Select(f => new
+            {
+                key = f.Key,
+                enabled = enabledByKey.TryGetValue(f.Key, out var e) ? e : true
+            });
+
+            return Results.Ok(new { features = status });
+        });
         // ── GET /api/admin/feature-flags ───────────────────────────────────────
         app.MapGet("/api/admin/feature-flags", async (
             HttpContext ctx,
@@ -36,6 +98,7 @@ public static class FeatureFlagEndpoints
                 LEFT JOIN profiles p ON p.id = f.created_by
                 ORDER BY f.created_at DESC
                 """);
+            DapperJsonbHelper.FixJsonb(flags);
             return Results.Ok(flags);
         }).RequireAuthorization("Admin");
 
@@ -154,6 +217,7 @@ public static class FeatureFlagEndpoints
                 WHERE flag_id = @id
                 ORDER BY priority DESC
                 """, new { id });
+            DapperJsonbHelper.FixJsonb(rules);
             return Results.Ok(rules);
         }).RequireAuthorization("Admin");
 
@@ -274,6 +338,7 @@ public static class FeatureFlagEndpoints
                 WHERE o.flag_id = @id
                 ORDER BY o.created_at DESC
                 """, new { id });
+            DapperJsonbHelper.FixJsonb(overrides);
             return Results.Ok(overrides);
         }).RequireAuthorization("Admin");
 

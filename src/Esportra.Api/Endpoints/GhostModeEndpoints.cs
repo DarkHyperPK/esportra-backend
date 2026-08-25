@@ -92,7 +92,7 @@ public static class GhostModeEndpoints
                 """
                 SELECT ga.id, ga.requester_id, ga.target_user_id, ga.reason, ga.created_at,
                        req.username AS requester_name, req.avatar_url AS requester_avatar,
-                       tgt.username AS target_name, tgt.avatar_url AS target_avatar
+                       tgt.username AS target_user_name, tgt.avatar_url AS target_avatar
                 FROM ghost_approvals ga
                 JOIN profiles req ON req.id = ga.requester_id
                 JOIN profiles tgt ON tgt.id = ga.target_user_id
@@ -420,7 +420,7 @@ public static class GhostModeEndpoints
                        gs.admin_ip::text AS admin_ip, gs.started_at, gs.ended_at, gs.expires_at,
                        gs.pages_viewed, gs.fields_unmasked,
                        admin.username AS admin_name,
-                       target.username AS target_name
+                       target.username AS target_user_name
                 FROM ghost_sessions gs
                 JOIN profiles admin ON admin.id = gs.admin_id
                 JOIN profiles target ON target.id = gs.target_user_id

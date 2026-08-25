@@ -100,6 +100,7 @@ Security is blocking, not advisory. Never weaken protections to unblock developm
 - **Private buckets:** store path reference, generate signed URLs for viewing
 - **No secrets in code** — environment variables only
 - **Conventional commits:** `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `perf:` — first line < 72 chars
+- **Session-scoped commits only (hard rule)** — never stage, commit, or push unrelated changes. Stage explicitly by file path (`git add -- <files>`), never `git add .` / `git add -A`. Only files modified for the current session's task may be committed; pre-existing dirty/untracked files stay untouched.
 
 ## Testing
 
@@ -122,6 +123,7 @@ Custom agents defined in `.claude/agents/` for specialized tasks:
 | `code-quality-reviewer` | Reviews code for clarity, simplicity, and maintainability. Focuses on readability, naming, structure, and duplication. Reports findings as HIGH/MEDIUM/LOW priority. | Glob, Grep, Read |
 | `refactoring-planner` | Plans safe, incremental refactoring steps. Outputs prerequisite checks, ordered steps with verification, commit points, and risks. Never mixes behavior changes with refactoring. | Glob, Grep, Read |
 | `security-reviewer` | Reviews code for security vulnerabilities and policy violations. Covers injection, auth gaps, data exposure, secrets handling, and input validation. Reports as CRITICAL/HIGH/MEDIUM/LOW severity. | Glob, Grep, Read |
+| `devops` | Handles git push/deploy operations. Enforces staging-only workflow. Never pushes to main. | Bash, Read, Grep |
 
 ## Skills
 
@@ -143,6 +145,7 @@ Always-active rules defined in `.claude/rules/` that govern all code changes:
 | `enterprise-code.md` | Code must be robust by design. Bans compensating helpers, duplicated state, string round-trips, symptom patches, and architecture bypasses. Requires single source of truth, normalize at boundary, atomicity, root-cause discipline. |
 | `refactoring.md` | Refactor to improve structure without changing behavior. Small steps, run tests after each, commit frequently. Never refactor while fixing a bug or without test coverage. |
 | `security.md` | Blocking security rules. Parameterized queries, RLS on every table, framework auth handlers, no hardcoded secrets, no PII in logs, safe client errors. Violations must be fixed before proceeding. |
+| `git-workflow.md` | Never push to main. All work on staging. Production deploys via CI/CD only. |
 
 ## Parked (Do Not Implement)
 

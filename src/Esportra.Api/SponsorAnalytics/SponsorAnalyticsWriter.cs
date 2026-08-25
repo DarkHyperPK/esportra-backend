@@ -12,6 +12,7 @@ public enum SponsorAnalyticsWriteResult
     Duplicate,
     Invalid,
     SponsorNotFound,
+    BotFiltered,
 }
 
 public sealed record SponsorAnalyticsWriteOutcome(
@@ -40,8 +41,11 @@ public sealed class SponsorAnalyticsWriter(
             return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Invalid, validationError);
 
         var now = timeProvider.GetUtcNow();
-        var demographics = await ResolveDemographicsAsync(userContext, context, now, cancellationToken);
         var deviceClass = SponsorAnalyticsIdentity.CoarseClientClass(context.Request.Headers.UserAgent.ToString());
+        if (deviceClass == "bot")
+            return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.BotFiltered);
+
+        var demographics = await ResolveDemographicsAsync(userContext, context, now, cancellationToken);
         var identityKind = userContext is null ? "anonymous" : "authenticated";
         var identityMaterial = userContext?.UserId
             ?? $"{context.Connection.RemoteIpAddress}:{deviceClass}";
