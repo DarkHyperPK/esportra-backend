@@ -196,7 +196,18 @@ public static class LeaderboardEndpoints
                     (SELECT COUNT(*) FROM public.tournaments WHERE status = 'completed')::int AS completed_tournaments,
                     (SELECT COUNT(*) FROM public.tournaments
                      WHERE status = 'completed' AND winner_id IS NOT NULL)::int AS crowned_winners,
-                    (SELECT COUNT(*) FROM public.tournament_placements)::int AS placement_rows
+                    (SELECT COUNT(*) FROM public.tournament_placements)::int AS placement_rows,
+                    (SELECT COUNT(*) FROM public.tournament_placements tp
+                     JOIN public.tournaments tr ON tr.id = tp.tournament_id
+                     WHERE tr.status = 'completed')::int AS placements_in_completed_tournaments,
+                    (SELECT COUNT(*) FROM public.tournament_placements tp
+                     JOIN public.teams t ON t.id = tp.team_id
+                     WHERE t.is_mock IS NOT TRUE AND (t.team_kind IS NULL OR t.team_kind <> 'mock'))::int AS placements_for_rankable_teams,
+                    (SELECT COUNT(*) FROM public.tournament_placements tp
+                     JOIN public.tournaments tr ON tr.id = tp.tournament_id
+                     JOIN public.teams t ON t.id = tp.team_id
+                     WHERE tr.status = 'completed'
+                       AND t.is_mock IS NOT TRUE AND (t.team_kind IS NULL OR t.team_kind <> 'mock'))::int AS placements_eligible_all_filters
                 """);
             return Results.Ok(new
             {
