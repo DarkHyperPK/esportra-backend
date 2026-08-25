@@ -107,14 +107,16 @@ public static class LeaderboardEndpoints
                 region = aggregateRegions ? null : EmptyToNull(region),
                 limit,
                 offset,
-                items = page.Items.Select((r, i) => new
+                items = page.Items.Select(r => new
                 {
                     rank = r.Rank,
                     team_id = r.TeamId,
                     name = r.Name,
                     logo_url = r.LogoUrl,
                     country_code = r.CountryCode,
-                    regions = r.Regions,
+                    regions = string.IsNullOrEmpty(r.RegionsCsv)
+                        ? Array.Empty<string>()
+                        : r.RegionsCsv.Split(','),
                     matches_played = r.MatchesPlayed,
                     wins = r.Wins,
                     losses = r.Losses,
@@ -229,7 +231,7 @@ public static class LeaderboardEndpoints
                     SUM(s.placement_points)::int    AS placement_points,
                     SUM(s.rp)::bigint               AS rp,
                     MIN(s.best_placement)           AS best_placement,
-                    ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.region_key), 'global')::text[] AS regions
+                    COALESCE(ARRAY_TO_STRING(ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.region_key), 'global'), ','), '') AS regions_csv
                 FROM public.leaderboard_team_stats s
                 WHERE (@Game::text IS NULL OR s.game_key = @Game)
                 {regionFilter}
@@ -306,7 +308,7 @@ public static class LeaderboardEndpoints
         string Name,
         string? LogoUrl,
         string? CountryCode,
-        string[] Regions,
+        string RegionsCsv,
         int MatchesPlayed,
         int Wins,
         int Losses,

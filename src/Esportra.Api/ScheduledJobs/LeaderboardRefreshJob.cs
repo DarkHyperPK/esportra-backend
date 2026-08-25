@@ -22,9 +22,12 @@ public sealed class LeaderboardRefreshJob(
             {
                 await cache.RemoveByTagAsync("leaderboard", ct);
             }
-            catch
+            catch (Exception invalidationEx)
             {
-                // Cache invalidation is best effort — entries expire in ≤60s regardless.
+                // Never fail the job over cache invalidation — entries expire in ≤60s
+                // regardless — but make the failure visible instead of silently stale.
+                logger.LogWarning(invalidationEx,
+                    "[Leaderboard] Cache invalidation failed; entries may be up to 60s stale.");
             }
         }
         catch (Exception ex)
