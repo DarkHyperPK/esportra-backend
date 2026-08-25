@@ -3788,6 +3788,7 @@ public static class AdminEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            Esportra.Core.Tournaments.LeaderboardStatsService leaderboardStats,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3837,26 +3838,19 @@ public static class AdminEndpoints
                 LIMIT 20
                 """, new { id });
 
-            // Leaderboard rank (RP calculation)
-            var leaderboard = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                WITH team_stats AS (
-                    SELECT
-                        COALESCE(SUM(CASE WHEN m.winner_id = @id THEN 1 ELSE 0 END), 0) AS wins,
-                        COALESCE(SUM(CASE
-                            WHEN m.status = 'completed' AND m.winner_id IS NOT NULL AND m.winner_id != @id
-                            THEN 1 ELSE 0
-                        END), 0) AS losses,
-                        COALESCE((SELECT COUNT(*) FROM tournaments tr WHERE tr.winner_id = @id AND tr.status = 'completed'), 0) AS tournament_wins
-                    FROM brkt_matches m
-                    WHERE (m.team1_id = @id OR m.team2_id = @id) AND m.status = 'completed'
-                )
-                SELECT wins, losses, (wins + losses) AS matches_played,
-                       CASE WHEN (wins + losses) > 0 THEN ROUND(wins * 100.0 / (wins + losses), 1) ELSE 0 END AS win_rate,
-                       tournament_wins AS tournaments_won,
-                       (wins * 50 + tournament_wins * 500 - losses * 10) AS rp
-                FROM team_stats
-                """, new { id });
+            // Leaderboard rank (single source of truth: LeaderboardStatsService)
+            var summary = await leaderboardStats.GetTeamSummaryAsync(id, ct);
+            var leaderboard = summary is null
+                ? null
+                : new
+                {
+                    wins = summary.Wins,
+                    losses = summary.Losses,
+                    matches_played = summary.MatchesPlayed,
+                    win_rate = summary.WinRate,
+                    tournaments_won = summary.TournamentsWon,
+                    rp = summary.Rp,
+                };
 
             return Results.Ok(new { team, members, tournaments, invites, leaderboard });
         }).RequireAuthorization("Admin");

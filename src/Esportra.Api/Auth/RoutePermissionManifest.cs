@@ -56,6 +56,10 @@ public static class RoutePermissionManifest
         P("GET",  "/api/profiles/search"),
         P("GET",  "/api/profiles/resolve-players"),
 
+        // Public reads — leaderboards
+        P("GET",  "/api/leaderboards"),
+        P("GET",  "/api/leaderboards/{*}"),
+
         // Public tools
         P("*",    "/api/veto/public/{*}"),
         P("*",    "/api/veto/token/{*}"),
