@@ -321,6 +321,7 @@ public static class TeamEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IHubContext<NotificationHub> hub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -335,8 +336,20 @@ public static class TeamEndpoints
                 return Results.BadRequest(new { error = "Transfer captaincy before leaving." });
 
             using var tx = conn.BeginTransaction();
+            List<Guid> memberIds;
+            string? teamName;
+            string? leaverName;
             try
             {
+                // Capture audience and display names before the rows disappear
+                memberIds = (await conn.QueryAsync<Guid>(
+                    "SELECT user_id FROM team_members WHERE team_id = @id AND is_active = TRUE",
+                    new { id }, tx)).ToList();
+                teamName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT name FROM teams WHERE id = @id", new { id });
+                leaverName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT username FROM profiles WHERE id = @userId", new { userId = userCtx.UserIdGuid });
+
                 await conn.ExecuteAsync(
                     "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
                     new { id, userId = userCtx.UserIdGuid }, tx);
@@ -355,7 +368,19 @@ public static class TeamEndpoints
                     "DELETE FROM team_invitations WHERE team_id = @id AND invited_user_id = @userId AND status = 'pending'",
                     new { id, userId = userCtx.UserIdGuid }, tx);
 
+                // Notify remaining members atomically with the departure.
+                // The leaver's own client refreshes via the mutation's onSuccess handler.
+                var others = memberIds.Where(m => m != userCtx.UserIdGuid).ToList();
+                var updateTitle = $"{teamName ?? "Team"} Roster Update";
+                var updateMessage = $"{leaverName ?? "A player"} left the team.";
+
+                await TeamNotifications.InsertAsync(conn, others,
+                    TeamNotifications.RosterUpdated, updateTitle, updateMessage, id, tx);
+
                 tx.Commit();
+
+                await TeamNotifications.PushAsync(hub, others,
+                    TeamNotifications.RosterUpdated, updateTitle, updateMessage);
             }
             catch
             {
@@ -372,6 +397,7 @@ public static class TeamEndpoints
             Guid userId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IHubContext<NotificationHub> hub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -387,8 +413,20 @@ public static class TeamEndpoints
                 return Results.BadRequest(new { error = "The team captain cannot be removed. Transfer captaincy first." });
 
             using var tx = conn.BeginTransaction();
+            List<Guid> memberIds;
+            string? teamName;
+            string? removedName;
             try
             {
+                // Capture audience and display names before the rows disappear
+                memberIds = (await conn.QueryAsync<Guid>(
+                    "SELECT user_id FROM team_members WHERE team_id = @id AND is_active = TRUE",
+                    new { id }, tx)).ToList();
+                teamName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT name FROM teams WHERE id = @id", new { id });
+                removedName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT username FROM profiles WHERE id = @userId", new { userId });
+
                 // Remove lineup memberships so the user doesn't linger as a ghost in rosters
                 await conn.ExecuteAsync(
                     """
@@ -407,7 +445,26 @@ public static class TeamEndpoints
                     "DELETE FROM team_invitations WHERE team_id = @id AND invited_user_id = @userId AND status = 'pending'",
                     new { id, userId }, tx);
 
+                // Notify atomically with the removal
+                var removedTitle = $"You've been removed from {teamName ?? "the team"}";
+                var removedMessage = $"The captain has removed you from the {teamName ?? "team"} roster.";
+                var updateTitle = $"{teamName ?? "Team"} Roster Update";
+                var updateMessage = $"{removedName ?? "A player"} was removed from the roster.";
+
+                await TeamNotifications.InsertAsync(conn, [userId],
+                    TeamNotifications.MemberRemoved, removedTitle, removedMessage, id, tx);
+                var others = memberIds.Where(m => m != userId && m != userCtx.UserIdGuid).ToList();
+                await TeamNotifications.InsertAsync(conn, others,
+                    TeamNotifications.RosterUpdated, updateTitle, updateMessage, id, tx);
+
                 tx.Commit();
+
+                // Real-time fan-out (post-commit; delivery failures are non-critical)
+                await TeamNotifications.PushAsync(hub, [userId],
+                    TeamNotifications.MemberRemoved, removedTitle, removedMessage);
+                await TeamNotifications.PushAsync(hub, others,
+                    TeamNotifications.RosterUpdated, updateTitle, updateMessage);
+
                 return Results.Ok(new { success = true, removed = affected > 0 });
             }
             catch
@@ -424,6 +481,7 @@ public static class TeamEndpoints
             [FromBody] TransferCaptainRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IHubContext<NotificationHub> hub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -432,15 +490,24 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             await AssertOwner(conn, id, userCtx.UserIdGuid);
 
+            var newCaptainIdGuid = Guid.Parse(req.NewCaptainId);
+
             using var tx = conn.BeginTransaction();
             try
             {
+                // Capture audience and display names before the roles change
+                var memberIds = (await conn.QueryAsync<Guid>(
+                    "SELECT user_id FROM team_members WHERE team_id = @id AND is_active = TRUE",
+                    new { id }, tx)).ToList();
+                var teamName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT name FROM teams WHERE id = @id", new { id });
+                var newCaptainName = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT username FROM profiles WHERE id = @userId", new { userId = newCaptainIdGuid });
+
                 // Step 1: demote current captain
                 await conn.ExecuteAsync(
                     "UPDATE team_members SET role = 'member' WHERE team_id = @id AND user_id = @userId AND role = 'captain'",
                     new { id, userId = userCtx.UserIdGuid }, tx);
-
-                var newCaptainIdGuid = Guid.Parse(req.NewCaptainId);
 
                 // Step 2: promote new captain (must already be a member)
                 var affected = await conn.ExecuteAsync(
@@ -463,7 +530,26 @@ public static class TeamEndpoints
                     "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
+                // Notify atomically with the promotion.
+                // The acting captain's own client refreshes via the mutation's onSuccess handler.
+                var captainTitle = $"You are now the captain of {teamName ?? "the team"}";
+                var captainMessage = "Leadership of the roster has been transferred to you.";
+                var updateTitle = $"{teamName ?? "Team"} Roster Update";
+                var updateMessage = $"{newCaptainName ?? "A player"} is now the team captain.";
+
+                await TeamNotifications.InsertAsync(conn, [newCaptainIdGuid],
+                    TeamNotifications.CaptainChanged, captainTitle, captainMessage, id, tx);
+                var others = memberIds.Where(m => m != newCaptainIdGuid && m != userCtx.UserIdGuid).ToList();
+                await TeamNotifications.InsertAsync(conn, others,
+                    TeamNotifications.RosterUpdated, updateTitle, updateMessage, id, tx);
+
                 tx.Commit();
+
+                // Real-time fan-out (post-commit; delivery failures are non-critical)
+                await TeamNotifications.PushAsync(hub, [newCaptainIdGuid],
+                    TeamNotifications.CaptainChanged, captainTitle, captainMessage);
+                await TeamNotifications.PushAsync(hub, others,
+                    TeamNotifications.RosterUpdated, updateTitle, updateMessage);
             }
             catch
             {
