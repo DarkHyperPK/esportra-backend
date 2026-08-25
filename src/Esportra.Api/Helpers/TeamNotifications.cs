@@ -40,7 +40,7 @@ internal static class TeamNotifications
         await conn.ExecuteAsync(
             """
             INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-            SELECT uid, @Type, @Title, @Message, '/player/teams',
+            SELECT uid, @Type::notification_type, @Title, @Message, '/player/teams',
                    jsonb_build_object('team_id', @TeamId::uuid), FALSE
             FROM UNNEST(@UserIds::uuid[]) AS uid
             """,
