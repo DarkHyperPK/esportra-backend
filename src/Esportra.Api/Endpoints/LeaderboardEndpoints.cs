@@ -229,7 +229,7 @@ public static class LeaderboardEndpoints
                     SUM(s.placement_points)::int    AS placement_points,
                     SUM(s.rp)::bigint               AS rp,
                     MIN(s.best_placement)           AS best_placement,
-                    ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.region_key), 'global') AS regions
+                    ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.region_key), 'global')::text[] AS regions
                 FROM public.leaderboard_team_stats s
                 WHERE (@Game::text IS NULL OR s.game_key = @Game)
                 {regionFilter}
@@ -310,7 +310,7 @@ public static class LeaderboardEndpoints
         int MatchesPlayed,
         int Wins,
         int Losses,
-        double WinRate,
+        decimal WinRate,
         int TournamentsPlayed,
         int TournamentsWon,
         int PlacementPoints,
