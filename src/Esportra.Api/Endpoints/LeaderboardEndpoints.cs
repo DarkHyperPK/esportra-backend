@@ -177,6 +177,34 @@ public static class LeaderboardEndpoints
             return Results.Ok(new { games = result.Games, regions = result.Regions, countries = result.Countries });
         });
 
+        // GET /api/leaderboards/health — ops diagnostics (admin): source-data counts
+        // vs persisted grains, so an empty public board is instantly explainable.
+        app.MapGet("/api/leaderboards/health", async (IDbConnectionFactory db) =>
+        {
+            using var conn = db.CreateConnection();
+            var table = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT COUNT(*)::int AS grain_rows,
+                       MAX(updated_at) AS last_write
+                FROM public.leaderboard_team_stats
+                """);
+            var sources = await conn.QuerySingleAsync<dynamic>(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM public.brkt_matches
+                     WHERE status = 'completed' AND winner_id IS NOT NULL)::int AS completed_matches_with_winner,
+                    (SELECT COUNT(*) FROM public.tournaments WHERE status = 'completed')::int AS completed_tournaments,
+                    (SELECT COUNT(*) FROM public.tournaments
+                     WHERE status = 'completed' AND winner_id IS NOT NULL)::int AS crowned_winners,
+                    (SELECT COUNT(*) FROM public.tournament_placements)::int AS placement_rows
+                """);
+            return Results.Ok(new
+            {
+                table = new { rows = (int)table.grain_rows, last_write = (DateTime?)table.last_write },
+                sources,
+            });
+        });
+
         // GET /api/leaderboards/meta — live formula description for UI explainers
         app.MapGet("/api/leaderboards/meta", () => Results.Ok(new
         {
