@@ -9,12 +9,8 @@ namespace Esportra.Core.Bracket;
 /// Handles pessimistic locking, version check, score update, bracket advancement,
 /// and event logging — all in .NET with Dapper.
 /// </summary>
-public sealed class MatchFinalizationService(
-    IDbConnectionFactory db,
-    Microsoft.Extensions.Logging.ILogger<MatchFinalizationService> logger,
-    IEnumerable<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>? leaderboardHooks = null)
+public sealed class MatchFinalizationService(IDbConnectionFactory db)
 {
-    private readonly IEnumerable<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>? _leaderboardHooks = leaderboardHooks;
 
     /// <summary>
     /// Replaces the PostgreSQL <c>finalize_match_locked()</c> RPC function.
@@ -93,10 +89,6 @@ public sealed class MatchFinalizationService(
             catch { /* Non-critical if loser_id FK fails on audit table */ }
 
             tx.Commit();
-
-            // Leaderboard source data changed (post-commit, non-fatal).
-            await Esportra.Core.Tournaments.LeaderboardSourceChangeHooks.FireAsync(
-                _leaderboardHooks, logger, $"match:{matchId}", ct);
 
             return true;
         }
