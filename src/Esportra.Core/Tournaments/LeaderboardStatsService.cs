@@ -135,20 +135,20 @@ public sealed class LeaderboardStatsService(IDbConnectionFactory db, ILogger<Lea
             ),
             title_stats AS (
                 SELECT
-                    w.id                                   AS team_id,
+                    t.id                                   AS team_id,
                     {GameKeyExpr}                          AS game_key,
                     {RegionKeyExpr}                        AS region_key,
                     COUNT(DISTINCT tr.id)::int             AS titles,
                     COUNT(DISTINCT tr.id) FILTER (WHERE NOT EXISTS (
                         SELECT 1 FROM public.tournament_placements x
-                        WHERE x.tournament_id = tr.id AND x.team_id = w.id
+                        WHERE x.tournament_id = tr.id AND x.team_id = t.id
                     ))::int                                AS uncovered_titles
                 FROM public.tournaments tr
-                JOIN public.teams w ON w.id = tr.winner_id
+                JOIN public.teams t ON t.id = tr.winner_id
                     {RealTeamFilter}
                 {AliasLookup}
                 WHERE tr.status = 'completed' AND tr.deleted_at IS NULL AND tr.winner_id IS NOT NULL
-                GROUP BY w.id, 2, 3
+                GROUP BY t.id, 2, 3
             ),
             participation AS (
                 SELECT team_id, tournament_id, game_key, region_key FROM (
