@@ -66,38 +66,39 @@ public static class BracketEndpoints
             };
 
             var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
-            if (teams.Count < 2)
-                return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
-
-            // Validate teams have at least one eligible participant row
             using var conn = db.CreateConnection();
-            var teamIds = req.Teams.Select(t => t.Id).ToArray();
-            var ineligibleTeams = await conn.QueryAsync<Guid>(
-                """
-                SELECT unnested_id AS slot_id
-                FROM UNNEST(@teamIds) AS unnested_id
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM tournament_participants tp
-                    WHERE tp.tournament_id = @tournamentId
-                      AND (tp.team_id = unnested_id OR tp.id = unnested_id)
-                      AND tp.status::text IN ('approved', 'checked_in', 'pending')
-                )
-                AND EXISTS (
-                    SELECT 1 FROM tournament_participants tp
-                    WHERE tp.tournament_id = @tournamentId
-                      AND (tp.team_id = unnested_id OR tp.id = unnested_id)
-                )
-                """,
-                new { tournamentId = req.TournamentId, teamIds });
 
-            var ineligibleList = ineligibleTeams.ToList();
-            if (ineligibleList.Count > 0)
+            if (teams.Count > 0)
             {
-                return Results.BadRequest(new
+                // Validate provided teams have at least one eligible participant row
+                var teamIds = req.Teams.Select(t => t.Id).ToArray();
+                var ineligibleTeams = await conn.QueryAsync<Guid>(
+                    """
+                    SELECT unnested_id AS slot_id
+                    FROM UNNEST(@teamIds) AS unnested_id
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM tournament_participants tp
+                        WHERE tp.tournament_id = @tournamentId
+                          AND (tp.team_id = unnested_id OR tp.id = unnested_id)
+                          AND tp.status::text IN ('approved', 'checked_in', 'pending')
+                    )
+                    AND EXISTS (
+                        SELECT 1 FROM tournament_participants tp
+                        WHERE tp.tournament_id = @tournamentId
+                          AND (tp.team_id = unnested_id OR tp.id = unnested_id)
+                    )
+                    """,
+                    new { tournamentId = req.TournamentId, teamIds });
+
+                var ineligibleList = ineligibleTeams.ToList();
+                if (ineligibleList.Count > 0)
                 {
-                    error = "Some teams are not eligible for seeding (banned, cancelled, or rejected).",
-                    ineligibleTeamIds = ineligibleList
-                });
+                    return Results.BadRequest(new
+                    {
+                        error = "Some teams are not eligible for seeding (banned, cancelled, or rejected).",
+                        ineligibleTeamIds = ineligibleList
+                    });
+                }
             }
 
             int? swissGroups = null;
@@ -141,6 +142,22 @@ public static class BracketEndpoints
             // For round_robin, read group_count from stage config — the authoritative source.
             // Falls back to req.BracketSize so existing callers without a StageId still work.
             int? effectiveBracketSize = req.BracketSize;
+
+            // When generating with no teams, derive bracket size from stage capacity so the full
+            // structure is created with TBD slots. Only applies to SE/DE — RR and Swiss derive
+            // their own size below from group_count / swiss_rounds.
+            if (teams.Count == 0
+                && effectiveBracketSize is null
+                && req.StageId is Guid capStageId
+                && !req.Format.Equals("round_robin", StringComparison.OrdinalIgnoreCase)
+                && !req.Format.Equals("swiss", StringComparison.OrdinalIgnoreCase))
+            {
+                var stageCapacity = await conn.ExecuteScalarAsync<int?>(
+                    "SELECT capacity FROM tournament_stages WHERE id = @stageId",
+                    new { stageId = capStageId });
+                if (stageCapacity is > 0)
+                    effectiveBracketSize = stageCapacity;
+            }
 
             if (req.Format.Equals("round_robin", StringComparison.OrdinalIgnoreCase) && req.StageId is Guid rrStageId)
             {
@@ -192,6 +209,16 @@ public static class BracketEndpoints
                 effectiveBoMode,
                 req.RoundBoOverrides);
 
+            if (teams.Count == 0 && (effectiveBracketSize is null or <= 1))
+                return Results.BadRequest(new { error = "Cannot generate an empty bracket without a valid stage capacity (must be >= 2)." });
+
+            if (teams.Count == 0
+                && (req.Format.Equals("round_robin", StringComparison.OrdinalIgnoreCase)
+                    || req.Format.Equals("swiss", StringComparison.OrdinalIgnoreCase)))
+            {
+                return Results.BadRequest(new { error = "Round Robin and Swiss formats require at least 2 teams to generate a meaningful bracket structure." });
+            }
+
             var graph = generator.Generate(
                 teams,
                 req.TournamentId,
@@ -223,6 +250,238 @@ public static class BracketEndpoints
                 nodeCount = graph.Nodes.Count,
                 edgeCount = graph.Edges.Count,
             });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/stages/{stageId}/seed-bracket ──────────────────────────
+        // Seeds enrolled participants into the existing bracket's round-0 slots
+        // in-place. Does NOT create a new version — scheduled_time is preserved.
+        app.MapPost("/api/stages/{stageId}/seed-bracket", async (
+            Guid stageId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanEditBracketByStageAsync(userCtx, stageId, ct))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var version = await conn.QuerySingleOrDefaultAsync(
+                """
+                SELECT id, tournament_id
+                FROM brkt_versions
+                WHERE stage_id = @stageId
+                  AND status IN ('draft', 'active')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                new { stageId });
+
+            if (version is null)
+                return Results.NotFound(new { error = "No bracket found for this stage. Generate the bracket first." });
+
+            Guid versionId = (Guid)version.id;
+            Guid tournamentId = (Guid)version.tournament_id;
+
+            var stageRow = await conn.QuerySingleOrDefaultAsync(
+                "SELECT capacity FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+
+            if (stageRow is null)
+                return Results.NotFound(new { error = "Stage not found." });
+
+            int capacity = (int)(stageRow.capacity ?? 8);
+            int P = (int)Math.Pow(2, Math.Ceiling(Math.Log2(Math.Max(capacity, 2))));
+
+            // Load enrolled participants ordered by seed
+            var participants = (await conn.QueryAsync(
+                """
+                SELECT sp.team_id AS id, COALESCE(t.name, 'Unknown') AS name
+                FROM stage_participants sp
+                LEFT JOIN teams t ON t.id = sp.team_id
+                WHERE sp.stage_id = @stageId
+                  AND sp.status IN ('approved', 'checked_in', 'pending')
+                  AND sp.team_id IS NOT NULL
+                ORDER BY sp.seed ASC NULLS LAST, sp.created_at ASC
+                """,
+                new { stageId })).ToList();
+
+            // Fall back to tournament_participants for stage 1 when stage_participants not yet populated
+            if (participants.Count == 0)
+            {
+                participants = (await conn.QueryAsync(
+                    """
+                    SELECT COALESCE(tp.team_id, tp.id) AS id,
+                           COALESCE(t.name, tp.team_name, tp.gamer_tag, 'Unknown') AS name
+                    FROM tournament_participants tp
+                    LEFT JOIN teams t ON t.id = tp.team_id
+                    WHERE tp.tournament_id = @tournamentId
+                      AND tp.status IN ('approved', 'checked_in', 'pending')
+                    ORDER BY tp.seed ASC NULLS LAST, tp.created_at ASC
+                    """,
+                    new { tournamentId })).ToList();
+            }
+
+            var teamList = participants
+                .Select(p => (Id: (Guid)p.id, Name: (string)(p.name ?? "Unknown")))
+                .ToList();
+
+            var seeded = BracketSeeding.SeedTeams(teamList, P);
+
+            var matchNumbers = (await conn.QueryAsync<int>(
+                """
+                SELECT match_number
+                FROM brkt_matches
+                WHERE version_id = @versionId AND round_index = 0
+                ORDER BY match_number
+                """,
+                new { versionId })).ToList();
+
+            if (matchNumbers.Count == 0)
+                return Results.Ok(new { seeded = 0, byesAdvanced = 0 });
+
+            // Reset later rounds to TBD state so re-seeding is clean.
+            // Only resets matches that were auto-advanced (not manually played).
+            await conn.ExecuteAsync(
+                """
+                UPDATE brkt_matches
+                SET team1_id = NULL, team2_id = NULL,
+                    team1_seed = NULL, team2_seed = NULL,
+                    winner_id = NULL, loser_id = NULL,
+                    status = 'pending'
+                WHERE version_id = @versionId
+                  AND round_index > 0
+                  AND status != 'completed'
+                """,
+                new { versionId });
+
+            // Seed round-0 matches in a single bulk UPDATE
+            var seedMatchNumbers = new List<int>();
+            var seedTeam1Ids = new List<Guid?>();
+            var seedTeam2Ids = new List<Guid?>();
+            var seedTeam1Seeds = new List<int?>();
+            var seedTeam2Seeds = new List<int?>();
+
+            foreach (var mn in matchNumbers)
+            {
+                var slot1 = seeded.ElementAtOrDefault((mn - 1) * 2);
+                var slot2 = seeded.ElementAtOrDefault((mn - 1) * 2 + 1);
+                seedMatchNumbers.Add(mn);
+                seedTeam1Ids.Add(slot1?.Id);
+                seedTeam2Ids.Add(slot2?.Id);
+                seedTeam1Seeds.Add(slot1?.Seed);
+                seedTeam2Seeds.Add(slot2?.Seed);
+            }
+
+            await conn.ExecuteAsync(
+                """
+                UPDATE brkt_matches m
+                SET team1_id   = u.t1_id,
+                    team2_id   = u.t2_id,
+                    team1_seed = u.t1_seed,
+                    team2_seed = u.t2_seed,
+                    winner_id  = NULL,
+                    loser_id   = NULL,
+                    status     = 'pending'
+                FROM UNNEST(@matchNums::int[], @t1Ids::uuid[], @t2Ids::uuid[], @t1Seeds::int[], @t2Seeds::int[])
+                     AS u(match_num, t1_id, t2_id, t1_seed, t2_seed)
+                WHERE m.version_id = @versionId
+                  AND m.round_index = 0
+                  AND m.match_number = u.match_num
+                  AND m.status NOT IN ('in_progress', 'completed')
+                """,
+                new
+                {
+                    versionId,
+                    matchNums = seedMatchNumbers.ToArray(),
+                    t1Ids     = seedTeam1Ids.ToArray(),
+                    t2Ids     = seedTeam2Ids.ToArray(),
+                    t1Seeds   = seedTeam1Seeds.ToArray(),
+                    t2Seeds   = seedTeam2Seeds.ToArray(),
+                });
+
+            // Auto-advance BYE slots across all rounds (cascading, batched per iteration)
+            int byesAdvanced = 0;
+            const int maxCascadeDepth = 20;
+            for (int depth = 0; depth < maxCascadeDepth; depth++)
+            {
+                var byeMatches = (await conn.QueryAsync(
+                    """
+                    SELECT id, team1_id, team2_id, team1_seed, team2_seed
+                    FROM brkt_matches
+                    WHERE version_id = @versionId
+                      AND status = 'pending'
+                      AND (
+                          (team1_id IS NOT NULL AND team2_id IS NULL) OR
+                          (team1_id IS NULL     AND team2_id IS NOT NULL)
+                      )
+                    """,
+                    new { versionId })).ToList();
+
+                if (byeMatches.Count == 0) break;
+
+                // Batch-mark all BYE matches as completed
+                var byeIds = byeMatches.Select(b => (Guid)b.id).ToArray();
+                var winnerIds = byeMatches.Select(b => (Guid?)b.team1_id ?? (Guid)b.team2_id).ToArray();
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE brkt_matches m
+                    SET winner_id = u.winner_id, status = 'completed'
+                    FROM UNNEST(@byeIds::uuid[], @winnerIds::uuid[]) AS u(match_id, winner_id)
+                    WHERE m.id = u.match_id
+                    """,
+                    new { byeIds, winnerIds });
+
+                // Batch-advance winners into their target slots
+                var advRows = (await conn.QueryAsync(
+                    """
+                    SELECT ba.source_match_id, ba.target_match_id, ba.target_slot,
+                           bm.team1_id, bm.team2_id, bm.team1_seed, bm.team2_seed
+                    FROM brkt_advancements ba
+                    JOIN brkt_matches bm ON bm.id = ba.source_match_id
+                    WHERE ba.source_match_id = ANY(@byeIds)
+                      AND ba.type = 'winner'
+                    """,
+                    new { byeIds })).ToList();
+
+                if (advRows.Count > 0)
+                {
+                    var targetIds = advRows.Select(a => (Guid)a.target_match_id).ToArray();
+                    var slots = advRows.Select(a => (int)a.target_slot).ToArray();
+                    var advTeamIds = advRows.Select(a =>
+                        (Guid?)a.team1_id ?? (Guid)a.team2_id).ToArray();
+                    var advSeeds = advRows.Select(a =>
+                        a.team1_id is not null ? (int?)a.team1_seed : (int?)a.team2_seed).ToArray();
+
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE brkt_matches m
+                        SET team1_id   = CASE WHEN u.slot = 1 THEN u.team_id ELSE m.team1_id END,
+                            team2_id   = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END,
+                            team1_seed = CASE WHEN u.slot = 1 THEN u.team_seed ELSE m.team1_seed END,
+                            team2_seed = CASE WHEN u.slot = 2 THEN u.team_seed ELSE m.team2_seed END
+                        FROM UNNEST(@targetIds::uuid[], @slots::int[], @advTeamIds::uuid[], @advSeeds::int[])
+                             AS u(target_match_id, slot, team_id, team_seed)
+                        WHERE m.id = u.target_match_id
+                        """,
+                        new { targetIds, slots, advTeamIds, advSeeds });
+
+                    byesAdvanced += advRows.Count;
+                }
+            }
+
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(versionId.ToString()))
+                .SendAsync(BracketHubEvents.MatchUpdated,
+                    new { versionId, seeded = teamList.Count, byesAdvanced },
+                    ct);
+
+            return Results.Ok(new { seeded = teamList.Count, byesAdvanced });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/brackets/persist ────────────────────────────────────────

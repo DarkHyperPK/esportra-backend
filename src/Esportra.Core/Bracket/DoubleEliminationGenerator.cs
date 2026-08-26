@@ -24,7 +24,7 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
         int numUpperRounds = (int)Math.Round(Math.Log2(P));
         int numLowerRounds = 2 * numUpperRounds - 2;
 
-        var seeded = SeedTeams(teams, P);
+        var seeded = BracketSeeding.SeedTeams(teams, P);
         var matchMap = new Dictionary<string, BracketNode>();
 
         // 1. Upper bracket nodes
@@ -162,28 +162,4 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
         return new BracketGraph(version, nodes, edges);
     }
 
-    private static (Guid Id, string Name, int Seed)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
-    {
-        var seeded = new (Guid Id, string Name, int Seed)?[bracketSize];
-        var positions = GetStandardBracketSlots(bracketSize);
-        for (int i = 0; i < teams.Count; i++)
-            seeded[positions[i]] = (teams[i].Id, teams[i].Name, i + 1); // seed is 1-based
-        return seeded;
-    }
-
-    private static int[] GetStandardBracketSlots(int n)
-    {
-        if (n == 1) return [0];
-        if (n == 2) return [0, 1];
-
-        var slots = new int[n];
-        int halfSize = n / 2;
-        var upper = GetStandardBracketSlots(halfSize);
-        for (int i = 0; i < halfSize; i++)
-        {
-            slots[i] = upper[i] * 2;
-            slots[n - 1 - i] = upper[i] * 2 + 1;
-        }
-        return slots;
-    }
 }
