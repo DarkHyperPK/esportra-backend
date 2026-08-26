@@ -446,6 +446,21 @@ public static class BracketEndpoints
             else
             {
                 // SE/DE: sequential match_numbers in round_index=0, power-of-2 slot formula is correct.
+                // DE losers bracket also starts at round_index=0 — reset it so re-seeding is clean.
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE brkt_matches
+                    SET team1_id = NULL, team2_id = NULL,
+                        team1_seed = NULL, team2_seed = NULL,
+                        winner_id = NULL, loser_id = NULL,
+                        status = 'pending'
+                    WHERE version_id = @versionId
+                      AND round_index = 0
+                      AND bracket_type = 'losers'
+                      AND status != 'completed'
+                    """,
+                    new { versionId });
+
                 var seeded = BracketSeeding.SeedTeams(teamList, P);
 
                 var matchNumbers = (await conn.QueryAsync<int>(
@@ -453,6 +468,7 @@ public static class BracketEndpoints
                     SELECT match_number
                     FROM brkt_matches
                     WHERE version_id = @versionId AND round_index = 0
+                      AND bracket_type = 'winners'
                     ORDER BY match_number
                     """,
                     new { versionId })).ToList();
@@ -488,6 +504,7 @@ public static class BracketEndpoints
                   AND m.round_index = 0
                   AND m.match_number = u.match_num
                   AND m.status NOT IN ('in_progress', 'completed')
+                  AND COALESCE(m.bracket_type, 'winners') = 'winners'
                 """,
                 new
                 {
