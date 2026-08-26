@@ -399,10 +399,10 @@ public static class BracketEndpoints
                 {
                     versionId,
                     matchNums = seedMatchNumbers.ToArray(),
-                    t1Ids     = seedTeam1Ids.ToArray(),
-                    t2Ids     = seedTeam2Ids.ToArray(),
-                    t1Seeds   = seedTeam1Seeds.ToArray(),
-                    t2Seeds   = seedTeam2Seeds.ToArray(),
+                    t1Ids = seedTeam1Ids.ToArray(),
+                    t2Ids = seedTeam2Ids.ToArray(),
+                    t1Seeds = seedTeam1Seeds.ToArray(),
+                    t2Seeds = seedTeam2Seeds.ToArray(),
                 });
 
             // Auto-advance BYE slots across all rounds (cascading, batched per iteration)
