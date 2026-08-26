@@ -327,7 +327,7 @@ public static class BracketEndpoints
             Guid tournamentId = (Guid)version.tournament_id;
 
             var stageRow = await conn.QuerySingleOrDefaultAsync(
-                "SELECT capacity FROM tournament_stages WHERE id = @stageId",
+                "SELECT capacity, format FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
 
             if (stageRow is null)
@@ -369,19 +369,8 @@ public static class BracketEndpoints
                 .Select(p => (Id: (Guid)p.id, Name: (string)(p.name ?? "Unknown")))
                 .ToList();
 
-            var seeded = BracketSeeding.SeedTeams(teamList, P);
-
-            var matchNumbers = (await conn.QueryAsync<int>(
-                """
-                SELECT match_number
-                FROM brkt_matches
-                WHERE version_id = @versionId AND round_index = 0
-                ORDER BY match_number
-                """,
-                new { versionId })).ToList();
-
-            if (matchNumbers.Count == 0)
-                return Results.Ok(new { seeded = 0, byesAdvanced = 0 });
+            string stageFormat = (string)(stageRow.format ?? "");
+            bool isGroupFormat = stageFormat is "round_robin" or "swiss";
 
             // Reset later rounds to TBD state so re-seeding is clean.
             // Only resets matches that were auto-advanced (not manually played).
@@ -405,16 +394,83 @@ public static class BracketEndpoints
             var seedTeam1Seeds = new List<int?>();
             var seedTeam2Seeds = new List<int?>();
 
-            foreach (var mn in matchNumbers)
+            if (isGroupFormat)
             {
-                var slot1 = seeded.ElementAtOrDefault((mn - 1) * 2);
-                var slot2 = seeded.ElementAtOrDefault((mn - 1) * 2 + 1);
-                seedMatchNumbers.Add(mn);
-                seedTeam1Ids.Add(slot1?.Id);
-                seedTeam2Ids.Add(slot2?.Id);
-                seedTeam1Seeds.Add(slot1?.Seed);
-                seedTeam2Seeds.Add(slot2?.Seed);
+                // RR/Swiss: match_number is a global counter across all groups + rounds,
+                // so the SE formula (mn-1)*2 produces out-of-range indices for Group B+.
+                // Use group-aware seeding: snake-distribute teams, then circle-algorithm pairings per group.
+                var groupMatches = (await conn.QueryAsync<(int MatchNumber, string GroupId)>(
+                    """
+                    SELECT match_number, group_id
+                    FROM brkt_matches
+                    WHERE version_id = @versionId AND round_index = 0
+                    ORDER BY group_id, match_number
+                    """,
+                    new { versionId })).ToList();
+
+                var groups = groupMatches
+                    .GroupBy(m => m.GroupId)
+                    .OrderBy(g => g.Key)
+                    .ToList();
+
+                int numGroups = groups.Count;
+                if (numGroups == 0)
+                    return Results.BadRequest(new { error = "No round-0 matches found. Generate the bracket first." });
+
+                var groupedTeams = Enumerable.Range(0, numGroups)
+                    .Select(_ => new List<(Guid Id, string Name, int Seed)>())
+                    .ToList();
+
+                for (int idx = 0; idx < teamList.Count; idx++)
+                {
+                    int cycle = idx / numGroups;
+                    int gi = cycle % 2 == 0 ? idx % numGroups : numGroups - 1 - (idx % numGroups);
+                    groupedTeams[gi].Add((teamList[idx].Id, teamList[idx].Name, idx + 1));
+                }
+
+                foreach (var (group, gi) in groups.Select((g, i) => (g, i)))
+                {
+                    var matchNums = group.Select(m => m.MatchNumber).ToList();
+                    var pairings = BracketSeeding.GetRound0Pairings(groupedTeams[gi]);
+
+                    for (int i = 0; i < Math.Min(matchNums.Count, pairings.Count); i++)
+                    {
+                        seedMatchNumbers.Add(matchNums[i]);
+                        seedTeam1Ids.Add(pairings[i].Team1.Id);
+                        seedTeam2Ids.Add(pairings[i].Team2.Id);
+                        seedTeam1Seeds.Add(pairings[i].Team1.Seed);
+                        seedTeam2Seeds.Add(pairings[i].Team2.Seed);
+                    }
+                }
             }
+            else
+            {
+                // SE/DE: sequential match_numbers in round_index=0, power-of-2 slot formula is correct.
+                var seeded = BracketSeeding.SeedTeams(teamList, P);
+
+                var matchNumbers = (await conn.QueryAsync<int>(
+                    """
+                    SELECT match_number
+                    FROM brkt_matches
+                    WHERE version_id = @versionId AND round_index = 0
+                    ORDER BY match_number
+                    """,
+                    new { versionId })).ToList();
+
+                foreach (var mn in matchNumbers)
+                {
+                    var slot1 = seeded.ElementAtOrDefault((mn - 1) * 2);
+                    var slot2 = seeded.ElementAtOrDefault((mn - 1) * 2 + 1);
+                    seedMatchNumbers.Add(mn);
+                    seedTeam1Ids.Add(slot1?.Id);
+                    seedTeam2Ids.Add(slot2?.Id);
+                    seedTeam1Seeds.Add(slot1?.Seed);
+                    seedTeam2Seeds.Add(slot2?.Seed);
+                }
+            }
+
+            if (seedMatchNumbers.Count == 0)
+                return Results.Ok(new { seeded = 0, byesAdvanced = 0 });
 
             await conn.ExecuteAsync(
                 """
