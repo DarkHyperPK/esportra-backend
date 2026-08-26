@@ -212,11 +212,24 @@ public static class BracketEndpoints
             if (teams.Count == 0 && (effectiveBracketSize is null or <= 1))
                 return Results.BadRequest(new { error = "Cannot generate an empty bracket without a valid stage capacity (must be >= 2)." });
 
+            // For RR/Swiss with 0 teams: use placeholder teams from capacity to produce
+            // the full structure, then null out team IDs on the generated nodes.
+            bool usedPlaceholders = false;
             if (teams.Count == 0
                 && (req.Format.Equals("round_robin", StringComparison.OrdinalIgnoreCase)
                     || req.Format.Equals("swiss", StringComparison.OrdinalIgnoreCase)))
             {
-                return Results.BadRequest(new { error = "Round Robin and Swiss formats require at least 2 teams to generate a meaningful bracket structure." });
+                var stageCapForPlaceholders = await conn.ExecuteScalarAsync<int?>(
+                    "SELECT capacity FROM tournament_stages WHERE id = @stageId",
+                    new { stageId = req.StageId });
+
+                if (stageCapForPlaceholders is null or < 2)
+                    return Results.BadRequest(new { error = "Stage capacity must be at least 2 to generate a TBD bracket for this format." });
+
+                teams = Enumerable.Range(1, stageCapForPlaceholders.Value)
+                    .Select(i => (Guid.NewGuid(), $"TBD {i}"))
+                    .ToList();
+                usedPlaceholders = true;
             }
 
             var graph = generator.Generate(
@@ -227,6 +240,17 @@ public static class BracketEndpoints
                 effectiveBracketSize,
                 req.AdvancementCount,
                 config);
+
+            // Strip placeholder team IDs so all slots are TBD
+            if (usedPlaceholders)
+            {
+                graph = graph with
+                {
+                    Nodes = graph.Nodes
+                        .Select(n => n with { Team1Id = null, Team2Id = null, Team1Seed = null, Team2Seed = null })
+                        .ToList()
+                };
+            }
 
             var errors = GraphValidator.Validate(graph);
             if (errors.Count > 0)
