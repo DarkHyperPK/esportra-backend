@@ -297,11 +297,25 @@ public static class BracketEndpoints
 
             var version = await conn.QuerySingleOrDefaultAsync(
                 """
-                SELECT id, tournament_id
-                FROM brkt_versions
-                WHERE stage_id = @stageId
-                  AND status IN ('draft', 'active')
-                ORDER BY created_at DESC
+                SELECT bv.id, bv.tournament_id
+                FROM brkt_versions bv
+                WHERE bv.stage_id = @stageId
+                  AND bv.status IN ('draft', 'active')
+                ORDER BY bv.created_at DESC
+                LIMIT 1
+                """,
+                new { stageId });
+
+            // Fallback: match by tournament_id when stage_id is NULL on the version
+            version ??= await conn.QuerySingleOrDefaultAsync(
+                """
+                SELECT bv.id, bv.tournament_id
+                FROM brkt_versions bv
+                JOIN tournament_stages ts ON ts.tournament_id = bv.tournament_id
+                WHERE ts.id = @stageId
+                  AND bv.stage_id IS NULL
+                  AND bv.status IN ('draft', 'active')
+                ORDER BY bv.created_at DESC
                 LIMIT 1
                 """,
                 new { stageId });
