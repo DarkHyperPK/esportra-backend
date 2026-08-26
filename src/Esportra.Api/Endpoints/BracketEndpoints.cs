@@ -522,6 +522,64 @@ public static class BracketEndpoints
             return Results.Ok(new { seeded = teamList.Count, byesAdvanced });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/stages/{stageId}/unseed-bracket ────────────────────────
+        // Resets all matches back to TBD state (removes teams), preserving structure + scheduled times.
+        app.MapPost("/api/stages/{stageId}/unseed-bracket", async (
+            Guid stageId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IHubContext<BracketHub> bracketHub,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanEditBracketByStageAsync(userCtx, stageId, ct))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var version = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT id FROM brkt_versions
+                WHERE stage_id = @stageId AND status IN ('draft', 'active')
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                new { stageId });
+
+            version ??= await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT bv.id FROM brkt_versions bv
+                JOIN tournament_stages ts ON ts.tournament_id = bv.tournament_id
+                WHERE ts.id = @stageId AND bv.stage_id IS NULL AND bv.status IN ('draft', 'active')
+                ORDER BY bv.created_at DESC LIMIT 1
+                """,
+                new { stageId });
+
+            if (version is null)
+                return Results.NotFound(new { error = "No bracket found for this stage." });
+
+            var cleared = await conn.ExecuteAsync(
+                """
+                UPDATE brkt_matches
+                SET team1_id = NULL, team2_id = NULL,
+                    team1_seed = NULL, team2_seed = NULL,
+                    winner_id = NULL, loser_id = NULL,
+                    status = 'pending'
+                WHERE version_id = @versionId
+                """,
+                new { versionId = version.Value });
+
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(version.Value.ToString()))
+                .SendAsync(BracketHubEvents.MatchUpdated,
+                    new { versionId = version.Value, unseeded = true, cleared },
+                    ct);
+
+            return Results.Ok(new { cleared });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/brackets/persist ────────────────────────────────────────
         // Used by MatchRepository.ts to save a client-generated bracket graph.
         // Frontend sends snake_case JSON — deserialize with SnakeCaseLower naming policy.

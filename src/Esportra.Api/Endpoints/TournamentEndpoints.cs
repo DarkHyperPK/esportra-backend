@@ -4779,19 +4779,13 @@ public static class TournamentEndpoints
             """,
             new { tournamentId }, tx);
 
-        // Identify versions with seeded teams — these are simulation state to delete.
-        // TBD versions (all team slots NULL) are preserved.
-        var seededVersionIds = (await conn.QueryAsync<Guid>(
-            """
-            SELECT DISTINCT v.id
-            FROM public.brkt_versions v
-            JOIN public.brkt_matches m ON m.version_id = v.id
-            WHERE v.tournament_id = @tournamentId
-              AND (m.team1_id IS NOT NULL OR m.team2_id IS NOT NULL)
-            """,
+        // Un-seed all bracket versions back to TBD state (preserves structure + scheduled times).
+        // Clear match events, games, disputes that reference these matches.
+        var allVersionIds = (await conn.QueryAsync<Guid>(
+            "SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId",
             new { tournamentId }, tx)).ToArray();
 
-        if (seededVersionIds.Length > 0)
+        if (allVersionIds.Length > 0)
         {
             await conn.ExecuteAsync(
                 """
@@ -4801,7 +4795,7 @@ public static class TournamentEndpoints
                 WHERE dc.dispute_id = td.id
                   AND m.version_id = ANY(@vids)
                 """,
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
             await conn.ExecuteAsync(
                 """
                 DELETE FROM public.tournament_disputes td
@@ -4809,7 +4803,7 @@ public static class TournamentEndpoints
                 WHERE td.match_id = m.id
                   AND m.version_id = ANY(@vids)
                 """,
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
             await conn.ExecuteAsync(
                 """
                 DELETE FROM public.match_disputes md
@@ -4817,7 +4811,7 @@ public static class TournamentEndpoints
                 WHERE md.match_id = m.id
                   AND m.version_id = ANY(@vids)
                 """,
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
             await conn.ExecuteAsync(
                 """
                 DELETE FROM public.match_result_reports r
@@ -4825,7 +4819,7 @@ public static class TournamentEndpoints
                 WHERE r.match_id = m.id
                   AND m.version_id = ANY(@vids)
                 """,
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
             await conn.ExecuteAsync(
                 """
                 DELETE FROM public.match_completed_events e
@@ -4833,34 +4827,24 @@ public static class TournamentEndpoints
                 WHERE e.match_id = m.id
                   AND m.version_id = ANY(@vids)
                 """,
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
             await conn.ExecuteAsync(
                 "DELETE FROM public.brkt_match_games WHERE match_id IN (SELECT id FROM public.brkt_matches WHERE version_id = ANY(@vids))",
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
             await conn.ExecuteAsync(
                 "DELETE FROM public.brkt_match_events WHERE match_id IN (SELECT id FROM public.brkt_matches WHERE version_id = ANY(@vids))",
-                new { vids = seededVersionIds }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.brkt_layout WHERE version_id = ANY(@vids)",
-                new { vids = seededVersionIds }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.brkt_advancements WHERE version_id = ANY(@vids)",
-                new { vids = seededVersionIds }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.brkt_matches WHERE version_id = ANY(@vids)",
-                new { vids = seededVersionIds }, tx);
-            await conn.ExecuteAsync(
-                "DELETE FROM public.brkt_versions WHERE id = ANY(@vids)",
-                new { vids = seededVersionIds }, tx);
+                new { vids = allVersionIds }, tx);
         }
 
-        // Clean any stale state on preserved TBD versions
+        // Reset all matches to TBD — structure, advancements, layout, and scheduled times preserved
         await conn.ExecuteAsync(
             """
             UPDATE public.brkt_matches
-            SET winner_id = NULL, loser_id = NULL, status = 'pending'
+            SET team1_id = NULL, team2_id = NULL,
+                team1_seed = NULL, team2_seed = NULL,
+                winner_id = NULL, loser_id = NULL,
+                status = 'pending'
             WHERE version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)
-              AND (winner_id IS NOT NULL OR status != 'pending')
             """,
             new { tournamentId }, tx);
 
