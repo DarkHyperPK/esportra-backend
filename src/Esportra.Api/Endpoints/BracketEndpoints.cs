@@ -341,12 +341,12 @@ public static class BracketEndpoints
                 participants = (await conn.QueryAsync(
                     """
                     SELECT COALESCE(tp.team_id, tp.id) AS id,
-                           COALESCE(t.name, tp.team_name, tp.gamer_tag, 'Unknown') AS name
+                           COALESCE(t.name, tp.team_name, 'Unknown') AS name
                     FROM tournament_participants tp
                     LEFT JOIN teams t ON t.id = tp.team_id
                     WHERE tp.tournament_id = @tournamentId
-                      AND tp.status IN ('approved', 'checked_in', 'pending')
-                    ORDER BY tp.seed ASC NULLS LAST, tp.created_at ASC
+                      AND tp.status::text IN ('approved', 'checked_in', 'pending')
+                    ORDER BY tp.created_at ASC
                     """,
                     new { tournamentId })).ToList();
             }
