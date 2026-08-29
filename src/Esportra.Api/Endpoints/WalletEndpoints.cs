@@ -119,7 +119,6 @@ public static class WalletEndpoints
                 return Results.BadRequest(new { error = "Invalid userId." });
 
             using var conn = db.CreateConnection();
-            conn.Open();
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
@@ -225,7 +224,6 @@ public static class WalletEndpoints
                 return Results.BadRequest(new { error = "Invalid walletId." });
 
             using var conn = db.CreateConnection();
-            conn.Open();
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(

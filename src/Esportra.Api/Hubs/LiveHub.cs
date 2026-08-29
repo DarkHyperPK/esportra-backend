@@ -123,7 +123,6 @@ public sealed class LiveHub : Hub
         try
         {
             using var conn = _db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             foreach (var p in positions)
@@ -263,7 +262,6 @@ public sealed class LiveHub : Hub
         try
         {
             using var conn = _db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             // Update venues.price_per_hour if provided

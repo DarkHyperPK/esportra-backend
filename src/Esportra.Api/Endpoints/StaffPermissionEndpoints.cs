@@ -116,7 +116,6 @@ public static class StaffPermissionEndpoints
                 return Results.BadRequest(new { error = $"Unknown permissions: {string.Join(", ", invalid)}" });
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try

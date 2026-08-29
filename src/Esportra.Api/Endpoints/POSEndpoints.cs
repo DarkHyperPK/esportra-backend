@@ -56,7 +56,6 @@ public static class POSEndpoints
                 return Results.BadRequest(new { error = $"Invalid payment method. Must be one of: {string.Join(", ", ValidPaymentMethods)}" });
 
             using var conn = db.CreateConnection();
-            conn.Open();
 
             // ── Fetch & validate menu items ─────────────────────────────
             var itemIds = req.Items.Select(i => i.ItemId).Distinct().ToArray();
@@ -326,7 +325,6 @@ public static class POSEndpoints
                 return Results.BadRequest(new { error = $"Invalid status. Must be one of: {string.Join(", ", ValidStatuses)}" });
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try

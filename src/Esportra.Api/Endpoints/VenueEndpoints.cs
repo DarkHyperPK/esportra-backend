@@ -539,7 +539,6 @@ public static class VenueEndpoints
                 return Results.BadRequest(new { error = "Invalid start time format." });
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
             try
             {
@@ -1041,7 +1040,6 @@ public static class VenueEndpoints
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try
