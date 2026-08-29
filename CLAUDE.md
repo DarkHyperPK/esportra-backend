@@ -73,6 +73,7 @@ Never edit `post-baseline-replay-schema.sql` or `replay-journal-seed.sql` by han
 - Functions < 50 lines, files < 800 lines
 - No `dynamic` — prefer generics or explicit models
 - `dotnet format` for formatting, remove unused `using` directives
+- **Run `dotnet format` before staging any `.cs` file** — then verify with `dotnet format --verify-no-changes` (must exit 0). CI enforces this; `dotnet build`/`dotnet test` do not catch whitespace violations.
 - Options pattern for config (strongly typed, no raw string reading)
 
 ## Security (Blocking)

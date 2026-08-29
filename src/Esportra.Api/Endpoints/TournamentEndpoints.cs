@@ -4741,13 +4741,13 @@ public static class TournamentEndpoints
             return null;
         var allowed = existingStatus?.ToLowerInvariant() switch
         {
-            "draft"     => new[] { "open", "published", "cancelled" },
-            "open"      => new[] { "ongoing", "check_in", "cancelled", "draft" },
+            "draft" => new[] { "open", "published", "cancelled" },
+            "open" => new[] { "ongoing", "check_in", "cancelled", "draft" },
             "published" => new[] { "open", "ongoing", "cancelled" },
-            "check_in"  => new[] { "ongoing", "cancelled" },
-            "ongoing"   => new[] { "completed", "cancelled" },
-            "approved"  => new[] { "open", "published", "cancelled" },
-            _           => Array.Empty<string>(),
+            "check_in" => new[] { "ongoing", "cancelled" },
+            "ongoing" => new[] { "completed", "cancelled" },
+            "approved" => new[] { "open", "published", "cancelled" },
+            _ => Array.Empty<string>(),
         };
         return allowed.Contains(newStatus.ToLowerInvariant())
             ? null

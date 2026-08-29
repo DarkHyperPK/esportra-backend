@@ -380,10 +380,10 @@ public static class BracketEndpoints
             try
             {
 
-            // Reset later rounds to TBD state so re-seeding is clean.
-            // Only resets matches that were auto-advanced (not manually played).
-            await conn.ExecuteAsync(
-                """
+                // Reset later rounds to TBD state so re-seeding is clean.
+                // Only resets matches that were auto-advanced (not manually played).
+                await conn.ExecuteAsync(
+                    """
                 UPDATE brkt_matches
                 SET team1_id = NULL, team2_id = NULL,
                     team1_seed = NULL, team2_seed = NULL,
@@ -393,73 +393,73 @@ public static class BracketEndpoints
                   AND round_index > 0
                   AND status != 'completed'
                 """,
-                new { versionId }, tx);
+                    new { versionId }, tx);
 
-            // Seed round-0 matches in a single bulk UPDATE
-            var seedMatchNumbers = new List<int>();
-            var seedTeam1Ids = new List<Guid?>();
-            var seedTeam2Ids = new List<Guid?>();
-            var seedTeam1Seeds = new List<int?>();
-            var seedTeam2Seeds = new List<int?>();
+                // Seed round-0 matches in a single bulk UPDATE
+                var seedMatchNumbers = new List<int>();
+                var seedTeam1Ids = new List<Guid?>();
+                var seedTeam2Ids = new List<Guid?>();
+                var seedTeam1Seeds = new List<int?>();
+                var seedTeam2Seeds = new List<int?>();
 
-            if (isGroupFormat)
-            {
-                // RR/Swiss: match_number is a global counter across all groups + rounds,
-                // so the SE formula (mn-1)*2 produces out-of-range indices for Group B+.
-                // Use group-aware seeding: snake-distribute teams, then circle-algorithm pairings per group.
-                var groupMatches = (await conn.QueryAsync<(int MatchNumber, string GroupId)>(
-                    """
+                if (isGroupFormat)
+                {
+                    // RR/Swiss: match_number is a global counter across all groups + rounds,
+                    // so the SE formula (mn-1)*2 produces out-of-range indices for Group B+.
+                    // Use group-aware seeding: snake-distribute teams, then circle-algorithm pairings per group.
+                    var groupMatches = (await conn.QueryAsync<(int MatchNumber, string GroupId)>(
+                        """
                     SELECT match_number, group_id
                     FROM brkt_matches
                     WHERE version_id = @versionId AND round_index = 0
                     ORDER BY group_id, match_number
                     """,
-                    new { versionId }, tx)).ToList();
+                        new { versionId }, tx)).ToList();
 
-                var groups = groupMatches
-                    .GroupBy(m => m.GroupId)
-                    .OrderBy(g => g.Key)
-                    .ToList();
+                    var groups = groupMatches
+                        .GroupBy(m => m.GroupId)
+                        .OrderBy(g => g.Key)
+                        .ToList();
 
-                int numGroups = groups.Count;
-                if (numGroups == 0)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = "No round-0 matches found. Generate the bracket first." });
-                }
-
-                var groupedTeams = Enumerable.Range(0, numGroups)
-                    .Select(_ => new List<(Guid Id, string Name, int Seed)>())
-                    .ToList();
-
-                for (int idx = 0; idx < teamList.Count; idx++)
-                {
-                    int cycle = idx / numGroups;
-                    int gi = cycle % 2 == 0 ? idx % numGroups : numGroups - 1 - (idx % numGroups);
-                    groupedTeams[gi].Add((teamList[idx].Id, teamList[idx].Name, idx + 1));
-                }
-
-                foreach (var (group, gi) in groups.Select((g, i) => (g, i)))
-                {
-                    var matchNums = group.Select(m => m.MatchNumber).ToList();
-                    var pairings = BracketSeeding.GetRound0Pairings(groupedTeams[gi]);
-
-                    for (int i = 0; i < Math.Min(matchNums.Count, pairings.Count); i++)
+                    int numGroups = groups.Count;
+                    if (numGroups == 0)
                     {
-                        seedMatchNumbers.Add(matchNums[i]);
-                        seedTeam1Ids.Add(pairings[i].Team1.Id);
-                        seedTeam2Ids.Add(pairings[i].Team2.Id);
-                        seedTeam1Seeds.Add(pairings[i].Team1.Seed);
-                        seedTeam2Seeds.Add(pairings[i].Team2.Seed);
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "No round-0 matches found. Generate the bracket first." });
+                    }
+
+                    var groupedTeams = Enumerable.Range(0, numGroups)
+                        .Select(_ => new List<(Guid Id, string Name, int Seed)>())
+                        .ToList();
+
+                    for (int idx = 0; idx < teamList.Count; idx++)
+                    {
+                        int cycle = idx / numGroups;
+                        int gi = cycle % 2 == 0 ? idx % numGroups : numGroups - 1 - (idx % numGroups);
+                        groupedTeams[gi].Add((teamList[idx].Id, teamList[idx].Name, idx + 1));
+                    }
+
+                    foreach (var (group, gi) in groups.Select((g, i) => (g, i)))
+                    {
+                        var matchNums = group.Select(m => m.MatchNumber).ToList();
+                        var pairings = BracketSeeding.GetRound0Pairings(groupedTeams[gi]);
+
+                        for (int i = 0; i < Math.Min(matchNums.Count, pairings.Count); i++)
+                        {
+                            seedMatchNumbers.Add(matchNums[i]);
+                            seedTeam1Ids.Add(pairings[i].Team1.Id);
+                            seedTeam2Ids.Add(pairings[i].Team2.Id);
+                            seedTeam1Seeds.Add(pairings[i].Team1.Seed);
+                            seedTeam2Seeds.Add(pairings[i].Team2.Seed);
+                        }
                     }
                 }
-            }
-            else
-            {
-                // SE/DE: reset losers bracket round 0, then seed winners bracket.
-                // P is derived from actual bracket slot count (not stage capacity) so seeds land correctly.
-                await conn.ExecuteAsync(
-                    """
+                else
+                {
+                    // SE/DE: reset losers bracket round 0, then seed winners bracket.
+                    // P is derived from actual bracket slot count (not stage capacity) so seeds land correctly.
+                    await conn.ExecuteAsync(
+                        """
                     UPDATE brkt_matches
                     SET team1_id = NULL, team2_id = NULL,
                         team1_seed = NULL, team2_seed = NULL,
@@ -470,41 +470,41 @@ public static class BracketEndpoints
                       AND bracket_type = 'losers'
                       AND status != 'completed'
                     """,
-                    new { versionId }, tx);
+                        new { versionId }, tx);
 
-                var matchNumbers = (await conn.QueryAsync<int>(
-                    """
+                    var matchNumbers = (await conn.QueryAsync<int>(
+                        """
                     SELECT match_number
                     FROM brkt_matches
                     WHERE version_id = @versionId AND round_index = 0
                       AND bracket_type = 'winners'
                     ORDER BY match_number
                     """,
-                    new { versionId }, tx)).ToList();
+                        new { versionId }, tx)).ToList();
 
-                int P = Math.Max(matchNumbers.Count * 2, 2);
-                var seeded = BracketSeeding.SeedTeams(teamList, P);
+                    int P = Math.Max(matchNumbers.Count * 2, 2);
+                    var seeded = BracketSeeding.SeedTeams(teamList, P);
 
-                foreach (var mn in matchNumbers)
-                {
-                    var slot1 = seeded.ElementAtOrDefault((mn - 1) * 2);
-                    var slot2 = seeded.ElementAtOrDefault((mn - 1) * 2 + 1);
-                    seedMatchNumbers.Add(mn);
-                    seedTeam1Ids.Add(slot1?.Id);
-                    seedTeam2Ids.Add(slot2?.Id);
-                    seedTeam1Seeds.Add(slot1?.Seed);
-                    seedTeam2Seeds.Add(slot2?.Seed);
+                    foreach (var mn in matchNumbers)
+                    {
+                        var slot1 = seeded.ElementAtOrDefault((mn - 1) * 2);
+                        var slot2 = seeded.ElementAtOrDefault((mn - 1) * 2 + 1);
+                        seedMatchNumbers.Add(mn);
+                        seedTeam1Ids.Add(slot1?.Id);
+                        seedTeam2Ids.Add(slot2?.Id);
+                        seedTeam1Seeds.Add(slot1?.Seed);
+                        seedTeam2Seeds.Add(slot2?.Seed);
+                    }
                 }
-            }
 
-            if (seedMatchNumbers.Count == 0)
-            {
-                tx.Commit();
-                return Results.Ok(new { seeded = 0, byesAdvanced = 0 });
-            }
+                if (seedMatchNumbers.Count == 0)
+                {
+                    tx.Commit();
+                    return Results.Ok(new { seeded = 0, byesAdvanced = 0 });
+                }
 
-            await conn.ExecuteAsync(
-                """
+                await conn.ExecuteAsync(
+                    """
                 UPDATE brkt_matches m
                 SET team1_id   = u.t1_id,
                     team2_id   = u.t2_id,
@@ -521,22 +521,22 @@ public static class BracketEndpoints
                   AND m.status NOT IN ('in_progress', 'completed')
                   AND COALESCE(m.bracket_type, 'winners') = 'winners'
                 """,
-                new
-                {
-                    versionId,
-                    matchNums = seedMatchNumbers.ToArray(),
-                    t1Ids = seedTeam1Ids.ToArray(),
-                    t2Ids = seedTeam2Ids.ToArray(),
-                    t1Seeds = seedTeam1Seeds.ToArray(),
-                    t2Seeds = seedTeam2Seeds.ToArray(),
-                }, tx);
+                    new
+                    {
+                        versionId,
+                        matchNums = seedMatchNumbers.ToArray(),
+                        t1Ids = seedTeam1Ids.ToArray(),
+                        t2Ids = seedTeam2Ids.ToArray(),
+                        t1Seeds = seedTeam1Seeds.ToArray(),
+                        t2Seeds = seedTeam2Seeds.ToArray(),
+                    }, tx);
 
-            // Auto-advance BYE slots across all rounds (cascading, batched per iteration)
-            const int maxCascadeDepth = 20;
-            for (int depth = 0; depth < maxCascadeDepth; depth++)
-            {
-                var byeMatches = (await conn.QueryAsync(
-                    """
+                // Auto-advance BYE slots across all rounds (cascading, batched per iteration)
+                const int maxCascadeDepth = 20;
+                for (int depth = 0; depth < maxCascadeDepth; depth++)
+                {
+                    var byeMatches = (await conn.QueryAsync(
+                        """
                     SELECT id, team1_id, team2_id, team1_seed, team2_seed
                     FROM brkt_matches
                     WHERE version_id = @versionId
@@ -546,25 +546,25 @@ public static class BracketEndpoints
                           (team1_id IS NULL     AND team2_id IS NOT NULL)
                       )
                     """,
-                    new { versionId }, tx)).ToList();
+                        new { versionId }, tx)).ToList();
 
-                if (byeMatches.Count == 0) break;
+                    if (byeMatches.Count == 0) break;
 
-                // Batch-mark all BYE matches as completed
-                var byeIds = byeMatches.Select(b => (Guid)b.id).ToArray();
-                var winnerIds = byeMatches.Select(b => (Guid?)b.team1_id ?? (Guid)b.team2_id).ToArray();
-                await conn.ExecuteAsync(
-                    """
+                    // Batch-mark all BYE matches as completed
+                    var byeIds = byeMatches.Select(b => (Guid)b.id).ToArray();
+                    var winnerIds = byeMatches.Select(b => (Guid?)b.team1_id ?? (Guid)b.team2_id).ToArray();
+                    await conn.ExecuteAsync(
+                        """
                     UPDATE brkt_matches m
                     SET winner_id = u.winner_id, status = 'completed'
                     FROM UNNEST(@byeIds::uuid[], @winnerIds::uuid[]) AS u(match_id, winner_id)
                     WHERE m.id = u.match_id
                     """,
-                    new { byeIds, winnerIds }, tx);
+                        new { byeIds, winnerIds }, tx);
 
-                // Batch-advance winners into their target slots
-                var advRows = (await conn.QueryAsync(
-                    """
+                    // Batch-advance winners into their target slots
+                    var advRows = (await conn.QueryAsync(
+                        """
                     SELECT ba.source_match_id, ba.target_match_id, ba.target_slot,
                            bm.team1_id, bm.team2_id, bm.team1_seed, bm.team2_seed
                     FROM brkt_advancements ba
@@ -572,19 +572,19 @@ public static class BracketEndpoints
                     WHERE ba.source_match_id = ANY(@byeIds)
                       AND ba.type = 'winner'
                     """,
-                    new { byeIds }, tx)).ToList();
+                        new { byeIds }, tx)).ToList();
 
-                if (advRows.Count > 0)
-                {
-                    var targetIds = advRows.Select(a => (Guid)a.target_match_id).ToArray();
-                    var slots = advRows.Select(a => (int)a.target_slot).ToArray();
-                    var advTeamIds = advRows.Select(a =>
-                        (Guid?)a.team1_id ?? (Guid)a.team2_id).ToArray();
-                    var advSeeds = advRows.Select(a =>
-                        a.team1_id is not null ? (int?)a.team1_seed : (int?)a.team2_seed).ToArray();
+                    if (advRows.Count > 0)
+                    {
+                        var targetIds = advRows.Select(a => (Guid)a.target_match_id).ToArray();
+                        var slots = advRows.Select(a => (int)a.target_slot).ToArray();
+                        var advTeamIds = advRows.Select(a =>
+                            (Guid?)a.team1_id ?? (Guid)a.team2_id).ToArray();
+                        var advSeeds = advRows.Select(a =>
+                            a.team1_id is not null ? (int?)a.team1_seed : (int?)a.team2_seed).ToArray();
 
-                    await conn.ExecuteAsync(
-                        """
+                        await conn.ExecuteAsync(
+                            """
                         UPDATE brkt_matches m
                         SET team1_id   = CASE WHEN u.slot = 1 THEN u.team_id ELSE m.team1_id END,
                             team2_id   = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END,
@@ -594,13 +594,13 @@ public static class BracketEndpoints
                              AS u(target_match_id, slot, team_id, team_seed)
                         WHERE m.id = u.target_match_id
                         """,
-                        new { targetIds, slots, advTeamIds, advSeeds }, tx);
+                            new { targetIds, slots, advTeamIds, advSeeds }, tx);
 
-                    byesAdvanced += advRows.Count;
+                        byesAdvanced += advRows.Count;
+                    }
                 }
-            }
 
-            tx.Commit();
+                tx.Commit();
             } // end try
             catch
             {
