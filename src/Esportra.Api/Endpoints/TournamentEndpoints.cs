@@ -4179,10 +4179,10 @@ public static class TournamentEndpoints
         await conn.ExecuteAsync(
             """
             UPDATE public.tournament_stages
-            SET status = 'draft',
+            SET status = 'pending',
                 updated_at = NOW()
             WHERE tournament_id = @tournamentId
-              AND status::text <> 'draft'
+              AND status <> 'pending'
             """,
             new { tournamentId }, tx);
 
