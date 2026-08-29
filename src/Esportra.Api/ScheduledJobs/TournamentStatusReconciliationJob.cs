@@ -25,7 +25,6 @@ public sealed class TournamentStatusReconciliationJob(
     public async Task ExecuteAsync(CancellationToken ct)
     {
         using var conn = db.CreateConnection();
-        await ((System.Data.Common.DbConnection)conn).OpenAsync(ct);
         using var tx = conn.BeginTransaction();
         var now = DateTimeOffset.UtcNow;
 

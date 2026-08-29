@@ -37,7 +37,6 @@ public sealed class TournamentCheckinDeadlineJob(
             return;
         }
 
-        await ((System.Data.Common.DbConnection)conn).OpenAsync(ct);
         using var tx = conn.BeginTransaction();
 
         // Snapshot + UPDATE in the same transaction so Hangfire retries are safe:

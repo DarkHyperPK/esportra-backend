@@ -375,7 +375,6 @@ public static class BracketEndpoints
 
             // All seeding writes are atomic: round reset + seed UPDATE + BYE cascade or nothing.
             int byesAdvanced = 0;
-            await ((System.Data.Common.DbConnection)conn).OpenAsync(ct);
             using var tx = conn.BeginTransaction();
             try
             {
