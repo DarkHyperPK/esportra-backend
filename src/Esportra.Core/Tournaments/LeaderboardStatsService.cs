@@ -274,7 +274,7 @@ public sealed class LeaderboardStatsService(IDbConnectionFactory db, ILogger<Lea
         int Wins,
         int Losses,
         int MatchesPlayed,
-        double WinRate,
+        decimal WinRate,
         int TournamentsWon,
         long Rp);
 
@@ -285,25 +285,29 @@ public sealed class LeaderboardStatsService(IDbConnectionFactory db, ILogger<Lea
     public async Task<TeamLeaderboardSummary?> GetTeamSummaryAsync(Guid teamId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<(int wins, int losses, int played, int titles, long rp)>(
+        var row = await conn.QuerySingleOrDefaultAsync<(int? wins, int? losses, int? played, int? titles, long? rp)>(
             new CommandDefinition(
                 """
-                SELECT COALESCE(SUM(wins), 0)::int,
-                       COALESCE(SUM(losses), 0)::int,
-                       COALESCE(SUM(matches_played), 0)::int,
-                       COALESCE(SUM(tournaments_won), 0)::int,
-                       COALESCE(SUM(rp), 0)::bigint
+                SELECT SUM(wins)::int,
+                       SUM(losses)::int,
+                       SUM(matches_played)::int,
+                       SUM(tournaments_won)::int,
+                       SUM(rp)::bigint
                 FROM public.leaderboard_team_stats
                 WHERE team_id = @teamId
                 """,
                 new { teamId }, cancellationToken: ct));
 
+        if (row.wins is null) return null;
+
+        int wins = row.wins.Value;
+        int played = row.played ?? 0;
         return new TeamLeaderboardSummary(
-            row.wins,
-            row.losses,
-            row.played,
-            row.played > 0 ? Math.Round(row.wins * 100.0 / row.played, 1) : 0,
-            row.titles,
-            row.rp);
+            wins,
+            row.losses ?? 0,
+            played,
+            played > 0 ? Math.Round((decimal)wins / played * 100, 1) : 0m,
+            row.titles ?? 0,
+            row.rp ?? 0L);
     }
 }

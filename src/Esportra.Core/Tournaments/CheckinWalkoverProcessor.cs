@@ -209,6 +209,21 @@ public sealed class CheckinWalkoverProcessor(
                 new { matchId = ctx.MatchId },
                 tx);
 
+            // Propagate null teams through advancements so downstream matches aren't stuck waiting
+            var advancements = await conn.QueryAsync<dynamic>(
+                "SELECT target_match_id, target_slot FROM public.brkt_advancements WHERE source_match_id = @matchId",
+                new { matchId = ctx.MatchId }, tx);
+
+            foreach (var adv in advancements)
+            {
+                var slot = (int)adv.target_slot;
+                var teamField = slot == 1 ? "team1_id" : "team2_id";
+                var seedField = slot == 1 ? "team1_seed" : "team2_seed";
+                await conn.ExecuteAsync(
+                    $"UPDATE public.brkt_matches SET {teamField} = NULL, {seedField} = NULL WHERE id = @targetId",
+                    new { targetId = (Guid)adv.target_match_id }, tx);
+            }
+
             tx.Commit();
             return true;
         }

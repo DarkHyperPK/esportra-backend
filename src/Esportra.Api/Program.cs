@@ -495,6 +495,8 @@ using (var scope = app.Services.CreateScope())
     var recurringJobs = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
     var backgroundJobs = scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>();
 
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.TournamentStatusReconciliationJob>(
+        "tournament-status-reconciliation", j => j.ExecuteAsync(CancellationToken.None), "*/5 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
         "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(

@@ -83,6 +83,7 @@ public static class PublicToolEndpoints
                 FROM public.public_tool_brackets b
                 WHERE b.owner_user_id = @owner
                 ORDER BY b.updated_at DESC
+                LIMIT 200
                 """,
                 new { owner = userCtx.UserIdGuid });
             return Results.Ok(rows);

@@ -134,6 +134,7 @@ Custom skills defined in `.claude/skills/` for guided workflows:
 | `clean-architecture` | Patterns for maintainable, testable code organization. Covers dependency direction, single responsibility, explicit dependencies, and file organization. | Creating new features, deciding where code lives, designing interfaces, refactoring tangled code |
 | `secure-development` | Security-first development practices for APIs and data handling. Covers input validation, parameterized queries, authorization, error handling, and secrets management. | Building endpoints, handling user input, auth/authz work, sensitive data, external integrations |
 | `root-cause-diagnosis` | Full multi-angle root-cause diagnosis protocol. Traces the complete data path, audits assumptions with evidence, distinguishes defects from intended workflow. | Bug reports, regressions, errors, unexpected behavior, investigating "why does X fail?" |
+| `cyclomatic-complexity` | Audit and enforce cyclomatic complexity limits (CC ≤ 10 hard limit, ≤ 7 preferred). Covers counting rules, violation thresholds, and refactoring patterns. | Writing or modifying any method with branching logic, code reviews, pre-commit checks |
 
 ## Rules
 
@@ -146,6 +147,7 @@ Always-active rules defined in `.claude/rules/` that govern all code changes:
 | `refactoring.md` | Refactor to improve structure without changing behavior. Small steps, run tests after each, commit frequently. Never refactor while fixing a bug or without test coverage. |
 | `security.md` | Blocking security rules. Parameterized queries, RLS on every table, framework auth handlers, no hardcoded secrets, no PII in logs, safe client errors. Violations must be fixed before proceeding. |
 | `git-workflow.md` | Never push to main. All work on staging. Production deploys via CI/CD only. |
+| `cyclomatic-complexity.md` | Blocking CC limits. CC ≤ 10 per method (hard), ≤ 7 preferred. CC 11–15 requires refactor before merge; CC 16+ is a hard block. |
 
 ## Parked (Do Not Implement)
 

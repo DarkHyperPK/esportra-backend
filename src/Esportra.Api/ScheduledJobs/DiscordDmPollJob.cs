@@ -12,6 +12,7 @@ namespace Esportra.Api.ScheduledJobs;
 /// migrated to use the inline enqueue pattern yet.
 /// </summary>
 [Queue("notifications")]
+[DisableConcurrentExecution(timeoutInSeconds: 30)]
 public sealed class DiscordDmPollJob(
     IDbConnectionFactory db,
     DiscordNotificationService discord,

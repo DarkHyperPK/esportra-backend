@@ -42,16 +42,22 @@ public sealed class SwissGenerator : IBracketGenerator
             var groupTeams = groups[gi];
             string? groupId = swissGroups > 1 ? $"Group {(char)('A' + gi)}" : null;
 
-            // Slide pairing: top half vs bottom half
-            int half = (groupTeams.Count + 1) / 2;
-            var topHalf = groupTeams.Take(half).ToList();
-            var bottomHalf = groupTeams.Skip(half).ToList();
+            // For odd groups the lowest-ranked team (worst seed = last in sorted list) gets the BYE
+            (Guid Id, string Name, int Seed)? byeTeam = null;
+            var activeTeams = groupTeams;
+            if (groupTeams.Count % 2 != 0)
+            {
+                byeTeam = groupTeams[^1];
+                activeTeams = groupTeams.Take(groupTeams.Count - 1).ToList();
+            }
+
+            // Slide pairing: top half vs bottom half of even-sized active list
+            int half = activeTeams.Count / 2;
+            var topHalf = activeTeams.Take(half).ToList();
+            var bottomHalf = activeTeams.Skip(half).ToList();
 
             for (int i = 0; i < topHalf.Count; i++)
             {
-                var t1 = topHalf[i];
-                var t2 = i < bottomHalf.Count ? bottomHalf[i] : ((Guid Id, string Name, int Seed)?)null;
-
                 nodes.Add(new BracketNode(
                     Id: Guid.NewGuid(),
                     VersionId: versionId,
@@ -61,11 +67,29 @@ public sealed class SwissGenerator : IBracketGenerator
                     RoundNumber: 1,
                     Status: "pending",
                     BestOf: bestOf,
-                    Team1Id: t1.Id,
-                    Team2Id: t2?.Id,
+                    Team1Id: topHalf[i].Id,
+                    Team2Id: bottomHalf[i].Id,
                     GroupId: groupId,
-                    Team1Seed: t1.Seed,
-                    Team2Seed: t2?.Seed));
+                    Team1Seed: topHalf[i].Seed,
+                    Team2Seed: bottomHalf[i].Seed));
+            }
+
+            if (byeTeam is not null)
+            {
+                nodes.Add(new BracketNode(
+                    Id: Guid.NewGuid(),
+                    VersionId: versionId,
+                    RoundIndex: 0,
+                    MatchNumber: matchCounter++,
+                    BracketType: "swiss_round",
+                    RoundNumber: 1,
+                    Status: "pending",
+                    BestOf: bestOf,
+                    Team1Id: byeTeam.Value.Id,
+                    Team2Id: null,
+                    GroupId: groupId,
+                    Team1Seed: byeTeam.Value.Seed,
+                    Team2Seed: null));
             }
         }
 
@@ -82,7 +106,7 @@ public sealed class SwissNextRoundService(
     StandingsService standings)
 {
     public async Task<(bool Success, string? Message)> GenerateNextRoundAsync(
-        Guid stageId, Guid versionId, int currentRound, CancellationToken ct = default)
+        Guid stageId, Guid versionId, int currentRound, StageRoundConfiguration? roundConfig = null, CancellationToken ct = default)
     {
         var standingsList = await standings.CalculateStandingsAsync(stageId, ct: ct);
         if (standingsList.Count < 2)
@@ -199,11 +223,16 @@ public sealed class SwissNextRoundService(
                 if (group.Count == 1) floaters.Add(group[0]);
             }
 
-            // Force-pair remaining floaters
+            // Force-pair remaining floaters (rematch avoidance where possible)
             while (floaters.Count >= 2)
             {
-                pairings.Add((floaters[0], floaters[1]));
-                floaters.RemoveRange(0, 2);
+                var f1 = floaters[0];
+                floaters.RemoveAt(0);
+
+                int oppIdx = floaters.FindIndex(f => !playedMap.Contains($"{f1.TeamId}-{f.TeamId}"));
+                if (oppIdx < 0) oppIdx = 0; // all played each other — unavoidable rematch
+                pairings.Add((f1, floaters[oppIdx]));
+                floaters.RemoveAt(oppIdx);
             }
             if (floaters.Count > 0)
             {
@@ -226,7 +255,7 @@ public sealed class SwissNextRoundService(
                     team1_id = t1.TeamId,
                     team2_id = t2?.TeamId,
                     winner_id = (Guid?)null,
-                    best_of = 1,
+                    best_of = roundConfig?.GetBestOf(nextRound - 1, "swiss_round", maxRounds) ?? 1,
                     group_id = groupId == "default" ? null : groupId,
                     team1_seed = teamSeedMap.GetValueOrDefault(t1.TeamId),
                     team2_seed = t2 is not null ? teamSeedMap.GetValueOrDefault(t2.TeamId) : (int?)null

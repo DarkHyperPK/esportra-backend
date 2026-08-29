@@ -66,6 +66,10 @@ public static class BracketEndpoints
             };
 
             var teams = req.Teams.Select(t => (t.Id, t.Name)).ToList();
+
+            if (teams.Count == 1)
+                return Results.BadRequest(new { error = "At least 2 teams are required to generate a bracket." });
+
             using var conn = db.CreateConnection();
 
             if (teams.Count > 0)
@@ -333,9 +337,6 @@ public static class BracketEndpoints
             if (stageRow is null)
                 return Results.NotFound(new { error = "Stage not found." });
 
-            int capacity = (int)(stageRow.capacity ?? 8);
-            int P = (int)Math.Pow(2, Math.Ceiling(Math.Log2(Math.Max(capacity, 2))));
-
             // Load enrolled participants ordered by seed
             var participants = (await conn.QueryAsync(
                 """
@@ -372,6 +373,13 @@ public static class BracketEndpoints
             string stageFormat = (string)(stageRow.format ?? "");
             bool isGroupFormat = stageFormat is "round_robin" or "swiss";
 
+            // All seeding writes are atomic: round reset + seed UPDATE + BYE cascade or nothing.
+            int byesAdvanced = 0;
+            await ((System.Data.Common.DbConnection)conn).OpenAsync(ct);
+            using var tx = conn.BeginTransaction();
+            try
+            {
+
             // Reset later rounds to TBD state so re-seeding is clean.
             // Only resets matches that were auto-advanced (not manually played).
             await conn.ExecuteAsync(
@@ -385,7 +393,7 @@ public static class BracketEndpoints
                   AND round_index > 0
                   AND status != 'completed'
                 """,
-                new { versionId });
+                new { versionId }, tx);
 
             // Seed round-0 matches in a single bulk UPDATE
             var seedMatchNumbers = new List<int>();
@@ -406,7 +414,7 @@ public static class BracketEndpoints
                     WHERE version_id = @versionId AND round_index = 0
                     ORDER BY group_id, match_number
                     """,
-                    new { versionId })).ToList();
+                    new { versionId }, tx)).ToList();
 
                 var groups = groupMatches
                     .GroupBy(m => m.GroupId)
@@ -415,7 +423,10 @@ public static class BracketEndpoints
 
                 int numGroups = groups.Count;
                 if (numGroups == 0)
+                {
+                    tx.Rollback();
                     return Results.BadRequest(new { error = "No round-0 matches found. Generate the bracket first." });
+                }
 
                 var groupedTeams = Enumerable.Range(0, numGroups)
                     .Select(_ => new List<(Guid Id, string Name, int Seed)>())
@@ -445,8 +456,8 @@ public static class BracketEndpoints
             }
             else
             {
-                // SE/DE: sequential match_numbers in round_index=0, power-of-2 slot formula is correct.
-                // DE losers bracket also starts at round_index=0 — reset it so re-seeding is clean.
+                // SE/DE: reset losers bracket round 0, then seed winners bracket.
+                // P is derived from actual bracket slot count (not stage capacity) so seeds land correctly.
                 await conn.ExecuteAsync(
                     """
                     UPDATE brkt_matches
@@ -459,9 +470,7 @@ public static class BracketEndpoints
                       AND bracket_type = 'losers'
                       AND status != 'completed'
                     """,
-                    new { versionId });
-
-                var seeded = BracketSeeding.SeedTeams(teamList, P);
+                    new { versionId }, tx);
 
                 var matchNumbers = (await conn.QueryAsync<int>(
                     """
@@ -471,7 +480,10 @@ public static class BracketEndpoints
                       AND bracket_type = 'winners'
                     ORDER BY match_number
                     """,
-                    new { versionId })).ToList();
+                    new { versionId }, tx)).ToList();
+
+                int P = Math.Max(matchNumbers.Count * 2, 2);
+                var seeded = BracketSeeding.SeedTeams(teamList, P);
 
                 foreach (var mn in matchNumbers)
                 {
@@ -486,7 +498,10 @@ public static class BracketEndpoints
             }
 
             if (seedMatchNumbers.Count == 0)
+            {
+                tx.Commit();
                 return Results.Ok(new { seeded = 0, byesAdvanced = 0 });
+            }
 
             await conn.ExecuteAsync(
                 """
@@ -514,10 +529,9 @@ public static class BracketEndpoints
                     t2Ids = seedTeam2Ids.ToArray(),
                     t1Seeds = seedTeam1Seeds.ToArray(),
                     t2Seeds = seedTeam2Seeds.ToArray(),
-                });
+                }, tx);
 
             // Auto-advance BYE slots across all rounds (cascading, batched per iteration)
-            int byesAdvanced = 0;
             const int maxCascadeDepth = 20;
             for (int depth = 0; depth < maxCascadeDepth; depth++)
             {
@@ -532,7 +546,7 @@ public static class BracketEndpoints
                           (team1_id IS NULL     AND team2_id IS NOT NULL)
                       )
                     """,
-                    new { versionId })).ToList();
+                    new { versionId }, tx)).ToList();
 
                 if (byeMatches.Count == 0) break;
 
@@ -546,7 +560,7 @@ public static class BracketEndpoints
                     FROM UNNEST(@byeIds::uuid[], @winnerIds::uuid[]) AS u(match_id, winner_id)
                     WHERE m.id = u.match_id
                     """,
-                    new { byeIds, winnerIds });
+                    new { byeIds, winnerIds }, tx);
 
                 // Batch-advance winners into their target slots
                 var advRows = (await conn.QueryAsync(
@@ -558,7 +572,7 @@ public static class BracketEndpoints
                     WHERE ba.source_match_id = ANY(@byeIds)
                       AND ba.type = 'winner'
                     """,
-                    new { byeIds })).ToList();
+                    new { byeIds }, tx)).ToList();
 
                 if (advRows.Count > 0)
                 {
@@ -580,10 +594,18 @@ public static class BracketEndpoints
                              AS u(target_match_id, slot, team_id, team_seed)
                         WHERE m.id = u.target_match_id
                         """,
-                        new { targetIds, slots, advTeamIds, advSeeds });
+                        new { targetIds, slots, advTeamIds, advSeeds }, tx);
 
                     byesAdvanced += advRows.Count;
                 }
+            }
+
+            tx.Commit();
+            } // end try
+            catch
+            {
+                tx.Rollback();
+                throw;
             }
 
             await bracketHub.Clients
@@ -641,6 +663,7 @@ public static class BracketEndpoints
                     winner_id = NULL, loser_id = NULL,
                     status = 'pending'
                 WHERE version_id = @versionId
+                  AND status != 'completed'
                 """,
                 new { versionId = version.Value });
 
@@ -857,10 +880,8 @@ public static class BracketEndpoints
                     new { versionId })).AsList();
 
                 foreach (var m in readyMatches)
-                {
                     await BracketPersistenceService.NotifyMatchReadyCaptainsAsync(
                         conn, (Guid)m.id, (Guid)m.team1_id, (Guid)m.team2_id);
-                }
             }
 
             // Notify subscribers
@@ -924,7 +945,26 @@ public static class BracketEndpoints
                 conn, userCtx.UserIdGuid, req.VersionId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
-            var (ok, msg) = await swissSvc.GenerateNextRoundAsync(req.StageId, req.VersionId, req.CurrentRound, ct);
+            var stageRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT format, best_of, bo_mode, round_bo_overrides FROM tournament_stages WHERE id = @stageId",
+                new { stageId = req.StageId });
+            StageRoundConfiguration? roundConfig = null;
+            if (stageRow is not null)
+            {
+                string stageFormat = ((string?)stageRow.format ?? "swiss").ToLowerInvariant();
+                int stageBestOf = (int?)stageRow.best_of ?? 1;
+                string stageBoMode = (string?)stageRow.bo_mode ?? "per_stage";
+                Dictionary<string, int>? stageOverrides = null;
+                if (stageRow.round_bo_overrides is not null)
+                {
+                    var jsonStr = stageRow.round_bo_overrides.ToString();
+                    if (!string.IsNullOrWhiteSpace(jsonStr) && jsonStr != "{}")
+                        stageOverrides = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr);
+                }
+                roundConfig = new StageRoundConfiguration(stageFormat, stageBestOf, stageBoMode, stageOverrides);
+            }
+
+            var (ok, msg) = await swissSvc.GenerateNextRoundAsync(req.StageId, req.VersionId, req.CurrentRound, roundConfig, ct);
             if (!ok) return Results.BadRequest(new { error = msg });
 
             await bracketHub.Clients
@@ -1223,6 +1263,7 @@ public static class BracketEndpoints
                     {BracketTeamResolutionSql.Team2Joins}
                     WHERE m.version_id = @versionId
                     ORDER BY m.round_index, m.match_number
+                    LIMIT 1000
                     """, new { versionId });
                 return Results.Ok(rows);
             }
@@ -1240,6 +1281,7 @@ public static class BracketEndpoints
                     {BracketTeamResolutionSql.Team2Joins}
                     WHERE v.stage_id = @stageId
                     ORDER BY v.version_number DESC, m.round_index, m.match_number
+                    LIMIT 1000
                     """, new { stageId });
                 return Results.Ok(rows);
             }
@@ -1290,7 +1332,7 @@ public static class BracketEndpoints
             if (matchId.HasValue)
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    "SELECT * FROM brkt_match_events WHERE match_id = @matchId ORDER BY created_at DESC",
+                    "SELECT * FROM brkt_match_events WHERE match_id = @matchId ORDER BY created_at DESC LIMIT 500",
                     new { matchId });
                 return Results.Ok(rows);
             }
@@ -1304,6 +1346,7 @@ public static class BracketEndpoints
                     JOIN brkt_matches m ON m.id = e.match_id
                     WHERE m.version_id = @versionId
                     ORDER BY e.created_at DESC
+                    LIMIT 2000
                     """, new { versionId });
                 return Results.Ok(rows);
             }
@@ -1335,7 +1378,7 @@ public static class BracketEndpoints
                     """;
                 if (!string.IsNullOrEmpty(status))
                     sql += " AND g.status = @status";
-                sql += " ORDER BY g.game_number ASC";
+                sql += " ORDER BY g.game_number ASC LIMIT 2000";
                 var rows = await conn.QueryAsync<dynamic>(sql, new { tournament_id, status });
                 DapperJsonbHelper.FixJsonb(rows);
                 return Results.Ok(rows);
@@ -1375,8 +1418,15 @@ public static class BracketEndpoints
         // Debug endpoint to inspect per-round BO configuration for a stage
         app.MapGet("/api/brackets/debug/round-config", async (
             Guid stageId,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            CancellationToken ct) => await GetRoundConfigDebugAsync(stageId, db, ct));
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            return await GetRoundConfigDebugAsync(stageId, db, ct);
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/brackets/versions/{id} ──────────────────────────────────
         // Alias for GET /api/brackets/{versionId} — same data, different URL pattern

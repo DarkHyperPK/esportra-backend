@@ -25,6 +25,12 @@ public sealed class VetoHub : Hub
 
     public async Task JoinVeto(string matchId)
     {
+        if (Context.User?.Identity?.IsAuthenticated != true)
+        {
+            await Clients.Caller.SendAsync("Error", "Authentication required to watch veto.");
+            return;
+        }
+
         await Groups.AddToGroupAsync(Context.ConnectionId, VetoGroup(matchId));
         _logger.LogDebug("Client {Conn} joined veto:{MatchId}", Context.ConnectionId, matchId);
 

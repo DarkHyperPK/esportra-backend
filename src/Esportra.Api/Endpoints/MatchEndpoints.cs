@@ -453,6 +453,7 @@ public static class MatchEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             MatchFinalizationService finalizer,
+            TournamentAuthorizationService tournamentAuth,
             IHubContext<MatchHub> matchHub,
             CancellationToken ct) =>
         {
@@ -477,13 +478,21 @@ public static class MatchEndpoints
             if ((string)report.status != "accepted")
                 return Results.BadRequest(new { error = $"Report status is '{report.status}', expected 'accepted'" });
 
-            // 2. Get current match version for optimistic locking
+            // 2. Get current match version for optimistic locking + tournament for auth
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT version, team1_id, team2_id FROM brkt_matches WHERE id = @matchId",
+                """
+                SELECT m.version, m.team1_id, m.team2_id, v.tournament_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                WHERE m.id = @matchId
+                """,
                 new { matchId });
 
             if (match is null)
                 return Results.NotFound(new { error = "Match not found" });
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, (Guid)match.tournament_id, ct: ct))
+                return Results.Forbid();
 
             if (match.team1_id is null || match.team2_id is null)
                 return Results.BadRequest(new { error = "Match teams have not been assigned yet." });
@@ -728,8 +737,10 @@ public static class MatchEndpoints
                 conn, userCtx.UserIdGuid, matchId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
+            using var tx = conn.BeginTransaction();
+
             // 1. Delete associated game results
-            await conn.ExecuteAsync("DELETE FROM brkt_match_games WHERE match_id = @matchId", new { matchId });
+            await conn.ExecuteAsync("DELETE FROM brkt_match_games WHERE match_id = @matchId", new { matchId }, tx);
 
             // 2. Undo advancements — inline SQL (the RPC uses auth.uid() which is NULL from Dapper)
             await conn.ExecuteAsync(
@@ -786,15 +797,11 @@ public static class MatchEndpoints
                     WHERE source_match_id = @matchId
                 )
                 """,
-                new { matchId });
+                new { matchId }, tx);
 
             // 3. Reset veto — delete entirely for a clean reinit
-            try
-            {
-                await conn.ExecuteAsync("DELETE FROM match_map_veto_actions WHERE match_id = @matchId", new { matchId });
-                await conn.ExecuteAsync("DELETE FROM match_map_vetos WHERE match_id = @matchId", new { matchId });
-            }
-            catch { /* veto tables may not exist yet */ }
+            await conn.ExecuteAsync("DELETE FROM match_map_veto_actions WHERE match_id = @matchId", new { matchId }, tx);
+            await conn.ExecuteAsync("DELETE FROM match_map_vetos WHERE match_id = @matchId", new { matchId }, tx);
 
             // 4. Soft-close open disputes, delete reports
             await conn.ExecuteAsync(
@@ -805,13 +812,13 @@ public static class MatchEndpoints
                     updated_at = NOW()
                 WHERE match_id = @matchId AND status NOT IN ('resolved', 'closed')
                 """,
-                new { matchId });
-            await conn.ExecuteAsync("DELETE FROM tournament_match_results WHERE match_id = @matchId", new { matchId });
-            await conn.ExecuteAsync("DELETE FROM match_result_reports WHERE match_id = @matchId", new { matchId });
+                new { matchId }, tx);
+            await conn.ExecuteAsync("DELETE FROM tournament_match_results WHERE match_id = @matchId", new { matchId }, tx);
+            await conn.ExecuteAsync("DELETE FROM match_result_reports WHERE match_id = @matchId", new { matchId }, tx);
 
             // 4b. Delete time proposals and check-ins so teams can re-propose and re-checkin
-            await conn.ExecuteAsync("DELETE FROM match_time_proposals WHERE match_id = @matchId", new { matchId });
-            await conn.ExecuteAsync("DELETE FROM match_checkins WHERE match_id = @matchId", new { matchId });
+            await conn.ExecuteAsync("DELETE FROM match_time_proposals WHERE match_id = @matchId", new { matchId }, tx);
+            await conn.ExecuteAsync("DELETE FROM match_checkins WHERE match_id = @matchId", new { matchId }, tx);
 
             // 5. Reset match record
             await conn.ExecuteAsync(
@@ -823,7 +830,9 @@ public static class MatchEndpoints
                     version = version + 1, updated_at = NOW()
                 WHERE id = @matchId
                 """,
-                new { matchId });
+                new { matchId }, tx);
+
+            tx.Commit();
 
             // 6. Broadcast updates
             var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1040,6 +1049,9 @@ public static class MatchEndpoints
             var winnerId = req.Team1Score > req.Team2Score ? t1Id : t2Id;
             var loserId = req.Team1Score > req.Team2Score ? t2Id : t1Id;
 
+            // Transaction wraps all critical writes: score → advancements → stage completion → dispute resolution
+            using var tx = conn.BeginTransaction();
+
             // 1. Save score
             await conn.ExecuteAsync(
                 """
@@ -1048,9 +1060,170 @@ public static class MatchEndpoints
                     winner_id = @winnerId, loser_id = @loserId, status = 'completed'
                 WHERE id = @matchId
                 """,
-                new { matchId, t1 = req.Team1Score, t2 = req.Team2Score, winnerId, loserId });
+                new { matchId, t1 = req.Team1Score, t2 = req.Team2Score, winnerId, loserId }, tx);
 
-            // 2. Upsert summary game record
+            // 2. Advance winner/loser (with seeds)
+            var sourceMatch = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT team1_id, team2_id, team1_seed, team2_seed FROM brkt_matches WHERE id = @matchId",
+                new { matchId }, tx);
+
+            var advancements = await conn.QueryAsync<dynamic>(
+                "SELECT target_match_id, target_slot, type FROM brkt_advancements WHERE source_match_id = @matchId",
+                new { matchId }, tx);
+
+            foreach (var adv in advancements)
+            {
+                Guid? teamId = (string?)adv.type == "winner" ? winnerId : loserId;
+                if (teamId is null) continue;
+
+                int? teamSeed = null;
+                if (sourceMatch is not null)
+                {
+                    if ((Guid?)sourceMatch.team1_id == teamId)
+                        teamSeed = (int?)sourceMatch.team1_seed;
+                    else if ((Guid?)sourceMatch.team2_id == teamId)
+                        teamSeed = (int?)sourceMatch.team2_seed;
+                }
+
+                string teamField = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
+                string seedField = (int)adv.target_slot == 1 ? "team1_seed" : "team2_seed";
+                await conn.ExecuteAsync(
+                    $"UPDATE brkt_matches SET {teamField} = @teamId, {seedField} = @teamSeed WHERE id = @targetId",
+                    new { teamId, teamSeed, targetId = (Guid)adv.target_match_id }, tx);
+            }
+
+            // 3. Stage completion check
+            bool stageComplete = false;
+            Guid? stageId = null;
+            Guid? gfWinnerIdForNotification = null;
+            Guid? stageInfoTournamentId = null;
+
+            var versionIdForStage = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId }, tx);
+            if (versionIdForStage is not null)
+            {
+                stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId = versionIdForStage }, tx);
+                if (stageId is not null)
+                {
+                    var pendingCount = await conn.QuerySingleAsync<int>(
+                        "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
+                        new { versionId = versionIdForStage }, tx);
+
+                    if (pendingCount == 0)
+                    {
+                        await conn.ExecuteAsync(
+                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+                            new { stageId }, tx);
+                        stageComplete = true;
+
+                        var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
+                            new { stageId }, tx);
+                        if (stageInfo is not null &&
+                            ((string?)stageInfo.format == "single_elimination" || (string?)stageInfo.format == "double_elimination"))
+                        {
+                            var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                                """
+                                SELECT winner_id FROM brkt_matches
+                                WHERE version_id = @versionId
+                                  AND status = 'completed' AND winner_id IS NOT NULL
+                                ORDER BY round_index DESC, match_number DESC
+                                LIMIT 1
+                                """,
+                                new { versionId = versionIdForStage }, tx);
+                            if (gfWinnerId is not null)
+                            {
+                                await winnerService.SetWinnerAsync(
+                                    conn, tx, (Guid)stageInfo.tournament_id, gfWinnerId.Value,
+                                    reason: "match score completed final bracket", ct);
+                                gfWinnerIdForNotification = gfWinnerId;
+                                stageInfoTournamentId = (Guid)stageInfo.tournament_id;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Organizer/staff manual score — clear open dispute artifacts
+            if (isOrganizerOrStaff)
+            {
+                var actorId = userCtx.UserIdGuid;
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE match_result_reports
+                    SET status = 'rejected', responded_at = NOW(), responded_by = @userId
+                    WHERE match_id = @matchId AND status IN ('disputed', 'pending')
+                    """,
+                    new { matchId, userId = actorId }, tx);
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE match_disputes
+                    SET status = 'resolved',
+                        resolution = 'Match score manually settled by organizer',
+                        resolved_at = NOW(),
+                        resolved_by = @userId
+                    WHERE match_id = @matchId AND status = 'pending'
+                    """,
+                    new { matchId, userId = actorId }, tx);
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE tournament_disputes
+                    SET status = 'resolved',
+                        resolution_notes = COALESCE(
+                            resolution_notes,
+                            'Match score manually settled by organizer'
+                        ),
+                        assigned_to_user_id = COALESCE(assigned_to_user_id, @userId),
+                        updated_at = NOW()
+                    WHERE match_id = @matchId AND status = 'open'
+                    """,
+                    new { matchId, userId = actorId }, tx);
+            }
+
+            tx.Commit();
+
+            // Post-commit: winner notifications (non-critical)
+            if (gfWinnerIdForNotification is not null && stageInfoTournamentId is not null)
+            {
+                try
+                {
+                    var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
+                        "SELECT name FROM tournaments WHERE id = @tid",
+                        new { tid = stageInfoTournamentId });
+                    var winningCaptains = await conn.QueryAsync<Guid>(
+                        "SELECT tm.user_id FROM team_members tm WHERE tm.team_id = @teamId AND tm.role = 'captain' AND tm.is_active = true",
+                        new { teamId = gfWinnerIdForNotification });
+                    var winningTeamName = await conn.QuerySingleOrDefaultAsync<string>(
+                        "SELECT name FROM teams WHERE id = @id",
+                        new { id = gfWinnerIdForNotification });
+                    foreach (var captainId in winningCaptains)
+                    {
+                        await conn.ExecuteAsync(
+                            """
+                            INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                            VALUES (@userId, 'tournament_announcement', @title,
+                                    @msg, @link,
+                                    jsonb_build_object('tournament_id', @tid::text, 'team_id', @teamId::text)::jsonb, false)
+                            """,
+                            new
+                            {
+                                userId = captainId,
+                                title = $"🏆 Champions! {winningTeamName ?? "Your Team"} Wins!",
+                                msg = $"WHAT A RUN! {winningTeamName ?? "Your team"} just conquered {tournamentName ?? "the tournament"}! The trophy is yours — celebrate with your squad!",
+                                link = $"/tournaments/{stageInfoTournamentId}",
+                                tid = stageInfoTournamentId.ToString(),
+                                teamId = gfWinnerIdForNotification.ToString()
+                            });
+                    }
+                }
+                catch { /* Notification is non-critical */ }
+            }
+
+            // Post-commit: non-critical analytics
+            // Game record
             try
             {
                 await conn.ExecuteAsync(
@@ -1064,7 +1237,7 @@ public static class MatchEndpoints
             }
             catch { /* Non-critical */ }
 
-            // 2b. Log match event for analytics
+            // Match event
             try
             {
                 await conn.ExecuteAsync(
@@ -1087,7 +1260,7 @@ public static class MatchEndpoints
             }
             catch { /* Non-critical */ }
 
-            // 2c. Insert match completed event for analytics pipeline
+            // Analytics pipeline event
             try
             {
                 await conn.ExecuteAsync(
@@ -1113,38 +1286,7 @@ public static class MatchEndpoints
                     ct: ct);
             }
 
-            // 3. Advance winner/loser (with seeds)
-            var sourceMatch = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT team1_id, team2_id, team1_seed, team2_seed FROM brkt_matches WHERE id = @matchId",
-                new { matchId });
-
-            var advancements = await conn.QueryAsync<dynamic>(
-                "SELECT target_match_id, target_slot, type FROM brkt_advancements WHERE source_match_id = @matchId",
-                new { matchId });
-
-            foreach (var adv in advancements)
-            {
-                Guid? teamId = (string?)adv.type == "winner" ? winnerId : loserId;
-                if (teamId is null) continue;
-
-                // Determine the seed of the advancing team
-                int? teamSeed = null;
-                if (sourceMatch is not null)
-                {
-                    if ((Guid?)sourceMatch.team1_id == teamId)
-                        teamSeed = (int?)sourceMatch.team1_seed;
-                    else if ((Guid?)sourceMatch.team2_id == teamId)
-                        teamSeed = (int?)sourceMatch.team2_seed;
-                }
-
-                string teamField = (int)adv.target_slot == 1 ? "team1_id" : "team2_id";
-                string seedField = (int)adv.target_slot == 1 ? "team1_seed" : "team2_seed";
-                await conn.ExecuteAsync(
-                    $"UPDATE brkt_matches SET {teamField} = @teamId, {seedField} = @teamSeed WHERE id = @targetId",
-                    new { teamId, teamSeed, targetId = (Guid)adv.target_match_id });
-            }
-
-            // 4. Grand Finals Reset (double elimination)
+            // 4. Grand Finals Reset (double elimination) — runs after commit
             try
             {
                 var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1213,140 +1355,15 @@ public static class MatchEndpoints
                     }
                 }
             }
-            catch { /* Non-critical */ }
-
-            // 5. Stage completion check
-            bool stageComplete = false;
-            Guid? stageId = null;
-            try
+            catch (Exception gfEx)
             {
-                var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
-                if (versionId is not null)
-                {
-                    stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId });
-                    if (stageId is not null)
-                    {
-                        var pendingCount = await conn.QuerySingleAsync<int>(
-                            "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
-                            new { versionId });
-
-                        if (pendingCount == 0)
-                        {
-                            await conn.ExecuteAsync(
-                                "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                                new { stageId });
-                            stageComplete = true;
-
-                            // Set tournament winner if elimination format — use grand final winner
-                            var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                                "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
-                                new { stageId });
-                            if (stageInfo is not null &&
-                                ((string?)stageInfo.format == "single_elimination" || (string?)stageInfo.format == "double_elimination"))
-                            {
-                                // Grand final = highest round_index in the bracket (bracket_type is 'winners', not 'final')
-                                var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                    """
-                                    SELECT winner_id FROM brkt_matches
-                                    WHERE version_id = @versionId
-                                      AND status = 'completed' AND winner_id IS NOT NULL
-                                    ORDER BY round_index DESC, match_number DESC
-                                    LIMIT 1
-                                    """,
-                                    new { versionId });
-                                if (gfWinnerId is not null)
-                                {
-                                    await winnerService.SetWinnerAsync(
-                                        conn,
-                                        tx: null,
-                                        (Guid)stageInfo.tournament_id,
-                                        gfWinnerId.Value,
-                                        reason: "match score completed final bracket",
-                                        ct);
-
-                                    // Send tournament won notification to winning team captains
-                                    try
-                                    {
-                                        var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
-                                            "SELECT name FROM tournaments WHERE id = @tid",
-                                            new { tid = (Guid)stageInfo.tournament_id });
-                                        var winningCaptains = await conn.QueryAsync<Guid>(
-                                            """
-                                            SELECT tm.user_id FROM team_members tm
-                                            WHERE tm.team_id = @teamId AND tm.role = 'captain' AND tm.is_active = true
-                                            """,
-                                            new { teamId = gfWinnerId });
-                                        var winningTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                                            "SELECT name FROM teams WHERE id = @id",
-                                            new { id = gfWinnerId });
-                                        foreach (var captainId in winningCaptains)
-                                        {
-                                            await conn.ExecuteAsync(
-                                                """
-                                                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                                                VALUES (@userId, 'tournament_announcement', @title,
-                                                        @msg, @link,
-                                                        jsonb_build_object('tournament_id', @tid::text, 'team_id', @teamId::text)::jsonb, false)
-                                                """,
-                                                new
-                                                {
-                                                    userId = captainId,
-                                                    title = $"🏆 Champions! {winningTeamName ?? "Your Team"} Wins!",
-                                                    msg = $"WHAT A RUN! {winningTeamName ?? "Your team"} just conquered {tournamentName ?? "the tournament"}! The trophy is yours — celebrate with your squad!",
-                                                    link = $"/tournaments/{stageInfo.tournament_id}",
-                                                    tid = ((Guid)stageInfo.tournament_id).ToString(),
-                                                    teamId = ((Guid)gfWinnerId).ToString()
-                                                });
-                                        }
-                                    }
-                                    catch { /* Notification is non-critical */ }
-                                }
-                            }
-                        }
-                    }
-                }
+                var gfLogger = ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("MatchEndpoints");
+                gfLogger.LogError(gfEx, "GF reset INSERT failed for match {MatchId}", matchId);
             }
-            catch { /* Non-critical */ }
 
-            // Organizer/staff manual score is authoritative — clear open dispute artifacts
+            // Post-commit: notify dispute resolution via SignalR
             if (isOrganizerOrStaff)
             {
-                var actorId = userCtx.UserIdGuid;
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE match_result_reports
-                    SET status = 'rejected', responded_at = NOW(), responded_by = @userId
-                    WHERE match_id = @matchId AND status IN ('disputed', 'pending')
-                    """,
-                    new { matchId, userId = actorId });
-
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE match_disputes
-                    SET status = 'resolved',
-                        resolution = 'Match score manually settled by organizer',
-                        resolved_at = NOW(),
-                        resolved_by = @userId
-                    WHERE match_id = @matchId AND status = 'pending'
-                    """,
-                    new { matchId, userId = actorId });
-
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE tournament_disputes
-                    SET status = 'resolved',
-                        resolution_notes = COALESCE(
-                            resolution_notes,
-                            'Match score manually settled by organizer'
-                        ),
-                        assigned_to_user_id = COALESCE(assigned_to_user_id, @userId),
-                        updated_at = NOW()
-                    WHERE match_id = @matchId AND status = 'open'
-                    """,
-                    new { matchId, userId = actorId });
-
                 await matchHub.Clients
                     .Group(MatchHub.MatchGroup(matchId.ToString()))
                     .SendAsync(MatchHubEvents.DisputeResolved,

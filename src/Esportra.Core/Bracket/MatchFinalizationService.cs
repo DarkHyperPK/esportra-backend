@@ -1,6 +1,8 @@
 using Dapper;
 using Esportra.Contracts.Database;
 using Esportra.Core.Notifications;
+using Esportra.Core.Tournaments;
+using Microsoft.Extensions.Logging;
 
 namespace Esportra.Core.Bracket;
 
@@ -9,7 +11,10 @@ namespace Esportra.Core.Bracket;
 /// Handles pessimistic locking, version check, score update, bracket advancement,
 /// and event logging — all in .NET with Dapper.
 /// </summary>
-public sealed class MatchFinalizationService(IDbConnectionFactory db)
+public sealed class MatchFinalizationService(
+    IDbConnectionFactory db,
+    IEnumerable<ILeaderboardSourceChangeHook> leaderboardHooks,
+    ILogger<MatchFinalizationService> logger)
 {
 
     /// <summary>
@@ -90,6 +95,7 @@ public sealed class MatchFinalizationService(IDbConnectionFactory db)
 
             tx.Commit();
 
+            await LeaderboardSourceChangeHooks.FireAsync(leaderboardHooks, logger, nameof(MatchFinalizationService), ct);
             return true;
         }
         catch

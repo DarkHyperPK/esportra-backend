@@ -489,23 +489,10 @@ public static class TournamentEndpoints
             if (tournament is null) return Results.NotFound();
 
             var tournamentId = (Guid)tournament.id;
-            var organizerId = (Guid)tournament.organizer_id;
-
-            // Reconcile stale status based on time
-            var rawStatus = tournament.status?.ToString() as string;
-            var reconciledStatus = ReconcileEffectiveStatus(
-                rawStatus,
-                (DateTimeOffset?)tournament.start_date,
-                (DateTimeOffset?)tournament.end_date);
-            if (reconciledStatus is not null && reconciledStatus != rawStatus)
-            {
-                await conn.ExecuteAsync(
-                    "UPDATE tournaments SET status = @newStatus::tournament_status, updated_at = NOW() WHERE id = @tournamentId",
-                    new { newStatus = reconciledStatus, tournamentId });
-                tournament.status = reconciledStatus;
-            }
 
             // Fetch participants and stages sequentially (Npgsql connections are NOT thread-safe)
+            await ReconcileStaleStatusAsync(conn, tournamentId, tournament);
+
             var allParticipants = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
@@ -522,50 +509,10 @@ public static class TournamentEndpoints
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order",
                 new { tournamentId });
 
-            // Permission check for organizer/staff
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            bool isOrganizer = false;
-            string[]? staffPermissions = null;
-            string? staffRole = null;
-            if (userCtx is not null)
-            {
-                var access = await staffAuth.ResolveTournamentAccessAsync(
-                    userCtx, tournamentId, ct);
-                isOrganizer = access.IsOrganizer || access.IsPlatformAdmin;
-                if (!isOrganizer && access.Role != "none")
-                {
-                    staffPermissions = access.Permissions;
-                    staffRole = access.Role;
-                }
-            }
-
-            // Organizers see all participants (for payment management); others see only active
-            var participants = isOrganizer
-                ? allParticipants
-                : allParticipants.Where(p =>
-                {
-                    string status = (string)p.status;
-                    return status != "rejected" && status != "cancelled";
-                });
-
-            var mockCount = isOrganizer
-                ? await conn.ExecuteScalarAsync<int>(
-                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tournamentId AND is_mock = TRUE",
-                    new { tournamentId })
-                : 0;
-
-            string participantMode;
-            try
-            {
-                participantMode = await gameCatalog.ResolveParticipantModeAsync(
-                    (string)tournament.game,
-                    tournament.game_mode as string,
-                    (int?)tournament.team_size);
-            }
-            catch
-            {
-                participantMode = ((int?)tournament.team_size ?? 1) > 1 ? "team" : "solo";
-            }
+            var access = await ResolveAccessAsync(ctx, staffAuth, tournamentId, ct);
+            var participants = FilterParticipantsForRole(allParticipants, access.IsOrganizer);
+            var mockCount = await FetchMockCountAsync(conn, tournamentId, access.IsOrganizer);
+            var participantMode = await ResolveParticipantModeAsync(gameCatalog, tournament);
 
             return Results.Ok(new
             {
@@ -573,9 +520,9 @@ public static class TournamentEndpoints
                 participantMode,
                 participants,
                 stages,
-                isOrganizer,
-                staffPermissions,
-                staffRole,
+                isOrganizer = access.IsOrganizer,
+                staffPermissions = access.StaffPermissions,
+                staffRole = access.StaffRole,
                 mockCount,
             });
         });
@@ -617,34 +564,21 @@ public static class TournamentEndpoints
 
             try
             {
-                // Unique slug: base + numeric suffix on conflict
-                var slug = req.Slug ?? Slugify(req.Name);
-                var uniqueSlug = slug;
-                var exists = await conn.QuerySingleOrDefaultAsync<bool>(
-                    "SELECT EXISTS(SELECT 1 FROM tournaments WHERE slug = @slug)", new { slug }, tx);
-                if (exists)
-                    uniqueSlug = $"{slug}-{DateTime.UtcNow.Ticks % 9999:x4}";
+                var uniqueSlug = await ResolveUniqueSlugAsync(conn, tx, req.Slug, req.Name);
 
                 var catalog = await gameCatalog.ResolveTournamentAsync(
-                    req.Game,
-                    req.GameMode,
-                    req.TeamSize,
-                    req.Format,
-                    req.TournamentType,
+                    req.Game, req.GameMode, req.TeamSize, req.Format, req.TournamentType,
                     req.Stages?.Select(s => s.Format).ToArray(),
-                    req.MapPoolIds is { Count: > 0 },
-                    req.Settings,
-                    conn,
-                    tx);
+                    req.MapPoolIds is { Count: > 0 }, req.Settings, conn, tx);
 
-                Guid? organizationId = Guid.TryParse(req.OrganizationId, out var orgGuid) ? orgGuid : null;
-                if (!organizationId.HasValue)
-                {
-                    organizationId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                        "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
-                        new { userId = userCtx.UserIdGuid },
-                        tx);
-                }
+                var organizationId = await ResolveOrganizationIdAsync(conn, tx, req.OrganizationId, userCtx.UserIdGuid);
+
+                var reservedSlots = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings);
+                var validationError = ValidateCreateTournamentConstraints(req, reservedSlots);
+                if (validationError is not null) { tx.Rollback(); return Results.BadRequest(new { error = validationError }); }
+
+                var dates = NormalizeTournamentDates(req);
+                var defaults = NormalizeTournamentDefaults(req);
 
                 var tournament = await conn.QuerySingleAsync<dynamic>(
                     """
@@ -683,126 +617,49 @@ public static class TournamentEndpoints
                         gameMode = catalog.GameMode,
                         maxTeams = req.MaxTeams,
                         teamSize = catalog.TeamSize,
-                        entryFee = req.EntryFee ?? 0m,
-                        prizePool = req.PrizePool ?? 0m,
+                        entryFee = defaults.EntryFee,
+                        prizePool = defaults.PrizePool,
                         prizeDistribution = SerializeJson(req.PrizeDistribution),
                         startDate = req.StartDate,
-                        endDate = req.EndDate ?? req.StartDate.AddHours(2),
-                        registrationDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
-                        status = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "draft",
+                        endDate = dates.EndDate,
+                        registrationDeadline = dates.RegistrationDeadline,
+                        status = dates.Status,
                         bannerUrl = req.BannerUrl,
                         logoUrl = req.LogoUrl,
-                        organizationId = organizationId,
-                        venueId = Guid.TryParse(req.VenueId, out var venGuid) ? venGuid : (Guid?)null,
-                        isPublic = req.IsPublic ?? false,
-                        checkInRequired = req.CheckInRequired ?? false,
+                        organizationId,
+                        venueId = defaults.VenueId,
+                        isPublic = defaults.IsPublic,
+                        checkInRequired = defaults.CheckInRequired,
                         checkInDeadline = req.CheckInDeadline,
-                        autoRemoveUnchecked = req.AutoRemoveUnchecked ?? false,
+                        autoRemoveUnchecked = defaults.AutoRemoveUnchecked,
                         rewards = req.Rewards,
                         streamUrl = req.StreamUrl,
-                        settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto) ?? "{}",
+                        settings = SerializeTournamentSettingsOrEmpty(req.Settings, catalog.SupportsMapVeto),
                         organizerId = userCtx.UserIdGuid,
                         rules = req.Rules,
                         paymentInstructions = req.PaymentInstructions,
                         region = req.Region,
-                        currency = req.Currency ?? "USD",
+                        currency = defaults.Currency,
                         serverRegion = req.ServerRegion,
-                        reservedInviteSlots = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings),
-                        inviteExpiryDays = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365),
-                        payoutMethod = req.PayoutMethod is "gateway" ? "gateway" : "manual",
+                        reservedInviteSlots = reservedSlots,
+                        inviteExpiryDays = dates.InviteExpiryDays,
+                        payoutMethod = defaults.PayoutMethod,
                         manualPayoutNotes = req.ManualPayoutNotes,
                     },
                     tx);
 
                 var tournamentId = (Guid)tournament.id;
 
-                var reservedSlotsForCreate = TournamentInviteSlots.ResolveForWrite(req.ReservedInviteSlots, req.Settings);
-                if (req.MaxTeams > 0 && reservedSlotsForCreate > req.MaxTeams)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." });
-                }
-
-                var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(req.StartDate, req.EndDate ?? req.StartDate.AddHours(2));
-                if (dateOrderError is not null)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = dateOrderError });
-                }
-
-                var registrationDeadlineError = TournamentTimelineValidator.ValidateRegistrationDeadline(
-                    req.RegistrationDeadline ?? req.StartDate.AddDays(-1),
-                    req.StartDate);
-                if (registrationDeadlineError is not null)
-                {
-                    tx.Rollback();
-                    return Results.BadRequest(new { error = registrationDeadlineError });
-                }
-
                 // BR tournaments start with no stages — organizers configure via stage setup wizard
-                var stagesToInsert = req.Stages;
-
-                // Stages
-                if (stagesToInsert is { Count: > 0 })
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO tournament_stages
-                            (tournament_id, name, format, stage_order, best_of, bo_mode,
-                             round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
-                        VALUES
-                            (@tournamentId, @name, @format, @stageOrder, @bestOf, @boMode,
-                             CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
-                             @capacity, @advancementCount,
-                             CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
-                             @startsAt, @endsAt)
-                        """,
-                        stagesToInsert.Select((s, i) => new
-                        {
-                            tournamentId,
-                            name = s.Name,
-                            format = s.Format,
-                            stageOrder = s.StageOrder ?? i,
-                            bestOf = s.BestOf ?? 1,
-                            boMode = s.BoMode ?? "per_stage",
-                            roundBoOverrides = s.RoundBoOverrides is { Count: > 0 }
-                                ? JsonSerializer.Serialize(s.RoundBoOverrides)
-                                : (string?)null,
-                            capacity = string.Equals(s.Format, "battle_royale", StringComparison.OrdinalIgnoreCase)
-                                ? s.Capacity ?? req.MaxTeams
-                                : s.Capacity,
-                            advancementCount = s.AdvancementCount,
-                            config = s.Config is not null ? JsonSerializer.Serialize(s.Config) : (string?)null,
-                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa)
-                                ? sa : (DateTimeOffset?)null,
-                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea)
-                                ? ea : (DateTimeOffset?)null,
-                        }),
-                        tx);
-                }
-
-                // Groups are initialized explicitly from the Stages tab (POST /br/bootstrap).
-                if (req.MapPoolIds is { Count: > 0 })
-                {
-                    await conn.ExecuteAsync(
-                        "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId)",
-                        req.MapPoolIds
-                            .Where(m => Guid.TryParse(m, out _))
-                            .Select(m => new { tournamentId, mapId = Guid.Parse(m) }),
-                        tx);
-                }
+                await InsertStagesAsync(conn, tx, tournamentId, req.Stages, req.MaxTeams);
+                await InsertMapPoolAsync(conn, tx, tournamentId, req.MapPoolIds);
 
                 tx.Commit();
 
                 // Invalidate all tournament list cache entries
                 try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
 
-                // Schedule auto-DQ job if check-in deadline is set
-                if ((req.CheckInRequired ?? false) && req.CheckInDeadline.HasValue && (req.AutoRemoveUnchecked ?? false))
-                {
-                    var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
-                    await jobScheduler.ScheduleTournamentCheckinDeadlineAsync(tournamentId, req.CheckInDeadline.Value, ct);
-                }
+                await ScheduleCheckinJobIfNeededAsync(ctx, tournamentId, req, ct);
 
                 return Results.Ok(tournament);
             }
@@ -849,89 +706,14 @@ public static class TournamentEndpoints
                 new { id });
             if (existingTournament is null) return Results.NotFound();
 
-            // ── Mock tournament guard: block only transitions into live/published states ──
-            var existingStatus = (string?)existingTournament.status;
-            var isPublishingTransition = req.Status is "open" or "published"
-                && !string.Equals(req.Status, existingStatus, StringComparison.OrdinalIgnoreCase);
-            if (isPublishingTransition)
-            {
-                var mockCount = await conn.ExecuteScalarAsync<int>(
-                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
-                    new { id });
-                if (mockCount > 0)
-                    return Results.BadRequest(new
-                    {
-                        error = $"Cannot publish tournament: {mockCount} mock participant(s) still exist. " +
-                                "Clear mock data before publishing."
-                    });
-            }
+            var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, existingTournament, gameCatalog);
+            if (validationResult.error is not null) return validationResult.error;
 
-            TournamentCatalogResolution catalog;
-            try
-            {
-                catalog = await gameCatalog.ResolveTournamentAsync(
-                    req.Game ?? (string)existingTournament.game,
-                    req.GameMode ?? (string?)existingTournament.game_mode,
-                    req.TeamSize ?? (int?)existingTournament.team_size,
-                    req.Format ?? (string?)existingTournament.format,
-                    null,
-                    Array.Empty<string>(),
-                    false,
-                    req.Settings,
-                    conn);
-            }
-            catch (GameCatalogValidationException ex)
-            {
-                return Results.BadRequest(new { error = ex.Message });
-            }
+            var catalog = validationResult.ctx!.Catalog;
+            var effectiveEndDate = validationResult.ctx.EffectiveEndDate;
+            var reservedSlotsForUpdate = validationResult.ctx.ReservedSlotsForUpdate;
 
-            var effectiveStartDate = req.StartDate ?? (DateTimeOffset?)existingTournament.start_date;
-            var effectiveEndDate = req.EndDate ?? (DateTimeOffset?)existingTournament.end_date;
-            var effectiveRegistrationDeadline = req.RegistrationDeadline ?? (DateTimeOffset?)existingTournament.registration_deadline;
-
-            // End-only updates (e.g. auto-extension) must stay on/after start.
-            if (effectiveStartDate is not null
-                && effectiveEndDate is not null
-                && effectiveEndDate < effectiveStartDate
-                && req.EndDate is not null
-                && req.StartDate is null)
-            {
-                effectiveEndDate = effectiveStartDate.Value.AddHours(4);
-            }
-
-            var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(effectiveStartDate, effectiveEndDate);
-            if (dateOrderError is not null)
-                return Results.BadRequest(new { error = dateOrderError });
-
-            var registrationDeadlineError = TournamentTimelineValidator.ValidateRegistrationDeadline(
-                effectiveRegistrationDeadline,
-                effectiveStartDate);
-            if (registrationDeadlineError is not null)
-                return Results.BadRequest(new { error = registrationDeadlineError });
-
-            var effectiveMaxTeams = req.MaxTeams ?? (int?)existingTournament.max_teams;
-            int? reservedSlotsForUpdate = req.ReservedInviteSlots.HasValue
-                ? req.ReservedInviteSlots.Value
-                : req.Settings is not null && TournamentInviteSlots.TryReadFromSettingsIfPresent(req.Settings, out var settingsSlots)
-                    ? settingsSlots
-                    : null;
-
-            if (effectiveMaxTeams is > 0 && reservedSlotsForUpdate is > 0 && reservedSlotsForUpdate > effectiveMaxTeams)
-                return Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." });
-
-            if (reservedSlotsForUpdate.HasValue)
-            {
-                var activeInviteCount = await conn.ExecuteScalarAsync<int>(
-                    """
-                    SELECT COUNT(*)::int
-                    FROM public.tournament_invitations
-                    WHERE tournament_id = @id
-                      AND status <> 'revoked'
-                    """,
-                    new { id });
-                if (reservedSlotsForUpdate.Value < activeInviteCount)
-                    return Results.BadRequest(new { error = $"Reserved invite slots cannot be less than active invitations ({activeInviteCount})." });
-            }
+            using var tx = conn.BeginTransaction();
 
             var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
@@ -1013,148 +795,17 @@ public static class TournamentEndpoints
                     manualPayoutNotes = req.ManualPayoutNotes,
                     deletedAt = req.DeletedAt,
                     clearDeletedAt = req.ClearDeletedAt,
-                });
-
-
-            // Clear winner_id when reopening a completed tournament
-            if (req.Status is not null && req.Status != "completed")
-            {
-                try
-                {
-                    using var txClear = conn.BeginTransaction();
-                    await winnerService.ClearWinnerAsync(
-                        conn,
-                        txClear,
-                        id,
-                        reopenCompleted: false,
-                        reason: "tournament status changed away from completed",
-                        ct);
-                    txClear.Commit();
-                }
-                catch { /* best effort: status update should not fail because a stale winner clear failed */ }
-            }
-
-            // Auto-set winner_id when tournament is marked completed
-            // Only pick winner from the grand final (last match of last stage)
-            // and only if ALL stages are completed
-            if (req.Status == "completed" && updated is not null)
-            {
-                Guid? resolvedWinnerId = null;
-
-                // 1. BR tournaments: frontend sends winner_team_name, look up team by name
-                if (!string.IsNullOrWhiteSpace(req.WinnerTeamName))
-                {
-                    resolvedWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                        """
-                        SELECT tp.team_id FROM tournament_participants tp
-                        JOIN teams t ON t.id = tp.team_id
-                        WHERE tp.tournament_id = @id AND t.name = @teamName
-                        LIMIT 1
-                        """,
-                        new { id, teamName = req.WinnerTeamName });
-                }
-
-                // 2. Bracket tournaments: find winner from grand final match
-                if (resolvedWinnerId is null)
-                {
-                    var stageCounts = await conn.QuerySingleAsync<dynamic>(
-                        """
-                        SELECT
-                            COUNT(*)::int AS total,
-                            COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
-                        FROM tournament_stages
-                        WHERE tournament_id = @id
-                        """,
-                        new { id });
-
-                    int stageTotal = (int)stageCounts.total;
-                    int stageCompleted = (int)stageCounts.completed;
-
-                    if (stageTotal > 0 && stageTotal == stageCompleted)
-                    {
-                        resolvedWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                            """
-                            SELECT m.winner_id
-                            FROM brkt_matches m
-                            JOIN brkt_versions v ON v.id = m.version_id
-                            JOIN tournament_stages s ON s.id = v.stage_id
-                            WHERE s.tournament_id = @id
-                              AND s.stage_order = (
-                                  SELECT MAX(stage_order) FROM tournament_stages WHERE tournament_id = @id
-                              )
-                              AND m.status = 'completed'
-                              AND m.winner_id IS NOT NULL
-                              AND m.bracket_type = 'final'
-                            ORDER BY m.round_index DESC, m.match_number DESC
-                            LIMIT 1
-                            """,
-                            new { id });
-                    }
-                }
-
-                if (resolvedWinnerId.HasValue)
-                {
-                    try
-                    {
-                        using var tx = conn.BeginTransaction();
-                        await winnerService.SetWinnerAsync(
-                            conn,
-                            tx,
-                            id,
-                            resolvedWinnerId.Value,
-                            reason: "tournament status changed to completed",
-                            ct);
-                        tx.Commit();
-                    }
-                    catch
-                    {
-                        // If trigger still blocks, don't fail the status change
-                    }
-
-                    try
-                    {
-                        await placementResolution.ResolveAsync(id, force: false, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Non-blocking: placement resolution failure must not fail tournament completion
-                        var loggerFactory = ctx.RequestServices.GetRequiredService<ILoggerFactory>();
-                        loggerFactory.CreateLogger("PrizeDistribution")
-                            .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", id);
-                    }
-                }
-            }
+                }, tx);
 
             if (updated is not null && req.DeletedAt is not null && !req.ClearDeletedAt)
-            {
-                using var tx = conn.BeginTransaction();
-                try
-                {
-                    await MockTeamCleanup.DeleteForTournamentAsync(conn, tx, id, ct);
-                    tx.Commit();
-                }
-                catch
-                {
-                    tx.Rollback();
-                    throw;
-                }
-            }
+                await MockTeamCleanup.DeleteForTournamentAsync(conn, tx, id, ct);
 
-            // Reschedule check-in deadline job if relevant fields changed
+            tx.Commit();
+
+            await ApplyPostUpdateEffectsAsync(conn, id, req, updated, winnerService, placementResolution, ctx, ct);
+
             if (updated is not null)
-            {
-                var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
-                bool checkInRequired = (bool)(updated.check_in_required ?? false);
-                bool autoRemove = (bool)(updated.auto_remove_unchecked ?? false);
-                DateTime? deadline = updated.check_in_deadline is not null
-                    ? (DateTime)updated.check_in_deadline
-                    : null;
-
-                if (checkInRequired && autoRemove && deadline.HasValue && deadline.Value > DateTime.UtcNow)
-                    await jobScheduler.ScheduleTournamentCheckinDeadlineAsync(id, deadline.Value, ct);
-                else
-                    await jobScheduler.CancelTournamentCheckinDeadlineAsync(id, ct);
-            }
+                await RescheduleCheckinJobAsync(ctx, id, updated, ct);
 
             try { await cache.RemoveByTagAsync("tournament-list", ct); } catch { /* best effort */ }
             return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -1219,6 +870,7 @@ public static class TournamentEndpoints
                 JOIN tournaments t ON t.id = tp.tournament_id
                 WHERE tp.user_id = @userId
                 ORDER BY tp.created_at DESC
+                LIMIT 200
                 """,
                 new { userId = userCtx.UserIdGuid });
             return Results.Ok(rows);
@@ -1317,7 +969,6 @@ public static class TournamentEndpoints
             using var conn = db.CreateConnection();
             using var txn = conn.BeginTransaction();
 
-            // Lock tournament row to prevent race condition on capacity check
             var tourn = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT status, max_teams, entry_fee, payment_instructions, game,
@@ -1331,65 +982,29 @@ public static class TournamentEndpoints
                 new { id }, txn);
             if (tourn is null) { txn.Rollback(); return Results.NotFound(); }
 
-            var registrationWindowError = TournamentTimelineValidator.ValidateRegistrationWindow(
+            var windowError = TournamentTimelineValidator.ValidateRegistrationWindow(
                 (string?)tourn.status,
                 (DateTimeOffset?)tourn.registration_deadline,
                 (DateTimeOffset?)tourn.start_date,
                 TournamentTimelineValidator.ParseRegistrationOpensAt(tourn.settings));
-            if (registrationWindowError is not null)
-            { txn.Rollback(); return Results.BadRequest(new { error = registrationWindowError }); }
+            if (windowError is not null)
+            { txn.Rollback(); return Results.BadRequest(new { error = windowError }); }
 
             if (string.Equals((string?)tourn.registration_type, "invite_only", StringComparison.OrdinalIgnoreCase))
             { txn.Rollback(); return Results.BadRequest(new { error = "This tournament is invite-only." }); }
             if (string.Equals((string?)tourn.registration_type, "closed", StringComparison.OrdinalIgnoreCase))
             { txn.Rollback(); return Results.BadRequest(new { error = "This tournament is closed for direct registration." }); }
 
-            // Check capacity (0 or null = unlimited)
-            int? maxTeams = (int?)tourn.max_teams;
-            if (maxTeams.HasValue && maxTeams.Value > 0)
-            {
-                var reservedSlots = TournamentInviteSlots.ResolveFromRow(tourn);
-                var openCap = Math.Max(maxTeams.Value - reservedSlots, 0);
+            int reservedSlots = TournamentInviteSlots.ResolveFromRow(tourn);
+            var capacityError = await CheckRegistrationCapacityAsync(
+                conn, txn, id, userCtx.UserIdGuid, (int?)tourn.max_teams, reservedSlots);
+            if (capacityError is not null) { txn.Rollback(); return capacityError; }
 
-                if (reservedSlots > 0)
-                {
-                    var openCount = await conn.QuerySingleAsync<int>(
-                        """
-                        SELECT COUNT(*)
-                        FROM tournament_participants
-                        WHERE tournament_id = @id
-                          AND status NOT IN ('rejected', 'cancelled', 'disqualified')
-                          AND COALESCE(source, 'open') = 'open'
-                        """,
-                        new { id }, txn);
-                    if (openCount >= openCap)
-                    { txn.Rollback(); return Results.BadRequest(new { error = "Open registration slots are full. Invited teams still have guaranteed slots." }); }
-                }
-                else
-                {
-                    var currentCount = await conn.QuerySingleAsync<int>(
-                        "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled', 'disqualified')",
-                        new { id }, txn);
-                    if (currentCount >= maxTeams.Value)
-                    { txn.Rollback(); return Results.BadRequest(new { error = "Tournament has reached maximum capacity." }); }
-                }
-            }
-
-            // Check existing registration (exclude cancelled/rejected/disqualified)
-            var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
-                new { id, userId = userCtx.UserIdGuid }, txn);
-            if (existing is not null)
-            { txn.Rollback(); return Results.Conflict(new { error = "You are already registered for this tournament." }); }
-
-            Guid? teamIdGuid = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
-            Guid? captainIdGuid = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
-            Guid? rosterIdGuid = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
-            var participantType = teamIdGuid is not null ? "team" : "solo";
+            var ids = ParseParticipantIds(req);
 
             try
             {
-                await gameCatalog.ValidateRegistrationAsync(conn, txn, id, teamIdGuid, rosterIdGuid, userCtx.UserIdGuid, req.RosterLineup);
+                await gameCatalog.ValidateRegistrationAsync(conn, txn, id, ids.TeamId, ids.RosterId, userCtx.UserIdGuid, req.RosterLineup);
             }
             catch (GameCatalogValidationException ex)
             {
@@ -1397,63 +1012,11 @@ public static class TournamentEndpoints
                 return Results.BadRequest(new { error = ex.Message });
             }
 
-            // Native solo participants: profile snapshot, no adapter team row.
-            string? soloDisplayName = null;
-            if (participantType == "solo")
-            {
-                var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    "SELECT username, avatar_url FROM profiles WHERE id = @uid",
-                    new { uid = userCtx.UserIdGuid }, txn);
+            var identity = await ResolveParticipantIdentityAsync(conn, txn, userCtx, req, ids);
+            var (regStatus, paymentStatus, entryFeePaid, entryFeeAmount) = DerivePaymentStatus((decimal?)tourn.entry_fee);
 
-                soloDisplayName = (string?)profile?.username ?? "Solo Player";
-                teamIdGuid = null;
-            }
-
-            // Determine if this is a paid tournament
-            decimal tournEntryFee = (decimal)(tourn.entry_fee ?? 0m);
-            bool isPaid = tournEntryFee > 0;
-
-            // Server determines registration status — never trust user-supplied value
-            var regStatus = isPaid ? "pending" : "approved";
-            var paymentStatus = isPaid ? "pending" : "not_required";
-            var entryFeePaid = !isPaid; // free = already paid; paid = not yet
-
-            string teamMembersJson;
-            string? rosterLineupJson = null;
-            if (rosterIdGuid.HasValue)
-            {
-                var usesRosterPool = await gameCatalog.TournamentUsesRosterPoolAsync(conn, txn, id);
-                if (usesRosterPool && !string.IsNullOrWhiteSpace(req.RosterLineup))
-                {
-                    try
-                    {
-                        (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildFromSubmittedLineupAsync(
-                            conn, rosterIdGuid.Value, req.RosterLineup, txn);
-                    }
-                    catch (InvalidOperationException ex)
-                    {
-                        txn.Rollback();
-                        return Results.BadRequest(new { error = ex.Message });
-                    }
-                }
-                else
-                {
-                    (teamMembersJson, rosterLineupJson) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(
-                        conn, rosterIdGuid.Value, txn);
-                }
-            }
-            else if (participantType == "solo" && !string.IsNullOrWhiteSpace(soloDisplayName))
-            {
-                teamMembersJson = System.Text.Json.JsonSerializer.Serialize(new[] { soloDisplayName });
-            }
-            else if (!string.IsNullOrWhiteSpace(req.TeamMembers))
-            {
-                teamMembersJson = $"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]";
-            }
-            else
-            {
-                teamMembersJson = "[]";
-            }
+            var membersResult = await BuildTeamMembersAsync(conn, txn, id, ids.RosterId, req, ids.ParticipantType, identity.SoloDisplayName, gameCatalog);
+            if (membersResult.Error is not null) { txn.Rollback(); return membersResult.Error; }
 
             var row = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -1476,19 +1039,19 @@ public static class TournamentEndpoints
                 {
                     tournamentId = id,
                     userId = userCtx.UserIdGuid,
-                    teamId = teamIdGuid,
-                    teamCaptainId = captainIdGuid ?? userCtx.UserIdGuid,
-                    teamName = participantType == "solo" ? soloDisplayName ?? req.TeamName : req.TeamName,
-                    teamMembers = teamMembersJson,
-                    rosterLineup = rosterLineupJson,
+                    teamId = identity.TeamId,
+                    teamCaptainId = identity.CaptainId,
+                    teamName = identity.TeamName,
+                    teamMembers = membersResult.TeamMembersJson,
+                    rosterLineup = membersResult.RosterLineupJson,
                     teamContactEmail = req.TeamContactEmail,
-                    rosterId = rosterIdGuid,
+                    rosterId = ids.RosterId,
                     rosterName = req.RosterName,
                     regStatus,
-                    participantType,
-                    entryFeeAmount = tournEntryFee,
-                    entryFeePaid = entryFeePaid,
-                    paymentStatus = paymentStatus,
+                    participantType = ids.ParticipantType,
+                    entryFeeAmount,
+                    entryFeePaid,
+                    paymentStatus,
                     paymentReceiptUrl = req.PaymentReceiptUrl,
                 }, txn);
 
@@ -2031,14 +1594,12 @@ public static class TournamentEndpoints
 
             var participantId = Guid.Parse(req.ParticipantId);
 
-            // Get participant info
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT user_id, team_id FROM tournament_participants WHERE id = @pid AND tournament_id = @id",
                 new { pid = participantId, id });
             if (participant is null)
                 return Results.NotFound(new { error = "Participant not found" });
 
-            // Determine ban target (must be Guid for uuid columns)
             Guid? banUserId = null, banTeamId = null;
             if (participant.team_id is not null) banTeamId = (Guid)participant.team_id;
             else if (participant.user_id is not null) banUserId = (Guid)participant.user_id;
@@ -2047,184 +1608,29 @@ public static class TournamentEndpoints
             if (banUserId is null && banTeamId is null)
                 return Results.BadRequest(new { error = "Cannot determine ban target" });
 
-            // Insert ban
+            using var tx = conn.BeginTransaction();
+
             await conn.ExecuteAsync(
                 """
                 INSERT INTO tournament_bans (tournament_id, participant_id, user_id, team_id, ban_reason, banned_by, banned_at, is_active)
                 VALUES (@tournamentId, @participantId, @userId, @teamId, @banReason, @bannedBy, NOW(), TRUE)
                 """,
-                new { tournamentId = id, participantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserIdGuid });
+                new { tournamentId = id, participantId, userId = banUserId, teamId = banTeamId, banReason = req.BanReason, bannedBy = userCtx.UserIdGuid }, tx);
 
-            // Mark participant as disqualified (soft delete)
             await conn.ExecuteAsync(
                 "UPDATE tournament_participants SET status = 'disqualified' WHERE id = @pid AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
-                new { pid = participantId });
+                new { pid = participantId }, tx);
 
-            // Cascade-forfeit all pending bracket matches for the banned team
             var bannedSlotId = banTeamId ?? participantId;
             var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                """
-                SELECT id FROM public.brkt_versions
-                WHERE tournament_id = @id
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                new { id });
+                "SELECT id FROM public.brkt_versions WHERE tournament_id = @id ORDER BY created_at DESC LIMIT 1",
+                new { id }, tx);
 
-            if (versionId.HasValue)
-            {
-                // Iterate until no more pending matches exist for the banned team.
-                // Each forfeit may advance the banned team through loser edges (double elimination),
-                // creating new matches that also need forfeiting.
-                for (var forfeitPass = 0; forfeitPass < 20; forfeitPass++)
-                {
-                    var pendingMatches = (await conn.QueryAsync<dynamic>(
-                        """
-                        SELECT id, team1_id, team2_id, best_of
-                        FROM public.brkt_matches
-                        WHERE version_id = @versionId
-                          AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
-                          AND status NOT IN ('completed', 'disputed')
-                        ORDER BY round_index ASC, match_number ASC
-                        """,
-                        new { versionId, bannedSlotId })).AsList();
+            await CascadeForfeitMatchesAsync(conn, tx, id, bannedSlotId, versionId, finalizer, bracketHub, ct);
+            await RemoveFromBRGroupsAsync(conn, tx, participantId, banTeamId, id);
+            await NotifyBannedUsersAsync(conn, tx, banTeamId, banUserId, id, req.BanReason);
 
-                    if (pendingMatches.Count == 0) break;
-
-                    foreach (var match in pendingMatches)
-                    {
-                        Guid matchId = (Guid)match.id;
-                        Guid? team1 = (Guid?)match.team1_id;
-                        Guid? team2 = (Guid?)match.team2_id;
-                        Guid? opponent = team1 == bannedSlotId ? team2 : team1;
-
-                        if (opponent.HasValue)
-                        {
-                            int bestOf = (int)(match.best_of ?? 1);
-                            int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
-                            int t1Score = team1 == opponent ? winnerScore : 0;
-                            int t2Score = team2 == opponent ? winnerScore : 0;
-                            await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
-                        }
-                        else
-                        {
-                            await conn.ExecuteAsync(
-                                """
-                                UPDATE public.brkt_matches
-                                SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
-                                    result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
-                                WHERE id = @matchId AND status != 'completed'
-                                """,
-                                new { matchId, bannedSlotId });
-                        }
-                    }
-                }
-
-                await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
-                    .SendAsync(BracketHubEvents.MatchUpdated,
-                        new { versionId, reason = "participant_banned", bannedSlotId },
-                        ct);
-
-                // Check if all matches are now completed — declare winner if so
-                var pendingCount = await conn.QuerySingleAsync<int>(
-                    "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
-                    new { versionId });
-
-                if (pendingCount == 0)
-                {
-                    var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                        "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId });
-                    if (stageId.HasValue)
-                    {
-                        await conn.ExecuteAsync(
-                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                            new { stageId });
-
-                        var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                            """
-                            SELECT winner_id FROM brkt_matches
-                            WHERE version_id = @versionId
-                              AND status = 'completed' AND winner_id IS NOT NULL
-                            ORDER BY round_index DESC, match_number DESC
-                            LIMIT 1
-                            """,
-                            new { versionId });
-
-                        if (gfWinnerId.HasValue)
-                        {
-                            await conn.ExecuteAsync(
-                                "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
-                                new { p_tournament_id = id, p_winner_id = gfWinnerId.Value });
-                        }
-                    }
-
-                    await bracketHub.Clients
-                        .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
-                        .SendAsync(BracketHubEvents.StageCompleted,
-                            new { versionId, tournamentId = id },
-                            ct);
-                }
-            }
-
-            // Remove banned team from BR groups (battle royale tournaments)
-            if (banTeamId.HasValue)
-            {
-                await conn.ExecuteAsync(
-                    """
-                    DELETE FROM br_group_teams
-                    WHERE team_id = @teamId
-                      AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
-                          SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
-                      ))
-                    """,
-                    new { teamId = banTeamId, tournamentId = id });
-            }
-            else
-            {
-                await conn.ExecuteAsync(
-                    """
-                    DELETE FROM br_group_teams
-                    WHERE participant_id = @participantId
-                      AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
-                          SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
-                      ))
-                    """,
-                    new { participantId, tournamentId = id });
-            }
-
-            // Notify affected users
-            var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM tournaments WHERE id = @id", new { id });
-            var banReason = req.BanReason ?? "No reason provided";
-
-            var notifyUserIds = new List<Guid>();
-            if (banTeamId.HasValue)
-            {
-                var teamMembers = await conn.QueryAsync<Guid>(
-                    "SELECT user_id FROM team_members WHERE team_id = @teamId AND is_active = TRUE",
-                    new { teamId = banTeamId });
-                notifyUserIds.AddRange(teamMembers);
-            }
-            else if (banUserId.HasValue)
-            {
-                notifyUserIds.Add(banUserId.Value);
-            }
-
-            foreach (var uid in notifyUserIds)
-            {
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
-                    """,
-                    new
-                    {
-                        userId = uid,
-                        title = "Banned from Tournament",
-                        message = $"You have been banned from {tournamentName ?? "a tournament"}. Reason: {banReason}",
-                        data = $"{{\"tournament_id\":\"{id}\"}}"
-                    });
-            }
+            tx.Commit();
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -2461,6 +1867,7 @@ public static class TournamentEndpoints
                 JOIN brkt_matches m ON m.id = g.match_id
                 JOIN brkt_versions v ON v.id = m.version_id
                 WHERE v.tournament_id = @id AND g.status = 'completed'
+                LIMIT 2000
                 """,
                 new { id });
             DapperJsonbHelper.FixJsonb(rows);
@@ -4856,6 +4263,720 @@ public static class TournamentEndpoints
     }
 
     private sealed record MockSimulationSafety(bool CanRegenerate, string? Error);
+
+    // ── GET /api/tournaments/{slugOrId} — helpers ────────────────────────────────
+
+    private sealed record TournamentAccess(bool IsOrganizer, string[]? StaffPermissions, string? StaffRole);
+
+    private static async Task ReconcileStaleStatusAsync(IDbConnection conn, Guid tournamentId, dynamic tournament)
+    {
+        var rawStatus = tournament.status?.ToString() as string;
+        var reconciledStatus = ReconcileEffectiveStatus(
+            rawStatus,
+            (DateTimeOffset?)tournament.start_date,
+            (DateTimeOffset?)tournament.end_date);
+        if (reconciledStatus is null || reconciledStatus == rawStatus) return;
+
+        // Guard in SQL prevents duplicate writes if two concurrent GETs see the same stale status
+        await conn.ExecuteAsync(
+            "UPDATE tournaments SET status = @newStatus::tournament_status, updated_at = NOW() WHERE id = @tournamentId AND status != @newStatus::tournament_status",
+            new { newStatus = reconciledStatus, tournamentId });
+        tournament.status = reconciledStatus;
+    }
+
+    private static async Task<TournamentAccess> ResolveAccessAsync(
+        HttpContext ctx, IStaffAuthorizationService staffAuth, Guid tournamentId, CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return new(false, null, null);
+
+        var access = await staffAuth.ResolveTournamentAccessAsync(userCtx, tournamentId, ct);
+        var isOrganizer = access.IsOrganizer || access.IsPlatformAdmin;
+        string[]? staffPermissions = null;
+        string? staffRole = null;
+        if (!isOrganizer && access.Role != "none")
+        {
+            staffPermissions = access.Permissions;
+            staffRole = access.Role;
+        }
+        return new(isOrganizer, staffPermissions, staffRole);
+    }
+
+    private static IEnumerable<dynamic> FilterParticipantsForRole(IEnumerable<dynamic> allParticipants, bool isOrganizer)
+    {
+        if (isOrganizer) return allParticipants;
+        return allParticipants.Where(p =>
+        {
+            string status = (string)p.status;
+            return status != "rejected" && status != "cancelled";
+        });
+    }
+
+    private static async Task<int> FetchMockCountAsync(IDbConnection conn, Guid tournamentId, bool isOrganizer)
+    {
+        if (!isOrganizer) return 0;
+        return await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tournamentId AND is_mock = TRUE",
+            new { tournamentId });
+    }
+
+    private static async Task<string> ResolveParticipantModeAsync(GameCatalogService gameCatalog, dynamic tournament)
+    {
+        try
+        {
+            return await gameCatalog.ResolveParticipantModeAsync(
+                (string)tournament.game,
+                tournament.game_mode as string,
+                (int?)tournament.team_size);
+        }
+        catch
+        {
+            return ((int?)tournament.team_size ?? 1) > 1 ? "team" : "solo";
+        }
+    }
+
+    // ── POST /api/tournaments — helpers ──────────────────────────────────────────
+
+    private sealed record TournamentCreateDates(DateTime EndDate, DateTime RegistrationDeadline, string Status, int InviteExpiryDays);
+    private sealed record TournamentCreateDefaults(bool IsPublic, bool CheckInRequired, bool AutoRemoveUnchecked, decimal EntryFee, decimal PrizePool, string Currency, Guid? VenueId, string PayoutMethod);
+    private sealed record StageInsertParams(Guid TournamentId, string Name, string Format, int StageOrder, int BestOf, string BoMode, string? RoundBoOverrides, int? Capacity, int? AdvancementCount, string? Config, DateTimeOffset? StartsAt, DateTimeOffset? EndsAt);
+
+    private static async Task<string> ResolveUniqueSlugAsync(IDbConnection conn, IDbTransaction tx, string? requestedSlug, string name)
+    {
+        var slug = requestedSlug ?? Slugify(name);
+        var exists = await conn.QuerySingleOrDefaultAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM tournaments WHERE slug = @slug)", new { slug }, tx);
+        if (exists) return $"{slug}-{DateTime.UtcNow.Ticks % 9999:x4}";
+        return slug;
+    }
+
+    private static async Task<Guid?> ResolveOrganizationIdAsync(IDbConnection conn, IDbTransaction tx, string? orgIdStr, Guid userId)
+    {
+        Guid? orgId = Guid.TryParse(orgIdStr, out var g) ? g : (Guid?)null;
+        if (!orgId.HasValue)
+            orgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+                new { userId }, tx);
+        return orgId;
+    }
+
+    private static string? ValidateCreateTournamentConstraints(CreateTournamentRequest req, int reservedSlots)
+    {
+        if (req.MaxTeams > 0 && reservedSlots > req.MaxTeams)
+            return "Reserved invite slots cannot exceed max teams.";
+
+        var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(
+            req.StartDate, req.EndDate ?? req.StartDate.AddHours(2));
+        if (dateOrderError is not null) return dateOrderError;
+
+        return TournamentTimelineValidator.ValidateRegistrationDeadline(
+            req.RegistrationDeadline ?? req.StartDate.AddDays(-1), req.StartDate);
+    }
+
+    private static TournamentCreateDates NormalizeTournamentDates(CreateTournamentRequest req)
+    {
+        var endDate = req.EndDate ?? req.StartDate.AddHours(2);
+        var regDeadline = req.RegistrationDeadline ?? req.StartDate.AddDays(-1);
+        var status = AllowedCreateStatuses.Contains(req.Status ?? "") ? req.Status! : "draft";
+        var inviteExpiryDays = Math.Clamp(req.InviteExpiryDays ?? 7, 1, 365);
+        return new(endDate, regDeadline, status, inviteExpiryDays);
+    }
+
+    private static TournamentCreateDefaults NormalizeTournamentDefaults(CreateTournamentRequest req)
+        => new(
+            IsPublic: req.IsPublic ?? false,
+            CheckInRequired: req.CheckInRequired ?? false,
+            AutoRemoveUnchecked: req.AutoRemoveUnchecked ?? false,
+            EntryFee: req.EntryFee ?? 0m,
+            PrizePool: req.PrizePool ?? 0m,
+            Currency: req.Currency ?? "USD",
+            VenueId: Guid.TryParse(req.VenueId, out var vg) ? vg : (Guid?)null,
+            PayoutMethod: req.PayoutMethod is "gateway" ? "gateway" : "manual");
+
+    private static string SerializeTournamentSettingsOrEmpty(object? settings, bool supportsMapVeto)
+        => SerializeTournamentSettings(settings, supportsMapVeto) ?? "{}";
+
+    private static DateTimeOffset? ParseStageDateTimeOffset(string? value)
+        => value is not null && DateTimeOffset.TryParse(value, out var result) ? result : (DateTimeOffset?)null;
+
+    private static StageInsertParams MapStageToInsertParams(StageRequest s, int index, Guid tournamentId, int maxTeams)
+        => new(
+            TournamentId: tournamentId,
+            Name: s.Name,
+            Format: s.Format,
+            StageOrder: s.StageOrder ?? index,
+            BestOf: s.BestOf ?? 1,
+            BoMode: s.BoMode ?? "per_stage",
+            RoundBoOverrides: s.RoundBoOverrides is { Count: > 0 } ? JsonSerializer.Serialize(s.RoundBoOverrides) : null,
+            Capacity: string.Equals(s.Format, "battle_royale", StringComparison.OrdinalIgnoreCase)
+                ? s.Capacity ?? maxTeams
+                : s.Capacity,
+            AdvancementCount: s.AdvancementCount,
+            Config: s.Config is not null ? JsonSerializer.Serialize(s.Config) : null,
+            StartsAt: ParseStageDateTimeOffset(s.StartsAt),
+            EndsAt: ParseStageDateTimeOffset(s.EndsAt));
+
+    private static async Task InsertStagesAsync(
+        IDbConnection conn, IDbTransaction tx, Guid tournamentId, List<StageRequest>? stages, int maxTeams)
+    {
+        if (stages is not { Count: > 0 }) return;
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO tournament_stages
+                (tournament_id, name, format, stage_order, best_of, bo_mode,
+                 round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
+            VALUES
+                (@TournamentId, @Name, @Format, @StageOrder, @BestOf, @BoMode,
+                 CASE WHEN @RoundBoOverrides::text IS NOT NULL THEN @RoundBoOverrides::jsonb ELSE NULL END,
+                 @Capacity, @AdvancementCount,
+                 CASE WHEN @Config::text IS NOT NULL THEN @Config::jsonb ELSE NULL END,
+                 @StartsAt, @EndsAt)
+            """,
+            stages.Select((s, i) => MapStageToInsertParams(s, i, tournamentId, maxTeams)),
+            tx);
+    }
+
+    private static async Task InsertMapPoolAsync(
+        IDbConnection conn, IDbTransaction tx, Guid tournamentId, List<string>? mapPoolIds)
+    {
+        if (mapPoolIds is not { Count: > 0 }) return;
+        await conn.ExecuteAsync(
+            "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId)",
+            mapPoolIds.Where(m => Guid.TryParse(m, out _)).Select(m => new { tournamentId, mapId = Guid.Parse(m) }),
+            tx);
+    }
+
+    private static async Task ScheduleCheckinJobIfNeededAsync(
+        HttpContext ctx, Guid tournamentId, CreateTournamentRequest req, CancellationToken ct)
+    {
+        if (!(req.CheckInRequired ?? false) || !req.CheckInDeadline.HasValue || !(req.AutoRemoveUnchecked ?? false))
+            return;
+
+        var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+        await jobScheduler.ScheduleTournamentCheckinDeadlineAsync(tournamentId, req.CheckInDeadline.Value, ct);
+    }
+
+    // ── POST /api/tournaments/{id}/register — helpers ────────────────────────────
+
+    private sealed record ParticipantIds(Guid? TeamId, Guid? CaptainId, Guid? RosterId, string ParticipantType);
+    private sealed record ParticipantIdentity(Guid? TeamId, Guid CaptainId, string? TeamName, string? SoloDisplayName);
+    private sealed record TeamMembersBuildResult(string TeamMembersJson, string? RosterLineupJson, IResult? Error);
+
+    private static ParticipantIds ParseParticipantIds(RegisterTournamentRequest req)
+    {
+        Guid? teamId = req.TeamId is not null ? Guid.Parse(req.TeamId) : null;
+        Guid? captainId = req.TeamCaptainId is not null ? Guid.Parse(req.TeamCaptainId) : null;
+        Guid? rosterId = req.RosterId is not null ? Guid.Parse(req.RosterId) : null;
+        var participantType = teamId is not null ? "team" : "solo";
+        return new(teamId, captainId, rosterId, participantType);
+    }
+
+    private static async Task<ParticipantIdentity> ResolveParticipantIdentityAsync(
+        IDbConnection conn, IDbTransaction txn, UserContext userCtx, RegisterTournamentRequest req, ParticipantIds ids)
+    {
+        if (ids.ParticipantType != "solo")
+        {
+            var captainId = ids.CaptainId ?? userCtx.UserIdGuid;
+            return new(ids.TeamId, captainId, req.TeamName, null);
+        }
+
+        var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT username FROM profiles WHERE id = @uid",
+            new { uid = userCtx.UserIdGuid }, txn);
+        var displayName = (string?)profile?.username ?? "Solo Player";
+        return new(null, userCtx.UserIdGuid, displayName, displayName);
+    }
+
+    private static async Task<IResult?> CheckRegistrationCapacityAsync(
+        IDbConnection conn, IDbTransaction txn, Guid id, Guid userId, int? maxTeams, int reservedSlots)
+    {
+        if (maxTeams.HasValue && maxTeams.Value > 0)
+        {
+            if (reservedSlots > 0)
+            {
+                var openCap = Math.Max(maxTeams.Value - reservedSlots, 0);
+                var openCount = await conn.QuerySingleAsync<int>(
+                    """
+                    SELECT COUNT(*)
+                    FROM tournament_participants
+                    WHERE tournament_id = @id
+                      AND status NOT IN ('rejected', 'cancelled', 'disqualified')
+                      AND COALESCE(source, 'open') = 'open'
+                    """,
+                    new { id }, txn);
+                if (openCount >= openCap)
+                    return Results.BadRequest(new { error = "Open registration slots are full. Invited teams still have guaranteed slots." });
+            }
+            else
+            {
+                var count = await conn.QuerySingleAsync<int>(
+                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND status NOT IN ('rejected', 'cancelled', 'disqualified')",
+                    new { id }, txn);
+                if (count >= maxTeams.Value)
+                    return Results.BadRequest(new { error = "Tournament has reached maximum capacity." });
+            }
+        }
+
+        var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT id FROM tournament_participants WHERE tournament_id = @id AND user_id = @userId AND status NOT IN ('cancelled', 'rejected', 'disqualified')",
+            new { id, userId }, txn);
+        if (existing is not null)
+            return Results.Conflict(new { error = "You are already registered for this tournament." });
+
+        return null;
+    }
+
+    private static (string RegStatus, string PaymentStatus, bool EntryFeePaid, decimal EntryFeeAmount) DerivePaymentStatus(decimal? rawFee)
+    {
+        var fee = rawFee ?? 0m;
+        return fee > 0
+            ? ("pending", "pending", false, fee)
+            : ("approved", "not_required", true, 0m);
+    }
+
+    private static async Task<TeamMembersBuildResult> BuildTeamMembersAsync(
+        IDbConnection conn, IDbTransaction txn, Guid id,
+        Guid? rosterIdGuid, RegisterTournamentRequest req, string participantType, string? soloDisplayName, GameCatalogService gameCatalog)
+    {
+        if (rosterIdGuid.HasValue)
+        {
+            var usesRosterPool = await gameCatalog.TournamentUsesRosterPoolAsync(conn, txn, id);
+            if (usesRosterPool && !string.IsNullOrWhiteSpace(req.RosterLineup))
+            {
+                try
+                {
+                    var (members, lineup) = await RosterRegistrationHelper.BuildFromSubmittedLineupAsync(
+                        conn, rosterIdGuid.Value, req.RosterLineup, txn);
+                    return new(members, lineup, null);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return new(string.Empty, null, Results.BadRequest(new { error = ex.Message }));
+                }
+            }
+
+            var (m, l) = await RosterRegistrationHelper.BuildRegistrationSnapshotAsync(conn, rosterIdGuid.Value, txn);
+            return new(m, l, null);
+        }
+
+        if (participantType == "solo" && !string.IsNullOrWhiteSpace(soloDisplayName))
+            return new(System.Text.Json.JsonSerializer.Serialize(new[] { soloDisplayName }), null, null);
+
+        if (!string.IsNullOrWhiteSpace(req.TeamMembers))
+            return new($"[\"{req.TeamMembers.Replace(",", "\",\"")}\"]", null, null);
+
+        return new("[]", null, null);
+    }
+
+    // ── POST /api/tournaments/{id}/ban-participant — helpers ─────────────────────
+
+    private static async Task CascadeForfeitMatchesAsync(
+        IDbConnection conn, IDbTransaction tx,
+        Guid tournamentId, Guid bannedSlotId, Guid? versionId,
+        MatchFinalizationService finalizer, IHubContext<BracketHub> bracketHub, CancellationToken ct)
+    {
+        if (!versionId.HasValue) return;
+
+        for (var forfeitPass = 0; forfeitPass < 20; forfeitPass++)
+        {
+            var pendingMatches = (await conn.QueryAsync<dynamic>(
+                """
+                SELECT id, team1_id, team2_id, best_of
+                FROM public.brkt_matches
+                WHERE version_id = @versionId
+                  AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
+                  AND status NOT IN ('completed', 'disputed')
+                ORDER BY round_index ASC, match_number ASC
+                """,
+                new { versionId, bannedSlotId }, tx)).AsList();
+
+            if (pendingMatches.Count == 0) break;
+
+            foreach (var match in pendingMatches)
+            {
+                Guid matchId = (Guid)match.id;
+                Guid? team1 = (Guid?)match.team1_id;
+                Guid? team2 = (Guid?)match.team2_id;
+                Guid? opponent = team1 == bannedSlotId ? team2 : team1;
+
+                if (opponent.HasValue)
+                {
+                    int bestOf = (int)(match.best_of ?? 1);
+                    int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
+                    int t1Score = team1 == opponent ? winnerScore : 0;
+                    int t2Score = team2 == opponent ? winnerScore : 0;
+                    // FinalizeAsync uses its own connection — cannot participate in our tx.
+                    // TODO: If our tx rolls back (e.g. notification INSERT fails), these match
+                    // forfeits are already committed. Track as a known partial-state risk.
+                    await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
+                }
+                else
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        UPDATE public.brkt_matches
+                        SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
+                            result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
+                        WHERE id = @matchId AND status != 'completed'
+                        """,
+                        new { matchId, bannedSlotId }, tx);
+                }
+            }
+        }
+
+        await bracketHub.Clients
+            .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+            .SendAsync(BracketHubEvents.MatchUpdated,
+                new { versionId, reason = "participant_banned", bannedSlotId },
+                ct);
+
+        var pendingCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
+            new { versionId }, tx);
+
+        if (pendingCount != 0) return;
+
+        var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId }, tx);
+        if (!stageId.HasValue) return;
+
+        await conn.ExecuteAsync(
+            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
+            new { stageId }, tx);
+
+        var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT winner_id FROM brkt_matches
+            WHERE version_id = @versionId
+              AND status = 'completed' AND winner_id IS NOT NULL
+            ORDER BY round_index DESC, match_number DESC
+            LIMIT 1
+            """,
+            new { versionId }, tx);
+
+        if (gfWinnerId.HasValue)
+            await conn.ExecuteAsync(
+                "SELECT public.admin_set_tournament_winner(@p_tournament_id, @p_winner_id)",
+                new { p_tournament_id = tournamentId, p_winner_id = gfWinnerId.Value }, tx);
+
+        await bracketHub.Clients
+            .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
+            .SendAsync(BracketHubEvents.StageCompleted,
+                new { versionId, tournamentId },
+                ct);
+    }
+
+    private static async Task RemoveFromBRGroupsAsync(
+        IDbConnection conn, IDbTransaction tx, Guid participantId, Guid? banTeamId, Guid tournamentId)
+    {
+        if (banTeamId.HasValue)
+        {
+            await conn.ExecuteAsync(
+                """
+                DELETE FROM br_group_teams
+                WHERE team_id = @teamId
+                  AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                      SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+                  ))
+                """,
+                new { teamId = banTeamId, tournamentId }, tx);
+        }
+        else
+        {
+            await conn.ExecuteAsync(
+                """
+                DELETE FROM br_group_teams
+                WHERE participant_id = @participantId
+                  AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                      SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+                  ))
+                """,
+                new { participantId, tournamentId }, tx);
+        }
+    }
+
+    private static async Task NotifyBannedUsersAsync(
+        IDbConnection conn, IDbTransaction tx, Guid? banTeamId, Guid? banUserId, Guid tournamentId, string? banReason)
+    {
+        var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
+            "SELECT name FROM tournaments WHERE id = @tournamentId", new { tournamentId }, tx);
+        var reason = banReason ?? "No reason provided";
+
+        var notifyUserIds = new List<Guid>();
+        if (banTeamId.HasValue)
+            notifyUserIds.AddRange(await conn.QueryAsync<Guid>(
+                "SELECT user_id FROM team_members WHERE team_id = @teamId AND is_active = TRUE",
+                new { teamId = banTeamId }, tx));
+        else if (banUserId.HasValue)
+            notifyUserIds.Add(banUserId.Value);
+
+        var dataJson = System.Text.Json.JsonSerializer.Serialize(new { tournament_id = tournamentId.ToString() });
+        foreach (var uid in notifyUserIds)
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO notifications (user_id, type, title, message, data)
+                VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                """,
+                new
+                {
+                    userId = uid,
+                    title = "Banned from Tournament",
+                    message = $"You have been banned from {tournamentName ?? "a tournament"}. Reason: {reason}",
+                    data = dataJson
+                }, tx);
+        }
+    }
+
+    // ── PUT /api/tournaments/{id} — helpers ──────────────────────────────────────
+
+    private sealed record TournamentUpdateContext(
+        TournamentCatalogResolution Catalog,
+        DateTimeOffset? EffectiveEndDate,
+        int? ReservedSlotsForUpdate);
+
+    private static IResult? ValidateStatusTransition(string? existingStatus, string? newStatus)
+    {
+        if (newStatus is null || string.Equals(newStatus, existingStatus, StringComparison.OrdinalIgnoreCase))
+            return null;
+        var allowed = existingStatus?.ToLowerInvariant() switch
+        {
+            "draft"     => new[] { "open", "published", "cancelled" },
+            "open"      => new[] { "ongoing", "check_in", "cancelled", "draft" },
+            "published" => new[] { "open", "ongoing", "cancelled" },
+            "check_in"  => new[] { "ongoing", "cancelled" },
+            "ongoing"   => new[] { "completed", "cancelled" },
+            "approved"  => new[] { "open", "published", "cancelled" },
+            _           => Array.Empty<string>(),
+        };
+        return allowed.Contains(newStatus.ToLowerInvariant())
+            ? null
+            : Results.BadRequest(new { error = $"Cannot transition tournament from '{existingStatus}' to '{newStatus}'." });
+    }
+
+    private static async Task<IResult?> ValidateMockGuardAsync(IDbConnection conn, Guid id, string? existingStatus, string? newStatus)
+    {
+        var isPublishingTransition = newStatus is "open" or "published"
+            && !string.Equals(newStatus, existingStatus, StringComparison.OrdinalIgnoreCase);
+        if (!isPublishingTransition) return null;
+        var mockCount = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
+            new { id });
+        return mockCount > 0
+            ? Results.BadRequest(new { error = $"Cannot publish tournament: {mockCount} mock participant(s) still exist. Clear mock data before publishing." })
+            : null;
+    }
+
+    private static async Task<(TournamentCatalogResolution? catalog, IResult? error)> ResolveCatalogAsync(
+        IDbConnection conn, UpdateTournamentRequest req,
+        string existingGame, string? existingGameMode, int? existingTeamSize, string? existingFormat,
+        GameCatalogService gameCatalog)
+    {
+        try
+        {
+            var catalog = await gameCatalog.ResolveTournamentAsync(
+                req.Game ?? existingGame,
+                req.GameMode ?? existingGameMode,
+                req.TeamSize ?? existingTeamSize,
+                req.Format ?? existingFormat,
+                null, Array.Empty<string>(), false, req.Settings, conn);
+            return (catalog, null);
+        }
+        catch (GameCatalogValidationException ex)
+        {
+            return (null, Results.BadRequest(new { error = ex.Message }));
+        }
+    }
+
+    private static (DateTimeOffset? effectiveEndDate, IResult? error) ValidateDates(
+        UpdateTournamentRequest req,
+        DateTimeOffset? existingStartDate, DateTimeOffset? existingEndDate, DateTimeOffset? existingRegistrationDeadline)
+    {
+        var effectiveStartDate = req.StartDate ?? existingStartDate;
+        var effectiveEndDate = req.EndDate ?? existingEndDate;
+        var effectiveRegistrationDeadline = req.RegistrationDeadline ?? existingRegistrationDeadline;
+
+        if (effectiveStartDate is not null
+            && effectiveEndDate is not null
+            && effectiveEndDate < effectiveStartDate
+            && req.EndDate is not null
+            && req.StartDate is null)
+        {
+            effectiveEndDate = effectiveStartDate.Value.AddHours(4);
+        }
+
+        var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(effectiveStartDate, effectiveEndDate);
+        if (dateOrderError is not null) return (null, Results.BadRequest(new { error = dateOrderError }));
+
+        var registrationDeadlineError = TournamentTimelineValidator.ValidateRegistrationDeadline(effectiveRegistrationDeadline, effectiveStartDate);
+        if (registrationDeadlineError is not null) return (null, Results.BadRequest(new { error = registrationDeadlineError }));
+
+        return (effectiveEndDate, null);
+    }
+
+    private static async Task<(int? reservedSlots, IResult? error)> ValidateInviteSlotsAsync(
+        IDbConnection conn, Guid id, UpdateTournamentRequest req, int? existingMaxTeams)
+    {
+        var effectiveMaxTeams = req.MaxTeams ?? existingMaxTeams;
+        int? reservedSlotsForUpdate = req.ReservedInviteSlots.HasValue
+            ? req.ReservedInviteSlots.Value
+            : req.Settings is not null && TournamentInviteSlots.TryReadFromSettingsIfPresent(req.Settings, out var settingsSlots)
+                ? settingsSlots
+                : null;
+
+        if (effectiveMaxTeams is > 0 && reservedSlotsForUpdate is > 0 && reservedSlotsForUpdate > effectiveMaxTeams)
+            return (null, Results.BadRequest(new { error = "Reserved invite slots cannot exceed max teams." }));
+
+        if (reservedSlotsForUpdate.HasValue)
+        {
+            var activeInviteCount = await conn.ExecuteScalarAsync<int>(
+                """
+                SELECT COUNT(*)::int
+                FROM public.tournament_invitations
+                WHERE tournament_id = @id
+                  AND status <> 'revoked'
+                """,
+                new { id });
+            if (reservedSlotsForUpdate.Value < activeInviteCount)
+                return (null, Results.BadRequest(new { error = $"Reserved invite slots cannot be less than active invitations ({activeInviteCount})." }));
+        }
+
+        return (reservedSlotsForUpdate, null);
+    }
+
+    private static async Task<(TournamentUpdateContext? ctx, IResult? error)> ValidateTournamentUpdateAsync(
+        IDbConnection conn, Guid id, UpdateTournamentRequest req, dynamic existing, GameCatalogService gameCatalog)
+    {
+        string existingStatus = (string?)existing.status ?? string.Empty;
+        string existingGame = (string)existing.game;
+        string? existingGameMode = (string?)existing.game_mode;
+        int? existingTeamSize = (int?)existing.team_size;
+        string? existingFormat = (string?)existing.format;
+        DateTimeOffset? existingStartDate = (DateTimeOffset?)existing.start_date;
+        DateTimeOffset? existingEndDate = (DateTimeOffset?)existing.end_date;
+        DateTimeOffset? existingRegistrationDeadline = (DateTimeOffset?)existing.registration_deadline;
+        int? existingMaxTeams = (int?)existing.max_teams;
+
+        var statusError = ValidateStatusTransition(existingStatus, req.Status);
+        if (statusError is not null) return (null, statusError);
+
+        var mockError = await ValidateMockGuardAsync(conn, id, existingStatus, req.Status);
+        if (mockError is not null) return (null, mockError);
+
+        var catalogResult = await ResolveCatalogAsync(conn, req, existingGame, existingGameMode, existingTeamSize, existingFormat, gameCatalog);
+        if (catalogResult.error is not null) return (null, catalogResult.error);
+
+        var datesResult = ValidateDates(req, existingStartDate, existingEndDate, existingRegistrationDeadline);
+        if (datesResult.error is not null) return (null, datesResult.error);
+
+        var slotsResult = await ValidateInviteSlotsAsync(conn, id, req, existingMaxTeams);
+        if (slotsResult.error is not null) return (null, slotsResult.error);
+
+        return (new TournamentUpdateContext(catalogResult.catalog!, datesResult.effectiveEndDate, slotsResult.reservedSlots), null);
+    }
+
+    private static async Task<Guid?> ResolveCompletionWinnerIdAsync(IDbConnection conn, Guid id, UpdateTournamentRequest req)
+    {
+        if (!string.IsNullOrWhiteSpace(req.WinnerTeamName))
+        {
+            var byName = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT tp.team_id FROM tournament_participants tp
+                JOIN teams t ON t.id = tp.team_id
+                WHERE tp.tournament_id = @id AND t.name = @teamName
+                LIMIT 1
+                """,
+                new { id, teamName = req.WinnerTeamName });
+            if (byName.HasValue) return byName;
+        }
+
+        var stageCounts = await conn.QuerySingleAsync<dynamic>(
+            """
+            SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
+            FROM tournament_stages
+            WHERE tournament_id = @id
+            """,
+            new { id });
+
+        int stageTotal = (int)stageCounts.total;
+        int stageCompleted = (int)stageCounts.completed;
+        if (stageTotal == 0 || stageTotal != stageCompleted) return null;
+
+        return await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT m.winner_id
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournament_stages s ON s.id = v.stage_id
+            WHERE s.tournament_id = @id
+              AND s.stage_order = (
+                  SELECT MAX(stage_order) FROM tournament_stages WHERE tournament_id = @id
+              )
+              AND m.status = 'completed'
+              AND m.winner_id IS NOT NULL
+              AND m.bracket_type = 'final'
+            ORDER BY m.round_index DESC, m.match_number DESC
+            LIMIT 1
+            """,
+            new { id });
+    }
+
+    private static async Task ApplyPostUpdateEffectsAsync(
+        IDbConnection conn, Guid id, UpdateTournamentRequest req, dynamic? updated,
+        TournamentWinnerService winnerService, PlacementResolutionService placementResolution,
+        HttpContext ctx, CancellationToken ct)
+    {
+        if (req.Status is not null && req.Status != "completed")
+        {
+            try
+            {
+                using var txClear = conn.BeginTransaction();
+                await winnerService.ClearWinnerAsync(conn, txClear, id, reopenCompleted: false,
+                    reason: "tournament status changed away from completed", ct);
+                txClear.Commit();
+            }
+            catch { /* best effort: stale winner clear must not block status change */ }
+        }
+
+        if (req.Status != "completed" || updated is null) return;
+
+        var resolvedWinnerId = await ResolveCompletionWinnerIdAsync(conn, id, req);
+        if (resolvedWinnerId.HasValue)
+        {
+            try
+            {
+                using var txWinner = conn.BeginTransaction();
+                await winnerService.SetWinnerAsync(conn, txWinner, id, resolvedWinnerId.Value,
+                    reason: "tournament status changed to completed", ct);
+                txWinner.Commit();
+            }
+            catch { /* trigger still blocks; winner set must not block status change */ }
+        }
+
+        try { await placementResolution.ResolveAsync(id, force: false, ct); }
+        catch (Exception ex)
+        {
+            ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("PrizeDistribution")
+                .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", id);
+        }
+    }
+
+    private static async Task RescheduleCheckinJobAsync(HttpContext ctx, Guid id, dynamic updated, CancellationToken ct)
+    {
+        var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+        bool checkInRequired = (bool)(updated.check_in_required ?? false);
+        bool autoRemove = (bool)(updated.auto_remove_unchecked ?? false);
+        DateTime? deadline = updated.check_in_deadline is not null
+            ? (DateTime)updated.check_in_deadline
+            : null;
+        if (checkInRequired && autoRemove && deadline.HasValue && deadline.Value > DateTime.UtcNow)
+            await jobScheduler.ScheduleTournamentCheckinDeadlineAsync(id, deadline.Value, ct);
+        else
+            await jobScheduler.CancelTournamentCheckinDeadlineAsync(id, ct);
+    }
 
     private static async Task<bool> CanViewTournamentPublicDataAsync(IDbConnection conn, HttpContext ctx, Guid tournamentId)
     {

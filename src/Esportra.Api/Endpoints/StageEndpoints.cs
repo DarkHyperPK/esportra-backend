@@ -181,13 +181,18 @@ public static class StageEndpoints
 
                 if (req.MapIds is { Length: > 0 })
                 {
-                    foreach (var mapIdStr in req.MapIds)
-                    {
-                        if (!Guid.TryParse(mapIdStr, out var mapId)) continue;
+                    var mapIds = req.MapIds
+                        .Where(s => Guid.TryParse(s, out _))
+                        .Select(Guid.Parse)
+                        .ToArray();
+                    if (mapIds.Length > 0)
                         await conn.ExecuteAsync(
-                            "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId) ON CONFLICT DO NOTHING",
-                            new { tournamentId, mapId });
-                    }
+                            """
+                            INSERT INTO tournament_map_pools (tournament_id, map_id)
+                            SELECT @tournamentId, UNNEST(@mapIds::uuid[])
+                            ON CONFLICT DO NOTHING
+                            """,
+                            new { tournamentId, mapIds });
                 }
 
                 return Results.Ok(new { success = true, count = req.MapIds?.Length ?? 0 });
@@ -399,13 +404,18 @@ public static class StageEndpoints
         // ── POST /api/stages/{stageId}/advance ──────────────────────────────
         app.MapPost("/api/stages/{stageId}/advance", async (
             Guid stageId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             StandingsService standings,
             TournamentWinnerService winnerService,
             PlacementResolutionService placementResolution,
+            TournamentAuthorizationService tournamentAuth,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
 
             // 1. Get stage info (includes BO config for debugging)
@@ -413,6 +423,9 @@ public static class StageEndpoints
                 "SELECT id, tournament_id, name, format, stage_order, advancement_count, status, config, best_of, bo_mode, round_bo_overrides FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, (Guid)stage.tournament_id, ct: ct))
+                return Results.Forbid();
 
             int advancementCount = (int?)stage.advancement_count ?? 1;
 

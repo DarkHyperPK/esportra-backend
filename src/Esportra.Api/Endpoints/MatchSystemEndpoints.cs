@@ -56,10 +56,17 @@ public static class MatchSystemEndpoints
         // ── GET /api/matches/{id}/reports ─────────────────────────────────────
         app.MapGet("/api/matches/{id}/reports", async (
             Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, id, userCtx))
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
+
             var reports = await conn.QueryAsync<dynamic>(
                 """
                 SELECT * FROM match_result_reports
@@ -340,6 +347,13 @@ public static class MatchSystemEndpoints
                 if (reportingCompetitorId is not null && captainCompetitorId == reportingCompetitorId)
                     return Results.BadRequest(new { error = "Cannot accept your own team's report." });
 
+                using var tx = conn.BeginTransaction();
+
+                // Row-lock the match before any game writes — serializes concurrent game accepts for BO3+
+                await conn.ExecuteScalarAsync<Guid?>(
+                    "SELECT id FROM brkt_matches WHERE id = @matchId FOR UPDATE",
+                    new { matchId = id }, tx);
+
                 // Mark report accepted
                 await conn.ExecuteAsync(
                     """
@@ -347,7 +361,7 @@ public static class MatchSystemEndpoints
                 SET status = 'accepted', responded_by = @userId, responded_at = NOW()
                 WHERE id = @rid AND match_id = @matchId AND status = 'pending'
                 """,
-                    new { rid, matchId = id, userId = userCtx.UserIdGuid });
+                    new { rid, matchId = id, userId = userCtx.UserIdGuid }, tx);
 
                 // Auto-process: record game result, check if series is complete
                 Guid? winnerId = null;
@@ -360,13 +374,13 @@ public static class MatchSystemEndpoints
                            match_data, map_name, map_id, riot_match_id,
                            screenshot_urls, game_number, reported_by_team_id
                     FROM match_result_reports WHERE id = @rid
-                    """, new { rid });
+                    """, new { rid }, tx);
 
                     if (report is not null)
                     {
                         var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                             "SELECT version, team1_id, team2_id, version_id, best_of FROM brkt_matches WHERE id = @matchId",
-                            new { matchId = id });
+                            new { matchId = id }, tx);
 
                         if (match is not null)
                         {
@@ -470,7 +484,7 @@ public static class MatchSystemEndpoints
                                             winnerId = gameWinnerId,
                                             loserId = gameLoserId,
                                             reportedByTeamId = report.reported_by_team_id is Guid rg ? (Guid?)rg : null,
-                                        });
+                                        }, tx);
 
                                     logger.LogInformation("brkt_match_games upsert succeeded for match {MatchId} game {GameNumber}", id, (int)gameNumber);
                                 }
@@ -489,7 +503,7 @@ public static class MatchSystemEndpoints
                                 FROM brkt_match_games
                                 WHERE match_id = @matchId AND status = 'completed'
                                 """,
-                                    new { matchId = id, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id });
+                                    new { matchId = id, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id }, tx);
 
                                 int team1Wins = Convert.ToInt32(seriesWins.team1_wins);
                                 int team2Wins = Convert.ToInt32(seriesWins.team2_wins);
@@ -505,7 +519,7 @@ public static class MatchSystemEndpoints
                                 SET team1_score = @team1Wins, team2_score = @team2Wins, updated_at = NOW()
                                 WHERE id = @matchId
                                 """,
-                                    new { matchId = id, team1Wins, team2Wins });
+                                    new { matchId = id, team1Wins, team2Wins }, tx);
 
                                 // 4. Only finalize + advance if a team has reached winsNeeded
                                 if (team1Wins >= winsNeeded || team2Wins >= winsNeeded)
@@ -635,6 +649,8 @@ public static class MatchSystemEndpoints
                 {
                     logger.LogWarning(ex, "Auto-process after accept failed for match {MatchId} (non-fatal)", id);
                 }
+
+                tx.Commit();
 
                 // Notify via SignalR
                 await matchHub.Clients
@@ -1264,6 +1280,7 @@ public static class MatchSystemEndpoints
                 new { ids, times, stageId });
 
             var jobScheduler = ctx.RequestServices.GetRequiredService<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+            var notifyTasks = new List<Task>();
             foreach (var update in req.Updates)
             {
                 if (!Guid.TryParse(update.MatchId, out var bulkMatchId))
@@ -1272,7 +1289,7 @@ public static class MatchSystemEndpoints
                     continue;
 
                 var scheduledTime = ParseScheduledTimeUtc(update.ScheduledTime);
-                await scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct);
+                notifyTasks.Add(scheduleNotify.DispatchScheduleChangedAsync(bulkMatchId, scheduledTime, ct));
                 await SyncProposalsAfterOrganizerScheduleAsync(conn, bulkMatchId, scheduledTime);
 
                 if (scheduledTime.HasValue)
@@ -1280,6 +1297,7 @@ public static class MatchSystemEndpoints
                 else
                     await jobScheduler.CancelMatchWalkoverAsync(bulkMatchId, ct);
             }
+            await Task.WhenAll(notifyTasks);
 
             if (updated > 0)
             {
@@ -1591,10 +1609,17 @@ public static class MatchSystemEndpoints
         // ── GET /api/matches/{matchId}/dispute ──────────────────────────────
         app.MapGet("/api/matches/{matchId}/dispute", async (
             Guid matchId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+            if (!await StaffAuthHelper.CanAccessMatchRoomAsync(conn, userCtx.UserIdGuid, matchId, userCtx))
+                return Results.Json(new { error = "You do not have access to this match." }, statusCode: 403);
+
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT id, match_id, disputed_by_team_id, disputed_by_user_id,
