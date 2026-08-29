@@ -51,6 +51,7 @@ All schema changes require a migration file in `src/Esportra.Infrastructure/Migr
 
 - **Naming:** `YYYYMMDDHHmmss_descriptive_name.sql`
 - **Must be idempotent:** `IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `ADD COLUMN IF NOT EXISTS`
+- **External schemas** (`hangfire.*`, `auth.*`, `storage.*`): verify actual column names before use — don't assume snake_case. Hangfire uses camelCase: `invocationdata`, `statename`, `createdat`, etc. See `.claude/rules/external-schema-migrations.md`.
 - **`ADD CONSTRAINT` has no `IF NOT EXISTS`** — wrap every constraint addition in a `DO $$` guard:
   ```sql
   DO $$

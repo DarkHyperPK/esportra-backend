@@ -9,6 +9,6 @@ BEGIN
   ) THEN
     DELETE FROM hangfire.job
     WHERE id = 11488
-      AND invocation_data LIKE '%InvitationExpiryJob%';
+      AND invocationdata LIKE '%InvitationExpiryJob%';
   END IF;
 END $$;
