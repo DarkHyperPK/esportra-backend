@@ -51,6 +51,15 @@ All schema changes require a migration file in `src/Esportra.Infrastructure/Migr
 
 - **Naming:** `YYYYMMDDHHmmss_descriptive_name.sql`
 - **Must be idempotent:** `IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `ADD COLUMN IF NOT EXISTS`
+- **`ADD CONSTRAINT` has no `IF NOT EXISTS`** — wrap every constraint addition in a `DO $$` guard:
+  ```sql
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'constraint_name') THEN
+      ALTER TABLE t ADD CONSTRAINT constraint_name ...;
+    END IF;
+  END $$;
+  ```
 - One migration per concern
 - Files auto-embed via `.csproj` wildcard — no manual registration needed
 - `20260317_001_baseline.sql` marks the cutoff from Supabase-native schema to DbUp tracking
