@@ -482,6 +482,11 @@ public static class StageEndpoints
             int stageOrder = (int)stage.stage_order;
             await EnsureMockBackingTeamsAsync(conn, tournamentId, advancingTeams.Select(t => t.TeamId));
 
+            var tournamentStatus = await conn.ExecuteScalarAsync<string>(
+                "SELECT status::text FROM tournaments WHERE id = @tournamentId",
+                new { tournamentId });
+            bool isDraft = tournamentStatus == "draft";
+
             // 5. Find next stage
             var nextStage = await conn.QuerySingleOrDefaultAsync(
                 "SELECT id, name FROM tournament_stages WHERE tournament_id = @tournamentId AND stage_order = @nextOrder",
@@ -494,31 +499,36 @@ public static class StageEndpoints
                     "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
                     new { stageId });
 
-                if (advancingTeams.Count > 0)
+                // In draft mode keep the tournament in draft so the organizer can keep
+                // testing with mock teams. Winner/completion writes only happen for live tournaments.
+                if (!isDraft)
                 {
-                    await winnerService.SetWinnerAsync(
-                        conn,
-                        tx: null,
-                        tournamentId,
-                        advancingTeams[0].TeamId,
-                        reason: "final stage advancement completed",
-                        ct);
-                }
-                else
-                {
-                    await conn.ExecuteAsync(
-                        "UPDATE tournaments SET status = 'completed' WHERE id = @tournamentId",
-                        new { tournamentId });
-                }
+                    if (advancingTeams.Count > 0)
+                    {
+                        await winnerService.SetWinnerAsync(
+                            conn,
+                            tx: null,
+                            tournamentId,
+                            advancingTeams[0].TeamId,
+                            reason: "final stage advancement completed",
+                            ct);
+                    }
+                    else
+                    {
+                        await conn.ExecuteAsync(
+                            "UPDATE tournaments SET status = 'completed' WHERE id = @tournamentId",
+                            new { tournamentId });
+                    }
 
-                try
-                {
-                    await placementResolution.ResolveAsync(tournamentId, force: false, ct);
-                }
-                catch (Exception ex)
-                {
-                    loggerFactory.CreateLogger("PrizeDistribution")
-                        .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", tournamentId);
+                    try
+                    {
+                        await placementResolution.ResolveAsync(tournamentId, force: false, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        loggerFactory.CreateLogger("PrizeDistribution")
+                            .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", tournamentId);
+                    }
                 }
 
                 return Results.Ok(new { success = true, advancedCount = 0, isFinalStage = true });
