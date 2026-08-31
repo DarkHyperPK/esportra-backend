@@ -706,7 +706,7 @@ public static class TournamentEndpoints
                 new { id });
             if (existingTournament is null) return Results.NotFound();
 
-            var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, existingTournament, gameCatalog, userCtx.IsSuperAdmin);
+            var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, (object)existingTournament, gameCatalog, userCtx.IsSuperAdmin);
             if (validationResult.error is not null) return validationResult.error;
 
             var catalog = validationResult.ctx!.Catalog;
