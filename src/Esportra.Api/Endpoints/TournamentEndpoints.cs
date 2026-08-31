@@ -4950,6 +4950,10 @@ public static class TournamentEndpoints
             catch { /* trigger still blocks; winner set must not block status change */ }
         }
 
+        await conn.ExecuteAsync(
+            "UPDATE tournament_stages SET status = 'completed' WHERE tournament_id = @id AND status != 'completed'",
+            new { id });
+
         try { await placementResolution.ResolveAsync(id, force: false, ct); }
         catch (Exception ex)
         {

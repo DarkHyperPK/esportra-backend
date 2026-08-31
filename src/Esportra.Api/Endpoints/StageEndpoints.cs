@@ -489,10 +489,6 @@ public static class StageEndpoints
             if (nextStage is null)
             {
                 // Final stage — mark completed; organizer manually finalizes the tournament
-                await conn.ExecuteAsync(
-                    "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                    new { stageId });
-
                 return Results.Ok(new { success = true, advancedCount = 0, isFinalStage = true });
             }
 
@@ -520,10 +516,7 @@ public static class StageEndpoints
                     new { stageIds, ids, seeds });
             }
 
-            // 7. Update stage statuses
-            await conn.ExecuteAsync(
-                "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                new { stageId });
+            // 7. Signal next stage is ready; current stage stays active until tournament is finalized
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET status = 'upcoming' WHERE id = @nextStageId",
                 new { nextStageId });
