@@ -706,7 +706,7 @@ public static class TournamentEndpoints
                 new { id });
             if (existingTournament is null) return Results.NotFound();
 
-            var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, existingTournament, gameCatalog);
+            var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, existingTournament, gameCatalog, userCtx.IsSuperAdmin);
             if (validationResult.error is not null) return validationResult.error;
 
             var catalog = validationResult.ctx!.Catalog;
@@ -4735,30 +4735,38 @@ public static class TournamentEndpoints
         DateTimeOffset? EffectiveEndDate,
         int? ReservedSlotsForUpdate);
 
-    private static IResult? ValidateStatusTransition(string? existingStatus, string? newStatus)
+    private static readonly Dictionary<string, string[]> AllowedTransitions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["draft"] = ["open", "published", "cancelled"],
+            ["open"] = ["ongoing", "check_in", "cancelled", "draft"],
+            ["published"] = ["open", "ongoing", "cancelled"],
+            ["check_in"] = ["ongoing", "cancelled"],
+            ["ongoing"] = ["completed", "cancelled"],
+            ["approved"] = ["open", "published", "cancelled"],
+        };
+
+    private static IResult? ValidateStatusTransition(
+        string? existingStatus, string? newStatus, bool isSuperAdmin = false)
     {
         if (newStatus is null || string.Equals(newStatus, existingStatus, StringComparison.OrdinalIgnoreCase))
             return null;
-        var allowed = existingStatus?.ToLowerInvariant() switch
-        {
-            "draft" => new[] { "open", "published", "cancelled" },
-            "open" => new[] { "ongoing", "check_in", "cancelled", "draft" },
-            "published" => new[] { "open", "ongoing", "cancelled" },
-            "check_in" => new[] { "ongoing", "cancelled" },
-            "ongoing" => new[] { "completed", "cancelled" },
-            "approved" => new[] { "open", "published", "cancelled" },
-            _ => Array.Empty<string>(),
-        };
-        return allowed.Contains(newStatus.ToLowerInvariant())
+        if (isSuperAdmin)
+            return null;
+        var allowed = existingStatus is not null && AllowedTransitions.TryGetValue(existingStatus, out var transitions)
+            ? transitions
+            : Array.Empty<string>();
+        return allowed.Contains(newStatus, StringComparer.OrdinalIgnoreCase)
             ? null
             : Results.BadRequest(new { error = $"Cannot transition tournament from '{existingStatus}' to '{newStatus}'." });
     }
 
-    private static async Task<IResult?> ValidateMockGuardAsync(IDbConnection conn, Guid id, string? existingStatus, string? newStatus)
+    private static async Task<IResult?> ValidateMockGuardAsync(
+        IDbConnection conn, Guid id, string? existingStatus, string? newStatus, bool isSuperAdmin = false)
     {
         var isPublishingTransition = newStatus is "open" or "published"
             && !string.Equals(newStatus, existingStatus, StringComparison.OrdinalIgnoreCase);
-        if (!isPublishingTransition) return null;
+        if (!isPublishingTransition || isSuperAdmin) return null;
         var mockCount = await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @id AND is_mock = TRUE",
             new { id });
@@ -4845,7 +4853,8 @@ public static class TournamentEndpoints
     }
 
     private static async Task<(TournamentUpdateContext? ctx, IResult? error)> ValidateTournamentUpdateAsync(
-        IDbConnection conn, Guid id, UpdateTournamentRequest req, dynamic existing, GameCatalogService gameCatalog)
+        IDbConnection conn, Guid id, UpdateTournamentRequest req, dynamic existing,
+        GameCatalogService gameCatalog, bool isSuperAdmin = false)
     {
         string existingStatus = (string?)existing.status ?? string.Empty;
         string existingGame = (string)existing.game;
@@ -4857,10 +4866,10 @@ public static class TournamentEndpoints
         DateTimeOffset? existingRegistrationDeadline = (DateTimeOffset?)existing.registration_deadline;
         int? existingMaxTeams = (int?)existing.max_teams;
 
-        var statusError = ValidateStatusTransition(existingStatus, req.Status);
+        var statusError = ValidateStatusTransition(existingStatus, req.Status, isSuperAdmin);
         if (statusError is not null) return (null, statusError);
 
-        var mockError = await ValidateMockGuardAsync(conn, id, existingStatus, req.Status);
+        var mockError = await ValidateMockGuardAsync(conn, id, existingStatus, req.Status, isSuperAdmin);
         if (mockError is not null) return (null, mockError);
 
         var catalogResult = await ResolveCatalogAsync(conn, req, existingGame, existingGameMode, existingTeamSize, existingFormat, gameCatalog);
