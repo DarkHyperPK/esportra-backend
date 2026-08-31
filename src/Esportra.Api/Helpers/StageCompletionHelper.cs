@@ -298,13 +298,8 @@ public static class StageCompletionHelper
         var pendingCount = await conn.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
             new { versionId }, tx);
-        if (pendingCount != 0) return (false, stageId);
 
-        await conn.ExecuteAsync(
-            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-            new { stageId }, tx);
-
-        return (true, stageId);
+        return (pendingCount == 0, stageId);
     }
 
     public static async Task<string> EvaluateBracketProgressLabelAsync(

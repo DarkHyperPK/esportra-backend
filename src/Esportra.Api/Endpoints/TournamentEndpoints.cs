@@ -4951,6 +4951,11 @@ public static class TournamentEndpoints
 
         if (req.Status != "completed" || updated is null) return;
 
+        // Lock all stages so ResolveCompletionWinnerIdAsync can find the winner
+        await conn.ExecuteAsync(
+            "UPDATE tournament_stages SET status = 'completed' WHERE tournament_id = @id AND status != 'completed'",
+            new { id });
+
         var resolvedWinnerId = await ResolveCompletionWinnerIdAsync(conn, id, req);
         if (resolvedWinnerId.HasValue)
         {
