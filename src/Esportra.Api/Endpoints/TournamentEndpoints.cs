@@ -4933,6 +4933,10 @@ public static class TournamentEndpoints
                 txClear.Commit();
             }
             catch { /* best effort: stale winner clear must not block status change */ }
+
+            await conn.ExecuteAsync(
+                "UPDATE tournament_stages SET status = 'active' WHERE tournament_id = @id AND status = 'completed'",
+                new { id });
         }
 
         if (req.Status != "completed" || updated is null) return;
