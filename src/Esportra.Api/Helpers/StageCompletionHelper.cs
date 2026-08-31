@@ -285,7 +285,7 @@ public static class StageCompletionHelper
             """,
             new { tournamentId, stageOrder });
 
-    public static async Task<(bool StageComplete, Guid? StageId)> HandleBracketStageCompletionAsync(
+    public static async Task<(bool AllMatchesDone, Guid? StageId)> CheckBracketStageCompletionAsync(
         IDbConnection conn,
         IDbTransaction? tx,
         Guid versionId)

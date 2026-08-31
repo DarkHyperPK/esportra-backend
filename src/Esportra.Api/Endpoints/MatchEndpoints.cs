@@ -1101,7 +1101,7 @@ public static class MatchEndpoints
             if (versionIdForStage is not null)
             {
                 (stageComplete, stageId) =
-                    await StageCompletionHelper.HandleBracketStageCompletionAsync(
+                    await StageCompletionHelper.CheckBracketStageCompletionAsync(
                         conn, tx, versionIdForStage.Value);
             }
 

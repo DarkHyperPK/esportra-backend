@@ -551,7 +551,7 @@ public static class MatchSystemEndpoints
                                             {
                                                 if (match.version_id is not null)
                                                 {
-                                                    await StageCompletionHelper.HandleBracketStageCompletionAsync(
+                                                    await StageCompletionHelper.CheckBracketStageCompletionAsync(
                                                         conn, tx: null, (Guid)match.version_id);
                                                 }
                                             }

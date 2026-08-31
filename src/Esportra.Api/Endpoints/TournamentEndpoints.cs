@@ -4899,20 +4899,6 @@ public static class TournamentEndpoints
             if (byName.HasValue) return byName;
         }
 
-        var stageCounts = await conn.QuerySingleAsync<dynamic>(
-            """
-            SELECT
-                COUNT(*)::int AS total,
-                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
-            FROM tournament_stages
-            WHERE tournament_id = @id
-            """,
-            new { id });
-
-        int stageTotal = (int)stageCounts.total;
-        int stageCompleted = (int)stageCounts.completed;
-        if (stageTotal == 0 || stageTotal != stageCompleted) return null;
-
         return await conn.QuerySingleOrDefaultAsync<Guid?>(
             """
             SELECT m.winner_id
@@ -4950,11 +4936,6 @@ public static class TournamentEndpoints
         }
 
         if (req.Status != "completed" || updated is null) return;
-
-        // Lock all stages so ResolveCompletionWinnerIdAsync can find the winner
-        await conn.ExecuteAsync(
-            "UPDATE tournament_stages SET status = 'completed' WHERE tournament_id = @id AND status != 'completed'",
-            new { id });
 
         var resolvedWinnerId = await ResolveCompletionWinnerIdAsync(conn, id, req);
         if (resolvedWinnerId.HasValue)
