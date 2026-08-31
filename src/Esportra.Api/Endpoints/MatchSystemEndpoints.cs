@@ -551,57 +551,8 @@ public static class MatchSystemEndpoints
                                             {
                                                 if (match.version_id is not null)
                                                 {
-                                                    var versionId = (Guid)match.version_id;
-                                                    var pendingCount = await conn.QuerySingleAsync<int>(
-                                                        "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
-                                                        new { versionId });
-
-                                                    if (pendingCount == 0)
-                                                    {
-                                                        var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                                            "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
-                                                            new { versionId });
-
-                                                        if (stageId is not null)
-                                                        {
-                                                            await conn.ExecuteAsync(
-                                                                "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                                                                new { stageId });
-
-                                                            var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                                                                "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
-                                                                new { stageId });
-
-                                                            if (stageInfo is not null)
-                                                            {
-                                                                var fmt = (string?)stageInfo.format;
-                                                                if (fmt is "single_elimination" or "double_elimination")
-                                                                {
-                                                                    var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                                                        """
-                                                                    SELECT winner_id FROM brkt_matches
-                                                                    WHERE version_id = @versionId
-                                                                      AND status = 'completed' AND winner_id IS NOT NULL
-                                                                    ORDER BY round_index DESC, match_number DESC
-                                                                    LIMIT 1
-                                                                    """,
-                                                                        new { versionId });
-
-                                                                    if (gfWinnerId is not null)
-                                                                    {
-                                                                        var tid = (Guid)stageInfo.tournament_id;
-                                                                        await winnerService.SetWinnerAsync(
-                                                                            conn,
-                                                                            tx: null,
-                                                                            tid,
-                                                                            gfWinnerId.Value,
-                                                                            reason: "match report completed final bracket",
-                                                                            ct);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
+                                                    await StageCompletionHelper.HandleBracketStageCompletionAsync(
+                                                        conn, tx: null, (Guid)match.version_id, winnerService, ct);
                                                 }
                                             }
                                             catch (Exception stageEx)

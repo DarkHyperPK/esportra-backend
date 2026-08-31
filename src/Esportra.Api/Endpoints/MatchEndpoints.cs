@@ -1102,47 +1102,9 @@ public static class MatchEndpoints
                 "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId }, tx);
             if (versionIdForStage is not null)
             {
-                stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT stage_id FROM brkt_versions WHERE id = @versionId", new { versionId = versionIdForStage }, tx);
-                if (stageId is not null)
-                {
-                    var pendingCount = await conn.QuerySingleAsync<int>(
-                        "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
-                        new { versionId = versionIdForStage }, tx);
-
-                    if (pendingCount == 0)
-                    {
-                        await conn.ExecuteAsync(
-                            "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                            new { stageId }, tx);
-                        stageComplete = true;
-
-                        var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                            "SELECT tournament_id, format FROM tournament_stages WHERE id = @stageId",
-                            new { stageId }, tx);
-                        if (stageInfo is not null &&
-                            ((string?)stageInfo.format == "single_elimination" || (string?)stageInfo.format == "double_elimination"))
-                        {
-                            var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                                """
-                                SELECT winner_id FROM brkt_matches
-                                WHERE version_id = @versionId
-                                  AND status = 'completed' AND winner_id IS NOT NULL
-                                ORDER BY round_index DESC, match_number DESC
-                                LIMIT 1
-                                """,
-                                new { versionId = versionIdForStage }, tx);
-                            if (gfWinnerId is not null)
-                            {
-                                await winnerService.SetWinnerAsync(
-                                    conn, tx, (Guid)stageInfo.tournament_id, gfWinnerId.Value,
-                                    reason: "match score completed final bracket", ct);
-                                gfWinnerIdForNotification = gfWinnerId;
-                                stageInfoTournamentId = (Guid)stageInfo.tournament_id;
-                            }
-                        }
-                    }
-                }
+                (stageComplete, gfWinnerIdForNotification, stageInfoTournamentId, stageId) =
+                    await StageCompletionHelper.HandleBracketStageCompletionAsync(
+                        conn, tx, versionIdForStage.Value, winnerService, ct);
             }
 
             // 4. Organizer/staff manual score — clear open dispute artifacts

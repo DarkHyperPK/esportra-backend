@@ -294,6 +294,7 @@ public static class StageEndpoints
             Guid stageId,
             IDbConnectionFactory db,
             StandingsService standings,
+            PlacementResolutionService placementResolution,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
@@ -380,7 +381,7 @@ public static class StageEndpoints
 
             if (format is "single_elimination" or "double_elimination")
             {
-                var elimination = await CheckEliminationCompletion(conn, matches, advancementCount);
+                var elimination = await CheckEliminationCompletion(conn, matches, format, advancementCount, placementResolution, stageId, ct);
                 return Results.Ok(MergeBracketCompletion(elimination, alreadyAdvanced, bracketProgressLabel));
             }
 
@@ -467,7 +468,7 @@ public static class StageEndpoints
             dynamic completionResult;
 
             if (format is "single_elimination" or "double_elimination")
-                completionResult = await CheckEliminationCompletion(conn, matches, advancementCount);
+                completionResult = await CheckEliminationCompletion(conn, matches, format, advancementCount, placementResolution, stageId, ct);
             else if (format is "swiss" or "round_robin")
                 completionResult = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct);
             else
@@ -547,10 +548,15 @@ public static class StageEndpoints
             if (newEntries.Count > 0)
             {
                 var ids = newEntries.Select(t => t.TeamId).ToArray();
+                var seeds = newEntries.Select(t => t.Seed).ToArray();
                 var stageIds = Enumerable.Repeat(nextStageId, ids.Length).ToArray();
                 await conn.ExecuteAsync(
-                    "INSERT INTO stage_participants (stage_id, team_id) SELECT * FROM UNNEST(@stageIds::uuid[], @ids::uuid[])",
-                    new { stageIds, ids });
+                    """
+                    INSERT INTO stage_participants (stage_id, team_id, seed)
+                    SELECT * FROM UNNEST(@stageIds::uuid[], @ids::uuid[], @seeds::int[])
+                    ON CONFLICT (stage_id, team_id) DO UPDATE SET seed = EXCLUDED.seed
+                    """,
+                    new { stageIds, ids, seeds });
             }
 
             // 7. Update stage statuses
@@ -752,29 +758,69 @@ public static class StageEndpoints
 
     private record AdvancingTeam(Guid TeamId, string TeamName, int Seed);
 
-    private static async Task<object> CheckEliminationCompletion(
+    private static Task<object> CheckEliminationCompletion(
+        System.Data.IDbConnection conn,
+        List<dynamic> matches,
+        string format,
+        int advancementCount,
+        PlacementResolutionService placementSvc,
+        Guid stageId,
+        CancellationToken ct)
+        => format == "double_elimination"
+            ? ResolveDECompletion(conn, matches, advancementCount, placementSvc, stageId, ct)
+            : CheckSECompletion(conn, matches, advancementCount);
+
+    private static async Task<object> ResolveDECompletion(
+        System.Data.IDbConnection conn,
+        List<dynamic> matches,
+        int advancementCount,
+        PlacementResolutionService placementSvc,
+        Guid stageId,
+        CancellationToken ct)
+    {
+        var gfMatches = matches.Where(m => (string?)m.bracket_type == "final").ToList();
+        if (gfMatches.Count == 0 || gfMatches.Any(m => (string?)m.status != "completed"))
+        {
+            int pending = matches.Count(m => (string?)m.status != "completed");
+            return new { isComplete = false, advancingTeams = new List<AdvancingTeam>(), reason = $"{pending} matches remaining" };
+        }
+
+        var placements = await placementSvc.ComputeForStageAsync(stageId, conn, ct);
+        var advancingTeams = placements
+            .OrderBy(p => p.Placement)
+            .Take(advancementCount)
+            .Select((p, i) => new AdvancingTeam(p.TeamId, p.TeamName, i + 1))
+            .ToList();
+
+        return new
+        {
+            isComplete = advancingTeams.Count == advancementCount,
+            advancingTeams,
+            reason = $"{advancingTeams.Count} teams ready to advance"
+        };
+    }
+
+    private static async Task<object> CheckSECompletion(
         System.Data.IDbConnection conn,
         List<dynamic> matches,
         int advancementCount)
     {
-        var pendingCount = matches.Count(m => (string?)m.status is "pending" or "in_progress");
-        int maxRound = matches.Max(m => (int)(m.round_index ?? 0));
-        var finalRoundMatches = matches.Where(m => (int)(m.round_index ?? 0) == maxRound).ToList();
-
-        bool allFinalComplete = finalRoundMatches.All(m =>
-            (string?)m.status == "completed" || m.winner_id is not null);
-
-        if (!allFinalComplete)
+        var finalMatches = matches.Where(m => (string?)m.bracket_type == "final").ToList();
+        if (finalMatches.Count == 0)
         {
-            return new
-            {
-                isComplete = false,
-                advancingTeams = new List<AdvancingTeam>(),
-                reason = $"{pendingCount} matches remaining"
-            };
+            int maxRound = matches.Count > 0 ? matches.Max(m => (int)(m.round_index ?? 0)) : 0;
+            finalMatches = matches.Where(m => (int)(m.round_index ?? 0) == maxRound).ToList();
         }
 
-        var winnerIds = finalRoundMatches
+        bool allComplete = finalMatches.All(m =>
+            (string?)m.status == "completed" || m.winner_id is not null);
+        if (!allComplete)
+        {
+            int pendingCount = matches.Count(m => (string?)m.status != "completed");
+            return new { isComplete = false, advancingTeams = new List<AdvancingTeam>(), reason = $"{pendingCount} matches remaining" };
+        }
+
+        var winnerIds = finalMatches
             .OrderBy(m => (int)(m.match_number ?? 0))
             .Where(m => m.winner_id is not null)
             .Select(m => (Guid)m.winner_id)
@@ -782,15 +828,11 @@ public static class StageEndpoints
             .ToList();
 
         var teams = await GetTeamInfo(conn, winnerIds);
-        bool isComplete = (teams.Count <= advancementCount && teams.Count > 0) || pendingCount == 0;
-
         return new
         {
-            isComplete,
+            isComplete = teams.Count > 0,
             advancingTeams = teams,
-            reason = isComplete
-                ? $"{teams.Count} teams ready to advance"
-                : $"{pendingCount} matches remaining"
+            reason = teams.Count > 0 ? $"{teams.Count} teams ready to advance" : "No winners found"
         };
     }
 

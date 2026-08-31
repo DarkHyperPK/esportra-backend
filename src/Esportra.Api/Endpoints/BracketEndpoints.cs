@@ -901,6 +901,7 @@ public static class BracketEndpoints
             Guid versionId,
             string? groupId,
             StandingsService standingsSvc,
+            PlacementResolutionService placementSvc,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
@@ -911,8 +912,13 @@ public static class BracketEndpoints
 
             if (stageId is null) return Results.NotFound(new { error = "Bracket not found." });
 
-            var standings = await standingsSvc.CalculateStandingsAsync(stageId.Value, groupId, ct);
-            return Results.Ok(standings);
+            var format = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT format FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+            var result = format is "double_elimination" or "single_elimination"
+                ? await GetEliminationStandingsAsync(conn, stageId.Value, standingsSvc, placementSvc, ct)
+                : (object)await standingsSvc.CalculateStandingsAsync(stageId.Value, groupId, ct);
+            return Results.Ok(result);
         });
 
         // ── GET /api/stages/{stageId}/standings ──────────────────────────────
@@ -921,10 +927,18 @@ public static class BracketEndpoints
             Guid stageId,
             string? groupId,
             StandingsService standingsSvc,
+            PlacementResolutionService placementSvc,
+            IDbConnectionFactory db,
             CancellationToken ct) =>
         {
-            var standings = await standingsSvc.CalculateStandingsAsync(stageId, groupId, ct);
-            return Results.Ok(standings);
+            using var conn = db.CreateConnection();
+            var format = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT format FROM tournament_stages WHERE id = @stageId",
+                new { stageId });
+            var result = format is "double_elimination" or "single_elimination"
+                ? await GetEliminationStandingsAsync(conn, stageId, standingsSvc, placementSvc, ct)
+                : (object)await standingsSvc.CalculateStandingsAsync(stageId, groupId, ct);
+            return Results.Ok(result);
         });
 
         // ── POST /api/swiss/next-round ────────────────────────────────────────
@@ -1514,6 +1528,38 @@ public static class BracketEndpoints
 
             return Results.Ok(new { success = true, matchId, bestOf = req.BestOf });
         }).RequireAuthorization("Authenticated");
+    }
+
+    private static async Task<List<object>> GetEliminationStandingsAsync(
+        System.Data.IDbConnection conn,
+        Guid stageId,
+        StandingsService standingsSvc,
+        PlacementResolutionService placementSvc,
+        CancellationToken ct)
+    {
+        var placements = await placementSvc.ComputeForStageAsync(stageId, conn, ct);
+        if (placements.Count == 0) return [];
+
+        var matchStats = (await standingsSvc.CalculateStandingsAsync(stageId, ct: ct))
+            .ToDictionary(s => s.TeamId);
+
+        return placements
+            .OrderBy(p => p.Placement)
+            .Select(p =>
+            {
+                matchStats.TryGetValue(p.TeamId, out var stats);
+                return (object)new
+                {
+                    teamId = p.TeamId,
+                    teamName = p.TeamName,
+                    placement = p.Placement,
+                    placementLabel = p.PlacementLabel,
+                    played = stats?.Played ?? 0,
+                    wins = stats?.Wins ?? 0,
+                    losses = stats?.Losses ?? 0,
+                };
+            })
+            .ToList();
     }
 
     private static async Task ClearTournamentWinnerIfMatchesContainWinnerAsync(

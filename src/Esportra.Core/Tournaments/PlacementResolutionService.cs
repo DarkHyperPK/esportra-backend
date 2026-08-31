@@ -65,6 +65,31 @@ public sealed class PlacementResolutionService(
         return result?.Placements ?? [];
     }
 
+    public async Task<List<ResolvedPlacement>> ComputeForStageAsync(
+        Guid stageId,
+        IDbConnection conn,
+        CancellationToken ct = default)
+    {
+        var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT format FROM tournament_stages WHERE id = @stageId",
+            new { stageId });
+        if (stage is null) return [];
+
+        string format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+        var orderedTeams = format switch
+        {
+            "double_elimination" => await ResolveDoubleEliminationAsync(conn, stageId, ct),
+            "round_robin" or "swiss" => await ResolveStandingsAsync(conn, stageId, ct),
+            _ => await ResolveSingleEliminationAsync(conn, stageId, ct),
+        };
+
+        return orderedTeams
+            .Select(p => new ResolvedPlacement(
+                p.TeamId, p.TeamName, p.Placement,
+                OrdinalLabel(p.Placement), 0m, [], false))
+            .ToList();
+    }
+
     private async Task<ComputationResult?> ComputeInternalAsync(
         IDbConnection conn, Guid tournamentId, CancellationToken ct)
     {
