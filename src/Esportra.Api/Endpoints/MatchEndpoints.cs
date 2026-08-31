@@ -1095,16 +1095,14 @@ public static class MatchEndpoints
             // 3. Stage completion check
             bool stageComplete = false;
             Guid? stageId = null;
-            Guid? gfWinnerIdForNotification = null;
-            Guid? stageInfoTournamentId = null;
 
             var versionIdForStage = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT version_id FROM brkt_matches WHERE id = @matchId", new { matchId }, tx);
             if (versionIdForStage is not null)
             {
-                (stageComplete, gfWinnerIdForNotification, stageInfoTournamentId, stageId) =
+                (stageComplete, stageId) =
                     await StageCompletionHelper.HandleBracketStageCompletionAsync(
-                        conn, tx, versionIdForStage.Value, winnerService, ct);
+                        conn, tx, versionIdForStage.Value);
             }
 
             // 4. Organizer/staff manual score — clear open dispute artifacts
@@ -1146,43 +1144,6 @@ public static class MatchEndpoints
             }
 
             tx.Commit();
-
-            // Post-commit: winner notifications (non-critical)
-            if (gfWinnerIdForNotification is not null && stageInfoTournamentId is not null)
-            {
-                try
-                {
-                    var tournamentName = await conn.QuerySingleOrDefaultAsync<string>(
-                        "SELECT name FROM tournaments WHERE id = @tid",
-                        new { tid = stageInfoTournamentId });
-                    var winningCaptains = await conn.QueryAsync<Guid>(
-                        "SELECT tm.user_id FROM team_members tm WHERE tm.team_id = @teamId AND tm.role = 'captain' AND tm.is_active = true",
-                        new { teamId = gfWinnerIdForNotification });
-                    var winningTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                        "SELECT name FROM teams WHERE id = @id",
-                        new { id = gfWinnerIdForNotification });
-                    foreach (var captainId in winningCaptains)
-                    {
-                        await conn.ExecuteAsync(
-                            """
-                            INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
-                            VALUES (@userId, 'tournament_announcement', @title,
-                                    @msg, @link,
-                                    jsonb_build_object('tournament_id', @tid::text, 'team_id', @teamId::text)::jsonb, false)
-                            """,
-                            new
-                            {
-                                userId = captainId,
-                                title = $"🏆 Champions! {winningTeamName ?? "Your Team"} Wins!",
-                                msg = $"WHAT A RUN! {winningTeamName ?? "Your team"} just conquered {tournamentName ?? "the tournament"}! The trophy is yours — celebrate with your squad!",
-                                link = $"/tournaments/{stageInfoTournamentId}",
-                                tid = stageInfoTournamentId.ToString(),
-                                teamId = gfWinnerIdForNotification.ToString()
-                            });
-                    }
-                }
-                catch { /* Notification is non-critical */ }
-            }
 
             // Post-commit: non-critical analytics
             // Game record

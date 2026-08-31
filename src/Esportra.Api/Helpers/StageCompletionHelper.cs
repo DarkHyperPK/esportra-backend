@@ -285,55 +285,26 @@ public static class StageCompletionHelper
             """,
             new { tournamentId, stageOrder });
 
-    public static async Task<(bool StageComplete, Guid? WinnerId, Guid? TournamentId, Guid? StageId)> HandleBracketStageCompletionAsync(
+    public static async Task<(bool StageComplete, Guid? StageId)> HandleBracketStageCompletionAsync(
         IDbConnection conn,
         IDbTransaction? tx,
-        Guid versionId,
-        TournamentWinnerService winnerService,
-        CancellationToken ct)
+        Guid versionId)
     {
         var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
             "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
             new { versionId }, tx);
-        if (stageId is null) return (false, null, null, null);
+        if (stageId is null) return (false, null);
 
         var pendingCount = await conn.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
             new { versionId }, tx);
-        if (pendingCount != 0) return (false, null, null, stageId);
+        if (pendingCount != 0) return (false, stageId);
 
         await conn.ExecuteAsync(
             "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
             new { stageId }, tx);
 
-        var stageInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT tournament_id, format, stage_order FROM tournament_stages WHERE id = @stageId",
-            new { stageId }, tx);
-        if (stageInfo is null) return (true, null, null, stageId);
-
-        string fmt = (string?)stageInfo.format ?? string.Empty;
-        if (fmt is not "single_elimination" and not "double_elimination")
-            return (true, null, null, stageId);
-
-        var hasNextStage = await HasNextStageAsync(conn, (Guid)stageInfo.tournament_id, (int)stageInfo.stage_order);
-        if (hasNextStage) return (true, null, null, stageId);
-
-        var gfWinnerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-            """
-            SELECT winner_id FROM brkt_matches
-            WHERE version_id = @versionId AND bracket_type = 'final'
-              AND status = 'completed' AND winner_id IS NOT NULL
-            ORDER BY round_index DESC, match_number DESC
-            LIMIT 1
-            """,
-            new { versionId }, tx);
-        if (gfWinnerId is null) return (true, null, null, stageId);
-
-        await winnerService.SetWinnerAsync(
-            conn, tx, (Guid)stageInfo.tournament_id, gfWinnerId.Value,
-            reason: "match score completed final bracket", ct);
-
-        return (true, gfWinnerId, (Guid)stageInfo.tournament_id, stageId);
+        return (true, stageId);
     }
 
     public static async Task<string> EvaluateBracketProgressLabelAsync(

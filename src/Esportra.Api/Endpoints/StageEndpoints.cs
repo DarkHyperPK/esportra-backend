@@ -408,10 +408,8 @@ public static class StageEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             StandingsService standings,
-            TournamentWinnerService winnerService,
             PlacementResolutionService placementResolution,
             TournamentAuthorizationService tournamentAuth,
-            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -483,11 +481,6 @@ public static class StageEndpoints
             int stageOrder = (int)stage.stage_order;
             await EnsureMockBackingTeamsAsync(conn, tournamentId, advancingTeams.Select(t => t.TeamId));
 
-            var tournamentStatus = await conn.ExecuteScalarAsync<string>(
-                "SELECT status::text FROM tournaments WHERE id = @tournamentId",
-                new { tournamentId });
-            bool isDraft = tournamentStatus == "draft";
-
             // 5. Find next stage
             var nextStage = await conn.QuerySingleOrDefaultAsync(
                 "SELECT id, name FROM tournament_stages WHERE tournament_id = @tournamentId AND stage_order = @nextOrder",
@@ -495,42 +488,10 @@ public static class StageEndpoints
 
             if (nextStage is null)
             {
-                // Final stage — mark completed
+                // Final stage — mark completed; organizer manually finalizes the tournament
                 await conn.ExecuteAsync(
                     "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
                     new { stageId });
-
-                // In draft mode keep the tournament in draft so the organizer can keep
-                // testing with mock teams. Winner/completion writes only happen for live tournaments.
-                if (!isDraft)
-                {
-                    if (advancingTeams.Count > 0)
-                    {
-                        await winnerService.SetWinnerAsync(
-                            conn,
-                            tx: null,
-                            tournamentId,
-                            advancingTeams[0].TeamId,
-                            reason: "final stage advancement completed",
-                            ct);
-                    }
-                    else
-                    {
-                        await conn.ExecuteAsync(
-                            "UPDATE tournaments SET status = 'completed' WHERE id = @tournamentId",
-                            new { tournamentId });
-                    }
-
-                    try
-                    {
-                        await placementResolution.ResolveAsync(tournamentId, force: false, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        loggerFactory.CreateLogger("PrizeDistribution")
-                            .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", tournamentId);
-                    }
-                }
 
                 return Results.Ok(new { success = true, advancedCount = 0, isFinalStage = true });
             }

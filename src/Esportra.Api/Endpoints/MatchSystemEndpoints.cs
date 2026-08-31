@@ -552,7 +552,7 @@ public static class MatchSystemEndpoints
                                                 if (match.version_id is not null)
                                                 {
                                                     await StageCompletionHelper.HandleBracketStageCompletionAsync(
-                                                        conn, tx: null, (Guid)match.version_id, winnerService, ct);
+                                                        conn, tx: null, (Guid)match.version_id);
                                                 }
                                             }
                                             catch (Exception stageEx)

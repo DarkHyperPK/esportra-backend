@@ -83,10 +83,19 @@ public sealed class PlacementResolutionService(
             _ => await ResolveSingleEliminationAsync(conn, stageId, ct),
         };
 
+        var counts = orderedTeams
+            .GroupBy(p => p.Placement)
+            .ToDictionary(g => g.Key, g => g.Count());
         return orderedTeams
-            .Select(p => new ResolvedPlacement(
-                p.TeamId, p.TeamName, p.Placement,
-                OrdinalLabel(p.Placement), 0m, [], false))
+            .Select(p =>
+            {
+                var count = counts[p.Placement];
+                var isTied = count > 1;
+                return new ResolvedPlacement(
+                    p.TeamId, p.TeamName, p.Placement,
+                    isTied ? RangeLabel(p.Placement, count) : OrdinalLabel(p.Placement),
+                    0m, [], isTied);
+            })
             .ToList();
     }
 
@@ -133,15 +142,30 @@ public sealed class PlacementResolutionService(
         string? manualPayoutNotes = (string?)tournament.manual_payout_notes;
         PrizeDistributionConfig? config = ParseDistributionConfig((string?)tournament.prize_distribution);
 
-        List<ResolvedPlacement> resolved = config is null || config.Placements.Count == 0
-            ? orderedTeams
-                .Select(t => new ResolvedPlacement(
-                    t.TeamId, t.TeamName, t.Placement,
-                    OrdinalLabel(t.Placement), 0m, [], t.Placement > 1))
-                .ToList()
-            : prizeService.CalculateAmounts(config, prizePool, orderedTeams
+        List<ResolvedPlacement> resolved;
+        if (config is null || config.Placements.Count == 0)
+        {
+            var counts = orderedTeams
+                .GroupBy(t => t.Placement)
+                .ToDictionary(g => g.Key, g => g.Count());
+            resolved = orderedTeams
+                .Select(t =>
+                {
+                    var count = counts[t.Placement];
+                    var isTied = count > 1;
+                    return new ResolvedPlacement(
+                        t.TeamId, t.TeamName, t.Placement,
+                        isTied ? RangeLabel(t.Placement, count) : OrdinalLabel(t.Placement),
+                        0m, [], isTied);
+                })
+                .ToList();
+        }
+        else
+        {
+            resolved = prizeService.CalculateAmounts(config, prizePool, orderedTeams
                 .Select(t => (t.TeamId, t.TeamName, t.Placement))
                 .ToList());
+        }
 
         return new ComputationResult(resolved, currency, payoutMethod, manualPayoutNotes);
     }
@@ -478,13 +502,24 @@ public sealed class PlacementResolutionService(
             (bool?)row.is_tied ?? false);
     }
 
-    private static string OrdinalLabel(int position) => position switch
+    private static string OrdinalLabel(int position)
     {
-        1 => "1st",
-        2 => "2nd",
-        3 => "3rd",
-        _ => $"{position}th",
-    };
+        var suffix = (position % 100) switch
+        {
+            11 or 12 or 13 => "th",
+            _ => (position % 10) switch
+            {
+                1 => "st",
+                2 => "nd",
+                3 => "rd",
+                _ => "th"
+            }
+        };
+        return $"{position}{suffix}";
+    }
+
+    private static string RangeLabel(int start, int count) =>
+        $"{OrdinalLabel(start)}–{OrdinalLabel(start + count - 1)}";
 
     private sealed record TeamPlacement(Guid TeamId, string TeamName, int Placement);
 
