@@ -362,51 +362,11 @@ public static class AdminEndpoints
             using var conn = db.CreateConnection();
 
             var conditions = new List<string>();
-            if (!string.IsNullOrWhiteSpace(search))
-                conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR p.email ILIKE @search ESCAPE '\\' OR p.full_name ILIKE @search ESCAPE '\\')");
-            if (status == "suspended")
-                conditions.Add("p.is_suspended = TRUE");
-            else if (status == "active")
-                conditions.Add("(p.is_suspended IS NULL OR p.is_suspended = FALSE)");
+            ApplyStatusAndRoleFilters(conditions, search, status, role);
+            var (joinedFrom, joinedTo) = ApplyAttributeFilters(conditions, country, joined_from, joined_to, has_team, verified);
 
-            // Role filtering via JOIN
-            if (!string.IsNullOrWhiteSpace(role))
-            {
-                if (role == "admin")
-                    conditions.Add("EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = p.id)");
-                else if (role == "casual")
-                    conditions.Add("NOT EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.is_active = TRUE) AND NOT EXISTS (SELECT 1 FROM admin_user_roles aur2 WHERE aur2.user_id = p.id)");
-                else
-                    conditions.Add("EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.role = @role AND ur2.is_active = TRUE)");
-            }
+            var where = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
 
-            if (!string.IsNullOrWhiteSpace(country))
-                conditions.Add("p.country_code = @country");
-
-            DateTimeOffset? joinedFrom = null;
-            DateTimeOffset? joinedTo = null;
-            if (!string.IsNullOrWhiteSpace(joined_from) && DateTimeOffset.TryParse(joined_from, out var jf))
-            { joinedFrom = jf; conditions.Add("p.created_at >= @joinedFrom"); }
-            if (!string.IsNullOrWhiteSpace(joined_to) && DateTimeOffset.TryParse(joined_to, out var jt))
-            { joinedTo = jt.AddDays(1); conditions.Add("p.created_at < @joinedTo"); }
-
-            if (has_team == "true")
-                conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
-            else if (has_team == "false")
-                conditions.Add("NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
-
-            // "Verified" = holds an approved, active licensed role (organizer / venue_owner / …).
-            // NOT platform-wide verification — licenses are issued through the license system.
-            if (verified == "true")
-                conditions.Add("EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
-            else if (verified == "false")
-                conditions.Add("NOT EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
-
-            var where = conditions.Count > 0
-                ? "WHERE " + string.Join(" AND ", conditions)
-                : "";
-
-            // Whitelist allowed sort columns
             var allowedSorts = new HashSet<string> { "created_at", "username", "updated_at" };
             var sortColumn = allowedSorts.Contains(sort_by ?? "") ? sort_by! : "created_at";
             var sortDirection = sort_dir?.ToLower() == "asc" ? "ASC" : "DESC";
@@ -440,7 +400,6 @@ public static class AdminEndpoints
             var users = await conn.QueryAsync<dynamic>(sql,
                 new { search = EscapeLike(search), limit, offset, role, country, joinedFrom, joinedTo });
 
-            // Fetch roles for these users in a single query
             var userIds = users.Select(u => (Guid)u.id).ToList();
             var rolesMap = new Dictionary<Guid, List<string>>();
             if (userIds.Count > 0)
@@ -448,12 +407,7 @@ public static class AdminEndpoints
                 var roleRows = await conn.QueryAsync<dynamic>(
                     "SELECT user_id, role FROM user_roles WHERE user_id = ANY(@ids) AND is_active = TRUE",
                     new { ids = userIds.ToArray() });
-                foreach (var r in roleRows)
-                {
-                    var uid = (Guid)r.user_id;
-                    if (!rolesMap.ContainsKey(uid)) rolesMap[uid] = new List<string>();
-                    rolesMap[uid].Add((string)r.role);
-                }
+                rolesMap = BuildRolesMap(roleRows);
             }
 
             var enriched = users.Select(u =>
@@ -480,7 +434,6 @@ public static class AdminEndpoints
                 $"SELECT COUNT(*) FROM profiles p {where}",
                 new { search = EscapeLike(search), role, country, joinedFrom, joinedTo });
 
-            // Role breakdown counts (unfiltered — always reflects full platform)
             var roleCountRows = await conn.QueryAsync<dynamic>(
                 "SELECT role, COUNT(DISTINCT user_id)::int AS count FROM user_roles WHERE is_active = TRUE GROUP BY role");
             var roleCounts = new Dictionary<string, int>();
@@ -789,150 +742,20 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            if (req.UserIds is not { Length: > 0 })
-                return Results.BadRequest(new { error = "UserIds must not be empty." });
-            if (req.UserIds.Length > 100)
-                return Results.BadRequest(new { error = "Cannot process more than 100 users at once." });
+            var (_, inputError) = ValidateBulkUserAction(req, userCtx);
+            if (inputError is not null) return inputError;
 
-            var requiredPerm = req.Action switch
-            {
-                "suspend" or "unsuspend" => Permissions.UsersBan,
-                "delete" => Permissions.UsersDelete,
-                _ => (string?)null
-            };
-            if (requiredPerm is null)
-                return Results.BadRequest(new { error = $"Unknown action: {req.Action}" });
-            if (!userCtx.Permissions.Contains(requiredPerm))
-                return Results.Forbid();
-
-            // Prevent admin from acting on themselves
             var safeIds = req.UserIds.Where(id => id != userCtx.UserIdGuid).ToArray();
             if (safeIds.Length == 0)
                 return Results.BadRequest(new { error = "Cannot perform this action on yourself." });
 
             using var conn = db.CreateConnection();
 
-            // Fetch target names for audit logging before any mutations
-            var targetUsers = (await conn.QueryAsync<(Guid id, string name)>(
-                "SELECT id, COALESCE(full_name, username, id::text) AS name FROM profiles WHERE id = ANY(@ids)",
-                new { ids = safeIds })).ToDictionary(u => u.id, u => u.name);
-
             if (req.Action == "delete")
-            {
-                // All-or-nothing: single transaction wraps all cascade deletes
-                using var txn = conn.BeginTransaction();
-                try
-                {
-                    foreach (var userId in safeIds)
-                        await DeleteUserCascadeAsync(userId, conn, txn);
+                return await ExecuteBulkDeleteAsync(safeIds, conn, ctx, userCtx, supabase, audit, logger, ct);
 
-                    txn.Commit();
-                }
-                catch
-                {
-                    txn.Rollback();
-                    throw;
-                }
-
-                // Supabase auth cleanup after DB commit succeeds — external service calls
-                // can't be rolled back, so we only attempt them after data is committed.
-                // Each call is individually try-caught to prevent one failure from blocking the rest.
-                var authFailures = 0;
-                foreach (var userId in safeIds)
-                {
-                    try
-                    {
-                        await supabase.DeleteUserAsync(userId.ToString(), ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        authFailures++;
-                        logger.LogError(ex, "[BulkDelete] Failed to delete Supabase auth for user {UserId} — orphaned auth entry requires manual cleanup", userId);
-                    }
-                }
-
-                // Audit each deletion
-                foreach (var userId in safeIds)
-                {
-                    await audit.LogFromHttp(
-                        ctx, userCtx,
-                        ActionType.Delete, TargetType.User,
-                        userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
-                        new { bulk = true, batchSize = safeIds.Length }, ct: ct);
-                }
-
-                return Results.Ok(new { success = true, affected = safeIds.Length, authCleanupFailures = authFailures });
-            }
-
-            var actionType = req.Action == "suspend" ? ActionType.Suspend : ActionType.Unsuspend;
-
-            var (sql, parameters) = req.Action switch
-            {
-                "suspend" => (
-                    """
-                    UPDATE profiles
-                    SET is_suspended = true,
-                        suspension_reason = @Reason,
-                        updated_at = NOW()
-                    WHERE id = ANY(@UserIds)
-                    """,
-                    (object)new { UserIds = safeIds, req.Reason }),
-                "unsuspend" => (
-                    """
-                    UPDATE profiles
-                    SET is_suspended = false,
-                        suspension_reason = null,
-                        suspension_type = null,
-                        suspension_until = null,
-                        updated_at = NOW()
-                    WHERE id = ANY(@UserIds)
-                    """,
-                    (object)new { UserIds = safeIds }),
-                _ => throw new InvalidOperationException()
-            };
-
-            var affected = await conn.ExecuteAsync(
-                new CommandDefinition(sql, parameters, cancellationToken: ct));
-
-            foreach (var userId in safeIds)
-            {
-                if (req.Action == "suspend")
-                {
-                    try
-                    {
-                        await supabase.LogoutUserAsync(userId.ToString(), ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex, "Supabase force-logout failed for bulk-suspended user {UserId}", userId);
-                    }
-                }
-
-                try
-                {
-                    await cache.RemoveAsync($"user-ctx:{userId}", ct);
-                    await cache.RemoveAsync($"user-suspension:{userId}", ct);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Cache eviction failed for bulk action user {UserId}", userId);
-                }
-            }
-
-            // Audit each affected user (email used as adminName — UserContext lacks display name)
-            var auditDetails = req.Action == "suspend"
-                ? (object)new { bulk = true, batchSize = safeIds.Length, reason = req.Reason }
-                : new { bulk = true, batchSize = safeIds.Length };
-            foreach (var userId in safeIds)
-            {
-                await audit.LogFromHttp(
-                    ctx, userCtx,
-                    actionType, TargetType.User,
-                    userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
-                    auditDetails, ct: ct);
-            }
-
-            return Results.Ok(new { success = true, affected });
+            return await ExecuteBulkStatusChangeAsync(
+                safeIds, req.Action, req.Reason, conn, ctx, userCtx, supabase, cache, audit, logger, ct);
         }).RequireAuthorization("Admin");
 
         // ── POST /api/emails ──────────────────────────────────────────────────
@@ -1260,68 +1083,21 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
-            // Validate key format: lowercase, alphanumeric + underscores, 3-50 chars
-            if (string.IsNullOrWhiteSpace(req.Key) || req.Key.Length < 3 || req.Key.Length > 50
-                || !System.Text.RegularExpressions.Regex.IsMatch(req.Key, @"^[a-z0-9_]+$"))
-                return Results.BadRequest(new { error = "Key must be 3-50 characters, lowercase alphanumeric and underscores only." });
-
-            if (string.IsNullOrWhiteSpace(req.Name))
-                return Results.BadRequest(new { error = "Name is required." });
-
-            if (req.Name.Length > 100)
-                return Results.BadRequest(new { error = "Name must be 100 characters or fewer." });
-
-            if ((req.Description?.Length ?? 0) > 500)
-                return Results.BadRequest(new { error = "Description must be 500 characters or fewer." });
-
-            if (req.PermissionIds is null || req.PermissionIds.Length == 0)
-                return Results.BadRequest(new { error = "At least one permission is required." });
+            var validationError = ValidateRoleRequest(req);
+            if (validationError is not null) return validationError;
 
             using var conn = db.CreateConnection();
 
-            // Validate all permissionIds exist
             var existingCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
                 "SELECT COUNT(*) FROM admin_permissions WHERE id = ANY(@Ids)",
                 new { Ids = req.PermissionIds },
                 cancellationToken: ct));
-
-            if (existingCount != req.PermissionIds.Length)
+            if (existingCount != req.PermissionIds!.Length)
                 return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
 
             var roleId = Guid.NewGuid();
-            if (conn.State != System.Data.ConnectionState.Open) conn.Open();
-            using var txn = conn.BeginTransaction();
-
-            try
-            {
-                await conn.ExecuteAsync(new CommandDefinition(
-                    """
-                    INSERT INTO admin_roles (id, name, key, description)
-                    VALUES (@Id, @Name, @Key, @Description)
-                    """,
-                    new { Id = roleId, req.Name, req.Key, Description = req.Description ?? "" },
-                    transaction: txn,
-                    cancellationToken: ct));
-
-                foreach (var permId in req.PermissionIds)
-                {
-                    await conn.ExecuteAsync(new CommandDefinition(
-                        """
-                        INSERT INTO admin_role_permissions (role_id, permission_id)
-                        VALUES (@RoleId, @PermId)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        new { RoleId = roleId, PermId = permId },
-                        transaction: txn,
-                        cancellationToken: ct));
-                }
-
-                txn.Commit();
-            }
-            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
-            {
-                return Results.Conflict(new { error = "A role with this name or key already exists." });
-            }
+            var insertError = await InsertRoleWithPermissionsAsync(conn, roleId, req, ct);
+            if (insertError is not null) return insertError;
 
             await audit.LogFromHttp(
                 ctx, userCtx,
@@ -1861,66 +1637,16 @@ public static class AdminEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            if (req.TournamentIds is not { Length: > 0 })
-                return Results.BadRequest(new { error = "TournamentIds must not be empty." });
-            if (req.TournamentIds.Length > 100)
-                return Results.BadRequest(new { error = "Cannot process more than 100 tournaments at once." });
-
-            var requiredPermission = req.Action switch
-            {
-                "approve" => Permissions.TournamentsApprove,
-                "cancel" => Permissions.TournamentsCancel,
-                "feature" => Permissions.TournamentsFeature,
-                "unfeature" => Permissions.TournamentsFeature,
-                _ => Permissions.TournamentsEdit
-            };
-
-            foreach (var tournamentId in req.TournamentIds.Distinct())
-            {
-                if (!await opsAuth.CanMutateTournamentAsync(userCtx, tournamentId, requiredPermission, ct))
-                    return Results.Forbid();
-            }
-
-            var sql = req.Action switch
-            {
-                "approve" => "UPDATE tournaments SET status = 'approved'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status IN ('draft', 'pending')",
-                "cancel" => "UPDATE tournaments SET status = 'cancelled'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status NOT IN ('completed', 'cancelled')",
-                "feature" => "UPDATE tournaments SET is_featured = true, updated_at = now() WHERE id = ANY(@Ids)",
-                "unfeature" => "UPDATE tournaments SET is_featured = false, updated_at = now() WHERE id = ANY(@Ids)",
-                _ => (string?)null
-            };
-            if (sql is null)
-                return Results.BadRequest(new { error = $"Unknown action: {req.Action}" });
-
-            // Map action string to audit ActionType
-            var actionType = req.Action switch
-            {
-                "approve" => ActionType.Approve,
-                "cancel" => ActionType.Cancel,
-                "feature" => ActionType.Feature,
-                "unfeature" => ActionType.Unfeature,
-                _ => ActionType.Update
-            };
+            var (requiredPermission, validationError) = ValidateBulkTournamentAction(req);
+            if (validationError is not null) return validationError;
 
             using var conn = db.CreateConnection();
 
-            // Fetch target names for audit logging before mutation
-            var targetTournaments = (await conn.QueryAsync<(Guid id, string name)>(
-                "SELECT id, COALESCE(name, id::text) AS name FROM tournaments WHERE id = ANY(@ids)",
-                new { ids = req.TournamentIds })).ToDictionary(t => t.id, t => t.name);
+            var (affected, execError) = await ExecuteTournamentBulkActionAsync(
+                req.TournamentIds, requiredPermission, req.Action, conn, opsAuth, userCtx, ct);
+            if (execError is not null) return execError;
 
-            var affected = await conn.ExecuteAsync(
-                new CommandDefinition(sql, new { Ids = req.TournamentIds }, cancellationToken: ct));
-
-            // Audit each affected tournament
-            foreach (var id in req.TournamentIds)
-            {
-                await audit.LogFromHttp(
-                    ctx, userCtx,
-                    actionType, TargetType.Tournament,
-                    id, targetTournaments.GetValueOrDefault(id, id.ToString()),
-                    new { bulk = true, batchSize = req.TournamentIds.Length, action = req.Action }, ct: ct);
-            }
+            await AuditTournamentBulkActionAsync(req.TournamentIds, req.Action, conn, audit, ctx, userCtx, ct);
 
             return Results.Ok(new { success = true, affected });
         }).RequireAuthorization("Admin");
@@ -3555,138 +3281,10 @@ public static class AdminEndpoints
             var dict = (IDictionary<string, object?>)application;
             var status = dict["status"]?.ToString();
             if (status == "approved" && dict["approved_sponsor_id"] is Guid approvedSponsorId)
-            {
-                var approvedCompanyName = dict["company_name"]?.ToString() ?? "Unknown";
-                var approvedContactEmail = request.InvitationEmail?.Trim()
-                    ?? dict["invitation_email"]?.ToString()?.Trim()
-                    ?? dict["contact_email"]?.ToString()?.Trim();
-                if (string.IsNullOrWhiteSpace(approvedContactEmail)
-                    || approvedContactEmail.Length > 254
-                    || !System.Net.Mail.MailAddress.TryCreate(approvedContactEmail, out _))
-                    return Results.BadRequest(new { error = "Application has no valid invitation email." });
+                return await HandleAlreadyApprovedApplicationAsync(
+                    approvedSponsorId, dict, request, conn, transaction, invitations, userCtx, ct);
 
-                var existingInvitation = await conn.QuerySingleOrDefaultAsync<(Guid Id, bool RequiresPasswordSetup)>(
-                    """
-                    SELECT id AS Id, requires_password_setup AS RequiresPasswordSetup
-                    FROM partner_sponsor_invitations
-                    WHERE sponsor_id = @sponsorId
-                      AND LOWER(email) = LOWER(@email)
-                      AND (
-                          status = 'accepted'
-                          OR (status = 'pending' AND expires_at > NOW())
-                      )
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    new { sponsorId = approvedSponsorId, email = approvedContactEmail }, transaction);
-                transaction.Commit();
-
-                if (existingInvitation != default)
-                {
-                    return Results.Ok(new
-                    {
-                        success = true,
-                        sponsorId = approvedSponsorId,
-                        companyName = approvedCompanyName,
-                        contactEmail = approvedContactEmail,
-                        invitationId = existingInvitation.Id,
-                        existingInvitation.RequiresPasswordSetup,
-                        alreadyApproved = true,
-                    });
-                }
-
-                var replacementInvitation = await invitations.CreateInvitationAsync(
-                    approvedSponsorId,
-                    approvedContactEmail,
-                    "owner",
-                    userCtx.UserIdGuid,
-                    ct);
-                if (replacementInvitation is null)
-                    return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
-                if (!replacementInvitation.WasDelivered)
-                    return Results.Json(new
-                    {
-                        error = "Invitation delivery failed. Resend the invitation.",
-                        sponsorId = approvedSponsorId,
-                        replacementInvitation.InvitationId,
-                    }, statusCode: 502);
-
-                return Results.Ok(new
-                {
-                    success = true,
-                    sponsorId = approvedSponsorId,
-                    companyName = approvedCompanyName,
-                    contactEmail = approvedContactEmail,
-                    replacementInvitation.InvitationId,
-                    replacementInvitation.RequiresPasswordSetup,
-                    alreadyApproved = true,
-                });
-            }
-            if (status is not ("pending" or "reviewed"))
-                return Results.Conflict(new { error = "Application is not available for approval." });
-
-            var companyName = dict["company_name"]?.ToString() ?? "Unknown";
-            var companyWebsite = dict["company_website"]?.ToString() ?? "";
-            var contactEmail = request.InvitationEmail?.Trim()
-                ?? dict["contact_email"]?.ToString()?.Trim();
-            var partnershipTier = NormalizeSponsorTier(request.Tier);
-            var message = dict["message"]?.ToString();
-
-            if (string.IsNullOrWhiteSpace(contactEmail)
-                || contactEmail.Length > 254
-                || !System.Net.Mail.MailAddress.TryCreate(contactEmail, out _))
-                return Results.BadRequest(new { error = "Application has no contact email." });
-
-            var sponsorId = await conn.QuerySingleAsync<Guid>(
-                """
-                INSERT INTO sponsors (name, website_url, tier, description, is_active, placement, priority, accent_color)
-                VALUES (@name, @website, @tier, @description, false, ARRAY['banner'], 0, '#f43f5e')
-                RETURNING id
-                """,
-                new { name = companyName, website = companyWebsite, tier = partnershipTier, description = message },
-                transaction);
-
-            await conn.ExecuteAsync(
-                """
-                UPDATE partner_applications
-                SET status = 'approved',
-                    invitation_email = @contactEmail,
-                    approved_sponsor_id = @sponsorId,
-                    approved_by = @approvedBy,
-                    approved_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = @id
-                """,
-                new { id, contactEmail = contactEmail.ToLowerInvariant(), sponsorId, approvedBy = userCtx.UserIdGuid },
-                transaction);
-            transaction.Commit();
-
-            var invitation = await invitations.CreateInvitationAsync(
-                sponsorId,
-                contactEmail,
-                "owner",
-                userCtx.UserIdGuid,
-                ct);
-            if (invitation is null)
-                return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
-
-            if (!invitation.WasDelivered)
-                return Results.Json(new
-                {
-                    error = "Partner approved, but invitation delivery failed. Resend the invitation.",
-                    sponsorId,
-                    invitation.InvitationId,
-                }, statusCode: 502);
-
-            return Results.Ok(new
-            {
-                success = true,
-                sponsorId,
-                companyName,
-                contactEmail,
-                invitation.InvitationId,
-                invitation.RequiresPasswordSetup,
-            });
+            return await NewApprovalFlowAsync(id, status, dict, request, conn, transaction, invitations, userCtx, ct);
         }).RequireAuthorization(Permissions.SponsorsApproveApplication);
 
         // ══════════════════════════════════════════════════════════════════════
@@ -4606,102 +4204,8 @@ public static class AdminEndpoints
             if (!userCtx.Permissions.Contains(Permissions.ContentModerate))
                 return Results.Forbid();
 
-            var action = req.Action?.ToLowerInvariant();
-            if (action is not "approve" and not "reject")
-                return Results.BadRequest(new { error = "Action must be 'approve' or 'reject'" });
-
             using var conn = db.CreateConnection();
-
-            // Fetch the queue item
-            var item = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
-                "SELECT id, content_type, content_id, field_name, status FROM moderation_queue WHERE id = @id",
-                new { id }, cancellationToken: ct));
-
-            if (item is null)
-                return Results.NotFound(new { error = "Moderation item not found" });
-
-            if ((string)item.status != "pending")
-                return Results.Conflict(new { error = "Item has already been reviewed" });
-
-            var newStatus = action == "approve" ? "approved" : "rejected";
-
-            // Update the queue item — atomic status check prevents TOCTOU race
-            var rowsAffected = await conn.ExecuteAsync(new CommandDefinition("""
-                UPDATE moderation_queue
-                SET status       = @newStatus,
-                    reviewed_by  = @reviewedBy,
-                    reviewed_at  = NOW(),
-                    review_notes = @notes
-                WHERE id = @id AND status = 'pending'
-                """, new
-            {
-                id,
-                newStatus,
-                reviewedBy = userCtx.UserIdGuid,
-                notes = req.Notes ?? ""
-            }, cancellationToken: ct));
-
-            if (rowsAffected == 0)
-                return Results.Conflict(new { error = "Item has already been reviewed by another moderator" });
-
-            // If rejected, take enforcement action based on content type
-            if (newStatus == "rejected")
-            {
-                var contentType = (string)item.content_type;
-                var contentId = (Guid)item.content_id;
-                var fieldName = (string)item.field_name;
-
-                switch (contentType)
-                {
-                    case "tournament":
-                        await conn.ExecuteAsync(new CommandDefinition(
-                            "UPDATE tournaments SET status = 'cancelled' WHERE id = @contentId",
-                            new { contentId }, cancellationToken: ct));
-                        break;
-
-                    case "team":
-                        if (fieldName == "name")
-                            await conn.ExecuteAsync(new CommandDefinition(
-                                "UPDATE teams SET name = '[Moderated]' WHERE id = @contentId",
-                                new { contentId }, cancellationToken: ct));
-                        else if (fieldName == "description")
-                            await conn.ExecuteAsync(new CommandDefinition(
-                                "UPDATE teams SET description = '' WHERE id = @contentId",
-                                new { contentId }, cancellationToken: ct));
-                        break;
-
-                    case "profile":
-                        if (fieldName == "bio")
-                            await conn.ExecuteAsync(new CommandDefinition(
-                                "UPDATE profiles SET bio = '' WHERE id = @contentId",
-                                new { contentId }, cancellationToken: ct));
-                        else if (fieldName == "username")
-                            await conn.ExecuteAsync(new CommandDefinition(
-                                "UPDATE profiles SET username = '[Moderated]' WHERE id = @contentId",
-                                new { contentId }, cancellationToken: ct));
-                        break;
-
-                    case "match_evidence":
-                        // For match evidence, clear the URL/content
-                        await conn.ExecuteAsync(new CommandDefinition(
-                            "UPDATE match_results SET evidence_url = NULL WHERE id = @contentId",
-                            new { contentId }, cancellationToken: ct));
-                        break;
-                }
-            }
-
-            // Audit log
-            await audit.LogAsync(
-                userCtx.UserIdGuid,
-                userCtx.Email,
-                newStatus == "approved" ? ActionType.Approve : ActionType.Reject,
-                TargetType.System,
-                id,
-                $"moderation:{item.content_type}/{item.content_id}",
-                new { action = newStatus, notes = req.Notes ?? "", content_type = (string)item.content_type, field_name = (string)item.field_name },
-                ct: ct);
-
-            return Results.Ok(new { success = true, status = newStatus });
+            return await ProcessModerationReviewAsync(id, req, userCtx, conn, audit, ct);
         }).RequireAuthorization("Admin");
 
         // ── DELETE /api/admin/moderation-queue/{id} ──────────────────────────────
@@ -7901,6 +7405,595 @@ public static class AdminEndpoints
             default:
                 return (new { report_type = reportType, generated_at = DateTime.UtcNow, rows = Array.Empty<object>() }, 0);
         }
+    }
+
+    // ── users/bulk-action helpers ────────────────────────────────────────────
+
+    private static (string? RequiredPerm, IResult? Error) ValidateBulkUserAction(
+        BulkUserActionRequest req, UserContext userCtx)
+    {
+        if (req.UserIds is not { Length: > 0 })
+            return (null, Results.BadRequest(new { error = "UserIds must not be empty." }));
+        if (req.UserIds.Length > 100)
+            return (null, Results.BadRequest(new { error = "Cannot process more than 100 users at once." }));
+
+        var requiredPerm = req.Action switch
+        {
+            "suspend" or "unsuspend" => Permissions.UsersBan,
+            "delete" => Permissions.UsersDelete,
+            _ => (string?)null
+        };
+        if (requiredPerm is null)
+            return (null, Results.BadRequest(new { error = $"Unknown action: {req.Action}" }));
+        if (!userCtx.Permissions.Contains(requiredPerm))
+            return (null, Results.Forbid());
+
+        return (requiredPerm, null);
+    }
+
+    private static async Task<IResult> ExecuteBulkDeleteAsync(
+        Guid[] safeIds, System.Data.IDbConnection conn, HttpContext ctx, UserContext userCtx,
+        ISupabaseAdminClient supabase, AuditService audit, ILogger logger, CancellationToken ct)
+    {
+        var targetUsers = (await conn.QueryAsync<(Guid id, string name)>(
+            "SELECT id, COALESCE(full_name, username, id::text) AS name FROM profiles WHERE id = ANY(@ids)",
+            new { ids = safeIds })).ToDictionary(u => u.id, u => u.name);
+
+        using var txn = conn.BeginTransaction();
+        try
+        {
+            foreach (var userId in safeIds)
+                await DeleteUserCascadeAsync(userId, conn, txn);
+            txn.Commit();
+        }
+        catch
+        {
+            txn.Rollback();
+            throw;
+        }
+
+        var authFailures = 0;
+        foreach (var userId in safeIds)
+        {
+            try
+            {
+                await supabase.DeleteUserAsync(userId.ToString(), ct);
+            }
+            catch (Exception ex)
+            {
+                authFailures++;
+                logger.LogError(ex, "[BulkDelete] Failed to delete Supabase auth for user {UserId} — orphaned auth entry requires manual cleanup", userId);
+            }
+        }
+
+        foreach (var userId in safeIds)
+        {
+            await audit.LogFromHttp(
+                ctx, userCtx,
+                ActionType.Delete, TargetType.User,
+                userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
+                new { bulk = true, batchSize = safeIds.Length }, ct: ct);
+        }
+
+        return Results.Ok(new { success = true, affected = safeIds.Length, authCleanupFailures = authFailures });
+    }
+
+    private static async Task<IResult> ExecuteBulkStatusChangeAsync(
+        Guid[] safeIds, string action, string? reason,
+        System.Data.IDbConnection conn, HttpContext ctx, UserContext userCtx,
+        ISupabaseAdminClient supabase, HybridCache cache,
+        AuditService audit, ILogger logger, CancellationToken ct)
+    {
+        var actionType = action == "suspend" ? ActionType.Suspend : ActionType.Unsuspend;
+
+        var (sql, parameters) = action switch
+        {
+            "suspend" => (
+                """
+                UPDATE profiles
+                SET is_suspended = true,
+                    suspension_reason = @Reason,
+                    updated_at = NOW()
+                WHERE id = ANY(@UserIds)
+                """,
+                (object)new { UserIds = safeIds, Reason = reason }),
+            "unsuspend" => (
+                """
+                UPDATE profiles
+                SET is_suspended = false,
+                    suspension_reason = null,
+                    suspension_type = null,
+                    suspension_until = null,
+                    updated_at = NOW()
+                WHERE id = ANY(@UserIds)
+                """,
+                (object)new { UserIds = safeIds }),
+            _ => throw new InvalidOperationException()
+        };
+
+        var affected = await conn.ExecuteAsync(
+            new CommandDefinition(sql, parameters, cancellationToken: ct));
+
+        foreach (var userId in safeIds)
+        {
+            if (action == "suspend")
+            {
+                try
+                {
+                    await supabase.LogoutUserAsync(userId.ToString(), ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Supabase force-logout failed for bulk-suspended user {UserId}", userId);
+                }
+            }
+
+            try
+            {
+                await cache.RemoveAsync($"user-ctx:{userId}", ct);
+                await cache.RemoveAsync($"user-suspension:{userId}", ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Cache eviction failed for bulk action user {UserId}", userId);
+            }
+        }
+
+        var targetUsers = (await conn.QueryAsync<(Guid id, string name)>(
+            "SELECT id, COALESCE(full_name, username, id::text) AS name FROM profiles WHERE id = ANY(@ids)",
+            new { ids = safeIds })).ToDictionary(u => u.id, u => u.name);
+
+        var auditDetails = action == "suspend"
+            ? (object)new { bulk = true, batchSize = safeIds.Length, reason }
+            : new { bulk = true, batchSize = safeIds.Length };
+        foreach (var userId in safeIds)
+        {
+            await audit.LogFromHttp(
+                ctx, userCtx,
+                actionType, TargetType.User,
+                userId, targetUsers.GetValueOrDefault(userId, userId.ToString()),
+                auditDetails, ct: ct);
+        }
+
+        return Results.Ok(new { success = true, affected });
+    }
+
+    // ── tournaments/bulk-action helpers ──────────────────────────────────────
+
+    private static (string RequiredPermission, IResult? Error) ValidateBulkTournamentAction(
+        BulkTournamentActionRequest req)
+    {
+        if (req.TournamentIds is not { Length: > 0 })
+            return ("", Results.BadRequest(new { error = "TournamentIds must not be empty." }));
+        if (req.TournamentIds.Length > 100)
+            return ("", Results.BadRequest(new { error = "Cannot process more than 100 tournaments at once." }));
+
+        var requiredPermission = req.Action switch
+        {
+            "approve" => Permissions.TournamentsApprove,
+            "cancel" => Permissions.TournamentsCancel,
+            "feature" => Permissions.TournamentsFeature,
+            "unfeature" => Permissions.TournamentsFeature,
+            _ => Permissions.TournamentsEdit
+        };
+        return (requiredPermission, null);
+    }
+
+    private static async Task<(int Affected, IResult? Error)> ExecuteTournamentBulkActionAsync(
+        Guid[] ids, string requiredPermission, string action,
+        System.Data.IDbConnection conn, OperationsAuthorizationService opsAuth,
+        UserContext userCtx, CancellationToken ct)
+    {
+        foreach (var tournamentId in ids.Distinct())
+        {
+            if (!await opsAuth.CanMutateTournamentAsync(userCtx, tournamentId, requiredPermission, ct))
+                return (0, Results.Forbid());
+        }
+
+        var sql = action switch
+        {
+            "approve" => "UPDATE tournaments SET status = 'approved'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status IN ('draft', 'pending')",
+            "cancel" => "UPDATE tournaments SET status = 'cancelled'::tournament_status, updated_at = now() WHERE id = ANY(@Ids) AND status NOT IN ('completed', 'cancelled')",
+            "feature" => "UPDATE tournaments SET is_featured = true, updated_at = now() WHERE id = ANY(@Ids)",
+            "unfeature" => "UPDATE tournaments SET is_featured = false, updated_at = now() WHERE id = ANY(@Ids)",
+            _ => (string?)null
+        };
+        if (sql is null)
+            return (0, Results.BadRequest(new { error = $"Unknown action: {action}" }));
+
+        var affected = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { Ids = ids }, cancellationToken: ct));
+        return (affected, null);
+    }
+
+    private static async Task AuditTournamentBulkActionAsync(
+        Guid[] ids, string action,
+        System.Data.IDbConnection conn, AuditService audit, HttpContext ctx, UserContext userCtx,
+        CancellationToken ct)
+    {
+        var targetTournaments = (await conn.QueryAsync<(Guid id, string name)>(
+            "SELECT id, COALESCE(name, id::text) AS name FROM tournaments WHERE id = ANY(@ids)",
+            new { ids })).ToDictionary(t => t.id, t => t.name);
+
+        var actionType = action switch
+        {
+            "approve" => ActionType.Approve,
+            "cancel" => ActionType.Cancel,
+            "feature" => ActionType.Feature,
+            "unfeature" => ActionType.Unfeature,
+            _ => ActionType.Update
+        };
+
+        foreach (var id in ids)
+        {
+            await audit.LogFromHttp(
+                ctx, userCtx,
+                actionType, TargetType.Tournament,
+                id, targetTournaments.GetValueOrDefault(id, id.ToString()),
+                new { bulk = true, batchSize = ids.Length, action }, ct: ct);
+        }
+    }
+
+    // ── GET /admin/users helpers ─────────────────────────────────────────────
+
+    private static void ApplyStatusAndRoleFilters(
+        List<string> conditions, string? search, string? status, string? role)
+    {
+        if (!string.IsNullOrWhiteSpace(search))
+            conditions.Add("(p.username ILIKE @search ESCAPE '\\' OR p.email ILIKE @search ESCAPE '\\' OR p.full_name ILIKE @search ESCAPE '\\')");
+        if (status == "suspended")
+            conditions.Add("p.is_suspended = TRUE");
+        else if (status == "active")
+            conditions.Add("(p.is_suspended IS NULL OR p.is_suspended = FALSE)");
+
+        if (!string.IsNullOrWhiteSpace(role))
+        {
+            if (role == "admin")
+                conditions.Add("EXISTS (SELECT 1 FROM admin_user_roles aur WHERE aur.user_id = p.id)");
+            else if (role == "casual")
+                conditions.Add("NOT EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.is_active = TRUE) AND NOT EXISTS (SELECT 1 FROM admin_user_roles aur2 WHERE aur2.user_id = p.id)");
+            else
+                conditions.Add("EXISTS (SELECT 1 FROM user_roles ur2 WHERE ur2.user_id = p.id AND ur2.role = @role AND ur2.is_active = TRUE)");
+        }
+    }
+
+    private static (DateTimeOffset? JoinedFrom, DateTimeOffset? JoinedTo) ApplyAttributeFilters(
+        List<string> conditions, string? country, string? joined_from, string? joined_to,
+        string? has_team, string? verified)
+    {
+        DateTimeOffset? joinedFrom = null;
+        DateTimeOffset? joinedTo = null;
+
+        if (!string.IsNullOrWhiteSpace(country))
+            conditions.Add("p.country_code = @country");
+
+        if (!string.IsNullOrWhiteSpace(joined_from) && DateTimeOffset.TryParse(joined_from, out var jf))
+        { joinedFrom = jf; conditions.Add("p.created_at >= @joinedFrom"); }
+        if (!string.IsNullOrWhiteSpace(joined_to) && DateTimeOffset.TryParse(joined_to, out var jt))
+        { joinedTo = jt.AddDays(1); conditions.Add("p.created_at < @joinedTo"); }
+
+        if (has_team == "true")
+            conditions.Add("EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+        else if (has_team == "false")
+            conditions.Add("NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = p.id)");
+
+        if (verified == "true")
+            conditions.Add("EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
+        else if (verified == "false")
+            conditions.Add("NOT EXISTS (SELECT 1 FROM verified_roles vr WHERE vr.user_id = p.id AND vr.status = 'approved' AND vr.is_active = TRUE)");
+
+        return (joinedFrom, joinedTo);
+    }
+
+    private static Dictionary<Guid, List<string>> BuildRolesMap(IEnumerable<dynamic> roleRows)
+    {
+        var rolesMap = new Dictionary<Guid, List<string>>();
+        foreach (var r in roleRows)
+        {
+            var uid = (Guid)r.user_id;
+            if (!rolesMap.ContainsKey(uid)) rolesMap[uid] = new List<string>();
+            rolesMap[uid].Add((string)r.role);
+        }
+        return rolesMap;
+    }
+
+    // ── sponsors/approve helpers ─────────────────────────────────────────────
+
+    private static async Task<IResult> HandleAlreadyApprovedApplicationAsync(
+        Guid approvedSponsorId, IDictionary<string, object?> dict,
+        PartnerApplicationApprovalRequest request,
+        System.Data.IDbConnection conn, System.Data.IDbTransaction transaction,
+        PartnerSponsorOnboardingService invitations, UserContext userCtx, CancellationToken ct)
+    {
+        var approvedCompanyName = dict["company_name"]?.ToString() ?? "Unknown";
+        var approvedContactEmail = request.InvitationEmail?.Trim()
+            ?? dict["invitation_email"]?.ToString()?.Trim()
+            ?? dict["contact_email"]?.ToString()?.Trim();
+        if (string.IsNullOrWhiteSpace(approvedContactEmail)
+            || approvedContactEmail.Length > 254
+            || !System.Net.Mail.MailAddress.TryCreate(approvedContactEmail, out _))
+            return Results.BadRequest(new { error = "Application has no valid invitation email." });
+
+        var existingInvitation = await conn.QuerySingleOrDefaultAsync<(Guid Id, bool RequiresPasswordSetup)>(
+            """
+            SELECT id AS Id, requires_password_setup AS RequiresPasswordSetup
+            FROM partner_sponsor_invitations
+            WHERE sponsor_id = @sponsorId
+              AND LOWER(email) = LOWER(@email)
+              AND (
+                  status = 'accepted'
+                  OR (status = 'pending' AND expires_at > NOW())
+              )
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            new { sponsorId = approvedSponsorId, email = approvedContactEmail }, transaction);
+        transaction.Commit();
+
+        if (existingInvitation != default)
+        {
+            return Results.Ok(new
+            {
+                success = true,
+                sponsorId = approvedSponsorId,
+                companyName = approvedCompanyName,
+                contactEmail = approvedContactEmail,
+                invitationId = existingInvitation.Id,
+                existingInvitation.RequiresPasswordSetup,
+                alreadyApproved = true,
+            });
+        }
+
+        var replacementInvitation = await invitations.CreateInvitationAsync(
+            approvedSponsorId, approvedContactEmail, "owner", userCtx.UserIdGuid, ct);
+        if (replacementInvitation is null)
+            return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
+        if (!replacementInvitation.WasDelivered)
+            return Results.Json(new
+            {
+                error = "Invitation delivery failed. Resend the invitation.",
+                sponsorId = approvedSponsorId,
+                replacementInvitation.InvitationId,
+            }, statusCode: 502);
+
+        return Results.Ok(new
+        {
+            success = true,
+            sponsorId = approvedSponsorId,
+            companyName = approvedCompanyName,
+            contactEmail = approvedContactEmail,
+            replacementInvitation.InvitationId,
+            replacementInvitation.RequiresPasswordSetup,
+            alreadyApproved = true,
+        });
+    }
+
+    private static async Task<IResult> NewApprovalFlowAsync(
+        Guid applicationId, string? status, IDictionary<string, object?> dict,
+        PartnerApplicationApprovalRequest request,
+        System.Data.IDbConnection conn, System.Data.IDbTransaction transaction,
+        PartnerSponsorOnboardingService invitations, UserContext userCtx, CancellationToken ct)
+    {
+        if (status is not ("pending" or "reviewed"))
+            return Results.Conflict(new { error = "Application is not available for approval." });
+
+        var companyName = dict["company_name"]?.ToString() ?? "Unknown";
+        var companyWebsite = dict["company_website"]?.ToString() ?? "";
+        var contactEmail = request.InvitationEmail?.Trim() ?? dict["contact_email"]?.ToString()?.Trim();
+        var partnershipTier = NormalizeSponsorTier(request.Tier);
+        var message = dict["message"]?.ToString();
+
+        if (string.IsNullOrWhiteSpace(contactEmail)
+            || contactEmail.Length > 254
+            || !System.Net.Mail.MailAddress.TryCreate(contactEmail, out _))
+            return Results.BadRequest(new { error = "Application has no contact email." });
+
+        var sponsorId = await conn.QuerySingleAsync<Guid>(
+            """
+            INSERT INTO sponsors (name, website_url, tier, description, is_active, placement, priority, accent_color)
+            VALUES (@name, @website, @tier, @description, false, ARRAY['banner'], 0, '#f43f5e')
+            RETURNING id
+            """,
+            new { name = companyName, website = companyWebsite, tier = partnershipTier, description = message },
+            transaction);
+
+        await conn.ExecuteAsync(
+            """
+            UPDATE partner_applications
+            SET status = 'approved',
+                invitation_email = @contactEmail,
+                approved_sponsor_id = @sponsorId,
+                approved_by = @approvedBy,
+                approved_at = NOW(),
+                updated_at = NOW()
+            WHERE id = @id
+            """,
+            new { id = applicationId, contactEmail = contactEmail.ToLowerInvariant(), sponsorId, approvedBy = userCtx.UserIdGuid },
+            transaction);
+        transaction.Commit();
+
+        var invitation = await invitations.CreateInvitationAsync(
+            sponsorId, contactEmail, "owner", userCtx.UserIdGuid, ct);
+        if (invitation is null)
+            return Results.Json(new { error = "Unable to create sponsor invitation." }, statusCode: 500);
+
+        if (!invitation.WasDelivered)
+            return Results.Json(new
+            {
+                error = "Partner approved, but invitation delivery failed. Resend the invitation.",
+                sponsorId,
+                invitation.InvitationId,
+            }, statusCode: 502);
+
+        return Results.Ok(new
+        {
+            success = true,
+            sponsorId,
+            companyName,
+            contactEmail,
+            invitation.InvitationId,
+            invitation.RequiresPasswordSetup,
+        });
+    }
+
+    // ── moderation-queue/review helpers ──────────────────────────────────────
+
+    private static async Task<IResult> ProcessModerationReviewAsync(
+        Guid id, ModerationReviewRequest req, UserContext userCtx,
+        System.Data.IDbConnection conn, AuditService audit, CancellationToken ct)
+    {
+        var action = req.Action?.ToLowerInvariant();
+        if (action is not "approve" and not "reject")
+            return Results.BadRequest(new { error = "Action must be 'approve' or 'reject'" });
+
+        var item = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
+            "SELECT id, content_type, content_id, field_name, status FROM moderation_queue WHERE id = @id",
+            new { id }, cancellationToken: ct));
+        if (item is null)
+            return Results.NotFound(new { error = "Moderation item not found" });
+
+        if ((string)item.status != "pending")
+            return Results.Conflict(new { error = "Item has already been reviewed" });
+
+        var newStatus = action == "approve" ? "approved" : "rejected";
+
+        var rowsAffected = await conn.ExecuteAsync(new CommandDefinition("""
+            UPDATE moderation_queue
+            SET status       = @newStatus,
+                reviewed_by  = @reviewedBy,
+                reviewed_at  = NOW(),
+                review_notes = @notes
+            WHERE id = @id AND status = 'pending'
+            """, new
+        {
+            id,
+            newStatus,
+            reviewedBy = userCtx.UserIdGuid,
+            notes = req.Notes ?? ""
+        }, cancellationToken: ct));
+
+        if (rowsAffected == 0)
+            return Results.Conflict(new { error = "Item has already been reviewed by another moderator" });
+
+        if (newStatus == "rejected")
+            await ApplyModerationContentAction(
+                (string)item.content_type, (Guid)item.content_id, (string)item.field_name, conn, ct);
+
+        await audit.LogAsync(
+            userCtx.UserIdGuid,
+            userCtx.Email,
+            newStatus == "approved" ? ActionType.Approve : ActionType.Reject,
+            TargetType.System,
+            id,
+            $"moderation:{item.content_type}/{item.content_id}",
+            new { action = newStatus, notes = req.Notes ?? "", content_type = (string)item.content_type, field_name = (string)item.field_name },
+            ct: ct);
+
+        return Results.Ok(new { success = true, status = newStatus });
+    }
+
+    private static async Task ApplyModerationContentAction(
+        string contentType, Guid contentId, string fieldName,
+        System.Data.IDbConnection conn, CancellationToken ct)
+    {
+        switch (contentType)
+        {
+            case "tournament":
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "UPDATE tournaments SET status = 'cancelled' WHERE id = @contentId",
+                    new { contentId }, cancellationToken: ct));
+                break;
+
+            case "team":
+                if (fieldName == "name")
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        "UPDATE teams SET name = '[Moderated]' WHERE id = @contentId",
+                        new { contentId }, cancellationToken: ct));
+                else if (fieldName == "description")
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        "UPDATE teams SET description = '' WHERE id = @contentId",
+                        new { contentId }, cancellationToken: ct));
+                break;
+
+            case "profile":
+                if (fieldName == "bio")
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        "UPDATE profiles SET bio = '' WHERE id = @contentId",
+                        new { contentId }, cancellationToken: ct));
+                else if (fieldName == "username")
+                    await conn.ExecuteAsync(new CommandDefinition(
+                        "UPDATE profiles SET username = '[Moderated]' WHERE id = @contentId",
+                        new { contentId }, cancellationToken: ct));
+                break;
+
+            case "match_evidence":
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "UPDATE match_results SET evidence_url = NULL WHERE id = @contentId",
+                    new { contentId }, cancellationToken: ct));
+                break;
+        }
+    }
+
+    // ── POST /admin/roles helpers ─────────────────────────────────────────────
+
+    private static IResult? ValidateRoleRequest(CreateAdminRoleRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Key) || req.Key.Length < 3 || req.Key.Length > 50
+            || !System.Text.RegularExpressions.Regex.IsMatch(req.Key, @"^[a-z0-9_]+$"))
+            return Results.BadRequest(new { error = "Key must be 3-50 characters, lowercase alphanumeric and underscores only." });
+
+        if (string.IsNullOrWhiteSpace(req.Name))
+            return Results.BadRequest(new { error = "Name is required." });
+
+        if (req.Name.Length > 100)
+            return Results.BadRequest(new { error = "Name must be 100 characters or fewer." });
+
+        if ((req.Description?.Length ?? 0) > 500)
+            return Results.BadRequest(new { error = "Description must be 500 characters or fewer." });
+
+        if (req.PermissionIds is null || req.PermissionIds.Length == 0)
+            return Results.BadRequest(new { error = "At least one permission is required." });
+
+        return null;
+    }
+
+    private static async Task<IResult?> InsertRoleWithPermissionsAsync(
+        System.Data.IDbConnection conn, Guid roleId, CreateAdminRoleRequest req, CancellationToken ct)
+    {
+        if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+        using var txn = conn.BeginTransaction();
+        try
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT INTO admin_roles (id, name, key, description)
+                VALUES (@Id, @Name, @Key, @Description)
+                """,
+                new { Id = roleId, req.Name, req.Key, Description = req.Description ?? "" },
+                transaction: txn,
+                cancellationToken: ct));
+
+            foreach (var permId in req.PermissionIds!)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT INTO admin_role_permissions (role_id, permission_id)
+                    VALUES (@RoleId, @PermId)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { RoleId = roleId, PermId = permId },
+                    transaction: txn,
+                    cancellationToken: ct));
+            }
+
+            txn.Commit();
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+        {
+            return Results.Conflict(new { error = "A role with this name or key already exists." });
+        }
+
+        return null;
     }
 }
 
