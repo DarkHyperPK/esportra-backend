@@ -59,28 +59,40 @@ public static class VetoEngine
         VetoState state, VetoEvent ev, TurnContext context,
         string? mapId, MatchMapVeto? veto)
     {
-        if (!context.IsCaptain && !context.IsOrganizer)
-            return new(false, "FORBIDDEN");
+        var actorResult = ValidateActorPermission(context);
+        if (!actorResult.Ok) return actorResult;
 
-        if (!context.IsOrganizer && context.UserTeamId != context.CurrentTeamId?.ToString())
-            return new(false, "NOT_YOUR_TURN");
+        var stateResult = ValidateEventMatchesState(ev, state);
+        if (!stateResult.Ok) return stateResult;
 
-        // State must match event
+        return ValidateMapAvailability(mapId, veto, ev);
+    }
+
+    private static VetoTransitionResult ValidateActorPermission(TurnContext context)
+    {
+        if (!context.IsCaptain && !context.IsOrganizer) return new(false, "FORBIDDEN");
+        if (!context.IsOrganizer && context.UserTeamId != context.CurrentTeamId?.ToString()) return new(false, "NOT_YOUR_TURN");
+        return new(true);
+    }
+
+    private static VetoTransitionResult ValidateEventMatchesState(VetoEvent ev, VetoState state)
+    {
         if (ev == VetoEvent.BanMap && state != VetoState.Ban) return new(false, "INVALID_STATE");
         if (ev == VetoEvent.PickMap && state != VetoState.Pick) return new(false, "INVALID_STATE");
         if (ev == VetoEvent.PickSide && state != VetoState.PickSide) return new(false, "INVALID_STATE");
+        return new(true);
+    }
 
-        // Map-level invariants
-        if (mapId is not null && veto is not null)
-        {
-            bool isBanned = veto.Team1BannedMaps.Contains(mapId) || veto.Team2BannedMaps.Contains(mapId);
-            bool isPicked = veto.Team1PickedMaps.Any(p => p.MapId == mapId)
-                         || veto.Team2PickedMaps.Any(p => p.MapId == mapId);
+    private static VetoTransitionResult ValidateMapAvailability(string? mapId, MatchMapVeto? veto, VetoEvent ev)
+    {
+        if (mapId is null || veto is null) return new(true);
 
-            if (isBanned) return new(false, "MAP_ALREADY_USED");
-            if (ev != VetoEvent.PickSide && isPicked) return new(false, "MAP_ALREADY_USED");
-        }
+        bool isBanned = veto.Team1BannedMaps.Contains(mapId) || veto.Team2BannedMaps.Contains(mapId);
+        bool isPicked = veto.Team1PickedMaps.Any(p => p.MapId == mapId)
+                     || veto.Team2PickedMaps.Any(p => p.MapId == mapId);
 
+        if (isBanned) return new(false, "MAP_ALREADY_USED");
+        if (ev != VetoEvent.PickSide && isPicked) return new(false, "MAP_ALREADY_USED");
         return new(true);
     }
 

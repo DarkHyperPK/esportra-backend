@@ -794,6 +794,31 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             selectedMapId = pool.FirstOrDefault(m => !allExcluded.Contains(m));
         }
 
+        var gameMapIds = ResolvePickedMapOrder(bestOf, t1Picked, t2Picked, selectedMapId);
+
+        if (gameMapIds.Count == 0) return [];
+
+        var mapNames = (await conn.QueryAsync<dynamic>(@"
+            SELECT id::text as id, map_name
+            FROM public.game_maps
+            WHERE id::text = ANY(@ids)",
+            new { ids = gameMapIds.ToArray() })).ToDictionary(
+                m => (string)m.id,
+                m => (string)m.map_name);
+
+        var result = new List<(int, string, string)>();
+        for (int i = 0; i < gameMapIds.Count; i++)
+        {
+            var mapId = gameMapIds[i];
+            mapNames.TryGetValue(mapId, out var mapName);
+            result.Add((i + 1, mapId, mapName ?? "Unknown"));
+        }
+        return result;
+    }
+
+    private static List<string> ResolvePickedMapOrder(
+        int bestOf, PickedMap[] t1Picked, PickedMap[] t2Picked, string? selectedMapId)
+    {
         var gameMapIds = new List<string>();
         if (bestOf == 1)
         {
@@ -814,25 +839,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             if (t2Picked.Length > 1) gameMapIds.Add(t2Picked[1].MapId);
             if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
         }
-
-        if (gameMapIds.Count == 0) return [];
-
-        var mapNames = (await conn.QueryAsync<dynamic>(@"
-            SELECT id::text as id, map_name
-            FROM public.game_maps
-            WHERE id::text = ANY(@ids)",
-            new { ids = gameMapIds.ToArray() })).ToDictionary(
-                m => (string)m.id,
-                m => (string)m.map_name);
-
-        var result = new List<(int, string, string)>();
-        for (int i = 0; i < gameMapIds.Count; i++)
-        {
-            var mapId = gameMapIds[i];
-            mapNames.TryGetValue(mapId, out var mapName);
-            result.Add((i + 1, mapId, mapName ?? "Unknown"));
-        }
-        return result;
+        return gameMapIds;
     }
 
     /// <summary>
@@ -883,33 +890,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                     logger.LogInformation("Computed decider map for match {MatchId}: {MapId}", matchId, selectedMapId);
             }
 
-            // Build ordered game map list based on veto sequence
-            var gameMapIds = new List<string>();
-
-            if (bestOf == 1)
-            {
-                // BO1: the picked map or selected_map_id (last remaining)
-                if (t1Picked.Length > 0)
-                    gameMapIds.Add(t1Picked[0].MapId);
-                else if (selectedMapId is not null)
-                    gameMapIds.Add(selectedMapId);
-            }
-            else if (bestOf == 3)
-            {
-                // BO3: T1 pick, T2 pick, decider (selected_map_id)
-                if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
-                if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
-                if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
-            }
-            else if (bestOf == 5)
-            {
-                // BO5: T1 pick, T2 pick, T1 pick, T2 pick, decider
-                if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
-                if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
-                if (t1Picked.Length > 1) gameMapIds.Add(t1Picked[1].MapId);
-                if (t2Picked.Length > 1) gameMapIds.Add(t2Picked[1].MapId);
-                if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
-            }
+            var gameMapIds = ResolvePickedMapOrder(bestOf, t1Picked, t2Picked, selectedMapId);
 
             if (gameMapIds.Count == 0)
             {
