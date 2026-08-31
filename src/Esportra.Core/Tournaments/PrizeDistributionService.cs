@@ -47,6 +47,9 @@ public sealed class PrizeDistributionService
     {
         var results = new List<ResolvedPlacement>();
         var sortedBands = config.Placements.OrderBy(p => p.Position).ToList();
+        var placementCounts = orderedTeams
+            .GroupBy(t => t.Placement)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         foreach (var (teamId, teamName, placement) in orderedTeams)
         {
@@ -55,11 +58,12 @@ public sealed class PrizeDistributionService
 
             if (band is null)
             {
-                // Team placed outside configured bands — no prize
+                var count = placementCounts[placement];
+                var isTied = count > 1;
                 results.Add(new ResolvedPlacement(
                     teamId, teamName, placement,
-                    OrdinalLabel(placement), 0m,
-                    [], IsTied: false));
+                    isTied ? RangeLabel(placement, count) : OrdinalLabel(placement),
+                    0m, [], IsTied: isTied));
                 continue;
             }
 
@@ -81,11 +85,22 @@ public sealed class PrizeDistributionService
     public List<PrizeDistributionTemplate> GetTemplates(string format, int teamCount) =>
         PrizeDistributionTemplates.GetTemplates(format, teamCount);
 
-    private static string OrdinalLabel(int position) => position switch
+    private static string OrdinalLabel(int position)
     {
-        1 => "1st",
-        2 => "2nd",
-        3 => "3rd",
-        _ => $"{position}th",
-    };
+        var suffix = (position % 100) switch
+        {
+            11 or 12 or 13 => "th",
+            _ => (position % 10) switch
+            {
+                1 => "st",
+                2 => "nd",
+                3 => "rd",
+                _ => "th"
+            }
+        };
+        return $"{position}{suffix}";
+    }
+
+    private static string RangeLabel(int start, int count) =>
+        $"{OrdinalLabel(start)}–{OrdinalLabel(start + count - 1)}";
 }

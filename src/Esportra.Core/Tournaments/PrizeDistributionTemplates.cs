@@ -270,11 +270,19 @@ public static class PrizeDistributionTemplates
             i + 1, OrdinalLabel(i + 1), (decimal)p)).ToList();
     }
 
-    private static string OrdinalLabel(int position) => position switch
+    private static string OrdinalLabel(int position)
     {
-        1 => "1st",
-        2 => "2nd",
-        3 => "3rd",
-        _ => $"{position}th",
-    };
+        var suffix = (position % 100) switch
+        {
+            11 or 12 or 13 => "th",
+            _ => (position % 10) switch
+            {
+                1 => "st",
+                2 => "nd",
+                3 => "rd",
+                _ => "th"
+            }
+        };
+        return $"{position}{suffix}";
+    }
 }
