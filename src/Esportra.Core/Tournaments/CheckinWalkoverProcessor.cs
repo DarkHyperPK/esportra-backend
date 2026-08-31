@@ -101,17 +101,7 @@ public sealed class CheckinWalkoverProcessor(
         if (!SelfPlayMatchRoomService.IsCheckinWindowClosed(effectiveTime.Value, windowMinutes, nowUtc))
             return CheckinWalkoverOutcome.WindowNotClosed;
 
-        if (ctx.Team1CheckedIn && ctx.Team2CheckedIn)
-            return CheckinWalkoverOutcome.BothCheckedIn;
-
-        if (ctx.Team1CheckedIn && !ctx.Team2CheckedIn)
-            return CheckinWalkoverOutcome.Walkover(ctx.Team1Id.Value, true, false);
-
-        if (!ctx.Team1CheckedIn && ctx.Team2CheckedIn)
-            return CheckinWalkoverOutcome.Walkover(ctx.Team2Id!.Value, false, true);
-
-        // Neither team checked in — both teams forfeit, and organizers are notified.
-        return CheckinWalkoverOutcome.DoubleForfeit(false, false);
+        return GetTeamWalkoverOutcome(ctx) ?? CheckinWalkoverOutcome.DoubleForfeit(false, false);
     }
 
     internal async Task<CheckinWalkoverOutcome> TryProcessDueWalkoverAsync(
@@ -130,37 +120,34 @@ public sealed class CheckinWalkoverProcessor(
         var winnerScore = bestOf == 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
 
         if (ctx.Team1CheckedIn && !ctx.Team2CheckedIn)
-        {
-            var success = await finalizer.FinalizeAsync(
-                ctx.MatchId,
-                ctx.Team1Id!.Value,
-                ctx.Team2Id,
-                winnerScore,
-                0,
-                ct);
-
-            return success
-                ? CheckinWalkoverOutcome.Walkover(ctx.Team1Id.Value, ctx.Team1CheckedIn, ctx.Team2CheckedIn)
-                : CheckinWalkoverOutcome.Failed;
-        }
+            return await ProcessSingleTeamWalkoverAsync(ctx, team1Won: true, winnerScore, ct);
 
         if (!ctx.Team1CheckedIn && ctx.Team2CheckedIn)
-        {
-            var success = await finalizer.FinalizeAsync(
-                ctx.MatchId,
-                ctx.Team2Id!.Value,
-                ctx.Team1Id,
-                0,
-                winnerScore,
-                ct);
-
-            return success
-                ? CheckinWalkoverOutcome.Walkover(ctx.Team2Id.Value, ctx.Team1CheckedIn, ctx.Team2CheckedIn)
-                : CheckinWalkoverOutcome.Failed;
-        }
+            return await ProcessSingleTeamWalkoverAsync(ctx, team1Won: false, winnerScore, ct);
 
         return await MarkDoubleForfeitAsync(conn, ctx, ct)
             ? CheckinWalkoverOutcome.DoubleForfeit(ctx.Team1CheckedIn, ctx.Team2CheckedIn)
+            : CheckinWalkoverOutcome.Failed;
+    }
+
+    private static CheckinWalkoverOutcome? GetTeamWalkoverOutcome(SelfPlayMatchRoomContext ctx)
+    {
+        if (ctx.Team1CheckedIn && ctx.Team2CheckedIn) return CheckinWalkoverOutcome.BothCheckedIn;
+        if (ctx.Team1CheckedIn && !ctx.Team2CheckedIn) return CheckinWalkoverOutcome.Walkover(ctx.Team1Id!.Value, true, false);
+        if (!ctx.Team1CheckedIn && ctx.Team2CheckedIn) return CheckinWalkoverOutcome.Walkover(ctx.Team2Id!.Value, false, true);
+        return null;
+    }
+
+    private async Task<CheckinWalkoverOutcome> ProcessSingleTeamWalkoverAsync(
+        SelfPlayMatchRoomContext ctx, bool team1Won, int winnerScore, CancellationToken ct)
+    {
+        Guid winnerId = team1Won ? ctx.Team1Id!.Value : ctx.Team2Id!.Value;
+        Guid? loserId = team1Won ? ctx.Team2Id : ctx.Team1Id;
+        int t1Score = team1Won ? winnerScore : 0;
+        int t2Score = team1Won ? 0 : winnerScore;
+        var success = await finalizer.FinalizeAsync(ctx.MatchId, winnerId, loserId, t1Score, t2Score, ct);
+        return success
+            ? CheckinWalkoverOutcome.Walkover(winnerId, ctx.Team1CheckedIn, ctx.Team2CheckedIn)
             : CheckinWalkoverOutcome.Failed;
     }
 

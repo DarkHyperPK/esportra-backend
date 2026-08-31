@@ -265,64 +265,61 @@ public sealed class PlacementResolutionService(
         var seen = new HashSet<Guid>();
         int nextPlacement = 1;
 
-        // Grand final: winner = 1st, loser = 2nd
         var grandFinal = matches.FirstOrDefault(m =>
             string.Equals((string?)m.bracket_type, "final", StringComparison.OrdinalIgnoreCase));
+        nextPlacement = CollectGrandFinalPlacements(grandFinal, result, seen, nextPlacement);
 
-        if (grandFinal is not null)
-        {
-            if (grandFinal.winner_id is Guid gfWin && seen.Add(gfWin))
-                result.Add(new(gfWin, (string?)grandFinal.winner_name ?? "Unknown", nextPlacement++));
-            if (grandFinal.loser_id is Guid gfLose && seen.Add(gfLose))
-                result.Add(new(gfLose, (string?)grandFinal.loser_name ?? "Unknown", nextPlacement++));
-        }
-
-        // Losers bracket matches, ordered by latest round first — each loser gets next placement
         var loserMatches = matches
             .Where(m => string.Equals((string?)m.bracket_type, "losers", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(m => (int)m.round_index)
-            .ToList();
+            .GroupBy(m => (int)m.round_index)
+            .OrderByDescending(g => g.Key);
+        nextPlacement = CollectBandPlacements(loserMatches, result, seen, nextPlacement);
 
-        // Group losers bracket by round — each round's losers share a placement band
-        foreach (var roundGroup in loserMatches.GroupBy(m => (int)m.round_index).OrderByDescending(g => g.Key))
+        var winnerMatches = matches
+            .Where(m => string.Equals((string?)m.bracket_type, "winners", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(m => (int)m.round_index)
+            .OrderByDescending(g => g.Key);
+        CollectBandPlacements(winnerMatches, result, seen, nextPlacement);
+
+        return result;
+    }
+
+    private static int CollectGrandFinalPlacements(
+        dynamic? grandFinal,
+        List<TeamPlacement> result,
+        HashSet<Guid> seen,
+        int nextPlacement)
+    {
+        if (grandFinal is null) return nextPlacement;
+        if (grandFinal.winner_id is Guid gfWin && seen.Add(gfWin))
+            result.Add(new(gfWin, (string?)grandFinal.winner_name ?? "Unknown", nextPlacement++));
+        if (grandFinal.loser_id is Guid gfLose && seen.Add(gfLose))
+            result.Add(new(gfLose, (string?)grandFinal.loser_name ?? "Unknown", nextPlacement++));
+        return nextPlacement;
+    }
+
+    private static int CollectBandPlacements(
+        IEnumerable<IGrouping<int, dynamic>> roundGroups,
+        List<TeamPlacement> result,
+        HashSet<Guid> seen,
+        int nextPlacement)
+    {
+        foreach (var roundGroup in roundGroups)
         {
-            var bandLosers = new List<(Guid Id, string Name)>();
+            var band = new List<(Guid Id, string Name)>();
             foreach (var m in roundGroup)
             {
                 if (m.loser_id is null) continue;
                 var lId = (Guid)m.loser_id;
                 if (seen.Add(lId))
-                    bandLosers.Add((lId, (string?)m.loser_name ?? "Unknown"));
+                    band.Add((lId, (string?)m.loser_name ?? "Unknown"));
             }
-            foreach (var loser in bandLosers)
+            foreach (var loser in band)
                 result.Add(new(loser.Id, loser.Name, nextPlacement));
-            if (bandLosers.Count > 0)
-                nextPlacement += bandLosers.Count;
+            if (band.Count > 0)
+                nextPlacement += band.Count;
         }
-
-        // Winners bracket losers (eliminated before reaching the grand final)
-        var winnerMatches = matches
-            .Where(m => string.Equals((string?)m.bracket_type, "winners", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(m => (int)m.round_index)
-            .ToList();
-
-        foreach (var roundGroup in winnerMatches.GroupBy(m => (int)m.round_index).OrderByDescending(g => g.Key))
-        {
-            var losers = new List<(Guid Id, string Name)>();
-            foreach (var m in roundGroup)
-            {
-                if (m.loser_id is null) continue;
-                var lid = (Guid)m.loser_id;
-                if (seen.Add(lid))
-                    losers.Add((lid, (string?)m.loser_name ?? "Unknown"));
-            }
-            foreach (var loser in losers)
-                result.Add(new(loser.Id, loser.Name, nextPlacement));
-            if (losers.Count > 0)
-                nextPlacement += losers.Count;
-        }
-
-        return result;
+        return nextPlacement;
     }
 
     private async Task<List<TeamPlacement>> ResolveStandingsAsync(
