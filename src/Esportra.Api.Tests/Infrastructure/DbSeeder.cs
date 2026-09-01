@@ -29,15 +29,15 @@ public sealed class DbSeeder(string connectionString)
             """,
             new { id = userId, email = string.IsNullOrEmpty(email) ? $"{userId}@test.esportra.com" : email });
 
+        var resolvedEmail = string.IsNullOrEmpty(email) ? $"{userId}@test.esportra.com" : email;
         try
         {
             await conn.ExecuteAsync("""
-                INSERT INTO public.profiles (id, username, display_name, avatar_url, bio, country_code,
-                                             created_at, updated_at, is_banned)
-                VALUES (@id, @username, @username, NULL, NULL, NULL, NOW(), NOW(), FALSE)
+                INSERT INTO public.profiles (id, username, full_name, email, created_at, updated_at)
+                VALUES (@id, @username, @username, @email, NOW(), NOW())
                 ON CONFLICT (id) DO NOTHING
                 """,
-                new { id = userId, username = $"testuser_{userId:N}"[..20] });
+                new { id = userId, username = $"testuser_{userId:N}"[..20], email = resolvedEmail });
         }
         catch (PostgresException ex) when (ex.SqlState == "42P01")
         {

@@ -102,10 +102,9 @@ public sealed class BracketEndpointTests
     [Fact]
     public async Task SeedBracket_Unauthenticated_Returns401()
     {
-        var stageId = await _seeder.SeedStageAsync(TournamentId);
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync($"/api/stages/{stageId}/seed-bracket", new { });
+        var response = await client.PostAsJsonAsync($"/api/stages/{Guid.NewGuid()}/seed-bracket", new { });
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
