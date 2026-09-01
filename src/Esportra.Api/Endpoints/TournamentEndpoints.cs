@@ -828,11 +828,13 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT organizer_id, deleted_at FROM tournaments WHERE id = @id", new { id });
-            if (row is null) return Results.NotFound();
-            if (row.deleted_at is null)
+            var row = await conn.QuerySingleOrDefaultAsync<(Guid OrganizerId, DateTimeOffset? DeletedAt, string Status, bool IsPublic)>(
+                "SELECT organizer_id, deleted_at, status::text, is_public FROM tournaments WHERE id = @id", new { id });
+            if (row == default) return Results.NotFound();
+            if (row.DeletedAt is null)
                 return Results.BadRequest(new { error = "Tournament must be moved to trash before it can be permanently deleted." });
+            if (row.Status == "completed" && row.IsPublic)
+                return Results.BadRequest(new { error = "Completed public tournaments cannot be permanently deleted." });
 
             using var tx = conn.BeginTransaction();
             try
