@@ -252,6 +252,7 @@ public sealed class AdminEndpointTests
     {
         await _seeder.SeedAuthUserAsync(AdminUserId);
         await _seeder.SeedUserRoleAsync(AdminUserId, "admin");
+        await _seeder.SeedAdminPanelRoleAsync(AdminUserId);
 
         await _seeder.SeedAuthUserAsync(RegularUserId);
         await _seeder.SeedUserRoleAsync(RegularUserId, "casual");

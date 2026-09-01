@@ -71,14 +71,28 @@ public sealed class DbSeeder(string connectionString)
         await conn.ExecuteAsync("""
             INSERT INTO public.tournaments
                 (id, name, game, format, status, organizer_id, max_teams,
-                 is_public, slug, created_at, updated_at)
+                 is_public, slug, start_date, end_date, registration_deadline,
+                 created_at, updated_at)
             VALUES
                 (@id, @name, 'test-game', @format, @status::tournament_status, @organizerId, @maxTeams,
-                 FALSE, @slug, NOW(), NOW())
+                 FALSE, @slug, NOW(), NOW() + INTERVAL '7 days', NOW() - INTERVAL '1 day',
+                 NOW(), NOW())
             ON CONFLICT (id) DO NOTHING
             """,
             new { id = id.Value, name, format, status, organizerId, maxTeams, slug = $"test-{id.Value:N}"[..20] });
         return id.Value;
+    }
+
+    /// <summary>Grants the user an admin panel role by linking to the pre-seeded ops_admin role.</summary>
+    public async Task SeedAdminPanelRoleAsync(Guid userId)
+    {
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.admin_user_roles (user_id, role_id)
+            SELECT @userId, id FROM public.admin_roles WHERE key = 'ops_admin'
+            ON CONFLICT (user_id, role_id) DO NOTHING
+            """,
+            new { userId });
     }
 
     /// <summary>Seeds a team row and returns its ID.</summary>
