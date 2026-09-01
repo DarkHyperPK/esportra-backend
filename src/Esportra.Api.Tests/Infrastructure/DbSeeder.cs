@@ -5,7 +5,7 @@ namespace Esportra.Api.Tests.Infrastructure;
 
 /// <summary>
 /// Helpers that seed the minimum required rows for a test to pass auth/FK checks.
-/// Every public method is idempotent (ON CONFLICT DO NOTHING / IF NOT EXISTS).
+/// Every public method is idempotent (ON CONFLICT DO NOTHING).
 /// </summary>
 public sealed class DbSeeder(string connectionString)
 {
@@ -16,10 +16,7 @@ public sealed class DbSeeder(string connectionString)
         return conn;
     }
 
-    /// <summary>
-    /// Inserts a row into auth.users so FK constraints on user_roles etc. are satisfied.
-    /// Also inserts a minimal public.profiles row if the schema requires one.
-    /// </summary>
+    /// <summary>Inserts a row into auth.users so FK constraints are satisfied.</summary>
     public async Task SeedAuthUserAsync(Guid userId, string email = "")
     {
         await using var conn = OpenConnection();
@@ -34,7 +31,6 @@ public sealed class DbSeeder(string connectionString)
             """,
             new { id = userId, email = string.IsNullOrEmpty(email) ? $"{userId}@test.esportra.com" : email });
 
-        // Profiles table may have a FK → auth.users; insert minimally if it exists
         try
         {
             await conn.ExecuteAsync("""
@@ -45,13 +41,13 @@ public sealed class DbSeeder(string connectionString)
                 """,
                 new { id = userId, username = $"testuser_{userId:N}"[..20] });
         }
-        catch (PostgresException ex) when (ex.SqlState == "42P01") // relation does not exist
+        catch (PostgresException ex) when (ex.SqlState == "42P01")
         {
             // profiles table doesn't exist in this schema version — skip
         }
     }
 
-    /// <summary>Grants the user a platform-level role (e.g. 'organizer', 'player').</summary>
+    /// <summary>Grants the user a platform-level role.</summary>
     public async Task SeedUserRoleAsync(Guid userId, string role)
     {
         await using var conn = OpenConnection();
@@ -107,5 +103,84 @@ public sealed class DbSeeder(string connectionString)
             new { teamId = id, userId = captainId });
 
         return id;
+    }
+
+    /// <summary>Seeds a tournament_stages row and returns its ID.</summary>
+    public async Task<Guid> SeedStageAsync(
+        Guid tournamentId,
+        string format = "single_elimination",
+        string name = "Main Stage",
+        int stageOrder = 1,
+        Guid? id = null)
+    {
+        id ??= Guid.NewGuid();
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.tournament_stages
+                (id, tournament_id, name, format, stage_order, best_of, advancement_count,
+                 status, created_at, updated_at)
+            VALUES
+                (@id, @tournamentId, @name, @format, @stageOrder, 1, 1,
+                 'pending', NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            new { id = id.Value, tournamentId, name, format, stageOrder });
+        return id.Value;
+    }
+
+    /// <summary>Seeds a brkt_versions row and returns its ID.</summary>
+    public async Task<Guid> SeedBracketVersionAsync(
+        Guid tournamentId,
+        Guid stageId,
+        string status = "draft",
+        Guid? id = null)
+    {
+        id ??= Guid.NewGuid();
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.brkt_versions
+                (id, tournament_id, stage_id, version_number, status, created_at)
+            VALUES
+                (@id, @tournamentId, @stageId, 1, @status, NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            new { id = id.Value, tournamentId, stageId, status });
+        return id.Value;
+    }
+
+    /// <summary>Seeds a brkt_matches row and returns its ID.</summary>
+    public async Task<Guid> SeedMatchAsync(
+        Guid versionId,
+        string bracketType = "winners",
+        int roundIndex = 0,
+        int matchNumber = 1,
+        Guid? team1Id = null,
+        Guid? team2Id = null,
+        string matchStatus = "pending",
+        Guid? id = null)
+    {
+        id ??= Guid.NewGuid();
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.brkt_matches
+                (id, version_id, bracket_type, round_index, match_number,
+                 team1_id, team2_id, status, best_of, created_at, updated_at)
+            VALUES
+                (@id, @versionId, @bracketType, @roundIndex, @matchNumber,
+                 @team1Id, @team2Id, @matchStatus, 1, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            new
+            {
+                id = id.Value,
+                versionId,
+                bracketType,
+                roundIndex,
+                matchNumber,
+                team1Id,
+                team2Id,
+                matchStatus
+            });
+        return id.Value;
     }
 }

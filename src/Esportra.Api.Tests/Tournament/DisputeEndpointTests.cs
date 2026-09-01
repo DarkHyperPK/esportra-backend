@@ -6,8 +6,8 @@ using Xunit;
 
 namespace Esportra.Api.Tests.Tournament;
 
-[Collection(TestDatabaseCollection.Name)]
-public sealed class DisputeEndpointTests : IClassFixture<ApiFactory>
+[Collection(IntegrationCollection.Name)]
+public sealed class DisputeEndpointTests
 {
     private readonly ApiFactory _factory;
     private readonly DbSeeder _seeder;
@@ -15,10 +15,10 @@ public sealed class DisputeEndpointTests : IClassFixture<ApiFactory>
     private static readonly Guid UserId = Guid.NewGuid();
     private static readonly Guid TournamentId = Guid.NewGuid();
 
-    public DisputeEndpointTests(TestDatabase db)
+    public DisputeEndpointTests(ApiFactory factory)
     {
-        _factory = new ApiFactory(db);
-        _seeder = _factory.Seeder;
+        _factory = factory;
+        _seeder = factory.Seeder;
     }
 
     // ── POST /api/disputes ────────────────────────────────────────────────────
