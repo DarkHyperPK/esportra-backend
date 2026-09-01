@@ -254,6 +254,6 @@ public sealed class AdminEndpointTests
         await _seeder.SeedUserRoleAsync(AdminUserId, "admin");
 
         await _seeder.SeedAuthUserAsync(RegularUserId);
-        await _seeder.SeedUserRoleAsync(RegularUserId, "player");
+        await _seeder.SeedUserRoleAsync(RegularUserId, "casual");
     }
 }

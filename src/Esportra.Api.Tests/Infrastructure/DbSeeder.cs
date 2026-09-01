@@ -73,7 +73,7 @@ public sealed class DbSeeder(string connectionString)
                 (id, name, game, format, status, organizer_id, max_teams,
                  is_public, slug, created_at, updated_at)
             VALUES
-                (@id, @name, 'test-game', @format, @status, @organizerId, @maxTeams,
+                (@id, @name, 'test-game', @format, @status::tournament_status, @organizerId, @maxTeams,
                  FALSE, @slug, NOW(), NOW())
             ON CONFLICT (id) DO NOTHING
             """,
