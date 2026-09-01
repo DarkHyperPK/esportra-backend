@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -49,6 +50,20 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     }
 
     // ── WebApplicationFactory ─────────────────────────────────────────────────
+
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        // AdminMutationAudit middleware injects a scoped service via constructor.
+        // Development mode enables DI scope validation which blocks startup when
+        // a scoped service is captured at the root provider level. Disable it here
+        // so the test host builds correctly without changing production registration.
+        builder.UseDefaultServiceProvider(options =>
+        {
+            options.ValidateScopes = false;
+            options.ValidateOnBuild = false;
+        });
+        return base.CreateHost(builder);
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {

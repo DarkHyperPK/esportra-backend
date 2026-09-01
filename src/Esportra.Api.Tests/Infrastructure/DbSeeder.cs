@@ -20,13 +20,11 @@ public sealed class DbSeeder(string connectionString)
     public async Task SeedAuthUserAsync(Guid userId, string email = "")
     {
         await using var conn = OpenConnection();
+        // CI replay schema defines auth.users with only (id, email, created_at, deleted_at) —
+        // a minimal FK-satisfaction stub, not the full Supabase auth.users schema.
         await conn.ExecuteAsync("""
-            INSERT INTO auth.users (id, email, created_at, updated_at, confirmation_sent_at,
-                                    recovery_sent_at, email_change_sent_at, last_sign_in_at,
-                                    raw_app_meta_data, raw_user_meta_data,
-                                    is_super_admin, role, aud, encrypted_password)
-            VALUES (@id, @email, NOW(), NOW(), NULL, NULL, NULL, NULL,
-                    '{}'::jsonb, '{}'::jsonb, FALSE, 'authenticated', 'authenticated', '')
+            INSERT INTO auth.users (id, email, created_at)
+            VALUES (@id, @email, NOW())
             ON CONFLICT (id) DO NOTHING
             """,
             new { id = userId, email = string.IsNullOrEmpty(email) ? $"{userId}@test.esportra.com" : email });
