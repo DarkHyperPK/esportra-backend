@@ -120,6 +120,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             await using var cmd = new NpgsqlCommand(sql, conn);
             await cmd.ExecuteNonQueryAsync();
         }
+
+        // The CI replay auth.users stub has only 4 columns (id, email, created_at, deleted_at).
+        // Endpoint SQL references email_confirmed_at — add it so queries don't error.
+        await using var patch = new NpgsqlCommand(
+            "ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_confirmed_at timestamptz;",
+            conn);
+        await patch.ExecuteNonQueryAsync();
     }
 
     private void RunMigrations()

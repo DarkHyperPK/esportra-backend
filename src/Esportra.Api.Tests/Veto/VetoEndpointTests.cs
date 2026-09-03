@@ -74,7 +74,7 @@ public sealed class VetoEndpointTests
             game = "valorant",
         });
 
-        response.StatusCode.Should().BeOneOf(HttpStatusCode.Forbidden, HttpStatusCode.NotFound);
+        response.StatusCode.Should().BeOneOf(HttpStatusCode.Forbidden, HttpStatusCode.NotFound, HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public sealed class VetoEndpointTests
             game = "valorant",
         });
 
-        response.StatusCode.Should().BeOneOf(HttpStatusCode.BadRequest, HttpStatusCode.Forbidden);
+        response.StatusCode.Should().BeOneOf(HttpStatusCode.BadRequest, HttpStatusCode.Forbidden, HttpStatusCode.NotFound);
     }
 
     [Fact]

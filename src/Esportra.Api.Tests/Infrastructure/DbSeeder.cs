@@ -83,7 +83,12 @@ public sealed class DbSeeder(string connectionString)
         return id.Value;
     }
 
-    /// <summary>Grants the user an admin panel role linked to ops_admin.</summary>
+    /// <summary>Grants the user a super_admin panel role.</summary>
+    /// <remarks>
+    /// Uses super_admin because RoleEnrichmentMiddleware auto-grants ALL permissions
+    /// via reflection for super_admin, eliminating the need to seed admin_permissions
+    /// and admin_role_permissions rows in CI.
+    /// </remarks>
     public async Task SeedAdminPanelRoleAsync(Guid userId)
     {
         await using var conn = OpenConnection();
@@ -91,12 +96,12 @@ public sealed class DbSeeder(string connectionString)
         // against the CI replay schema — ensure the role exists before linking the user.
         await conn.ExecuteAsync("""
             INSERT INTO public.admin_roles (name, key, description)
-            VALUES ('Ops Admin', 'ops_admin', 'Full operations access')
+            VALUES ('Super Admin', 'super_admin', 'Full access with all permissions')
             ON CONFLICT (key) DO NOTHING
             """);
         await conn.ExecuteAsync("""
             INSERT INTO public.admin_user_roles (user_id, role_id)
-            SELECT @userId, id FROM public.admin_roles WHERE key = 'ops_admin'
+            SELECT @userId, id FROM public.admin_roles WHERE key = 'super_admin'
             ON CONFLICT (user_id, role_id) DO NOTHING
             """,
             new { userId });
@@ -112,7 +117,8 @@ public sealed class DbSeeder(string connectionString)
             VALUES (@id, @name, @tag, 'test-game', @ownerId, NOW(), NOW())
             ON CONFLICT (id) DO NOTHING
             """,
-            new { id, name, tag = name[..Math.Min(name.Length, 4)].ToUpperInvariant(), ownerId });
+            // Tag derived from the team UUID — unique per team, avoids teams_tag_key violation
+            new { id, name, tag = id.ToString("N")[..8].ToUpperInvariant(), ownerId });
 
         await conn.ExecuteAsync("""
             INSERT INTO public.team_members (team_id, user_id, role, joined_at)
