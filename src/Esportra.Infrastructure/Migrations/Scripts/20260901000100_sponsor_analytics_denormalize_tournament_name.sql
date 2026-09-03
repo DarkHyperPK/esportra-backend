@@ -4,31 +4,17 @@
 -- because tournament_id is part of the PK and rows cannot be meaningfully retained
 -- without it — blocking deletion protects the data instead.
 
--- sponsor_analytics_events: add tournament_name snapshot
+-- sponsor_analytics_events: add tournament_name snapshot column.
+-- No backfill: existing rows still have their tournament FK intact so the name
+-- is derivable at query time. The snapshot is only needed when the tournament is
+-- deleted (cascade-NULL), which is handled by the updated trigger below.
 ALTER TABLE public.sponsor_analytics_events
     ADD COLUMN IF NOT EXISTS tournament_name TEXT;
 
--- The immutability trigger (sponsor_analytics_events_no_update) blocks all updates
--- that are not a cascade-NULLing of tournament_id. Disable it for the backfill only.
-ALTER TABLE public.sponsor_analytics_events DISABLE TRIGGER sponsor_analytics_events_no_update;
-
-UPDATE public.sponsor_analytics_events e
-SET tournament_name = t.name
-FROM public.tournaments t
-WHERE e.tournament_id = t.id
-  AND e.tournament_name IS NULL;
-
-ALTER TABLE public.sponsor_analytics_events ENABLE TRIGGER sponsor_analytics_events_no_update;
-
--- sponsor_content_daily_stats: add tournament_name snapshot
+-- sponsor_content_daily_stats: add tournament_name snapshot column.
+-- Same reasoning — no backfill needed.
 ALTER TABLE public.sponsor_content_daily_stats
     ADD COLUMN IF NOT EXISTS tournament_name TEXT;
-
-UPDATE public.sponsor_content_daily_stats c
-SET tournament_name = t.name
-FROM public.tournaments t
-WHERE c.tournament_id = t.id
-  AND c.tournament_name IS NULL;
 
 -- sponsor_slot_daily_stats: change FK from CASCADE to RESTRICT (data cannot survive
 -- without tournament_id in PK; block deletion rather than silently destroy analytics)
@@ -49,12 +35,6 @@ END $$;
 
 ALTER TABLE public.sponsor_slot_daily_stats
     ADD COLUMN IF NOT EXISTS tournament_name TEXT;
-
-UPDATE public.sponsor_slot_daily_stats s
-SET tournament_name = t.name
-FROM public.tournaments t
-WHERE s.tournament_id = t.id
-  AND s.tournament_name IS NULL;
 
 -- Re-declare immutability trigger now that tournament_name exists on the table.
 -- Migration 000000 installed a version that did not yet know about this column;
