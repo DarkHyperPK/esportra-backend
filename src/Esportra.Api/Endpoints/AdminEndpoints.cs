@@ -1562,7 +1562,7 @@ public static class AdminEndpoints
                     cancellationToken: ct));
             if (existing is null) return Results.NotFound();
 
-            var affected = await conn.ExecuteAsync(
+            var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 new CommandDefinition(
                     """
                 UPDATE tournaments SET
@@ -1576,6 +1576,11 @@ public static class AdminEndpoints
                     start_date  = COALESCE(@StartDate, start_date),
                     updated_at  = now()
                 WHERE id = @id
+                RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
+                         entry_fee, prize_pool, start_date, end_date, registration_deadline,
+                         status, banner_url, logo_url, organization_id, venue_id, is_public, is_featured,
+                         check_in_required, check_in_deadline, auto_remove_unchecked,
+                         rewards, stream_url, settings, organizer_id, created_at, updated_at
                 """,
                     new
                     {
@@ -1622,7 +1627,7 @@ public static class AdminEndpoints
                 },
                 ct: ct);
 
-            return affected == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+            return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Admin");
 
         // ── POST /api/admin/tournaments/bulk-action ───────────────────────────
