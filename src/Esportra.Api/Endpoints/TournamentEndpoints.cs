@@ -35,25 +35,46 @@ public static class TournamentEndpoints
     private static readonly HashSet<string> AllowedCreateStatuses = new(StringComparer.OrdinalIgnoreCase)
         { "draft", "open", "published" };
 
-    private static string? SerializeTournamentSettings(object? settings, bool supportsMapVeto)
+    private static string? SerializeTournamentSettings(
+        object? settings, bool supportsMapVeto,
+        bool? assistedReportingEnabled = null, int? requiredAccountLinks = null)
     {
-        if (settings is null) return null;
+        JsonObject obj;
 
-        var json = JsonSerializer.Serialize(settings);
-        var node = JsonNode.Parse(json);
-        if (node is JsonObject obj)
+        if (settings is not null)
         {
-            if (!supportsMapVeto)
-                obj["mapVetoEnabled"] = false;
-
-            return obj.ToJsonString();
+            var json = JsonSerializer.Serialize(settings);
+            var node = JsonNode.Parse(json);
+            obj = node is JsonObject parsed ? parsed : new JsonObject();
+        }
+        else if (assistedReportingEnabled.HasValue)
+        {
+            obj = new JsonObject();
+        }
+        else
+        {
+            return null;
         }
 
-        var fallback = new JsonObject();
         if (!supportsMapVeto)
-            fallback["mapVetoEnabled"] = false;
+            obj["mapVetoEnabled"] = false;
 
-        return fallback.ToJsonString();
+        if (assistedReportingEnabled.HasValue)
+        {
+            obj["assistedReportingEnabled"] = assistedReportingEnabled.Value;
+            obj["requiredAccountLinks"] = requiredAccountLinks ?? 1;
+        }
+
+        return obj.ToJsonString();
+    }
+
+    private static string? BuildAccountLinkPatch(bool? assistedReportingEnabled, int? requiredAccountLinks)
+    {
+        if (!assistedReportingEnabled.HasValue && !requiredAccountLinks.HasValue) return null;
+        var obj = new JsonObject();
+        if (assistedReportingEnabled.HasValue) obj["assistedReportingEnabled"] = assistedReportingEnabled.Value;
+        if (requiredAccountLinks.HasValue) obj["requiredAccountLinks"] = requiredAccountLinks.Value;
+        return obj.ToJsonString();
     }
 
     private static string? SerializeJson(object? value)
@@ -577,6 +598,10 @@ public static class TournamentEndpoints
                 var validationError = ValidateCreateTournamentConstraints(req, reservedSlots);
                 if (validationError is not null) { tx.Rollback(); return Results.BadRequest(new { error = validationError }); }
 
+                var accountLinkError = ValidateAccountLinkSettings(
+                    req.AssistedReportingEnabled, req.RequiredAccountLinks, catalog.TeamSize, catalog.SupportsAssistedReporting);
+                if (accountLinkError is not null) { tx.Rollback(); return Results.BadRequest(new { error = accountLinkError }); }
+
                 var dates = NormalizeTournamentDates(req);
                 var defaults = NormalizeTournamentDefaults(req);
 
@@ -634,7 +659,7 @@ public static class TournamentEndpoints
                         autoRemoveUnchecked = defaults.AutoRemoveUnchecked,
                         rewards = req.Rewards,
                         streamUrl = req.StreamUrl,
-                        settings = SerializeTournamentSettingsOrEmpty(req.Settings, catalog.SupportsMapVeto),
+                        settings = SerializeTournamentSettingsOrEmpty(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks),
                         organizerId = userCtx.UserIdGuid,
                         rules = req.Rules,
                         paymentInstructions = req.PaymentInstructions,
@@ -699,7 +724,8 @@ public static class TournamentEndpoints
             var existingTournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT organizer_id, game, game_mode, team_size, format, status,
-                       start_date, end_date, registration_deadline, max_teams
+                       start_date, end_date, registration_deadline, max_teams,
+                       COALESCE((settings->>'assistedReportingEnabled')::boolean, false) AS assisted_reporting_enabled
                 FROM tournaments
                 WHERE id = @id
                 """,
@@ -742,7 +768,11 @@ public static class TournamentEndpoints
                     payment_instructions = COALESCE(@paymentInstructions, payment_instructions),
                     region               = COALESCE(@region, region),
                     currency             = COALESCE(@currency, currency),
-                    settings             = CASE WHEN @settings IS NOT NULL THEN @settings::jsonb ELSE settings END,
+                    settings             = CASE
+                                             WHEN @settings IS NOT NULL THEN @settings::jsonb
+                                             WHEN @accountLinkPatch IS NOT NULL THEN settings || @accountLinkPatch::jsonb
+                                             ELSE settings
+                                         END,
                     prize_distribution   = CASE WHEN @prizeDistribution IS NOT NULL THEN @prizeDistribution::jsonb ELSE prize_distribution END,
                     reserved_invite_slots = COALESCE(@reservedInviteSlots, reserved_invite_slots),
                     invite_expiry_days   = COALESCE(@inviteExpiryDays, invite_expiry_days),
@@ -785,7 +815,8 @@ public static class TournamentEndpoints
                     paymentInstructions = req.PaymentInstructions,
                     region = req.Region,
                     currency = req.Currency,
-                    settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto),
+                    settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks),
+                    accountLinkPatch = BuildAccountLinkPatch(req.AssistedReportingEnabled, req.RequiredAccountLinks),
                     prizeDistribution = SerializeJson(req.PrizeDistribution),
                     reservedInviteSlots = reservedSlotsForUpdate,
                     inviteExpiryDays = req.InviteExpiryDays.HasValue
@@ -4118,6 +4149,23 @@ public static class TournamentEndpoints
             req.RegistrationDeadline ?? req.StartDate.AddDays(-1), req.StartDate);
     }
 
+    private static string? ValidateAccountLinkSettings(
+        bool? assistedReportingEnabled,
+        int? requiredAccountLinks,
+        int teamSize,
+        bool supportsAssistedReporting)
+    {
+        if (requiredAccountLinks.HasValue && (requiredAccountLinks.Value < 1 || requiredAccountLinks.Value > teamSize))
+            return $"Required account links must be between 1 and {teamSize}.";
+
+        if (assistedReportingEnabled != true) return null;
+
+        if (!supportsAssistedReporting)
+            return "Assisted match reporting is not supported for this game.";
+
+        return null;
+    }
+
     private static TournamentCreateDates NormalizeTournamentDates(CreateTournamentRequest req)
     {
         var endDate = req.EndDate ?? req.StartDate.AddHours(2);
@@ -4138,8 +4186,10 @@ public static class TournamentEndpoints
             VenueId: Guid.TryParse(req.VenueId, out var vg) ? vg : (Guid?)null,
             PayoutMethod: req.PayoutMethod is "gateway" ? "gateway" : "manual");
 
-    private static string SerializeTournamentSettingsOrEmpty(object? settings, bool supportsMapVeto)
-        => SerializeTournamentSettings(settings, supportsMapVeto) ?? "{}";
+    private static string SerializeTournamentSettingsOrEmpty(
+        object? settings, bool supportsMapVeto,
+        bool? assistedReportingEnabled = null, int? requiredAccountLinks = null)
+        => SerializeTournamentSettings(settings, supportsMapVeto, assistedReportingEnabled, requiredAccountLinks) ?? "{}";
 
     private static DateTimeOffset? ParseStageDateTimeOffset(string? value)
         => value is not null && DateTimeOffset.TryParse(value, out var result) ? result : (DateTimeOffset?)null;
@@ -4488,6 +4538,7 @@ public static class TournamentEndpoints
             ["published"] = ["open", "ongoing", "cancelled"],
             ["check_in"] = ["ongoing", "cancelled"],
             ["ongoing"] = ["completed", "cancelled"],
+            ["completed"] = ["open", "draft", "cancelled"],
             ["approved"] = ["open", "published", "cancelled"],
         };
 
@@ -4619,6 +4670,21 @@ public static class TournamentEndpoints
 
         var catalogResult = await ResolveCatalogAsync(conn, req, existingGame, existingGameMode, existingTeamSize, existingFormat, gameCatalog);
         if (catalogResult.error is not null) return (null, catalogResult.error);
+
+        if (req.AssistedReportingEnabled.HasValue || req.RequiredAccountLinks.HasValue)
+        {
+            var canEditStatus = existingStatus is "draft" or "open";
+            var beforeDeadline = existingRegistrationDeadline is null || existingRegistrationDeadline > DateTimeOffset.UtcNow;
+            if (!canEditStatus || !beforeDeadline)
+                return (null, Results.BadRequest(new { error = "Account link settings can only be changed while the tournament is in draft or open status and before the registration deadline." }));
+
+            var accountLinkError = ValidateAccountLinkSettings(
+                req.AssistedReportingEnabled ?? (bool?)existing.assisted_reporting_enabled,
+                req.RequiredAccountLinks,
+                catalogResult.catalog!.TeamSize,
+                catalogResult.catalog!.SupportsAssistedReporting);
+            if (accountLinkError is not null) return (null, Results.BadRequest(new { error = accountLinkError }));
+        }
 
         var datesResult = ValidateDates(req, existingStartDate, existingEndDate, existingRegistrationDeadline);
         if (datesResult.error is not null) return (null, datesResult.error);
@@ -5147,7 +5213,9 @@ public sealed record CreateTournamentRequest(
     int? InviteExpiryDays = null,
     object? PrizeDistribution = null,
     string? PayoutMethod = null,
-    string? ManualPayoutNotes = null);
+    string? ManualPayoutNotes = null,
+    bool? AssistedReportingEnabled = null,
+    int? RequiredAccountLinks = null);
 
 public sealed record StageRequest(
     string Name,
@@ -5195,7 +5263,9 @@ public sealed record UpdateTournamentRequest(
     int? InviteExpiryDays = null,
     object? PrizeDistribution = null,
     string? PayoutMethod = null,
-    string? ManualPayoutNotes = null);
+    string? ManualPayoutNotes = null,
+    bool? AssistedReportingEnabled = null,
+    int? RequiredAccountLinks = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId = null,
