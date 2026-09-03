@@ -83,10 +83,17 @@ public sealed class DbSeeder(string connectionString)
         return id.Value;
     }
 
-    /// <summary>Grants the user an admin panel role by linking to the pre-seeded ops_admin role.</summary>
+    /// <summary>Grants the user an admin panel role linked to ops_admin.</summary>
     public async Task SeedAdminPanelRoleAsync(Guid userId)
     {
         await using var conn = OpenConnection();
+        // The seeding migration for admin_roles is pre-baseline so it won't re-run
+        // against the CI replay schema — ensure the role exists before linking the user.
+        await conn.ExecuteAsync("""
+            INSERT INTO public.admin_roles (name, key, description)
+            VALUES ('Ops Admin', 'ops_admin', 'Full operations access')
+            ON CONFLICT (key) DO NOTHING
+            """);
         await conn.ExecuteAsync("""
             INSERT INTO public.admin_user_roles (user_id, role_id)
             SELECT @userId, id FROM public.admin_roles WHERE key = 'ops_admin'
@@ -96,23 +103,23 @@ public sealed class DbSeeder(string connectionString)
     }
 
     /// <summary>Seeds a team row and returns its ID.</summary>
-    public async Task<Guid> SeedTeamAsync(Guid captainId, string name = "Test Team")
+    public async Task<Guid> SeedTeamAsync(Guid ownerId, string name = "Test Team")
     {
         var id = Guid.NewGuid();
         await using var conn = OpenConnection();
         await conn.ExecuteAsync("""
-            INSERT INTO public.teams (id, name, captain_id, created_at, updated_at)
-            VALUES (@id, @name, @captainId, NOW(), NOW())
+            INSERT INTO public.teams (id, name, tag, game, owner_id, created_at, updated_at)
+            VALUES (@id, @name, @tag, 'test-game', @ownerId, NOW(), NOW())
             ON CONFLICT (id) DO NOTHING
             """,
-            new { id, name, captainId });
+            new { id, name, tag = name[..Math.Min(name.Length, 4)].ToUpperInvariant(), ownerId });
 
         await conn.ExecuteAsync("""
-            INSERT INTO public.team_members (team_id, user_id, role, is_active, joined_at)
-            VALUES (@teamId, @userId, 'captain', TRUE, NOW())
+            INSERT INTO public.team_members (team_id, user_id, role, joined_at)
+            VALUES (@teamId, @userId, 'captain', NOW())
             ON CONFLICT (team_id, user_id) DO NOTHING
             """,
-            new { teamId = id, userId = captainId });
+            new { teamId = id, userId = ownerId });
 
         return id;
     }
@@ -153,7 +160,9 @@ public sealed class DbSeeder(string connectionString)
             INSERT INTO public.brkt_versions
                 (id, tournament_id, stage_id, version_number, status, created_at)
             VALUES
-                (@id, @tournamentId, @stageId, 1, @status, NOW())
+                (@id, @tournamentId, @stageId,
+                 COALESCE((SELECT MAX(version_number) FROM public.brkt_versions WHERE tournament_id = @tournamentId), 0) + 1,
+                 @status, NOW())
             ON CONFLICT (id) DO NOTHING
             """,
             new { id = id.Value, tournamentId, stageId, status });

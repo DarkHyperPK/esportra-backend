@@ -48,8 +48,8 @@ public sealed class BracketEndpointTests
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var body = await response.Content.ReadFromJsonAsync<dynamic>();
-        ((object?)body?.versionId).Should().NotBeNull();
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.GetProperty("versionId").GetGuid().Should().NotBe(Guid.Empty);
     }
 
     [Fact]

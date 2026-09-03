@@ -38,9 +38,9 @@ public sealed class DisputeEndpointTests
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
-        var body = await response.Content.ReadFromJsonAsync<dynamic>();
-        ((string?)body?.status).Should().Be("open");
-        ((string?)body?.reference_number).Should().StartWith("DSP-");
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.GetProperty("status").GetString().Should().Be("open");
+        body.GetProperty("reference_number").GetString().Should().StartWith("DSP-");
     }
 
     [Fact]
@@ -73,8 +73,8 @@ public sealed class DisputeEndpointTests
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var body = await response.Content.ReadFromJsonAsync<dynamic>();
-        ((string?)body?.error).Should().Contain("tournament_id");
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.GetProperty("error").GetString().Should().Contain("tournament_id");
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public sealed class DisputeEndpointTests
     private async Task SeedBaseDataAsync()
     {
         await _seeder.SeedAuthUserAsync(UserId);
-        await _seeder.SeedUserRoleAsync(UserId, "player");
+        await _seeder.SeedUserRoleAsync(UserId, "casual");
         await _seeder.SeedTournamentAsync(UserId, id: TournamentId);
     }
 }

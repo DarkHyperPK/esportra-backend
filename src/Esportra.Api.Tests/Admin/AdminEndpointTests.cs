@@ -53,9 +53,9 @@ public sealed class AdminEndpointTests
         var response = await client.GetAsync("/api/admin/users?limit=10");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var body = await response.Content.ReadFromJsonAsync<dynamic>();
-        ((object?)body?.users).Should().NotBeNull();
-        ((object?)body?.total).Should().NotBeNull();
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.TryGetProperty("users", out _).Should().BeTrue();
+        body.TryGetProperty("total", out _).Should().BeTrue();
     }
 
     [Fact]
