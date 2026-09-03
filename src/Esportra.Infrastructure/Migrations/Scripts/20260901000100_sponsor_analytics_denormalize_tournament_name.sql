@@ -8,11 +8,17 @@
 ALTER TABLE public.sponsor_analytics_events
     ADD COLUMN IF NOT EXISTS tournament_name TEXT;
 
+-- The immutability trigger (sponsor_analytics_events_no_update) blocks all updates
+-- that are not a cascade-NULLing of tournament_id. Disable it for the backfill only.
+ALTER TABLE public.sponsor_analytics_events DISABLE TRIGGER sponsor_analytics_events_no_update;
+
 UPDATE public.sponsor_analytics_events e
 SET tournament_name = t.name
 FROM public.tournaments t
 WHERE e.tournament_id = t.id
   AND e.tournament_name IS NULL;
+
+ALTER TABLE public.sponsor_analytics_events ENABLE TRIGGER sponsor_analytics_events_no_update;
 
 -- sponsor_content_daily_stats: add tournament_name snapshot
 ALTER TABLE public.sponsor_content_daily_stats
