@@ -1133,21 +1133,11 @@ public static class AdminEndpoints
             if (userCtx is null) return Results.Unauthorized();
             if (!userCtx.IsSuperAdmin) return Results.Forbid();
 
-            if (string.IsNullOrWhiteSpace(req.Name))
-                return Results.BadRequest(new { error = "Name is required." });
-
-            if (req.Name.Length > 100)
-                return Results.BadRequest(new { error = "Name must be 100 characters or fewer." });
-
-            if ((req.Description?.Length ?? 0) > 500)
-                return Results.BadRequest(new { error = "Description must be 500 characters or fewer." });
-
-            if (req.PermissionIds is null || req.PermissionIds.Length == 0)
-                return Results.BadRequest(new { error = "At least one permission is required." });
+            var validationError = ValidateUpdateRoleRequest(req);
+            if (validationError is not null) return validationError;
 
             using var conn = db.CreateConnection();
 
-            // Fetch existing role
             var existingRole = await conn.QueryFirstOrDefaultAsync<dynamic>(new CommandDefinition(
                 "SELECT id, name, key, description FROM admin_roles WHERE id = @roleId",
                 new { roleId },
@@ -1155,7 +1145,6 @@ public static class AdminEndpoints
 
             if (existingRole is null) return Results.NotFound(new { error = "Role not found." });
 
-            // Validate all permissionIds exist
             var existingCount = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
                 "SELECT COUNT(*) FROM admin_permissions WHERE id = ANY(@Ids)",
                 new { Ids = req.PermissionIds },
@@ -1164,7 +1153,6 @@ public static class AdminEndpoints
             if (existingCount != req.PermissionIds.Length)
                 return Results.BadRequest(new { error = "One or more permission IDs are invalid." });
 
-            // Get old permissions for audit
             var oldPermIds = (await conn.QueryAsync<Guid>(new CommandDefinition(
                 "SELECT permission_id FROM admin_role_permissions WHERE role_id = @roleId",
                 new { roleId },
@@ -1173,42 +1161,8 @@ public static class AdminEndpoints
             if (conn.State != System.Data.ConnectionState.Open) conn.Open();
             using var txn = conn.BeginTransaction();
 
-            try
-            {
-                await conn.ExecuteAsync(new CommandDefinition(
-                    """
-                    UPDATE admin_roles SET name = @Name, description = @Description
-                    WHERE id = @roleId
-                    """,
-                    new { req.Name, Description = req.Description ?? "", roleId },
-                    transaction: txn,
-                    cancellationToken: ct));
-
-                await conn.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
-                    new { roleId },
-                    transaction: txn,
-                    cancellationToken: ct));
-
-                foreach (var permId in req.PermissionIds)
-                {
-                    await conn.ExecuteAsync(new CommandDefinition(
-                        """
-                        INSERT INTO admin_role_permissions (role_id, permission_id)
-                        VALUES (@RoleId, @PermId)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        new { RoleId = roleId, PermId = permId },
-                        transaction: txn,
-                        cancellationToken: ct));
-                }
-
-                txn.Commit();
-            }
-            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
-            {
-                return Results.Conflict(new { error = "A role with this name already exists." });
-            }
+            var txnError = await UpdateRolePermissionsInTransactionAsync(roleId, req, conn, txn, ct);
+            if (txnError is not null) return txnError;
 
             await audit.LogFromHttp(
                 ctx, userCtx,
@@ -7999,6 +7953,63 @@ public static class AdminEndpoints
         }
 
         return null;
+    }
+
+    private static IResult? ValidateUpdateRoleRequest(UpdateAdminRoleRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Name))
+            return Results.BadRequest(new { error = "Name is required." });
+        if (req.Name.Length > 100)
+            return Results.BadRequest(new { error = "Name must be 100 characters or fewer." });
+        if ((req.Description?.Length ?? 0) > 500)
+            return Results.BadRequest(new { error = "Description must be 500 characters or fewer." });
+        if (req.PermissionIds is null || req.PermissionIds.Length == 0)
+            return Results.BadRequest(new { error = "At least one permission is required." });
+        return null;
+    }
+
+    private static async Task<IResult?> UpdateRolePermissionsInTransactionAsync(
+        Guid roleId, UpdateAdminRoleRequest req,
+        System.Data.IDbConnection conn, System.Data.IDbTransaction txn,
+        CancellationToken ct)
+    {
+        try
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE admin_roles SET name = @Name, description = @Description
+                WHERE id = @roleId
+                """,
+                new { req.Name, Description = req.Description ?? "", roleId },
+                transaction: txn,
+                cancellationToken: ct));
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM admin_role_permissions WHERE role_id = @roleId",
+                new { roleId },
+                transaction: txn,
+                cancellationToken: ct));
+
+            foreach (var permId in req.PermissionIds!)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT INTO admin_role_permissions (role_id, permission_id)
+                    VALUES (@RoleId, @PermId)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    new { RoleId = roleId, PermId = permId },
+                    transaction: txn,
+                    cancellationToken: ct));
+            }
+
+            txn.Commit();
+            return null;
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+        {
+            return Results.Conflict(new { error = "A role with this name already exists." });
+        }
     }
 }
 
