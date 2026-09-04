@@ -554,30 +554,33 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
     private static void ValidateAction(MatchMapVeto veto, VetoEvent ev, string? mapId)
     {
         var state = VetoEngine.DeriveState(veto);
+        ValidateEventMatchesState(ev, state);
+        ValidateMapNotReused(mapId, ev, veto);
+    }
 
-        // Check state matches expected action type
+    private static void ValidateEventMatchesState(VetoEvent ev, VetoState state)
+    {
         if (ev == VetoEvent.BanMap && state != VetoState.Ban)
             throw new InvalidOperationException($"INVALID_STATE: expected Ban, got {state}");
         if (ev == VetoEvent.PickMap && state != VetoState.Pick)
             throw new InvalidOperationException($"INVALID_STATE: expected Pick, got {state}");
         if (ev == VetoEvent.PickSide && state != VetoState.PickSide)
             throw new InvalidOperationException($"INVALID_STATE: expected PickSide, got {state}");
-
         if (state == VetoState.Complete)
             throw new InvalidOperationException("INVALID_STATE: veto already completed");
+    }
 
-        // Check map not already used
-        if (mapId is not null)
-        {
-            bool isBanned = veto.Team1BannedMaps.Contains(mapId) || veto.Team2BannedMaps.Contains(mapId);
-            bool isPicked = veto.Team1PickedMaps.Any(p => p.MapId == mapId)
-                         || veto.Team2PickedMaps.Any(p => p.MapId == mapId);
-
-            if (isBanned)
-                throw new InvalidOperationException("MAP_ALREADY_USED: map is already banned");
-            if (ev != VetoEvent.PickSide && isPicked)
-                throw new InvalidOperationException("MAP_ALREADY_USED: map is already picked");
-        }
+    private static void ValidateMapNotReused(string? mapId, VetoEvent ev, MatchMapVeto veto)
+    {
+        if (mapId is null)
+            return;
+        bool isBanned = veto.Team1BannedMaps.Contains(mapId) || veto.Team2BannedMaps.Contains(mapId);
+        bool isPicked = veto.Team1PickedMaps.Any(p => p.MapId == mapId)
+                     || veto.Team2PickedMaps.Any(p => p.MapId == mapId);
+        if (isBanned)
+            throw new InvalidOperationException("MAP_ALREADY_USED: map is already banned");
+        if (ev != VetoEvent.PickSide && isPicked)
+            throw new InvalidOperationException("MAP_ALREADY_USED: map is already picked");
     }
 
     private async Task AssertIsCaptainOfCurrentTeam(Guid userId, MatchMapVeto veto, CancellationToken ct)
