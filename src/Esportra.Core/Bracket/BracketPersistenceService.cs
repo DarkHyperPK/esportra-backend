@@ -115,39 +115,78 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     public async Task<int> AutoAdvanceByesAsync(Guid versionId, CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
+        using var tx = conn.BeginTransaction();
 
-        var matches = (await conn.QueryAsync(
-            "SELECT id, team1_id, team2_id, team1_seed, team2_seed, best_of FROM public.brkt_matches WHERE version_id = @versionId AND status = 'pending'",
-            new { versionId })).AsList();
-
-        int count = 0;
-        foreach (var match in matches)
+        try
         {
-            bool hasT1 = match.team1_id is not null;
-            bool hasT2 = match.team2_id is not null;
+            int totalAdvanced = 0;
+            const int maxDepth = 20;
 
-            if (!(hasT1 ^ hasT2)) continue; // both or neither → skip
+            for (int depth = 0; depth < maxDepth; depth++)
+            {
+                ct.ThrowIfCancellationRequested();
 
-            Guid winnerId = hasT1 ? (Guid)match.team1_id : (Guid)match.team2_id;
-            int? winnerSeed = hasT1 ? (int?)match.team1_seed : (int?)match.team2_seed;
-            int bestOf = (int)(match.best_of ?? 1);
-            int winScore = bestOf == 1 ? 13 : (int)Math.Ceiling(bestOf / 2.0);
-            int t1Score = hasT1 ? winScore : 0;
-            int t2Score = hasT2 ? winScore : 0;
+                // Only match slots that have no inbound advancement edge are true BYEs.
+                // A null slot with an inbound edge is waiting for an upstream match result.
+                var byeMatches = (await conn.QueryAsync(
+                    new CommandDefinition(
+                        """
+                        SELECT id, team1_id, team2_id, team1_seed, team2_seed, best_of
+                        FROM brkt_matches m
+                        WHERE version_id = @versionId AND status = 'pending'
+                          AND (
+                            (team1_id IS NOT NULL AND team2_id IS NULL
+                             AND NOT EXISTS (
+                               SELECT 1 FROM brkt_advancements
+                               WHERE target_match_id = m.id AND target_slot = 2 AND version_id = @versionId
+                             ))
+                            OR
+                            (team1_id IS NULL AND team2_id IS NOT NULL
+                             AND NOT EXISTS (
+                               SELECT 1 FROM brkt_advancements
+                               WHERE target_match_id = m.id AND target_slot = 1 AND version_id = @versionId
+                             ))
+                          )
+                        """,
+                        new { versionId },
+                        transaction: tx,
+                        cancellationToken: ct))).AsList();
 
-            await conn.ExecuteAsync(@"
-                UPDATE public.brkt_matches
-                   SET status = 'completed', winner_id = @winnerId, loser_id = null,
-                       team1_score = @t1, team2_score = @t2
-                 WHERE id = @id",
-                new { winnerId, t1 = t1Score, t2 = t2Score, id = (Guid)match.id });
+                if (byeMatches.Count == 0) break;
 
-            // Advance winner along edges with their seed
-            await AdvanceTeamAsync(conn, (Guid)match.id, versionId, "winner", winnerId, winnerSeed);
-            count++;
+                foreach (var match in byeMatches)
+                {
+                    bool hasT1 = match.team1_id is not null;
+                    Guid winnerId = hasT1 ? (Guid)match.team1_id : (Guid)match.team2_id;
+                    int? winnerSeed = hasT1 ? (int?)match.team1_seed : (int?)match.team2_seed;
+                    int bestOf = (int)(match.best_of ?? 1);
+                    int winScore = bestOf == 1 ? 13 : (int)Math.Ceiling(bestOf / 2.0);
+
+                    await conn.ExecuteAsync(
+                        new CommandDefinition(
+                            """
+                            UPDATE brkt_matches
+                            SET status = 'completed', winner_id = @winnerId, loser_id = null,
+                                team1_score = @t1, team2_score = @t2
+                            WHERE id = @id
+                            """,
+                            new { winnerId, t1 = hasT1 ? winScore : 0, t2 = hasT1 ? 0 : winScore, id = (Guid)match.id },
+                            transaction: tx,
+                            cancellationToken: ct));
+
+                    await AdvanceTeamAsync(conn, (Guid)match.id, versionId, "winner", winnerId, winnerSeed, tx);
+                    totalAdvanced++;
+                }
+            }
+
+            tx.Commit();
+            return totalAdvanced;
         }
-
-        return count;
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
     }
 
     // ── Reset (keep structure, clear results) ────────────────────────────────
@@ -356,11 +395,12 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
     // ── Internal: advance a team along edges ─────────────────────────────────
 
     private static async Task AdvanceTeamAsync(System.Data.IDbConnection conn,
-        Guid sourceMatchId, Guid versionId, string edgeType, Guid teamId, int? teamSeed = null)
+        Guid sourceMatchId, Guid versionId, string edgeType, Guid teamId, int? teamSeed = null,
+        System.Data.IDbTransaction? tx = null)
     {
         var edges = (await conn.QueryAsync(
             "SELECT target_match_id, target_slot FROM public.brkt_advancements WHERE version_id=@v AND source_match_id=@s AND type=@t",
-            new { v = versionId, s = sourceMatchId, t = edgeType })).AsList();
+            new { v = versionId, s = sourceMatchId, t = edgeType }, tx)).AsList();
 
         foreach (var edge in edges)
         {
@@ -368,7 +408,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
             string seedCol = (int)edge.target_slot == 1 ? "team1_seed" : "team2_seed";
             await conn.ExecuteAsync(
                 $"UPDATE public.brkt_matches SET {teamCol} = @teamId, {seedCol} = @teamSeed WHERE id = @targetId",
-                new { teamId, teamSeed, targetId = (Guid)edge.target_match_id });
+                new { teamId, teamSeed, targetId = (Guid)edge.target_match_id }, tx);
         }
     }
 

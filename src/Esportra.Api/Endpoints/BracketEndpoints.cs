@@ -118,7 +118,6 @@ public static class BracketEndpoints
             string stageFormat = (string)(stageRow.format ?? "");
             bool isGroupFormat = stageFormat is "round_robin" or "swiss";
 
-            int byesAdvanced = 0;
             using var tx = conn.BeginTransaction();
             try
             {
@@ -165,7 +164,6 @@ public static class BracketEndpoints
                     """,
                     new { versionId, matchNums, t1Ids, t2Ids, t1Seeds, t2Seeds }, tx);
 
-                byesAdvanced = await CascadeSeedByesAsync(versionId, conn, tx);
                 tx.Commit();
             }
             catch
@@ -177,9 +175,9 @@ public static class BracketEndpoints
             await bracketHub.Clients
                 .Group(BracketHub.BracketGroup(versionId.ToString()))
                 .SendAsync(BracketHubEvents.MatchUpdated,
-                    new { versionId, seeded = teamList.Count, byesAdvanced }, ct);
+                    new { versionId, seeded = teamList.Count, byesAdvanced = 0 }, ct);
 
-            return Results.Ok(new { seeded = teamList.Count, byesAdvanced });
+            return Results.Ok(new { seeded = teamList.Count, byesAdvanced = 0 });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/stages/{stageId}/unseed-bracket ────────────────────────
@@ -1669,64 +1667,6 @@ public static class BracketEndpoints
         return (seedMatchNums.ToArray(), t1Ids.ToArray(), t2Ids.ToArray(), t1Seeds.ToArray(), t2Seeds.ToArray(), null);
     }
 
-    private static async Task<int> CascadeSeedByesAsync(
-        Guid versionId, System.Data.IDbConnection conn, System.Data.IDbTransaction tx)
-    {
-        int byesAdvanced = 0;
-        const int maxCascadeDepth = 20;
-        for (int depth = 0; depth < maxCascadeDepth; depth++)
-        {
-            var byeMatches = (await conn.QueryAsync(
-                """
-                SELECT id, team1_id, team2_id, team1_seed, team2_seed
-                FROM brkt_matches
-                WHERE version_id = @versionId AND status = 'pending'
-                  AND ((team1_id IS NOT NULL AND team2_id IS NULL) OR (team1_id IS NULL AND team2_id IS NOT NULL))
-                """,
-                new { versionId }, tx)).ToList();
-            if (byeMatches.Count == 0) break;
-
-            var byeIds = byeMatches.Select(b => (Guid)b.id).ToArray();
-            var winnerIds = byeMatches.Select(b => (Guid?)b.team1_id ?? (Guid)b.team2_id).ToArray();
-            await conn.ExecuteAsync(
-                """
-                UPDATE brkt_matches m SET winner_id = u.winner_id, status = 'completed'
-                FROM UNNEST(@byeIds::uuid[], @winnerIds::uuid[]) AS u(match_id, winner_id)
-                WHERE m.id = u.match_id
-                """,
-                new { byeIds, winnerIds }, tx);
-
-            var advRows = (await conn.QueryAsync(
-                """
-                SELECT ba.source_match_id, ba.target_match_id, ba.target_slot,
-                       bm.team1_id, bm.team2_id, bm.team1_seed, bm.team2_seed
-                FROM brkt_advancements ba JOIN brkt_matches bm ON bm.id = ba.source_match_id
-                WHERE ba.source_match_id = ANY(@byeIds) AND ba.type = 'winner'
-                """,
-                new { byeIds }, tx)).ToList();
-            if (advRows.Count > 0)
-            {
-                var targetIds = advRows.Select(a => (Guid)a.target_match_id).ToArray();
-                var slots = advRows.Select(a => (int)a.target_slot).ToArray();
-                var advTeamIds = advRows.Select(a => (Guid?)a.team1_id ?? (Guid)a.team2_id).ToArray();
-                var advSeeds = advRows.Select(a => a.team1_id is not null ? (int?)a.team1_seed : (int?)a.team2_seed).ToArray();
-                await conn.ExecuteAsync(
-                    """
-                    UPDATE brkt_matches m
-                    SET team1_id   = CASE WHEN u.slot = 1 THEN u.team_id ELSE m.team1_id END,
-                        team2_id   = CASE WHEN u.slot = 2 THEN u.team_id ELSE m.team2_id END,
-                        team1_seed = CASE WHEN u.slot = 1 THEN u.team_seed ELSE m.team1_seed END,
-                        team2_seed = CASE WHEN u.slot = 2 THEN u.team_seed ELSE m.team2_seed END
-                    FROM UNNEST(@targetIds::uuid[], @slots::int[], @advTeamIds::uuid[], @advSeeds::int[])
-                         AS u(target_match_id, slot, team_id, team_seed)
-                    WHERE m.id = u.target_match_id
-                    """,
-                    new { targetIds, slots, advTeamIds, advSeeds }, tx);
-                byesAdvanced += advRows.Count;
-            }
-        }
-        return byesAdvanced;
-    }
 }
 
 file sealed record SwissStageConfigRow(string? SwissGroups, string? SwissRounds);
