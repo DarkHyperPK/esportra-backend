@@ -19,4 +19,5 @@ public enum EmailType
     LicenseRejected,
     TournamentInvite,
     Broadcast,
+    MatchChatMessage,
 }
