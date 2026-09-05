@@ -6,13 +6,15 @@ namespace Esportra.Core.Tests;
 public class VetoSequencesTests
 {
     [Fact]
-    public void Valorant_Bo1_Has_Seven_Actions_BanPickSide()
+    public void Valorant_Bo1_PureBan_Has_Seven_Actions()
     {
         var steps = VetoSequences.GetSequence(1, "valorant", 7);
         Assert.Equal(7, steps.Count);
         Assert.Equal("ban", steps[0].Action);
-        Assert.Equal("pick", steps[^2].Action);
+        Assert.Equal(6, steps.Count(s => s.Action == "ban"));
         Assert.Equal("pick_side", steps[^1].Action);
+        Assert.True(steps[^1].IsDecider);
+        Assert.Equal("T1", steps[^1].Team);
     }
 
     [Fact]
@@ -67,5 +69,40 @@ public class VetoSequencesTests
         var legacy = VetoSequences.GetSequence(1);
         var explicitValorant = VetoSequences.GetSequence(1, "valorant", 7);
         Assert.Equal(legacy.Count, explicitValorant.Count);
+    }
+
+    [Fact]
+    public void Valorant_Bo5_Decider_Side_Is_T2()
+    {
+        var steps = VetoSequences.GetSequence(5, "valorant", 7);
+        var decider = steps[^1];
+        Assert.Equal("pick_side", decider.Action);
+        Assert.Equal("T2", decider.Team);
+        Assert.True(decider.IsDecider);
+    }
+
+    [Fact]
+    public void Valorant_Bo3_Sequence_Is_Correct()
+    {
+        var steps = VetoSequences.GetSequence(3, "valorant", 7);
+        Assert.Equal(9, steps.Count);
+        // ban, ban, pick(T1), side(T2), pick(T2), side(T1), ban, ban, pick_side(T1, decider)
+        Assert.Equal("ban", steps[0].Action); Assert.Equal("T1", steps[0].Team);
+        Assert.Equal("ban", steps[1].Action); Assert.Equal("T2", steps[1].Team);
+        Assert.Equal("pick", steps[2].Action); Assert.Equal("T1", steps[2].Team);
+        Assert.Equal("pick_side", steps[3].Action); Assert.Equal("T2", steps[3].Team);
+        Assert.Equal("pick", steps[4].Action); Assert.Equal("T2", steps[4].Team);
+        Assert.Equal("pick_side", steps[5].Action); Assert.Equal("T1", steps[5].Team);
+        Assert.Equal("ban", steps[6].Action); Assert.Equal("T1", steps[6].Team);
+        Assert.Equal("ban", steps[7].Action); Assert.Equal("T2", steps[7].Team);
+        Assert.True(steps[^1].IsDecider);
+        Assert.Equal("T1", steps[^1].Team);
+    }
+
+    [Fact]
+    public void Valorant_Bo1_Has_No_Pick_Step()
+    {
+        var steps = VetoSequences.GetSequence(1, "valorant", 7);
+        Assert.DoesNotContain(steps, s => s.Action == "pick");
     }
 }

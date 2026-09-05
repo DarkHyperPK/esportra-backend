@@ -10,7 +10,7 @@ public static class VetoSequences
 
     public sealed record VetoGameConfig(string Game, int MapPoolSize, Bo1Style Bo1Style);
 
-    private static readonly VetoGameConfig ValorantConfig = new("valorant", 7, Bo1Style.BanPick);
+    private static readonly VetoGameConfig ValorantConfig = new("valorant", 7, Bo1Style.PureBan);
     private static readonly VetoGameConfig Cs2Config = new("cs2", 7, Bo1Style.PureBan);
     private static readonly VetoGameConfig R6Config = new("r6s", 9, Bo1Style.PureBan);
 
@@ -105,7 +105,8 @@ public static class VetoSequences
         for (var i = 0; i < remainingBans; i++)
             steps.Add(new(n++, "ban", i % 2 == 0 ? "T1" : "T2"));
 
-        steps.Add(new(n, "pick_side", "T1", IsDecider: true));
+        var deciderTeam = bestOf == 5 ? "T2" : "T1";
+        steps.Add(new(n, "pick_side", deciderTeam, IsDecider: true));
         return steps;
     }
 
