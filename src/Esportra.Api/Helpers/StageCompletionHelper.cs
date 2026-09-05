@@ -285,6 +285,23 @@ public static class StageCompletionHelper
             """,
             new { tournamentId, stageOrder });
 
+    public static async Task<(bool AllMatchesDone, Guid? StageId)> CheckBracketStageCompletionAsync(
+        IDbConnection conn,
+        IDbTransaction? tx,
+        Guid versionId)
+    {
+        var stageId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT stage_id FROM brkt_versions WHERE id = @versionId",
+            new { versionId }, tx);
+        if (stageId is null) return (false, null);
+
+        var pendingCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
+            new { versionId }, tx);
+
+        return (pendingCount == 0, stageId);
+    }
+
     public static async Task<string> EvaluateBracketProgressLabelAsync(
         IDbConnection conn,
         dynamic stage,

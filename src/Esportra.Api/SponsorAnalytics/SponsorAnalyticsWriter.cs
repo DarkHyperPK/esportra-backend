@@ -67,16 +67,22 @@ public sealed class SponsorAnalyticsWriter(
             identityKind,
             now);
 
+        var tournamentName = request.TournamentId is not null
+            ? await connection.QuerySingleOrDefaultAsync<string?>(
+                "SELECT name FROM public.tournaments WHERE id = @id",
+                new { id = request.TournamentId }, transaction)
+            : null;
+
         var pagePath = NormalizePagePath(request.PagePath);
         var sequence = await connection.QuerySingleOrDefaultAsync<long?>(
             """
             INSERT INTO public.sponsor_analytics_events
                 (event_id, sponsor_id, audience_id, identity_kind, event_type, placement,
-                 tournament_id, page_path, country_code, country_provenance,
+                 tournament_id, tournament_name, page_path, country_code, country_provenance,
                  age_band, age_provenance, schema_version, received_at, event_date_utc)
             VALUES
                 (@EventId, @SponsorId, @AudienceId, @IdentityKind, @EventType, @Placement,
-                 @TournamentId, @PagePath, @CountryCode, @CountryProvenance,
+                 @TournamentId, @TournamentName, @PagePath, @CountryCode, @CountryProvenance,
                  @AgeBand, @AgeProvenance, @SchemaVersion, @ReceivedAt, @EventDate)
             ON CONFLICT (sponsor_id, event_id) DO NOTHING
             RETURNING event_sequence
@@ -90,6 +96,7 @@ public sealed class SponsorAnalyticsWriter(
                 request.EventType,
                 request.Placement,
                 request.TournamentId,
+                TournamentName = tournamentName,
                 PagePath = pagePath,
                 demographics.CountryCode,
                 demographics.CountryProvenance,
@@ -115,6 +122,7 @@ public sealed class SponsorAnalyticsWriter(
             demographics,
             deviceClass,
             pagePath,
+            tournamentName,
             now.UtcDateTime.Date);
         transaction.Commit();
         return new SponsorAnalyticsWriteOutcome(SponsorAnalyticsWriteResult.Accepted);
@@ -173,6 +181,7 @@ public sealed class SponsorAnalyticsWriter(
         DemographicSnapshot demographics,
         string deviceClass,
         string? pagePath,
+        string? tournamentName,
         DateTime factDate)
     {
         await connection.ExecuteAsync(
@@ -249,15 +258,16 @@ public sealed class SponsorAnalyticsWriter(
             await connection.ExecuteAsync(
                 """
                 INSERT INTO public.sponsor_content_daily_stats
-                    (sponsor_id, stat_date, tournament_id, page_path, impressions, clicks)
-                VALUES (@SponsorId, @FactDate, @TournamentId, @PagePath,
+                    (sponsor_id, stat_date, tournament_id, tournament_name, page_path, impressions, clicks)
+                VALUES (@SponsorId, @FactDate, @TournamentId, @TournamentName, @PagePath,
                         CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
                         CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
                 ON CONFLICT ON CONSTRAINT sponsor_content_daily_stats_pk DO UPDATE SET
+                    tournament_name = EXCLUDED.tournament_name,
                     impressions = sponsor_content_daily_stats.impressions + EXCLUDED.impressions,
                     clicks = sponsor_content_daily_stats.clicks + EXCLUDED.clicks
                 """,
-                new { request.SponsorId, FactDate = factDate, request.TournamentId, PagePath = pagePath, request.EventType },
+                new { request.SponsorId, FactDate = factDate, request.TournamentId, TournamentName = tournamentName, PagePath = pagePath, request.EventType },
                 transaction);
         }
 
@@ -266,15 +276,16 @@ public sealed class SponsorAnalyticsWriter(
             await connection.ExecuteAsync(
                 """
                 INSERT INTO public.sponsor_slot_daily_stats
-                    (sponsor_id, stat_date, tournament_id, placement_zone, impressions, clicks)
-                VALUES (@SponsorId, @FactDate, @TournamentId, @Placement,
+                    (sponsor_id, stat_date, tournament_id, tournament_name, placement_zone, impressions, clicks)
+                VALUES (@SponsorId, @FactDate, @TournamentId, @TournamentName, @Placement,
                         CASE WHEN @EventType = 'impression' THEN 1 ELSE 0 END,
                         CASE WHEN @EventType = 'click' THEN 1 ELSE 0 END)
                 ON CONFLICT (sponsor_id, stat_date, tournament_id, placement_zone) DO UPDATE SET
+                    tournament_name = EXCLUDED.tournament_name,
                     impressions = sponsor_slot_daily_stats.impressions + EXCLUDED.impressions,
                     clicks      = sponsor_slot_daily_stats.clicks      + EXCLUDED.clicks
                 """,
-                new { request.SponsorId, FactDate = factDate, request.TournamentId, request.Placement, request.EventType },
+                new { request.SponsorId, FactDate = factDate, request.TournamentId, TournamentName = tournamentName, request.Placement, request.EventType },
                 transaction);
         }
     }

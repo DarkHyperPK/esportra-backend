@@ -256,7 +256,6 @@ public static class LoyaltyEndpoints
                 return Results.BadRequest(new { error = "Invalid userId." });
 
             using var conn = db.CreateConnection();
-            conn.Open();
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(
@@ -380,7 +379,6 @@ public static class LoyaltyEndpoints
                 return Results.BadRequest(new { error = "Invalid userId." });
 
             using var conn = db.CreateConnection();
-            conn.Open();
 
             // Venue staff gate
             var staffCheck = await conn.QuerySingleOrDefaultAsync<int>(

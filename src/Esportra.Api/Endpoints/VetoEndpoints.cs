@@ -93,70 +93,19 @@ public static class VetoEndpoints
 
             try
             {
-                var existing = await veto.GetAsync(matchId, ct);
-                if (existing is not null)
-                {
-                    var needsRestart =
-                        string.Equals(existing.Status, "pending", StringComparison.OrdinalIgnoreCase)
-                        && existing.CurrentTeamId is null
-                        && existing.CurrentActionNumber == 0;
-
-                    if (!needsRestart)
-                        return Results.Ok(existing);
-                }
+                var (existing, shouldReturn) = await CheckOrReturnExistingVetoAsync(matchId, veto, ct);
+                if (shouldReturn) return Results.Ok(existing);
 
                 using var conn = db.CreateConnection();
-                var tournament = await conn.QuerySingleOrDefaultAsync<TournamentVetoGateRow>(
-                    """
-                    SELECT game,
-                           game_mode AS GameMode,
-                           team_size AS TeamSize,
-                           settings::text AS SettingsJson
-                    FROM public.tournaments
-                    WHERE id = @tournamentId
-                    """,
-                    new { tournamentId = req.TournamentId });
+                var (tournamentRow, tournamentErr) = await ValidateVetoTournamentGateAsync(req.TournamentId, gameCatalog, conn, ct);
+                if (tournamentErr is not null) return tournamentErr;
 
-                if (tournament is null)
-                    return Results.NotFound(new { error = "Tournament was not found." });
+                var authErr = await ValidateVetoInitAuthAsync(userCtx, req, veto, ct);
+                if (authErr is not null) return authErr;
 
-                var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
-                    tournament.Game,
-                    tournament.GameMode,
-                    tournament.TeamSize,
-                    conn);
-
-                if (!supportsMapVeto || IsMapVetoDisabled(tournament.SettingsJson))
-                {
-                    return Results.BadRequest(new
-                    {
-                        error = "Map veto is not enabled for this tournament."
-                    });
-                }
-
-                // S2: Only organizer, platform admin, or captain can init
-                var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct)
-                    || StaffAuthHelper.IsPlatformAdmin(userCtx);
-                if (!isOrg)
-                {
-                    bool isCaptain = false;
-                    if (req.Team1Id.HasValue)
-                        isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team1Id.Value, ct);
-                    if (!isCaptain && req.Team2Id.HasValue)
-                        isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team2Id.Value, ct);
-                    if (!isCaptain)
-                        return Results.Json(new { error = "FORBIDDEN: only organizer or team captain can init veto" }, statusCode: 403);
-                }
-
-                var result = await veto.InitAsync(
-                    matchId, req.TournamentId,
-                    req.Team1Id, req.Team2Id,
-                    req.BestOf, req.Game ?? "valorant", ct);
-
-                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString()))
-                    .SendAsync(VetoHubEvents.StateSync, result, ct);
+                var result = await veto.InitAsync(matchId, req.TournamentId, req.Team1Id, req.Team2Id, req.BestOf, req.Game ?? "valorant", ct);
+                await hub.Clients.Group(VetoHub.VetoGroup(matchId.ToString())).SendAsync(VetoHubEvents.StateSync, result, ct);
                 await BroadcastHistoryAsync(hub, veto, matchId, ct);
-
                 return Results.Ok(result);
             }
             catch (InvalidOperationException ex)
@@ -172,7 +121,6 @@ public static class VetoEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "Veto init unexpected error for match {MatchId}", matchId);
-                // On conflict (duplicate), try to return existing
                 var fallback = await veto.GetAsync(matchId, ct);
                 if (fallback is not null) return Results.Ok(fallback);
                 return Results.Json(new { error = "We couldn't start the map veto. Please try again." }, statusCode: 500);
@@ -715,6 +663,57 @@ public static class VetoEndpoints
         state.CompletedAt,
         state.Game,
     };
+
+    private static async Task<(MatchMapVeto? Existing, bool ShouldReturn)> CheckOrReturnExistingVetoAsync(
+        Guid matchId, VetoDbService veto, CancellationToken ct)
+    {
+        var existing = await veto.GetAsync(matchId, ct);
+        if (existing is null) return (null, false);
+        var needsRestart = string.Equals(existing.Status, "pending", StringComparison.OrdinalIgnoreCase)
+            && existing.CurrentTeamId is null
+            && existing.CurrentActionNumber == 0;
+        return (existing, !needsRestart);
+    }
+
+    private static async Task<(TournamentVetoGateRow? Row, IResult? Error)> ValidateVetoTournamentGateAsync(
+        Guid tournamentId, GameCatalogService gameCatalog, System.Data.IDbConnection conn, CancellationToken ct)
+    {
+        var tournament = await conn.QuerySingleOrDefaultAsync<TournamentVetoGateRow>(
+            """
+            SELECT game,
+                   game_mode AS GameMode,
+                   team_size AS TeamSize,
+                   settings::text AS SettingsJson
+            FROM public.tournaments
+            WHERE id = @tournamentId
+            """,
+            new { tournamentId });
+        if (tournament is null)
+            return (null, Results.NotFound(new { error = "Tournament was not found." }));
+        var supportsMapVeto = await gameCatalog.SupportsMapVetoAsync(
+            tournament.Game, tournament.GameMode, tournament.TeamSize, conn);
+        if (!supportsMapVeto || IsMapVetoDisabled(tournament.SettingsJson))
+            return (null, Results.BadRequest(new { error = "Map veto is not enabled for this tournament." }));
+        return (tournament, null);
+    }
+
+    private static async Task<IResult?> ValidateVetoInitAuthAsync(
+        UserContext userCtx, VetoInitRequest req, VetoDbService veto, CancellationToken ct)
+    {
+        var isOrg = await veto.IsOrganizerAsync(userCtx.UserIdGuid, req.TournamentId, ct)
+            || StaffAuthHelper.IsPlatformAdmin(userCtx);
+        if (!isOrg)
+        {
+            bool isCaptain = false;
+            if (req.Team1Id.HasValue)
+                isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team1Id.Value, ct);
+            if (!isCaptain && req.Team2Id.HasValue)
+                isCaptain = await veto.IsTeamCaptainAsync(userCtx.UserIdGuid, req.Team2Id.Value, ct);
+            if (!isCaptain)
+                return Results.Json(new { error = "FORBIDDEN: only organizer or team captain can init veto" }, statusCode: 403);
+        }
+        return null;
+    }
 
     private static bool IsMapVetoDisabled(string? settingsJson)
     {

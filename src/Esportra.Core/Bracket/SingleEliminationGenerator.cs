@@ -26,7 +26,7 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
         int targetRemaining = (int)Math.Pow(2, Math.Ceiling(Math.Log2(Math.Max(1, effectiveAdvCount))));
         int numRounds = Math.Max(1, fullRounds - (int)Math.Round(Math.Log2(targetRemaining)));
 
-        var seeded = SeedTeams(teams, P);
+        var seeded = BracketSeeding.SeedTeams(teams, P);
         var matchMap = new Dictionary<string, BracketNode>();
 
         // 1. Create nodes
@@ -100,34 +100,4 @@ public sealed class SingleEliminationGenerator : IBracketGenerator
         return new BracketGraph(version, nodes, edges);
     }
 
-    // Standard bracket seeding: 1 vs N, 2 vs N-1, etc.
-    // Returns (Id, Name, Seed) where Seed is the 1-based seed number
-    private static (Guid Id, string Name, int Seed)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
-    {
-        var seeded = new (Guid Id, string Name, int Seed)?[bracketSize];
-        var positions = GetStandardBracketSlots(bracketSize);
-
-        for (int i = 0; i < teams.Count; i++)
-            seeded[positions[i]] = (teams[i].Id, teams[i].Name, i + 1); // seed is 1-based
-
-        return seeded;
-    }
-
-    private static int[] GetStandardBracketSlots(int n)
-    {
-        if (n == 1) return [0];
-        if (n == 2) return [0, 1];
-
-        var slots = new int[n];
-        int halfSize = n / 2;
-        var upper = GetStandardBracketSlots(halfSize);
-
-        for (int i = 0; i < halfSize; i++)
-        {
-            slots[i] = upper[i] * 2;
-            slots[n - 1 - i] = upper[i] * 2 + 1;
-        }
-
-        return slots;
-    }
 }

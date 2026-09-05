@@ -31,6 +31,17 @@ public sealed class TournamentCheckinDeadlineJob(
             return;
         }
 
+        if (!tournament.AutoRemove)
+        {
+            logger.LogDebug("[TournamentCheckinDeadline] Tournament {Id}: auto_remove_unchecked is disabled, skipping.", tournamentId);
+            return;
+        }
+
+        using var tx = conn.BeginTransaction();
+
+        // Snapshot + UPDATE in the same transaction so Hangfire retries are safe:
+        // if the job crashes after UPDATE but before INSERT, the transaction rolls back and
+        // the retry finds the rows again — participants are removed and notified atomically.
         var affectedUsers = (await conn.QueryAsync<AffectedParticipant>(
             """
             SELECT
@@ -40,7 +51,7 @@ public sealed class TournamentCheckinDeadlineJob(
               AND tp.checked_in_at IS NULL
               AND tp.status IN ('pending', 'approved')
             """,
-            new { tournamentId })).AsList();
+            new { tournamentId }, tx)).AsList();
 
         var removedCount = await conn.ExecuteAsync(
             """
@@ -50,10 +61,11 @@ public sealed class TournamentCheckinDeadlineJob(
               AND checked_in_at IS NULL
               AND status IN ('pending', 'approved')
             """,
-            new { tournamentId });
+            new { tournamentId }, tx);
 
         if (removedCount == 0)
         {
+            tx.Commit();
             logger.LogDebug("[TournamentCheckinDeadline] Tournament {Id}: all participants checked in.", tournamentId);
             return;
         }
@@ -77,17 +89,7 @@ public sealed class TournamentCheckinDeadlineJob(
                     title = "Removed from Tournament",
                     message = $"You were removed from {tournament.TournamentName} because you didn't check in before the deadline.",
                     data = dataJson
-                });
-
-            await notifHub.Clients
-                .Group(NotificationHub.UserGroup(p.UserId.ToString()))
-                .SendAsync(NotificationHubEvents.NewNotification, new
-                {
-                    type = "tournament_announcement",
-                    title = "Removed from Tournament",
-                    message = $"You were removed from {tournament.TournamentName} because you didn't check in before the deadline.",
-                    data = new { tournament_id = tournamentId },
-                }, ct);
+                }, tx);
         }
 
         // Notify organizer
@@ -103,7 +105,23 @@ public sealed class TournamentCheckinDeadlineJob(
                 title = "Participants Auto-Removed",
                 message = $"{removedCount} participant(s) were removed from {tournament.TournamentName} for not checking in before the deadline.",
                 data = orgData
-            });
+            }, tx);
+
+        tx.Commit();
+
+        // SignalR after commit (non-transactional, best-effort)
+        foreach (var p in affectedUsers.Where(u => u.UserId != Guid.Empty))
+        {
+            await notifHub.Clients
+                .Group(NotificationHub.UserGroup(p.UserId.ToString()))
+                .SendAsync(NotificationHubEvents.NewNotification, new
+                {
+                    type = "tournament_announcement",
+                    title = "Removed from Tournament",
+                    message = $"You were removed from {tournament.TournamentName} because you didn't check in before the deadline.",
+                    data = new { tournament_id = tournamentId },
+                }, ct);
+        }
 
         await notifHub.Clients
             .Group(NotificationHub.UserGroup(tournament.OrganizerId.ToString()))

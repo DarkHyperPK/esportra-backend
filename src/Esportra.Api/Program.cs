@@ -383,6 +383,10 @@ builder.Services.AddScoped<Esportra.Api.Services.TournamentWinnerService>();
 builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.PrizeDistributionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.PlacementResolutionService>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.LeaderboardStatsService>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>(sp =>
+    sp.GetRequiredService<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>());
 builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
@@ -491,11 +495,17 @@ using (var scope = app.Services.CreateScope())
     var recurringJobs = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
     var backgroundJobs = scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>();
 
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.TournamentStatusReconciliationJob>(
+        "tournament-status-reconciliation", j => j.ExecuteAsync(CancellationToken.None), "*/5 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
         "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
         "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
+        "leaderboard-refresh", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
 
+    backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
+        j => j.ExecuteAsync(CancellationToken.None));
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.StartupRecoveryJob>(
         j => j.ExecuteAsync(CancellationToken.None));
 }

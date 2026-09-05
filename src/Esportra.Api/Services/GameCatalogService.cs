@@ -185,7 +185,8 @@ public sealed partial class GameCatalogService(
             mode.ModeKey,
             mode.TeamSize,
             structure.StructureKey,
-            EffectiveBoolFeature(features, mode.FeaturesOverrideJson, "mapVeto"));
+            EffectiveBoolFeature(features, mode.FeaturesOverrideJson, "mapVeto"),
+            EffectiveBoolFeature(features, mode.FeaturesOverrideJson, "assistedReporting"));
     }
 
     public async Task<bool> SupportsMapVetoAsync(
@@ -259,7 +260,9 @@ public sealed partial class GameCatalogService(
     {
         var tournament = await conn.QuerySingleAsync<TournamentRegistrationCatalogRow>(
             """
-            SELECT id, game, game_mode AS gameMode, team_size AS teamSize
+            SELECT id, game, game_mode AS gameMode, team_size AS teamSize,
+                   COALESCE((settings->>'assistedReportingEnabled')::boolean, false) AS assistedReportingEnabled,
+                   COALESCE((settings->>'requiredAccountLinks')::int, 1) AS requiredAccountLinks
             FROM public.tournaments
             WHERE id = @tournamentId
             """,
@@ -292,7 +295,9 @@ public sealed partial class GameCatalogService(
     {
         var tournament = await conn.QuerySingleAsync<TournamentRegistrationCatalogRow>(
             """
-            SELECT id, game, game_mode AS gameMode, team_size AS teamSize
+            SELECT id, game, game_mode AS gameMode, team_size AS teamSize,
+                   COALESCE((settings->>'assistedReportingEnabled')::boolean, false) AS assistedReportingEnabled,
+                   COALESCE((settings->>'requiredAccountLinks')::int, 1) AS requiredAccountLinks
             FROM public.tournaments
             WHERE id = @tournamentId
             """,
@@ -311,18 +316,15 @@ public sealed partial class GameCatalogService(
             tx);
 
         var gameRow = await ResolveGameAsync(conn, tournament.Game, tx);
-        var gameFeatures = ParseObject(gameRow?.FeaturesJson);
-
         var mode = await ResolveModeAsync(conn, resolved.GameSlug, resolved.GameMode, resolved.TeamSize, tx);
-        var requiresGameAccountLink = EffectiveBoolFeature(gameFeatures, mode.FeaturesOverrideJson, "assistedReporting");
 
         if (mode.ParticipantMode == "solo")
         {
             if (teamId.HasValue)
                 throw new GameCatalogValidationException("This tournament mode uses solo registration. Do not submit a team registration.");
 
-            if (requiresGameAccountLink)
-                await ValidateRiotAccountLinkedAsync(conn, tx, new[] { userId });
+            if (tournament.AssistedReportingEnabled)
+                await ValidateRiotAccountLinkedAsync(conn, tx, new[] { userId }, tournament.RequiredAccountLinks);
 
             return;
         }
@@ -386,13 +388,13 @@ public sealed partial class GameCatalogService(
             """,
             new { rosterId }, tx)).AsList();
 
-        if (requiresGameAccountLink)
+        if (tournament.AssistedReportingEnabled)
         {
             var playerUserIds = memberRows
                 .Where(IsRosterPlayer)
                 .Select(m => m.UserId)
                 .ToArray();
-            await ValidateRiotAccountLinkedAsync(conn, tx, playerUserIds);
+            await ValidateRiotAccountLinkedAsync(conn, tx, playerUserIds, tournament.RequiredAccountLinks);
         }
 
         var modeRules = new RosterModeRules(
@@ -879,9 +881,10 @@ public sealed partial class GameCatalogService(
     private static async Task ValidateRiotAccountLinkedAsync(
         IDbConnection conn,
         IDbTransaction tx,
-        Guid[] userIds)
+        Guid[] userIds,
+        int requiredCount)
     {
-        if (userIds.Length == 0) return;
+        if (userIds.Length == 0 || requiredCount <= 0) return;
 
         var unlinkedUsernames = (await conn.QueryAsync<string>(
             """
@@ -895,9 +898,12 @@ public sealed partial class GameCatalogService(
             """,
             new { userIds }, tx)).AsList();
 
-        if (unlinkedUsernames.Count > 0)
+        var linkedCount = userIds.Length - unlinkedUsernames.Count;
+        if (linkedCount < requiredCount)
             throw new GameCatalogValidationException(
-                $"The following players must link their Riot account before registering: {string.Join(", ", unlinkedUsernames)}");
+                $"At least {requiredCount} player(s) must have a linked Riot account to register. " +
+                $"Currently {linkedCount} of {userIds.Length} are linked. " +
+                $"Unlinked: {string.Join(", ", unlinkedUsernames)}");
     }
 
     private static bool MatchesGame(string? candidate, string expected) =>
@@ -1100,7 +1106,7 @@ public sealed partial class GameCatalogService(
         public object? Features { get; set; }
     }
     public sealed record StructureRow(string StructureKey, string Name, bool IsDefault);
-    private sealed record TournamentRegistrationCatalogRow(Guid Id, string Game, string? GameMode, int? TeamSize);
+    private sealed record TournamentRegistrationCatalogRow(Guid Id, string Game, string? GameMode, int? TeamSize, bool AssistedReportingEnabled, int RequiredAccountLinks);
     private sealed record TeamCatalogRow(Guid Id, string Name, string? Game, string? GameFormat, Guid OwnerId);
     private sealed record RosterCatalogRow(Guid Id, Guid TeamId, string? Game, string? Format, int TeamSize);
     private sealed record RosterMemberCatalogRow(Guid UserId, string? RosterRole, bool IsStarter, string? TeamMemberRole);
@@ -1114,7 +1120,8 @@ public sealed record TournamentCatalogResolution(
     string GameMode,
     int TeamSize,
     string TournamentStructure,
-    bool SupportsMapVeto);
+    bool SupportsMapVeto,
+    bool SupportsAssistedReporting);
 
 public sealed record GameModeCatalogResolution(
     string GameName,

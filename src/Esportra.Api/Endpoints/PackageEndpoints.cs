@@ -219,7 +219,6 @@ public static class PackageEndpoints
                 return Results.BadRequest(new { error = "package_id is required" });
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try
@@ -360,7 +359,6 @@ public static class PackageEndpoints
                 return Results.BadRequest(new { error = "hours must be positive" });
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try

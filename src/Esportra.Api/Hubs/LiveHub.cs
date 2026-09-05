@@ -40,6 +40,15 @@ public sealed class LiveHub : Hub
 
     public async Task JoinVenue(string venueId)
     {
+        var userId = GetUserId();
+        if (userId is null) { await SendError("Not authenticated."); return; }
+
+        var vid = ParseGuid(venueId);
+        if (vid is null) { await SendError("Invalid venue ID."); return; }
+
+        if (!await IsVenueOwnerOrStaffAsync(userId, vid.Value))
+        { await SendError("Forbidden."); return; }
+
         await Groups.AddToGroupAsync(Context.ConnectionId, VenueGroup(venueId));
         _logger.LogDebug("Client {Conn} joined venue:{VenueId}", Context.ConnectionId, venueId);
     }
@@ -114,7 +123,6 @@ public sealed class LiveHub : Hub
         try
         {
             using var conn = _db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             foreach (var p in positions)
@@ -254,7 +262,6 @@ public sealed class LiveHub : Hub
         try
         {
             using var conn = _db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             // Update venues.price_per_hour if provided

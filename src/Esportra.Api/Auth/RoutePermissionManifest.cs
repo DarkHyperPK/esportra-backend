@@ -56,6 +56,11 @@ public static class RoutePermissionManifest
         P("GET",  "/api/profiles/search"),
         P("GET",  "/api/profiles/resolve-players"),
 
+        // Public reads — leaderboards (admin health probe must precede the wildcard)
+        new() { Method = "GET", Pattern = "/api/leaderboards/health", Level = AuthLevel.AdminAny },
+        P("GET",  "/api/leaderboards"),
+        P("GET",  "/api/leaderboards/{*}"),
+
         // Public tools
         P("*",    "/api/veto/public/{*}"),
         P("*",    "/api/veto/token/{*}"),

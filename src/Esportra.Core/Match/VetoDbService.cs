@@ -554,30 +554,33 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
     private static void ValidateAction(MatchMapVeto veto, VetoEvent ev, string? mapId)
     {
         var state = VetoEngine.DeriveState(veto);
+        ValidateEventMatchesState(ev, state);
+        ValidateMapNotReused(mapId, ev, veto);
+    }
 
-        // Check state matches expected action type
+    private static void ValidateEventMatchesState(VetoEvent ev, VetoState state)
+    {
         if (ev == VetoEvent.BanMap && state != VetoState.Ban)
             throw new InvalidOperationException($"INVALID_STATE: expected Ban, got {state}");
         if (ev == VetoEvent.PickMap && state != VetoState.Pick)
             throw new InvalidOperationException($"INVALID_STATE: expected Pick, got {state}");
         if (ev == VetoEvent.PickSide && state != VetoState.PickSide)
             throw new InvalidOperationException($"INVALID_STATE: expected PickSide, got {state}");
-
         if (state == VetoState.Complete)
             throw new InvalidOperationException("INVALID_STATE: veto already completed");
+    }
 
-        // Check map not already used
-        if (mapId is not null)
-        {
-            bool isBanned = veto.Team1BannedMaps.Contains(mapId) || veto.Team2BannedMaps.Contains(mapId);
-            bool isPicked = veto.Team1PickedMaps.Any(p => p.MapId == mapId)
-                         || veto.Team2PickedMaps.Any(p => p.MapId == mapId);
-
-            if (isBanned)
-                throw new InvalidOperationException("MAP_ALREADY_USED: map is already banned");
-            if (ev != VetoEvent.PickSide && isPicked)
-                throw new InvalidOperationException("MAP_ALREADY_USED: map is already picked");
-        }
+    private static void ValidateMapNotReused(string? mapId, VetoEvent ev, MatchMapVeto veto)
+    {
+        if (mapId is null)
+            return;
+        bool isBanned = veto.Team1BannedMaps.Contains(mapId) || veto.Team2BannedMaps.Contains(mapId);
+        bool isPicked = veto.Team1PickedMaps.Any(p => p.MapId == mapId)
+                     || veto.Team2PickedMaps.Any(p => p.MapId == mapId);
+        if (isBanned)
+            throw new InvalidOperationException("MAP_ALREADY_USED: map is already banned");
+        if (ev != VetoEvent.PickSide && isPicked)
+            throw new InvalidOperationException("MAP_ALREADY_USED: map is already picked");
     }
 
     private async Task AssertIsCaptainOfCurrentTeam(Guid userId, MatchMapVeto veto, CancellationToken ct)
@@ -794,6 +797,31 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             selectedMapId = pool.FirstOrDefault(m => !allExcluded.Contains(m));
         }
 
+        var gameMapIds = ResolvePickedMapOrder(bestOf, t1Picked, t2Picked, selectedMapId);
+
+        if (gameMapIds.Count == 0) return [];
+
+        var mapNames = (await conn.QueryAsync<dynamic>(@"
+            SELECT id::text as id, map_name
+            FROM public.game_maps
+            WHERE id::text = ANY(@ids)",
+            new { ids = gameMapIds.ToArray() })).ToDictionary(
+                m => (string)m.id,
+                m => (string)m.map_name);
+
+        var result = new List<(int, string, string)>();
+        for (int i = 0; i < gameMapIds.Count; i++)
+        {
+            var mapId = gameMapIds[i];
+            mapNames.TryGetValue(mapId, out var mapName);
+            result.Add((i + 1, mapId, mapName ?? "Unknown"));
+        }
+        return result;
+    }
+
+    private static List<string> ResolvePickedMapOrder(
+        int bestOf, PickedMap[] t1Picked, PickedMap[] t2Picked, string? selectedMapId)
+    {
         var gameMapIds = new List<string>();
         if (bestOf == 1)
         {
@@ -814,25 +842,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
             if (t2Picked.Length > 1) gameMapIds.Add(t2Picked[1].MapId);
             if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
         }
-
-        if (gameMapIds.Count == 0) return [];
-
-        var mapNames = (await conn.QueryAsync<dynamic>(@"
-            SELECT id::text as id, map_name
-            FROM public.game_maps
-            WHERE id::text = ANY(@ids)",
-            new { ids = gameMapIds.ToArray() })).ToDictionary(
-                m => (string)m.id,
-                m => (string)m.map_name);
-
-        var result = new List<(int, string, string)>();
-        for (int i = 0; i < gameMapIds.Count; i++)
-        {
-            var mapId = gameMapIds[i];
-            mapNames.TryGetValue(mapId, out var mapName);
-            result.Add((i + 1, mapId, mapName ?? "Unknown"));
-        }
-        return result;
+        return gameMapIds;
     }
 
     /// <summary>
@@ -883,33 +893,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, ILogger<VetoDbService
                     logger.LogInformation("Computed decider map for match {MatchId}: {MapId}", matchId, selectedMapId);
             }
 
-            // Build ordered game map list based on veto sequence
-            var gameMapIds = new List<string>();
-
-            if (bestOf == 1)
-            {
-                // BO1: the picked map or selected_map_id (last remaining)
-                if (t1Picked.Length > 0)
-                    gameMapIds.Add(t1Picked[0].MapId);
-                else if (selectedMapId is not null)
-                    gameMapIds.Add(selectedMapId);
-            }
-            else if (bestOf == 3)
-            {
-                // BO3: T1 pick, T2 pick, decider (selected_map_id)
-                if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
-                if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
-                if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
-            }
-            else if (bestOf == 5)
-            {
-                // BO5: T1 pick, T2 pick, T1 pick, T2 pick, decider
-                if (t1Picked.Length > 0) gameMapIds.Add(t1Picked[0].MapId);
-                if (t2Picked.Length > 0) gameMapIds.Add(t2Picked[0].MapId);
-                if (t1Picked.Length > 1) gameMapIds.Add(t1Picked[1].MapId);
-                if (t2Picked.Length > 1) gameMapIds.Add(t2Picked[1].MapId);
-                if (selectedMapId is not null) gameMapIds.Add(selectedMapId);
-            }
+            var gameMapIds = ResolvePickedMapOrder(bestOf, t1Picked, t2Picked, selectedMapId);
 
             if (gameMapIds.Count == 0)
             {

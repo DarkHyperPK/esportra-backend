@@ -51,6 +51,16 @@ All schema changes require a migration file in `src/Esportra.Infrastructure/Migr
 
 - **Naming:** `YYYYMMDDHHmmss_descriptive_name.sql`
 - **Must be idempotent:** `IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `ADD COLUMN IF NOT EXISTS`
+- **External schemas** (`hangfire.*`, `auth.*`, `storage.*`): verify actual column names before use — don't assume snake_case. Hangfire uses camelCase: `invocationdata`, `statename`, `createdat`, etc. See `.claude/rules/external-schema-migrations.md`.
+- **`ADD CONSTRAINT` has no `IF NOT EXISTS`** — wrap every constraint addition in a `DO $$` guard:
+  ```sql
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'constraint_name') THEN
+      ALTER TABLE t ADD CONSTRAINT constraint_name ...;
+    END IF;
+  END $$;
+  ```
 - One migration per concern
 - Files auto-embed via `.csproj` wildcard — no manual registration needed
 - `20260317_001_baseline.sql` marks the cutoff from Supabase-native schema to DbUp tracking
@@ -73,6 +83,7 @@ Never edit `post-baseline-replay-schema.sql` or `replay-journal-seed.sql` by han
 - Functions < 50 lines, files < 800 lines
 - No `dynamic` — prefer generics or explicit models
 - `dotnet format` for formatting, remove unused `using` directives
+- **Run `dotnet format` before staging any `.cs` file** — then verify with `dotnet format --verify-no-changes` (must exit 0). CI enforces this; `dotnet build`/`dotnet test` do not catch whitespace violations.
 - Options pattern for config (strongly typed, no raw string reading)
 
 ## Security (Blocking)
@@ -134,6 +145,7 @@ Custom skills defined in `.claude/skills/` for guided workflows:
 | `clean-architecture` | Patterns for maintainable, testable code organization. Covers dependency direction, single responsibility, explicit dependencies, and file organization. | Creating new features, deciding where code lives, designing interfaces, refactoring tangled code |
 | `secure-development` | Security-first development practices for APIs and data handling. Covers input validation, parameterized queries, authorization, error handling, and secrets management. | Building endpoints, handling user input, auth/authz work, sensitive data, external integrations |
 | `root-cause-diagnosis` | Full multi-angle root-cause diagnosis protocol. Traces the complete data path, audits assumptions with evidence, distinguishes defects from intended workflow. | Bug reports, regressions, errors, unexpected behavior, investigating "why does X fail?" |
+| `cyclomatic-complexity` | Audit and enforce cyclomatic complexity limits (CC ≤ 10 hard limit, ≤ 7 preferred). Covers counting rules, violation thresholds, and refactoring patterns. | Writing or modifying any method with branching logic, code reviews, pre-commit checks |
 
 ## Rules
 
@@ -146,6 +158,7 @@ Always-active rules defined in `.claude/rules/` that govern all code changes:
 | `refactoring.md` | Refactor to improve structure without changing behavior. Small steps, run tests after each, commit frequently. Never refactor while fixing a bug or without test coverage. |
 | `security.md` | Blocking security rules. Parameterized queries, RLS on every table, framework auth handlers, no hardcoded secrets, no PII in logs, safe client errors. Violations must be fixed before proceeding. |
 | `git-workflow.md` | Never push to main. All work on staging. Production deploys via CI/CD only. |
+| `cyclomatic-complexity.md` | Blocking CC limits. CC ≤ 10 per method (hard), ≤ 7 preferred. CC 11–15 requires refactor before merge; CC 16+ is a hard block. |
 
 ## Parked (Do Not Implement)
 
@@ -165,3 +178,44 @@ For new features (not bug fixes), follow 7 phases:
 7. Verification — persistence, role access, error recovery, build passes
 
 Phases 1–4 are thinking. Phases 5–7 are building.
+
+## AI Company
+
+This repository runs an autonomous AI company operating system. The CEO (you) is the only human. Every other role — executives, engineers, designers, QA — is an AI agent.
+
+### CEO Commands
+
+- `/company "objective"` — triggers the full pipeline: executive analysis → proposal → CEO approval → delegation → implementation → QA → CTO audit → executive review → CEO acceptance
+- `/company-status` — view active projects, task states, blockers, and approvals
+
+### How It Works
+
+1. You describe a feature or objective
+2. Executives analyze it in parallel (CTO, CPO full depth; CMO/CFO/COO/CIO lightweight)
+3. System synthesizes a proposal with conflicts surfaced for your decision
+4. **HARD STOP** — you approve, modify, or reject
+5. CTO orchestrates implementation (architecture → engineering → QA → audit)
+6. **HARD STOP** — you accept the final report or request changes
+
+### Organizational Hierarchy
+
+```
+CEO (You)
+├── CTO → Senior Architect, Backend, Frontend, Database, DevOps Engineers, QA Lead
+├── CPO → Product requirements, acceptance criteria
+├── CMO → Marketing/positioning analysis
+├── CFO → Cost/resource analysis
+├── COO → Operational implications
+└── CIO → Security, compliance, privacy
+```
+
+### Agent Definitions
+
+All agent files: `.claude/agents/` (version-controlled)
+All rules: `.claude/rules/` (auto-loaded, version-controlled)
+Runtime state: `.claude/company/` (gitignored — local only)
+
+### Natural Language Detection
+
+For feature-scale requests outside of `/company`, the system will ask:
+> "This looks like a company-level feature request. Route through the company workflow? (or handle directly)"

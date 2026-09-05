@@ -558,4 +558,24 @@ public static class EmailTemplates
             "system" => ("System Notice", SubtleText),
             _ => ("Announcement", RoseLight)
         };
+
+    public static (string Subject, string Html) MatchChatMessage(
+        string senderTeamName, string messagePreview, string matchRoomUrl)
+    {
+        var subject = $"New message from {senderTeamName} in your match";
+        var body = $"""
+            {Eyebrow("match comms")}
+            {H1("New message")}
+            {P($"<strong style=\"color:{Headline};\">{E(senderTeamName)}</strong> sent a message in your match room.")}
+            <div style="margin:20px 0;padding:16px 20px;border-left:3px solid {Rose};background:rgba(244,63,94,0.06);">
+              <p style="margin:0;font-size:14px;line-height:1.6;color:{BodyText};font-style:italic;">&ldquo;{E(messagePreview)}&rdquo;</p>
+            </div>
+            {Btn(matchRoomUrl, "Open match room")}
+            {Divider()}
+            {P($"<span style=\"color:{SubtleText};font-size:13px;\">You will not receive another notification for this match for the next 5 minutes.</span>")}
+            """;
+
+        var html = Wrap("New message from your opponent in the match room.", subject, body);
+        return (subject, html);
+    }
 }

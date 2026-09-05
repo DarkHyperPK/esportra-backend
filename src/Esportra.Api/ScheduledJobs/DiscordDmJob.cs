@@ -43,8 +43,7 @@ public sealed class DiscordDmJob(
         if (dm is null)
             return;
 
-        await discord.TrySendDmAsync(dm.UserId, dm.Type, dm.Title ?? "", dm.Message ?? "");
-
+        // Flag before send — at-most-once delivery; if send fails, job retries from scratch
         await conn.ExecuteAsync(
             """
             UPDATE notifications
@@ -52,6 +51,8 @@ public sealed class DiscordDmJob(
             WHERE id = @notificationId
             """,
             new { notificationId });
+
+        await discord.TrySendDmAsync(dm.UserId, dm.Type, dm.Title ?? "", dm.Message ?? "");
 
         logger.LogDebug("[DiscordDm] Sent DM for notification {Id} (type={Type}).", notificationId, dm.Type);
     }

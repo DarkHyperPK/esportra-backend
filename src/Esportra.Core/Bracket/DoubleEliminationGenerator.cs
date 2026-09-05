@@ -14,20 +14,44 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
         roundConfig ??= StageRoundConfiguration.PerStage("double_elimination", 1);
 
         var versionId = Guid.NewGuid();
-        var nodes = new List<BracketNode>();
-        var edges = new List<BracketEdge>();
-
         int numTeams = teams.Count;
         int targetSize = bracketSize ?? Math.Max(numTeams, 2);
         int P = (int)Math.Pow(2, Math.Ceiling(Math.Log2(targetSize)));
-
         int numUpperRounds = (int)Math.Round(Math.Log2(P));
         int numLowerRounds = 2 * numUpperRounds - 2;
 
-        var seeded = SeedTeams(teams, P);
+        var seeded = BracketSeeding.SeedTeams(teams, P);
         var matchMap = new Dictionary<string, BracketNode>();
+        var nodes = new List<BracketNode>();
+        var edges = new List<BracketEdge>();
 
-        // 1. Upper bracket nodes
+        nodes.AddRange(BuildWinnersBracketNodes(seeded, P, numUpperRounds, versionId, roundConfig, matchMap));
+        nodes.AddRange(BuildLosersBracketNodes(numLowerRounds, versionId, roundConfig, matchMap));
+
+        int gfBestOf = roundConfig.GetBestOf(0, "final", 1);
+        var gf = new BracketNode(
+            Id: Guid.NewGuid(), VersionId: versionId,
+            RoundIndex: numUpperRounds, MatchNumber: 1,
+            BracketType: "final", Status: "pending", BestOf: gfBestOf);
+        nodes.Add(gf);
+        matchMap["final-0-1"] = gf;
+
+        edges.AddRange(BuildUpperBracketEdges(matchMap, P, numUpperRounds, numLowerRounds, versionId, gf));
+        edges.AddRange(BuildLowerBracketEdges(matchMap, numLowerRounds, versionId, gf));
+
+        var version = new BracketVersion(versionId, tournamentId, stageId, 1, "draft",
+            DateTime.UtcNow.ToString("o"));
+
+        return new BracketGraph(version, nodes, edges);
+    }
+
+    private static List<BracketNode> BuildWinnersBracketNodes(
+        (Guid Id, string Name, int Seed)?[] seeded,
+        int P, int numUpperRounds, Guid versionId,
+        StageRoundConfiguration roundConfig,
+        Dictionary<string, BracketNode> matchMap)
+    {
+        var nodes = new List<BracketNode>();
         for (int r = 0; r < numUpperRounds; r++)
         {
             int matchesInRound = P / (int)Math.Pow(2, r + 1);
@@ -44,51 +68,49 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
                     t1Seed = slot1?.Seed;
                     t2Seed = slot2?.Seed;
                 }
-
                 int matchBestOf = roundConfig.GetBestOf(r, "winners", numUpperRounds);
-
                 var match = new BracketNode(
                     Id: Guid.NewGuid(), VersionId: versionId,
                     RoundIndex: r, MatchNumber: i + 1,
                     BracketType: "winners", Status: "pending",
                     BestOf: matchBestOf, Team1Id: t1, Team2Id: t2,
                     Team1Seed: t1Seed, Team2Seed: t2Seed);
-
                 nodes.Add(match);
                 matchMap[$"winners-{r}-{i + 1}"] = match;
             }
         }
+        return nodes;
+    }
 
-        // 2. Lower bracket nodes
+    private static List<BracketNode> BuildLosersBracketNodes(
+        int numLowerRounds, Guid versionId,
+        StageRoundConfiguration roundConfig,
+        Dictionary<string, BracketNode> matchMap)
+    {
+        var nodes = new List<BracketNode>();
         for (int r = 0; r < numLowerRounds; r++)
         {
             int matchesInRound = (int)Math.Pow(2, Math.Floor((numLowerRounds - 1 - r) / 2.0));
             for (int i = 0; i < matchesInRound; i++)
             {
                 int matchBestOf = roundConfig.GetBestOf(r, "losers", numLowerRounds);
-
                 var match = new BracketNode(
                     Id: Guid.NewGuid(), VersionId: versionId,
                     RoundIndex: r, MatchNumber: i + 1,
                     BracketType: "losers", Status: "pending", BestOf: matchBestOf);
-
                 nodes.Add(match);
                 matchMap[$"losers-{r}-{i + 1}"] = match;
             }
         }
+        return nodes;
+    }
 
-        // 3. Grand final node
-        int gfBestOf = roundConfig.GetBestOf(0, "final", 1);
-
-        var gf = new BracketNode(
-            Id: Guid.NewGuid(), VersionId: versionId,
-            RoundIndex: numUpperRounds, MatchNumber: 1,
-            BracketType: "final", Status: "pending", BestOf: gfBestOf);
-
-        nodes.Add(gf);
-        matchMap["final-0-1"] = gf;
-
-        // 4. Upper bracket edges
+    private static List<BracketEdge> BuildUpperBracketEdges(
+        Dictionary<string, BracketNode> matchMap,
+        int P, int numUpperRounds, int numLowerRounds,
+        Guid versionId, BracketNode gf)
+    {
+        var edges = new List<BracketEdge>();
         for (int r = 0; r < numUpperRounds - 1; r++)
         {
             int matchesInRound = P / (int)Math.Pow(2, r + 1);
@@ -96,15 +118,10 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
             {
                 if (!matchMap.TryGetValue($"winners-{r}-{i + 1}", out var current)) continue;
 
-                // Winner → next WB round
                 int nextMatchNum = (int)Math.Ceiling((i + 1) / 2.0);
                 if (matchMap.TryGetValue($"winners-{r + 1}-{nextMatchNum}", out var next))
-                {
-                    edges.Add(new BracketEdge(Guid.NewGuid(), versionId,
-                        current.Id, next.Id, "winner", (i + 1) % 2 == 1 ? 1 : 2));
-                }
+                    edges.Add(new BracketEdge(Guid.NewGuid(), versionId, current.Id, next.Id, "winner", (i + 1) % 2 == 1 ? 1 : 2));
 
-                // Loser → lower bracket
                 int lr = r == 0 ? 0 : 2 * r - 1;
                 if (lr < numLowerRounds)
                 {
@@ -112,27 +129,27 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
                     if (matchMap.TryGetValue($"losers-{lr}-{dropMatchNum}", out var loserMatch))
                     {
                         int slot = r == 0 ? ((i + 1) % 2 == 1 ? 1 : 2) : 1;
-                        edges.Add(new BracketEdge(Guid.NewGuid(), versionId,
-                            current.Id, loserMatch.Id, "loser", slot));
+                        edges.Add(new BracketEdge(Guid.NewGuid(), versionId, current.Id, loserMatch.Id, "loser", slot));
                     }
                 }
             }
         }
 
-        // Upper final → GF (slot 1) + LB final (loser)
         if (matchMap.TryGetValue($"winners-{numUpperRounds - 1}-1", out var upperFinal))
         {
-            edges.Add(new BracketEdge(Guid.NewGuid(), versionId,
-                upperFinal.Id, gf.Id, "winner", 1));
-
+            edges.Add(new BracketEdge(Guid.NewGuid(), versionId, upperFinal.Id, gf.Id, "winner", 1));
             if (matchMap.TryGetValue($"losers-{numLowerRounds - 1}-1", out var lbFinal))
-            {
-                edges.Add(new BracketEdge(Guid.NewGuid(), versionId,
-                    upperFinal.Id, lbFinal.Id, "loser", 1));
-            }
+                edges.Add(new BracketEdge(Guid.NewGuid(), versionId, upperFinal.Id, lbFinal.Id, "loser", 1));
         }
 
-        // 5. Lower bracket edges
+        return edges;
+    }
+
+    private static List<BracketEdge> BuildLowerBracketEdges(
+        Dictionary<string, BracketNode> matchMap,
+        int numLowerRounds, Guid versionId, BracketNode gf)
+    {
+        var edges = new List<BracketEdge>();
         for (int r = 0; r < numLowerRounds - 1; r++)
         {
             int matchesInRound = (int)Math.Pow(2, Math.Floor((numLowerRounds - 1 - r) / 2.0));
@@ -144,46 +161,13 @@ public sealed class DoubleEliminationGenerator : IBracketGenerator
                 if (!matchMap.TryGetValue($"losers-{r + 1}-{nextMatchNum}", out var next)) continue;
 
                 int slot = r % 2 == 0 ? 2 : ((i + 1) % 2 == 1 ? 1 : 2);
-                edges.Add(new BracketEdge(Guid.NewGuid(), versionId,
-                    current.Id, next.Id, "winner", slot));
+                edges.Add(new BracketEdge(Guid.NewGuid(), versionId, current.Id, next.Id, "winner", slot));
             }
         }
 
-        // Lower final → GF slot 2
         if (matchMap.TryGetValue($"losers-{numLowerRounds - 1}-1", out var lowerFinal))
-        {
-            edges.Add(new BracketEdge(Guid.NewGuid(), versionId,
-                lowerFinal.Id, gf.Id, "winner", 2));
-        }
+            edges.Add(new BracketEdge(Guid.NewGuid(), versionId, lowerFinal.Id, gf.Id, "winner", 2));
 
-        var version = new BracketVersion(versionId, tournamentId, stageId, 1, "draft",
-            DateTime.UtcNow.ToString("o"));
-
-        return new BracketGraph(version, nodes, edges);
-    }
-
-    private static (Guid Id, string Name, int Seed)?[] SeedTeams(IReadOnlyList<(Guid Id, string Name)> teams, int bracketSize)
-    {
-        var seeded = new (Guid Id, string Name, int Seed)?[bracketSize];
-        var positions = GetStandardBracketSlots(bracketSize);
-        for (int i = 0; i < teams.Count; i++)
-            seeded[positions[i]] = (teams[i].Id, teams[i].Name, i + 1); // seed is 1-based
-        return seeded;
-    }
-
-    private static int[] GetStandardBracketSlots(int n)
-    {
-        if (n == 1) return [0];
-        if (n == 2) return [0, 1];
-
-        var slots = new int[n];
-        int halfSize = n / 2;
-        var upper = GetStandardBracketSlots(halfSize);
-        for (int i = 0; i < halfSize; i++)
-        {
-            slots[i] = upper[i] * 2;
-            slots[n - 1 - i] = upper[i] * 2 + 1;
-        }
-        return slots;
+        return edges;
     }
 }

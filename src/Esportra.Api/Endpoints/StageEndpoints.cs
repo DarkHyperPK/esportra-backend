@@ -75,75 +75,8 @@ public static class StageEndpoints
                     new { ids = toDelete }, tx);
             }
 
-            // Upsert all stages
             foreach (var s in normalizedStages)
-            {
-                var stageGuid = s.Id is not null && Guid.TryParse(s.Id, out var parsed) ? parsed : (Guid?)null;
-
-                var roundBoOverridesJson = s.RoundBoOverrides is { Count: > 0 }
-                    ? System.Text.Json.JsonSerializer.Serialize(s.RoundBoOverrides)
-                    : null;
-
-                if (stageGuid.HasValue && existingGuids.Contains(stageGuid.Value))
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        UPDATE tournament_stages
-                        SET name = @name, format = @format, stage_order = @stageOrder,
-                            best_of = @bestOf, bo_mode = @boMode,
-                            round_bo_overrides = CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
-                            capacity = @capacity,
-                            advancement_count = @advancementCount,
-                            config = CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE config END,
-                            starts_at = @startsAt,
-                            ends_at = @endsAt,
-                            updated_at = NOW()
-                        WHERE id = @id
-                        """,
-                        new
-                        {
-                            id = stageGuid.Value,
-                            name = s.Name,
-                            format = s.Format,
-                            stageOrder = s.StageOrder,
-                            bestOf = s.BestOf ?? 1,
-                            boMode = s.BoMode ?? "per_stage",
-                            roundBoOverrides = roundBoOverridesJson,
-                            capacity = s.Capacity,
-                            advancementCount = s.AdvancementCount,
-                            config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
-                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
-                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
-                        }, tx);
-                }
-                else
-                {
-                    await conn.ExecuteAsync(
-                        """
-                        INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, bo_mode, round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
-                        VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @boMode,
-                                CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
-                                @capacity, @advancementCount,
-                                CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
-                                @startsAt, @endsAt)
-                        """,
-                        new
-                        {
-                            tournamentId,
-                            name = s.Name,
-                            format = s.Format,
-                            stageOrder = s.StageOrder,
-                            bestOf = s.BestOf ?? 1,
-                            boMode = s.BoMode ?? "per_stage",
-                            roundBoOverrides = roundBoOverridesJson,
-                            capacity = s.Capacity,
-                            advancementCount = s.AdvancementCount,
-                            config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
-                            startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa2) ? sa2 : (DateTimeOffset?)null,
-                            endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea2) ? ea2 : (DateTimeOffset?)null,
-                        }, tx);
-                }
-            }
+                await UpsertStageAsync(conn, tx, s, tournamentId, existingGuids);
 
             var updated = await conn.QueryAsync<dynamic>(
                 "SELECT * FROM tournament_stages WHERE tournament_id = @tournamentId ORDER BY stage_order LIMIT 50",
@@ -181,13 +114,18 @@ public static class StageEndpoints
 
                 if (req.MapIds is { Length: > 0 })
                 {
-                    foreach (var mapIdStr in req.MapIds)
-                    {
-                        if (!Guid.TryParse(mapIdStr, out var mapId)) continue;
+                    var mapIds = req.MapIds
+                        .Where(s => Guid.TryParse(s, out _))
+                        .Select(Guid.Parse)
+                        .ToArray();
+                    if (mapIds.Length > 0)
                         await conn.ExecuteAsync(
-                            "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@tournamentId, @mapId) ON CONFLICT DO NOTHING",
-                            new { tournamentId, mapId });
-                    }
+                            """
+                            INSERT INTO tournament_map_pools (tournament_id, map_id)
+                            SELECT @tournamentId, UNNEST(@mapIds::uuid[])
+                            ON CONFLICT DO NOTHING
+                            """,
+                            new { tournamentId, mapIds });
                 }
 
                 return Results.Ok(new { success = true, count = req.MapIds?.Length ?? 0 });
@@ -289,6 +227,7 @@ public static class StageEndpoints
             Guid stageId,
             IDbConnectionFactory db,
             StandingsService standings,
+            PlacementResolutionService placementResolution,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
@@ -375,13 +314,13 @@ public static class StageEndpoints
 
             if (format is "single_elimination" or "double_elimination")
             {
-                var elimination = await CheckEliminationCompletion(conn, matches, advancementCount);
+                var elimination = await CheckEliminationCompletion(conn, matches, format, advancementCount, placementResolution, stageId, ct);
                 return Results.Ok(MergeBracketCompletion(elimination, alreadyAdvanced, bracketProgressLabel));
             }
 
             if (format is "swiss" or "round_robin")
             {
-                var roundRobin = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct);
+                var roundRobin = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, (string?)stage.format, stage.config?.ToString(), standings, ct);
                 return Results.Ok(MergeBracketCompletion(roundRobin, alreadyAdvanced, bracketProgressLabel));
             }
 
@@ -399,13 +338,16 @@ public static class StageEndpoints
         // ── POST /api/stages/{stageId}/advance ──────────────────────────────
         app.MapPost("/api/stages/{stageId}/advance", async (
             Guid stageId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             StandingsService standings,
-            TournamentWinnerService winnerService,
             PlacementResolutionService placementResolution,
-            ILoggerFactory loggerFactory,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
 
             // 1. Get stage info (includes BO config for debugging)
@@ -414,136 +356,57 @@ public static class StageEndpoints
                 new { stageId });
             if (stage is null) return Results.NotFound("Stage not found");
 
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, (Guid)stage.tournament_id, ct: ct))
+                return Results.Forbid();
+
             int advancementCount = (int?)stage.advancement_count ?? 1;
 
-            // 2. Count participants
-            int participantsCount;
-            if ((int)stage.stage_order == 1)
-            {
-                participantsCount = await conn.ExecuteScalarAsync<int>(
-                    "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tid AND status != 'pending'",
-                    new { tid = (Guid)stage.tournament_id });
-            }
-            else
-            {
-                participantsCount = await conn.ExecuteScalarAsync<int>(
-                    "SELECT COUNT(*) FROM stage_participants WHERE stage_id = @stageId",
-                    new { stageId });
-            }
+            int stageOrder = (int)stage.stage_order;
+            Guid stageTournamentId = (Guid)stage.tournament_id;
+            int participantsCount = await LoadParticipantCountAsync(stageOrder, stageTournamentId, stageId, conn);
 
             if (advancementCount >= participantsCount)
-            {
                 return Results.Ok(new { success = false, error = $"Advancement count ({advancementCount}) >= participants ({participantsCount})" });
-            }
 
-            // 3. Get latest bracket version
             var version = await conn.QuerySingleOrDefaultAsync(
                 "SELECT id FROM brkt_versions WHERE stage_id = @stageId ORDER BY version_number DESC LIMIT 1",
                 new { stageId });
             if (version is null)
                 return Results.Ok(new { success = false, error = "No bracket found" });
 
-            // 4. Get all matches and check completion
             var matches = (await conn.QueryAsync(
                 "SELECT * FROM brkt_matches WHERE version_id = @vid",
                 new { vid = (Guid)version.id })).AsList();
             if (matches.Count == 0)
                 return Results.Ok(new { success = false, error = "No matches found" });
 
-            string format = (string?)stage.format ?? "single_elimination";
-            dynamic completionResult;
+            string stageFormat = (string?)stage.format ?? "single_elimination";
+            string? stageConfigJson = stage.config?.ToString();
+            (dynamic? completionResult, IResult? formatErr) = await CheckStageFormatCompletionAsync(
+                stageFormat, stageConfigJson, stageId, matches, advancementCount, standings, placementResolution, conn, ct);
+            if (formatErr is not null) return formatErr;
 
-            if (format is "single_elimination" or "double_elimination")
-                completionResult = await CheckEliminationCompletion(conn, matches, advancementCount);
-            else if (format is "swiss" or "round_robin")
-                completionResult = await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stage, standings, ct);
-            else
-                return Results.Ok(new { success = false, error = "Unknown format" });
-
-            bool isComplete = completionResult.isComplete;
+            bool isComplete = completionResult!.isComplete;
             if (!isComplete)
                 return Results.Ok(new { success = false, error = $"Stage not complete: {completionResult.reason}" });
 
             var advancingTeams = (List<AdvancingTeam>)completionResult.advancingTeams;
-            Guid tournamentId = (Guid)stage.tournament_id;
-            int stageOrder = (int)stage.stage_order;
-            await EnsureMockBackingTeamsAsync(conn, tournamentId, advancingTeams.Select(t => t.TeamId));
+            await EnsureMockBackingTeamsAsync(conn, stageTournamentId, advancingTeams.Select(t => t.TeamId));
 
-            // 5. Find next stage
             var nextStage = await conn.QuerySingleOrDefaultAsync(
                 "SELECT id, name FROM tournament_stages WHERE tournament_id = @tournamentId AND stage_order = @nextOrder",
-                new { tournamentId, nextOrder = stageOrder + 1 });
+                new { tournamentId = stageTournamentId, nextOrder = stageOrder + 1 });
 
             if (nextStage is null)
-            {
-                // Final stage — mark completed
-                await conn.ExecuteAsync(
-                    "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                    new { stageId });
-
-                if (advancingTeams.Count > 0)
-                {
-                    await winnerService.SetWinnerAsync(
-                        conn,
-                        tx: null,
-                        tournamentId,
-                        advancingTeams[0].TeamId,
-                        reason: "final stage advancement completed",
-                        ct);
-                }
-                else
-                {
-                    await conn.ExecuteAsync(
-                        "UPDATE tournaments SET status = 'completed' WHERE id = @tournamentId",
-                        new { tournamentId });
-                }
-
-                try
-                {
-                    await placementResolution.ResolveAsync(tournamentId, force: false, ct);
-                }
-                catch (Exception ex)
-                {
-                    loggerFactory.CreateLogger("PrizeDistribution")
-                        .LogWarning(ex, "Placement resolution failed for tournament {TournamentId}; manual resolve available.", tournamentId);
-                }
-
                 return Results.Ok(new { success = true, advancedCount = 0, isFinalStage = true });
-            }
 
-            // 6. Insert advancing teams into next stage (avoid duplicates)
-            Guid nextStageId = (Guid)nextStage.id;
-            var existingTeamIds = (await conn.QueryAsync<Guid>(
-                "SELECT team_id FROM stage_participants WHERE stage_id = @nextStageId",
-                new { nextStageId })).ToHashSet();
+            await InsertAdvancingTeamsAsync(advancingTeams, (Guid)nextStage.id, conn);
 
-            var newEntries = advancingTeams
-                .Where(t => !existingTeamIds.Contains(t.TeamId))
-                .ToList();
-
-            if (newEntries.Count > 0)
-            {
-                var ids = newEntries.Select(t => t.TeamId).ToArray();
-                var stageIds = Enumerable.Repeat(nextStageId, ids.Length).ToArray();
-                await conn.ExecuteAsync(
-                    "INSERT INTO stage_participants (stage_id, team_id) SELECT * FROM UNNEST(@stageIds::uuid[], @ids::uuid[])",
-                    new { stageIds, ids });
-            }
-
-            // 7. Update stage statuses
-            await conn.ExecuteAsync(
-                "UPDATE tournament_stages SET status = 'completed' WHERE id = @stageId",
-                new { stageId });
             await conn.ExecuteAsync(
                 "UPDATE tournament_stages SET status = 'upcoming' WHERE id = @nextStageId",
-                new { nextStageId });
+                new { nextStageId = (Guid)nextStage.id });
 
-            return Results.Ok(new
-            {
-                success = true,
-                nextStageId,
-                advancedCount = advancingTeams.Count
-            });
+            return Results.Ok(new { success = true, nextStageId = (Guid)nextStage.id, advancedCount = advancingTeams.Count });
         }).RequireAuthorization("Authenticated");
 
 
@@ -619,6 +482,132 @@ public static class StageEndpoints
             var rounds = StageRoundConfiguration.GetRoundStructure(format, bracketSize);
             return Results.Ok(new { format, bracketSize, rounds });
         });
+    }
+
+    private static async Task UpsertStageAsync(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        StageDto s, Guid tournamentId, HashSet<Guid> existingGuids)
+    {
+        var stageGuid = s.Id is not null && Guid.TryParse(s.Id, out var parsed) ? parsed : (Guid?)null;
+        var roundBoOverridesJson = s.RoundBoOverrides is { Count: > 0 }
+            ? System.Text.Json.JsonSerializer.Serialize(s.RoundBoOverrides)
+            : null;
+        if (stageGuid.HasValue && existingGuids.Contains(stageGuid.Value))
+            await UpdateStageAsync(conn, tx, s, stageGuid.Value, roundBoOverridesJson);
+        else
+            await InsertStageAsync(conn, tx, s, tournamentId, roundBoOverridesJson);
+    }
+
+    private static async Task UpdateStageAsync(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        StageDto s, Guid stageId, string? roundBoOverridesJson)
+    {
+        await conn.ExecuteAsync(
+            """
+            UPDATE tournament_stages
+            SET name = @name, format = @format, stage_order = @stageOrder,
+                best_of = @bestOf, bo_mode = @boMode,
+                round_bo_overrides = CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                capacity = @capacity,
+                advancement_count = @advancementCount,
+                config = CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE config END,
+                starts_at = @startsAt,
+                ends_at = @endsAt,
+                updated_at = NOW()
+            WHERE id = @id
+            """,
+            new
+            {
+                id = stageId,
+                name = s.Name,
+                format = s.Format,
+                stageOrder = s.StageOrder,
+                bestOf = s.BestOf ?? 1,
+                boMode = s.BoMode ?? "per_stage",
+                roundBoOverrides = roundBoOverridesJson,
+                capacity = s.Capacity,
+                advancementCount = s.AdvancementCount,
+                config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
+                endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
+            }, tx);
+    }
+
+    private static async Task InsertStageAsync(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+        StageDto s, Guid tournamentId, string? roundBoOverridesJson)
+    {
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO tournament_stages (tournament_id, name, format, stage_order, best_of, bo_mode, round_bo_overrides, capacity, advancement_count, config, starts_at, ends_at)
+            VALUES (@tournamentId, @name, @format, @stageOrder, @bestOf, @boMode,
+                    CASE WHEN @roundBoOverrides::text IS NOT NULL THEN @roundBoOverrides::jsonb ELSE NULL END,
+                    @capacity, @advancementCount,
+                    CASE WHEN @config::text IS NOT NULL THEN @config::jsonb ELSE NULL END,
+                    @startsAt, @endsAt)
+            """,
+            new
+            {
+                tournamentId,
+                name = s.Name,
+                format = s.Format,
+                stageOrder = s.StageOrder,
+                bestOf = s.BestOf ?? 1,
+                boMode = s.BoMode ?? "per_stage",
+                roundBoOverrides = roundBoOverridesJson,
+                capacity = s.Capacity,
+                advancementCount = s.AdvancementCount,
+                config = s.Config.HasValue ? s.Config.Value.ToString() : (string?)null,
+                startsAt = s.StartsAt is not null && DateTimeOffset.TryParse(s.StartsAt, out var sa) ? sa : (DateTimeOffset?)null,
+                endsAt = s.EndsAt is not null && DateTimeOffset.TryParse(s.EndsAt, out var ea) ? ea : (DateTimeOffset?)null,
+            }, tx);
+    }
+
+    private static async Task<int> LoadParticipantCountAsync(
+        int stageOrder, Guid tournamentId, Guid stageId, System.Data.IDbConnection conn)
+    {
+        if (stageOrder == 1)
+            return await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tid AND status != 'pending'",
+                new { tid = tournamentId });
+        return await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM stage_participants WHERE stage_id = @stageId",
+            new { stageId });
+    }
+
+    private static async Task<(dynamic? Result, IResult? Error)> CheckStageFormatCompletionAsync(
+        string stageFormat, string? stageConfigJson, Guid stageId,
+        List<dynamic> matches, int advancementCount,
+        StandingsService standings, PlacementResolutionService placementResolution,
+        System.Data.IDbConnection conn, CancellationToken ct)
+    {
+        if (stageFormat is "single_elimination" or "double_elimination")
+            return (await CheckEliminationCompletion(conn, matches, stageFormat, advancementCount, placementResolution, stageId, ct), null);
+        if (stageFormat is "swiss" or "round_robin")
+            return (await CheckRoundRobinCompletion(conn, matches, advancementCount, stageId, stageFormat, stageConfigJson, standings, ct), null);
+        return (null, Results.Ok(new { success = false, error = "Unknown format" }));
+    }
+
+    private static async Task InsertAdvancingTeamsAsync(
+        List<AdvancingTeam> advancingTeams, Guid nextStageId, System.Data.IDbConnection conn)
+    {
+        var existingTeamIds = (await conn.QueryAsync<Guid>(
+            "SELECT team_id FROM stage_participants WHERE stage_id = @nextStageId",
+            new { nextStageId })).ToHashSet();
+        var newEntries = advancingTeams.Where(t => !existingTeamIds.Contains(t.TeamId)).ToList();
+        if (newEntries.Count > 0)
+        {
+            var ids = newEntries.Select(t => t.TeamId).ToArray();
+            var seeds = newEntries.Select(t => t.Seed).ToArray();
+            var stageIds = Enumerable.Repeat(nextStageId, ids.Length).ToArray();
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO stage_participants (stage_id, team_id, seed)
+                SELECT * FROM UNNEST(@stageIds::uuid[], @ids::uuid[], @seeds::int[])
+                ON CONFLICT (stage_id, team_id) DO UPDATE SET seed = EXCLUDED.seed
+                """,
+                new { stageIds, ids, seeds });
+        }
     }
 
     private static StageDto[] NormalizeStageCapacities(StageDto[] stages, int? tournamentMaxTeams)
@@ -729,29 +718,69 @@ public static class StageEndpoints
 
     private record AdvancingTeam(Guid TeamId, string TeamName, int Seed);
 
-    private static async Task<object> CheckEliminationCompletion(
+    private static Task<object> CheckEliminationCompletion(
+        System.Data.IDbConnection conn,
+        List<dynamic> matches,
+        string format,
+        int advancementCount,
+        PlacementResolutionService placementSvc,
+        Guid stageId,
+        CancellationToken ct)
+        => format == "double_elimination"
+            ? ResolveDECompletion(conn, matches, advancementCount, placementSvc, stageId, ct)
+            : CheckSECompletion(conn, matches, advancementCount);
+
+    private static async Task<object> ResolveDECompletion(
+        System.Data.IDbConnection conn,
+        List<dynamic> matches,
+        int advancementCount,
+        PlacementResolutionService placementSvc,
+        Guid stageId,
+        CancellationToken ct)
+    {
+        var gfMatches = matches.Where(m => (string?)m.bracket_type == "final").ToList();
+        if (gfMatches.Count == 0 || gfMatches.Any(m => (string?)m.status != "completed"))
+        {
+            int pending = matches.Count(m => (string?)m.status != "completed");
+            return new { isComplete = false, advancingTeams = new List<AdvancingTeam>(), reason = $"{pending} matches remaining" };
+        }
+
+        var placements = await placementSvc.ComputeForStageAsync(stageId, conn, ct);
+        var advancingTeams = placements
+            .OrderBy(p => p.Placement)
+            .Take(advancementCount)
+            .Select((p, i) => new AdvancingTeam(p.TeamId, p.TeamName, i + 1))
+            .ToList();
+
+        return new
+        {
+            isComplete = advancingTeams.Count == advancementCount,
+            advancingTeams,
+            reason = $"{advancingTeams.Count} teams ready to advance"
+        };
+    }
+
+    private static async Task<object> CheckSECompletion(
         System.Data.IDbConnection conn,
         List<dynamic> matches,
         int advancementCount)
     {
-        var pendingCount = matches.Count(m => (string?)m.status is "pending" or "in_progress");
-        int maxRound = matches.Max(m => (int)(m.round_index ?? 0));
-        var finalRoundMatches = matches.Where(m => (int)(m.round_index ?? 0) == maxRound).ToList();
-
-        bool allFinalComplete = finalRoundMatches.All(m =>
-            (string?)m.status == "completed" || m.winner_id is not null);
-
-        if (!allFinalComplete)
+        var finalMatches = matches.Where(m => (string?)m.bracket_type == "final").ToList();
+        if (finalMatches.Count == 0)
         {
-            return new
-            {
-                isComplete = false,
-                advancingTeams = new List<AdvancingTeam>(),
-                reason = $"{pendingCount} matches remaining"
-            };
+            int maxRound = matches.Count > 0 ? matches.Max(m => (int)(m.round_index ?? 0)) : 0;
+            finalMatches = matches.Where(m => (int)(m.round_index ?? 0) == maxRound).ToList();
         }
 
-        var winnerIds = finalRoundMatches
+        bool allComplete = finalMatches.All(m =>
+            (string?)m.status == "completed" || m.winner_id is not null);
+        if (!allComplete)
+        {
+            int pendingCount = matches.Count(m => (string?)m.status != "completed");
+            return new { isComplete = false, advancingTeams = new List<AdvancingTeam>(), reason = $"{pendingCount} matches remaining" };
+        }
+
+        var winnerIds = finalMatches
             .OrderBy(m => (int)(m.match_number ?? 0))
             .Where(m => m.winner_id is not null)
             .Select(m => (Guid)m.winner_id)
@@ -759,15 +788,11 @@ public static class StageEndpoints
             .ToList();
 
         var teams = await GetTeamInfo(conn, winnerIds);
-        bool isComplete = (teams.Count <= advancementCount && teams.Count > 0) || pendingCount == 0;
-
         return new
         {
-            isComplete,
+            isComplete = teams.Count > 0,
             advancingTeams = teams,
-            reason = isComplete
-                ? $"{teams.Count} teams ready to advance"
-                : $"{pendingCount} matches remaining"
+            reason = teams.Count > 0 ? $"{teams.Count} teams ready to advance" : "No winners found"
         };
     }
 
@@ -776,108 +801,82 @@ public static class StageEndpoints
         List<dynamic> matches,
         int advancementCount,
         Guid stageId,
-        dynamic stage,
+        string? stageFormat,
+        string? configJson,
         StandingsService standings,
         CancellationToken ct)
     {
         int pendingCount = matches.Count(m => (string?)m.status != "completed");
 
-        // Check Swiss Rounds target
-        string? stageFormat = (string?)stage.format;
-        string? configJson = stage.config?.ToString();
-        int swissRounds = 0;
-        if (stageFormat == "swiss" && configJson is not null)
-        {
-            try
-            {
-                var config = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(configJson);
-                if (config?.TryGetValue("swiss_rounds", out var srVal) == true)
-                    int.TryParse(srVal?.ToString(), out swissRounds);
-            }
-            catch { /* Config is optional JSON; default to 0 swiss_rounds on parse failure */ }
-        }
-
+        int swissRounds = ParseSwissRoundsTarget(stageFormat, configJson);
         if (stageFormat == "swiss" && swissRounds > 0)
         {
             int maxRound = matches.Max(m => (int)(m.round_number ?? m.round_index + 1 ?? 1));
             if (maxRound < swissRounds)
-            {
-                return new
-                {
-                    isComplete = false,
-                    advancingTeams = new List<AdvancingTeam>(),
-                    reason = $"Round {maxRound} of {swissRounds} completed. Generate next round."
-                };
-            }
+                return new { isComplete = false, advancingTeams = new List<AdvancingTeam>(), reason = $"Round {maxRound} of {swissRounds} completed. Generate next round." };
         }
 
         if (pendingCount > 0)
-        {
-            return new
-            {
-                isComplete = false,
-                advancingTeams = new List<AdvancingTeam>(),
-                reason = $"{pendingCount} matches remaining"
-            };
-        }
+            return new { isComplete = false, advancingTeams = new List<AdvancingTeam>(), reason = $"{pendingCount} matches remaining" };
 
-        // All matches complete — calculate advancement via standings
-        // Determine group count from config (swiss_groups or group_count) or from actual match data
-        int configGroupCount = 1;
-        if (configJson is not null)
-        {
-            try
-            {
-                var config = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(configJson);
-                if (config?.TryGetValue("swiss_groups", out var sgVal) == true)
-                    int.TryParse(sgVal?.ToString(), out configGroupCount);
-                // Round robin format uses group_count instead of swiss_groups
-                if (configGroupCount <= 1 && config?.TryGetValue("group_count", out var gcVal) == true)
-                    int.TryParse(gcVal?.ToString(), out configGroupCount);
-            }
-            catch { /* Config is optional JSON; default to 1 on parse failure */ }
-        }
-
-        // Discover actual groups from match data
-        var groupIds = matches
-            .Select(m => (string?)m.group_id)
-            .Where(g => g is not null)
-            .Distinct()
-            .OrderBy(g => g)
-            .ToList();
-
+        int configGroupCount = ParseGroupCount(configJson);
+        var groupIds = matches.Select(m => (string?)m.group_id).Where(g => g is not null).Distinct().OrderBy(g => g).ToList();
         int actualGroupCount = groupIds.Count > 0 ? groupIds.Count : configGroupCount;
 
-        var advancingTeams = new List<AdvancingTeam>();
+        var advancingTeams = await CalculateAdvancingTeamsAsync(actualGroupCount, groupIds!, advancementCount, stageId, standings, ct);
+        return new { isComplete = true, advancingTeams, reason = $"{advancingTeams.Count} teams ready to advance" };
+    }
 
+    private static int ParseSwissRoundsTarget(string? stageFormat, string? configJson)
+    {
+        if (stageFormat != "swiss" || configJson is null) return 0;
+        try
+        {
+            var config = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(configJson);
+            if (config?.TryGetValue("swiss_rounds", out var srVal) == true && int.TryParse(srVal?.ToString(), out var sr))
+                return sr;
+        }
+        catch { /* Config is optional JSON; default to 0 on parse failure */ }
+        return 0;
+    }
+
+    private static int ParseGroupCount(string? configJson)
+    {
+        if (configJson is null) return 1;
+        try
+        {
+            var config = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(configJson);
+            if (config?.TryGetValue("swiss_groups", out var sgVal) == true && int.TryParse(sgVal?.ToString(), out var sg) && sg > 0)
+                return sg;
+            if (config?.TryGetValue("group_count", out var gcVal) == true && int.TryParse(gcVal?.ToString(), out var gc) && gc > 0)
+                return gc;
+        }
+        catch { /* Config is optional JSON; default to 1 on parse failure */ }
+        return 1;
+    }
+
+    private static async Task<List<AdvancingTeam>> CalculateAdvancingTeamsAsync(
+        int actualGroupCount, List<string> groupIds, int advancementCount,
+        Guid stageId, StandingsService standings, CancellationToken ct)
+    {
+        var advancingTeams = new List<AdvancingTeam>();
         if (actualGroupCount > 1 && groupIds.Count > 0)
         {
-            // Per-group advancement: distribute slots fairly across all groups
             int baseAdv = advancementCount / actualGroupCount;
             int remainder = advancementCount % actualGroupCount;
-
             for (int i = 0; i < groupIds.Count; i++)
             {
                 int countForGroup = baseAdv + (i < remainder ? 1 : 0);
                 var s = await standings.CalculateStandingsAsync(stageId, groupIds[i], ct);
-                advancingTeams.AddRange(s.Take(countForGroup)
-                    .Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank)));
+                advancingTeams.AddRange(s.Take(countForGroup).Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank)));
             }
         }
         else
         {
             var s = await standings.CalculateStandingsAsync(stageId, ct: ct);
-            advancingTeams = s.Take(advancementCount)
-                .Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank))
-                .ToList();
+            advancingTeams = s.Take(advancementCount).Select(x => new AdvancingTeam(x.TeamId, x.TeamName, x.Rank)).ToList();
         }
-
-        return new
-        {
-            isComplete = true,
-            advancingTeams,
-            reason = $"{advancingTeams.Count} teams ready to advance"
-        };
+        return advancingTeams;
     }
 
     private static async Task<List<AdvancingTeam>> GetTeamInfo(

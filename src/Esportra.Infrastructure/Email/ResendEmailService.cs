@@ -136,6 +136,10 @@ public sealed class ResendEmailService(
                     Get("title"), Get("content"),
                     Get("broadcastType", "announcement"), Get("priority", "normal")),
 
+            EmailType.MatchChatMessage =>
+                EmailTemplates.MatchChatMessage(
+                    Get("senderTeamName"), Get("messagePreview"), Get("matchRoomUrl")),
+
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
     }

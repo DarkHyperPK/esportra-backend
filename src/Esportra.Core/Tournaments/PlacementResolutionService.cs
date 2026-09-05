@@ -10,8 +10,11 @@ namespace Esportra.Core.Tournaments;
 public sealed class PlacementResolutionService(
     IDbConnectionFactory db,
     StandingsService standings,
-    PrizeDistributionService prizeService)
+    PrizeDistributionService prizeService,
+    Microsoft.Extensions.Logging.ILogger<PlacementResolutionService> logger,
+    IEnumerable<ILeaderboardSourceChangeHook>? leaderboardHooks = null)
 {
+
     public async Task<List<ResolvedPlacement>> ResolveAsync(
         Guid tournamentId,
         bool force = false,
@@ -45,6 +48,11 @@ public sealed class PlacementResolutionService(
 
         await PersistAsync(conn, tournamentId, computation.Placements,
             computation.Currency, computation.PayoutMethod, computation.ManualPayoutNotes, force, ct);
+
+        // Leaderboard source data changed (non-fatal).
+        await LeaderboardSourceChangeHooks.FireAsync(
+            leaderboardHooks, logger, $"placements:{tournamentId}", ct);
+
         return computation.Placements;
     }
 
@@ -55,6 +63,40 @@ public sealed class PlacementResolutionService(
         using var conn = db.CreateConnection();
         var result = await ComputeInternalAsync(conn, tournamentId, ct);
         return result?.Placements ?? [];
+    }
+
+    public async Task<List<ResolvedPlacement>> ComputeForStageAsync(
+        Guid stageId,
+        IDbConnection conn,
+        CancellationToken ct = default)
+    {
+        var stage = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT format FROM tournament_stages WHERE id = @stageId",
+            new { stageId });
+        if (stage is null) return [];
+
+        string format = ((string?)stage.format ?? "single_elimination").ToLowerInvariant();
+        var orderedTeams = format switch
+        {
+            "double_elimination" => await ResolveDoubleEliminationAsync(conn, stageId, ct),
+            "round_robin" or "swiss" => await ResolveStandingsAsync(conn, stageId, ct),
+            _ => await ResolveSingleEliminationAsync(conn, stageId, ct),
+        };
+
+        var counts = orderedTeams
+            .GroupBy(p => p.Placement)
+            .ToDictionary(g => g.Key, g => g.Count());
+        return orderedTeams
+            .Select(p =>
+            {
+                var count = counts[p.Placement];
+                var isTied = count > 1;
+                return new ResolvedPlacement(
+                    p.TeamId, p.TeamName, p.Placement,
+                    isTied ? RangeLabel(p.Placement, count) : OrdinalLabel(p.Placement),
+                    0m, [], isTied);
+            })
+            .ToList();
     }
 
     private async Task<ComputationResult?> ComputeInternalAsync(
@@ -100,15 +142,30 @@ public sealed class PlacementResolutionService(
         string? manualPayoutNotes = (string?)tournament.manual_payout_notes;
         PrizeDistributionConfig? config = ParseDistributionConfig((string?)tournament.prize_distribution);
 
-        List<ResolvedPlacement> resolved = config is null || config.Placements.Count == 0
-            ? orderedTeams
-                .Select(t => new ResolvedPlacement(
-                    t.TeamId, t.TeamName, t.Placement,
-                    OrdinalLabel(t.Placement), 0m, [], t.Placement > 1))
-                .ToList()
-            : prizeService.CalculateAmounts(config, prizePool, orderedTeams
+        List<ResolvedPlacement> resolved;
+        if (config is null || config.Placements.Count == 0)
+        {
+            var counts = orderedTeams
+                .GroupBy(t => t.Placement)
+                .ToDictionary(g => g.Key, g => g.Count());
+            resolved = orderedTeams
+                .Select(t =>
+                {
+                    var count = counts[t.Placement];
+                    var isTied = count > 1;
+                    return new ResolvedPlacement(
+                        t.TeamId, t.TeamName, t.Placement,
+                        isTied ? RangeLabel(t.Placement, count) : OrdinalLabel(t.Placement),
+                        0m, [], isTied);
+                })
+                .ToList();
+        }
+        else
+        {
+            resolved = prizeService.CalculateAmounts(config, prizePool, orderedTeams
                 .Select(t => (t.TeamId, t.TeamName, t.Placement))
                 .ToList());
+        }
 
         return new ComputationResult(resolved, currency, payoutMethod, manualPayoutNotes);
     }
@@ -208,64 +265,61 @@ public sealed class PlacementResolutionService(
         var seen = new HashSet<Guid>();
         int nextPlacement = 1;
 
-        // Grand final: winner = 1st, loser = 2nd
         var grandFinal = matches.FirstOrDefault(m =>
             string.Equals((string?)m.bracket_type, "final", StringComparison.OrdinalIgnoreCase));
+        nextPlacement = CollectGrandFinalPlacements(grandFinal, result, seen, nextPlacement);
 
-        if (grandFinal is not null)
-        {
-            if (grandFinal.winner_id is Guid gfWin && seen.Add(gfWin))
-                result.Add(new(gfWin, (string?)grandFinal.winner_name ?? "Unknown", nextPlacement++));
-            if (grandFinal.loser_id is Guid gfLose && seen.Add(gfLose))
-                result.Add(new(gfLose, (string?)grandFinal.loser_name ?? "Unknown", nextPlacement++));
-        }
-
-        // Losers bracket matches, ordered by latest round first — each loser gets next placement
         var loserMatches = matches
             .Where(m => string.Equals((string?)m.bracket_type, "losers", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(m => (int)m.round_index)
-            .ToList();
+            .GroupBy(m => (int)m.round_index)
+            .OrderByDescending(g => g.Key);
+        nextPlacement = CollectBandPlacements(loserMatches, result, seen, nextPlacement);
 
-        // Group losers bracket by round — each round's losers share a placement band
-        foreach (var roundGroup in loserMatches.GroupBy(m => (int)m.round_index).OrderByDescending(g => g.Key))
+        var winnerMatches = matches
+            .Where(m => string.Equals((string?)m.bracket_type, "winners", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(m => (int)m.round_index)
+            .OrderByDescending(g => g.Key);
+        CollectBandPlacements(winnerMatches, result, seen, nextPlacement);
+
+        return result;
+    }
+
+    private static int CollectGrandFinalPlacements(
+        dynamic? grandFinal,
+        List<TeamPlacement> result,
+        HashSet<Guid> seen,
+        int nextPlacement)
+    {
+        if (grandFinal is null) return nextPlacement;
+        if (grandFinal.winner_id is Guid gfWin && seen.Add(gfWin))
+            result.Add(new(gfWin, (string?)grandFinal.winner_name ?? "Unknown", nextPlacement++));
+        if (grandFinal.loser_id is Guid gfLose && seen.Add(gfLose))
+            result.Add(new(gfLose, (string?)grandFinal.loser_name ?? "Unknown", nextPlacement++));
+        return nextPlacement;
+    }
+
+    private static int CollectBandPlacements(
+        IEnumerable<IGrouping<int, dynamic>> roundGroups,
+        List<TeamPlacement> result,
+        HashSet<Guid> seen,
+        int nextPlacement)
+    {
+        foreach (var roundGroup in roundGroups)
         {
-            var bandLosers = new List<(Guid Id, string Name)>();
+            var band = new List<(Guid Id, string Name)>();
             foreach (var m in roundGroup)
             {
                 if (m.loser_id is null) continue;
                 var lId = (Guid)m.loser_id;
                 if (seen.Add(lId))
-                    bandLosers.Add((lId, (string?)m.loser_name ?? "Unknown"));
+                    band.Add((lId, (string?)m.loser_name ?? "Unknown"));
             }
-            foreach (var loser in bandLosers)
+            foreach (var loser in band)
                 result.Add(new(loser.Id, loser.Name, nextPlacement));
-            if (bandLosers.Count > 0)
-                nextPlacement += bandLosers.Count;
+            if (band.Count > 0)
+                nextPlacement += band.Count;
         }
-
-        // Winners bracket losers (eliminated before reaching the grand final)
-        var winnerMatches = matches
-            .Where(m => string.Equals((string?)m.bracket_type, "winners", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(m => (int)m.round_index)
-            .ToList();
-
-        foreach (var roundGroup in winnerMatches.GroupBy(m => (int)m.round_index).OrderByDescending(g => g.Key))
-        {
-            var losers = new List<(Guid Id, string Name)>();
-            foreach (var m in roundGroup)
-            {
-                if (m.loser_id is null) continue;
-                var lid = (Guid)m.loser_id;
-                if (seen.Add(lid))
-                    losers.Add((lid, (string?)m.loser_name ?? "Unknown"));
-            }
-            foreach (var loser in losers)
-                result.Add(new(loser.Id, loser.Name, nextPlacement));
-            if (losers.Count > 0)
-                nextPlacement += losers.Count;
-        }
-
-        return result;
+        return nextPlacement;
     }
 
     private async Task<List<TeamPlacement>> ResolveStandingsAsync(
@@ -445,13 +499,24 @@ public sealed class PlacementResolutionService(
             (bool?)row.is_tied ?? false);
     }
 
-    private static string OrdinalLabel(int position) => position switch
+    private static string OrdinalLabel(int position)
     {
-        1 => "1st",
-        2 => "2nd",
-        3 => "3rd",
-        _ => $"{position}th",
-    };
+        var suffix = (position % 100) switch
+        {
+            11 or 12 or 13 => "th",
+            _ => (position % 10) switch
+            {
+                1 => "st",
+                2 => "nd",
+                3 => "rd",
+                _ => "th"
+            }
+        };
+        return $"{position}{suffix}";
+    }
+
+    private static string RangeLabel(int start, int count) =>
+        $"{OrdinalLabel(start)}–{OrdinalLabel(start + count - 1)}";
 
     private sealed record TeamPlacement(Guid TeamId, string TeamName, int Placement);
 

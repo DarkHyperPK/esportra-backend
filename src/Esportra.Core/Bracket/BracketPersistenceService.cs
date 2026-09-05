@@ -315,7 +315,7 @@ public sealed class BracketPersistenceService(IDbConnectionFactory db)
                 await conn.ExecuteAsync(
                     """
                     UPDATE public.tournament_stages
-                       SET status = 'draft',
+                       SET status = 'pending',
                            updated_at = NOW()
                      WHERE id = @stageId
                     """,

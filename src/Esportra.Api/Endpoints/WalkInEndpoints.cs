@@ -157,7 +157,6 @@ public static class WalkInEndpoints
                 return Results.BadRequest(new { error = "station_id is required" });
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try
@@ -315,7 +314,6 @@ public static class WalkInEndpoints
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             try

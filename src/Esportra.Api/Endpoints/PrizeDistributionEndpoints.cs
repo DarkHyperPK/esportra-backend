@@ -228,6 +228,49 @@ public static class PrizeDistributionEndpoints
                 new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(10) },
                 cancellationToken: ct);
 
+            // Cross-stage match stats per team
+            var statsRows = await conn.QueryAsync<dynamic>(
+                """
+                WITH sides AS (
+                    SELECT m.team1_id AS team_id,
+                           m.winner_id = m.team1_id                                         AS won,
+                           m.loser_id  = m.team1_id                                         AS lost,
+                           m.winner_id IS NULL AND m.loser_id IS NULL                        AS tied,
+                           COALESCE(m.team1_score, 0) - COALESCE(m.team2_score, 0)           AS sd
+                    FROM brkt_matches m
+                    JOIN brkt_versions v  ON v.id  = m.version_id
+                    JOIN tournament_stages ts ON ts.id = v.stage_id
+                    WHERE ts.tournament_id = @id
+                      AND m.status = 'completed'
+                      AND m.team1_id IS NOT NULL
+                    UNION ALL
+                    SELECT m.team2_id AS team_id,
+                           m.winner_id = m.team2_id                                         AS won,
+                           m.loser_id  = m.team2_id                                         AS lost,
+                           m.winner_id IS NULL AND m.loser_id IS NULL                        AS tied,
+                           COALESCE(m.team2_score, 0) - COALESCE(m.team1_score, 0)           AS sd
+                    FROM brkt_matches m
+                    JOIN brkt_versions v  ON v.id  = m.version_id
+                    JOIN tournament_stages ts ON ts.id = v.stage_id
+                    WHERE ts.tournament_id = @id
+                      AND m.status = 'completed'
+                      AND m.team2_id IS NOT NULL
+                )
+                SELECT team_id,
+                       COUNT(*)              AS played,
+                       COUNT(*) FILTER (WHERE won)  AS wins,
+                       COUNT(*) FILTER (WHERE lost) AS losses,
+                       COUNT(*) FILTER (WHERE tied) AS ties,
+                       SUM(sd)              AS score_diff
+                FROM sides
+                GROUP BY team_id
+                """,
+                new { id });
+
+            var statsLookup = statsRows.ToDictionary(
+                r => (Guid)r.team_id,
+                r => r);
+
             // Build a lookup from persisted rows for prize/reward/logo data
             var persistedLookup = persistedRows.ToDictionary(
                 p => (Guid)p.team_id,
@@ -236,6 +279,7 @@ public static class PrizeDistributionEndpoints
             var result = (livePlacements ?? []).Select(p =>
             {
                 var persisted = persistedLookup.GetValueOrDefault(p.TeamId);
+                var stats = statsLookup.GetValueOrDefault(p.TeamId);
                 var rewards = persisted is not null
                     ? ParseRewards((string?)persisted.prize_rewards)
                     : p.Rewards.Select(r => (object)new { type = r.Type, title = r.Title, description = r.Description, estimated_value = r.EstimatedValue, quantity = r.Quantity }).ToList();
@@ -251,6 +295,11 @@ public static class PrizeDistributionEndpoints
                     rewards,
                     is_tied = p.IsTied,
                     resolved_at = persisted is not null ? (DateTime?)persisted.resolved_at : null,
+                    played = stats is not null ? (int)(long)stats.played : 0,
+                    wins = stats is not null ? (int)(long)stats.wins : 0,
+                    losses = stats is not null ? (int)(long)stats.losses : 0,
+                    ties = stats is not null ? (int)(long)stats.ties : 0,
+                    score_diff = stats is not null ? (int)(long)stats.score_diff : 0,
                 };
             });
 
