@@ -178,3 +178,44 @@ For new features (not bug fixes), follow 7 phases:
 7. Verification — persistence, role access, error recovery, build passes
 
 Phases 1–4 are thinking. Phases 5–7 are building.
+
+## AI Company
+
+This repository runs an autonomous AI company operating system. The CEO (you) is the only human. Every other role — executives, engineers, designers, QA — is an AI agent.
+
+### CEO Commands
+
+- `/company "objective"` — triggers the full pipeline: executive analysis → proposal → CEO approval → delegation → implementation → QA → CTO audit → executive review → CEO acceptance
+- `/company-status` — view active projects, task states, blockers, and approvals
+
+### How It Works
+
+1. You describe a feature or objective
+2. Executives analyze it in parallel (CTO, CPO full depth; CMO/CFO/COO/CIO lightweight)
+3. System synthesizes a proposal with conflicts surfaced for your decision
+4. **HARD STOP** — you approve, modify, or reject
+5. CTO orchestrates implementation (architecture → engineering → QA → audit)
+6. **HARD STOP** — you accept the final report or request changes
+
+### Organizational Hierarchy
+
+```
+CEO (You)
+├── CTO → Senior Architect, Backend, Frontend, Database, DevOps Engineers, QA Lead
+├── CPO → Product requirements, acceptance criteria
+├── CMO → Marketing/positioning analysis
+├── CFO → Cost/resource analysis
+├── COO → Operational implications
+└── CIO → Security, compliance, privacy
+```
+
+### Agent Definitions
+
+All agent files: `.claude/agents/` (version-controlled)
+All rules: `.claude/rules/` (auto-loaded, version-controlled)
+Runtime state: `.claude/company/` (gitignored — local only)
+
+### Natural Language Detection
+
+For feature-scale requests outside of `/company`, the system will ask:
+> "This looks like a company-level feature request. Route through the company workflow? (or handle directly)"

@@ -26,3 +26,6 @@ Thumbs.db
 test-publish/
 
 artifacts/
+
+# AI Company — runtime state (proposals, tasks, handoffs, decisions — sensitive/ephemeral)
+.claude/company/
