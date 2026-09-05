@@ -81,6 +81,7 @@ After CEO approves the proposal:
 - Senior UI/UX Designer (design specs, if needed)
 - QA Lead (who dispatches all QA agents)
 - code-quality-reviewer (delegate during audit for code quality pass)
+- security-reviewer (delegate during audit for security pass)
 - refactoring-planner (use when implementation has CC violations needing refactor)
 
 **You receive from:**
