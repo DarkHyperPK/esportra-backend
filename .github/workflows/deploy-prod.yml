@@ -65,11 +65,9 @@ jobs:
       - name: Run tests
         run: dotnet test --no-restore -c Release
 
-  # TEMPORARILY DISABLED: Migration replay needs CI fixtures updated
-  migration-replay-disabled:
-    name: Migration Replay (Disabled)
+  migration-replay:
+    name: Migration Lint & Replay
     runs-on: ubuntu-latest
-    if: false
     services:
       postgres:
         image: postgres:16
@@ -92,6 +90,13 @@ jobs:
         with:
           dotnet-version: "9.0.x"
 
+      - name: Lint migration scripts
+        run: |
+          python .github/scripts/lint-migrations.py
+          python .github/scripts/lint-prod-table-references.py
+
+      # Regenerate fixtures after any migration that drops/renames a constraint or index:
+      #   PROD_SSH_KEY=~/.ssh/esportra-prod.key bash .github/scripts/dump-replay-schema.sh --env production
       - name: Apply replay fixture
         run: bash .github/scripts/apply-replay-bootstrap.sh
         env:
@@ -100,6 +105,8 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: migrationtest
           PGDATABASE: esportra_test
+          REPLAY_SCHEMA_FILE: .github/ci/post-baseline-prod-replay-schema.sql
+          REPLAY_JOURNAL_FILE: .github/ci/replay-prod-journal-seed.sql
 
       - name: Run migrations
         run: dotnet run --project src/Esportra.Migrator -c Release
@@ -115,9 +122,21 @@ jobs:
           PGPASSWORD: migrationtest
           PGDATABASE: esportra_test
 
+      - name: Re-run migrations and assert idempotency
+        run: |
+          dotnet run --project src/Esportra.Migrator -c Release
+          bash .github/scripts/assert-migration-replay-complete.sh
+        env:
+          ConnectionStrings__Postgres: "Host=localhost;Port=5432;Database=esportra_test;Username=postgres;Password=migrationtest"
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: migrationtest
+          PGDATABASE: esportra_test
+
   gate:
     name: All checks passed
-    needs: [build, lint, test]
+    needs: [build, lint, test, migration-replay]
     runs-on: ubuntu-latest
     steps:
       - name: Gate passed
@@ -159,7 +178,7 @@ jobs:
 
   notify-failure:
     name: Report failure
-    needs: [build, lint, test, gate, promote, smoke]
+    needs: [build, lint, test, migration-replay, gate, promote, smoke]
     if: failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
