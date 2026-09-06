@@ -57,6 +57,8 @@ Instead: write the observation to the project's `decisions.md` with your suggest
 - [ ] `dotnet build` passes (or frontend build passes)
 - [ ] Components render without errors
 - [ ] Existing UI patterns followed
+- [ ] **No shortcuts in React state patterns** — no side effects inside TanStack Query `queryFn`; state mutations triggered by data fetching belong in `useEffect` keyed on query data, not inside the fetch callback. A SHOULD_FIX finding on this pattern is MUST_FIX.
+- [ ] **Framework-idiomatic code only** — if a pattern would be flagged in a standard React code review, it is not acceptable here regardless of whether it "works in practice."
 - [ ] Structured handoff filed with component list, files changed, assumptions
 
 ### Senior Database Engineer
@@ -86,7 +88,8 @@ Instead: write the observation to the project's `decisions.md` with your suggest
 - [ ] All specialized QA agents ran and reported
 - [ ] All MUST_FIX issues resolved before escalating upward
 - [ ] Consolidated QA report filed with pass/fail per criterion
-- [ ] For CI/infrastructure projects: static file verification alone is not sufficient — confirm staging CI run is green before reporting PASS. Reading files proves structure; a passing CI run proves it works.
+- [ ] **Static code review is not final QA** — reading files proves structure; a live staging environment proves it works. These are not interchangeable.
+- [ ] **Staging verification is mandatory for all projects** — after code is committed and pushed to staging and CI passes, the QA Lead must re-verify each acceptance criterion against the running staging environment. A project is not COMPLETED until this pass is done.
 
 ### CTO (audit)
 - [ ] Architecture adherence verified — implementation matches the architecture handoff

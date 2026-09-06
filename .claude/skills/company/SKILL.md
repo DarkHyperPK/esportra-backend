@@ -231,7 +231,20 @@ Collect all approvals. Present the final report:
 
 **STOP. Do not finalize. Wait for CEO response.**
 
-After CEO accepts: update `proposal.md` status to COMPLETED. Write completion summary to `.claude/company/memory/` as an organizational memory record.
+After CEO accepts: update `proposal.md` status to `CEO_ACCEPTED`. Do NOT mark COMPLETED yet — the project is not done until it is committed, on staging, CI passes, and QA verifies on the live staging environment.
+
+### STAGE 11: Staging Deploy + QA Staging Verification
+
+After CEO acceptance, the following must happen before the project is COMPLETED:
+
+1. **Commit** — stage only PROJ-XXX files by explicit path (`git add -- <files>`), never `git add .`. Commit with a conventional commit message.
+2. **Push to staging** — push both repos (backend + frontend if applicable) to `staging`. CI triggers automatically.
+3. **CI must pass** — migration replay, build, format check. Do not proceed if any job is red.
+4. **QA Lead staging verification** — dispatch the `qa-lead` agent with the project's acceptance criteria and a live staging URL. The QA Lead must verify each AC against the running environment, not static code. Evidence required per criterion.
+
+Only after all four steps complete: update `proposal.md` status to `COMPLETED` and write the completion summary to memory.
+
+**This step is not optional.** Static code review (reading files) proves structure. A passing staging environment proves it works. These are not interchangeable.
 
 ---
 

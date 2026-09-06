@@ -74,7 +74,7 @@ If you cannot be specific, do not file a finding. Collect more evidence first.
 | QA | Under QA testing |
 | CHANGES_REQUESTED | Reviewer found issues, agent must fix |
 | APPROVED | Reviewer approved, ready to proceed downstream |
-| COMPLETED | All reviews done, task fully closed |
+| COMPLETED | All reviews done, code committed to staging, CI passes, QA verified on live staging |
 | BLOCKED | Cannot proceed — dependency or decision missing |
 | ESCALATED | Sent to manager for resolution |
 | REJECTED | Killed by reviewer or CEO |
