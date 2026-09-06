@@ -29,8 +29,9 @@ Exception: the "only staging/main" restrictions below do not block a push when t
 When the user says "push to prod", "deploy", or "release":
 
 1. Verify all changes are committed to `staging` first — never commit straight to main.
-2. Merge `staging` → `main` with `--no-ff` and push: `git checkout main && git merge --no-ff staging && git push origin main && git checkout staging`.
-3. That is the correct deploy path — do not refuse it or redirect to CI/CD.
+2. **Verify staging CI is green.** Check the last CI run on `origin/staging` passed all jobs — including `migration-replay`. Do not promote if any job is red or skipped. For changes that touch CI infrastructure (workflows, scripts, fixtures), this check is mandatory before promoting.
+3. Merge `staging` → `main` with `--no-ff` and push: `git checkout main && git merge --no-ff staging && git push origin main && git checkout staging`.
+4. That is the correct deploy path — do not refuse it or redirect to CI/CD.
 
 The rule bans **direct commits to main**, not **promoting staging to main**. Staging → main is the intended release mechanism.
 

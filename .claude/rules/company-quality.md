@@ -66,7 +66,8 @@ Instead: write the observation to the project's `decisions.md` with your suggest
 - [ ] Naming follows snake_case convention (not external schemas — check `.claude/rules/external-schema-migrations.md`)
 
 ### Senior DevOps Engineer
-- [ ] Infrastructure changes tested in staging context
+- [ ] Infrastructure changes pushed to staging and staging CI run passes — not just "looks correct on paper"
+- [ ] For CI workflow or fixture changes specifically: confirm the affected CI job runs and exits green on staging before HANDOFF
 - [ ] No secrets hardcoded
 - [ ] Changes documented in handoff
 
@@ -85,6 +86,7 @@ Instead: write the observation to the project's `decisions.md` with your suggest
 - [ ] All specialized QA agents ran and reported
 - [ ] All MUST_FIX issues resolved before escalating upward
 - [ ] Consolidated QA report filed with pass/fail per criterion
+- [ ] For CI/infrastructure projects: static file verification alone is not sufficient — confirm staging CI run is green before reporting PASS. Reading files proves structure; a passing CI run proves it works.
 
 ### CTO (audit)
 - [ ] Architecture adherence verified — implementation matches the architecture handoff
