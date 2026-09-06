@@ -21,10 +21,6 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Disable function body validation during restore (functions may reference
--- tables that appear later in the dump due to pg_dump ordering limitations).
-SET check_function_bodies = off;
-
 -- auth.users stub (FK target for public tables)
 CREATE TABLE IF NOT EXISTS auth.users (
     id uuid NOT NULL PRIMARY KEY,
@@ -32,6 +28,32 @@ CREATE TABLE IF NOT EXISTS auth.users (
     created_at timestamp with time zone,
     deleted_at timestamp with time zone
 );
+
+-- auth helper functions referenced by RLS policies
+CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+    LANGUAGE sql STABLE
+    AS $$ SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid; $$;
+
+CREATE OR REPLACE FUNCTION auth.role() RETURNS text
+    LANGUAGE sql STABLE
+    AS $$ SELECT COALESCE(current_setting('request.jwt.claim.role', true), 'anon'); $$;
+
+CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$ SELECT '{}'::jsonb; $$;
+
+-- storage.objects stub (referenced by functions via %ROWTYPE)
+CREATE TABLE IF NOT EXISTS storage.objects (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    bucket_id text,
+    name text,
+    owner uuid,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+-- Disable function body validation during restore (functions may reference
+-- tables that appear later in the dump due to pg_dump ordering limitations).
+SET check_function_bodies = off;
 
 -- Public schema from production pg_dump:
 
