@@ -1,0 +1,13 @@
+# Migration lint exceptions — pre-rule DROP INDEX patterns
+# These files existed before the DROP INDEX lint rule was introduced (2026-09-06).
+# New migrations must NOT be added here — fix the migration instead.
+# To add an exception: requires CTO approval.
+20260609170000_match_result_reports_solo_competitor.sql
+20260611120000_br_pro_lobby_model.sql
+20260611140000_br_games_model.sql
+20260625000000_season_feature_final_cleanup.sql
+20260716120000_partner_management_mvp.sql
+20260719120000_slot_based_sponsor_placements.sql
+20260719150000_sponsor_placement_review_state.sql
+20260723120000_allow_multi_slot_sponsors.sql
+20260827000500_sprint5_drop_duplicate_indexes.sql

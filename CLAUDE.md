@@ -61,7 +61,16 @@ All schema changes require a migration file in `src/Esportra.Infrastructure/Migr
     END IF;
   END $$;
   ```
+- **`DROP INDEX` must be preceded by `DROP CONSTRAINT`** — always run `ALTER TABLE t DROP CONSTRAINT IF EXISTS <name>` before `DROP INDEX IF EXISTS <name>` on the same name. Constraint-backing indexes can only be dropped via the constraint.
+- **No environment-specific DDL assumptions** — never assume whether a constraint vs standalone index exists based on environment. Use `pg_constraint`/`pg_indexes` guards or write both operations (DROP CONSTRAINT IF EXISTS + DROP INDEX IF EXISTS) when structural state may differ between environments.
+- **Bulk `UPDATE`/`DELETE` requires pre-flight comment** — any migration with an `UPDATE` or `DELETE` affecting more than a trivial number of rows must include a comment block immediately above it:
+  ```sql
+  -- PRE-FLIGHT: Run on production before deploying, confirm expected count before proceeding:
+  -- SELECT <query that returns the rows to be affected>;
+  -- Expected: <description of acceptable result>
+  ```
 - One migration per concern
+- **No `_staging_repair` in migration filenames** — migrations must be safe to run on all environments. If a known schema divergence exists between environments, document it in `.github/ci/prod-schema-divergences.md` instead of creating a repair migration.
 - Files auto-embed via `.csproj` wildcard — no manual registration needed
 - `20260317_001_baseline.sql` marks the cutoff from Supabase-native schema to DbUp tracking
 

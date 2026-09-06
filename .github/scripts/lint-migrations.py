@@ -138,6 +138,18 @@ _REFERENCE_CHECKS: list[tuple[re.Pattern, str]] = [
     (_REFERENCES, "REFERENCES"),
 ]
 
+# ── DROP INDEX without DROP CONSTRAINT patterns ───────────────────────────────
+
+_DROP_INDEX_PATTERN = re.compile(
+    r"\bDROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?(\w+)",
+    re.IGNORECASE,
+)
+
+_DROP_CONSTRAINT_PATTERN = re.compile(
+    r"\bDROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?(\w+)",
+    re.IGNORECASE,
+)
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -175,6 +187,40 @@ def collect_defined_tables(files: list[Path]) -> set[str]:
     return defined
 
 
+# ── DROP INDEX check ─────────────────────────────────────────────────────────
+
+
+def check_drop_index_without_constraint(
+    files: list[Path], allowed_files: set[str]
+) -> list[str]:
+    """Return errors for any DROP INDEX not preceded by DROP CONSTRAINT on the same name."""
+    errors: list[str] = []
+    for sql_file in files:
+        if sql_file.name in allowed_files:
+            continue
+        content = strip_noise(
+            sql_file.read_text(encoding="utf-8", errors="replace")
+        )
+        constraint_positions: dict[str, list[int]] = {}
+        for m in _DROP_CONSTRAINT_PATTERN.finditer(content):
+            name = m.group(1).lower()
+            constraint_positions.setdefault(name, []).append(m.start())
+        for m in _DROP_INDEX_PATTERN.finditer(content):
+            index_name = m.group(1).lower()
+            preceding = any(
+                pos < m.start()
+                for pos in constraint_positions.get(index_name, [])
+            )
+            if not preceding:
+                errors.append(
+                    f"  ❌  {sql_file.name}\n"
+                    f"       DROP INDEX '{index_name}' has no preceding DROP CONSTRAINT IF EXISTS"
+                    f" — wrap in: ALTER TABLE ... DROP CONSTRAINT IF EXISTS {index_name};"
+                    f" before DROP INDEX IF EXISTS {index_name};"
+                )
+    return errors
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -187,6 +233,14 @@ def main() -> int:
     if not files:
         print("ERROR: No migration files found.")
         return 1
+
+    EXCEPTIONS_FILE = REPO_ROOT / ".github" / "ci" / "lint-exceptions.txt"
+    allowed_files: set[str] = set()
+    if EXCEPTIONS_FILE.exists():
+        for line in EXCEPTIONS_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                allowed_files.add(line)
 
     # Pre-DbUp schema (profiles, venues, tournaments, …) is documented in
     # 20260317_001_baseline.sql but not recreated here. Only enforce ordering for
@@ -226,12 +280,25 @@ def main() -> int:
 
         known.update(created_here)
 
-    if errors:
-        # Deduplicate while preserving insertion order.
-        unique_errors = list(dict.fromkeys(errors))
-        print(f"Migration linter: {len(unique_errors)} forward-reference issue(s) found\n")
-        for e in unique_errors:
-            print(e)
+    # Deduplicate forward-reference errors while preserving insertion order.
+    fwd_errors = list(dict.fromkeys(errors))
+
+    # Check for DROP INDEX statements not covered by DROP CONSTRAINT.
+    drop_index_errors = check_drop_index_without_constraint(files, allowed_files)
+
+    if fwd_errors or drop_index_errors:
+        if fwd_errors:
+            print(
+                f"Migration linter: {len(fwd_errors)} forward-reference issue(s) found\n"
+            )
+            for e in fwd_errors:
+                print(e)
+        if drop_index_errors:
+            print(
+                f"Migration linter: {len(drop_index_errors)} DROP INDEX issue(s) found\n"
+            )
+            for e in drop_index_errors:
+                print(e)
         return 1
 
     print(
