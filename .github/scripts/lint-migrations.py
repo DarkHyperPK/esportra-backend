@@ -302,7 +302,7 @@ def main() -> int:
         return 1
 
     print(
-        f"\u2705  Migration linter passed \u2014 "
+        f"PASS  Migration linter passed -- "
         f"{len(defined_tables)} managed table(s), "
         f"{len(known)} created in-order across {len(files)} script(s)."
     )
