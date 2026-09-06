@@ -38,17 +38,26 @@ END $$;
 -- UPDATE is idempotent: re-running sets the row to the same values.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-UPDATE storage.buckets
-SET file_size_limit    = 52428800,
-    allowed_mime_types = ARRAY[
-        'image/jpeg',
-        'image/jpg',
-        'image/png',
-        'image/webp',
-        'image/gif',
-        'application/pdf'
-    ]
-WHERE id = 'tournaments.disputes.evidence';
+-- storage.buckets only exists in Supabase environments; skip silently in local/CI Postgres
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'storage' AND table_name = 'buckets'
+    ) THEN
+        UPDATE storage.buckets
+        SET file_size_limit    = 52428800,
+            allowed_mime_types = ARRAY[
+                'image/jpeg',
+                'image/jpg',
+                'image/png',
+                'image/webp',
+                'image/gif',
+                'application/pdf'
+            ]
+        WHERE id = 'tournaments.disputes.evidence';
+    END IF;
+END $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Change 3: tournament_disputes.reopen_count
