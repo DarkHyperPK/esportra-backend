@@ -58,9 +58,23 @@ public sealed class ChatHub : Hub
             await Clients.Caller.SendAsync(ChatHubEvents.Error, "You are not a participant in this match.");
             return;
         }
+        Context.Items[$"auth:{matchId}"] = true;
+        var joined = Context.Items.TryGetValue("joinedMatches", out var existing)
+            ? (List<string>)existing!
+            : new List<string>();
+        joined.Add(matchId);
+        Context.Items["joinedMatches"] = joined;
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ChatGroup(matchId));
-        await SetPresenceAsync(matchId, userId);
+        _ = TryMarkReadInternalAsync(matchId, userId);
+        try
+        {
+            await SetPresenceAsync(matchId, userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to set chat presence for match {MatchId}, user {UserId} — continuing without presence", matchId, userId);
+        }
         _logger.LogDebug("Client {Conn} joined chat:{MatchId}", Context.ConnectionId, matchId);
     }
 
@@ -69,11 +83,30 @@ public sealed class ChatHub : Hub
     {
         var userId = Context.UserIdentifier;
         if (userId is null) return;
+        if (!await IsMatchParticipantAsync(userId, matchId)) return;
+        Context.Items[$"auth:{matchId}"] = true;
         await SetPresenceAsync(matchId, userId);
+        _ = TryMarkReadInternalAsync(matchId, userId);
     }
 
-    public async Task LeaveChat(string matchId) =>
+    public async Task LeaveChat(string matchId)
+    {
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, ChatGroup(matchId));
+        var userId = Context.UserIdentifier;
+        if (userId is not null)
+            await _redis.KeyDeleteAsync($"chat-active:{matchId}:{userId}");
+    }
+
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        var userId = Context.UserIdentifier;
+        if (userId is not null && Context.Items.TryGetValue("joinedMatches", out var raw) && raw is List<string> matches)
+        {
+            foreach (var matchId in matches)
+                await _redis.KeyDeleteAsync($"chat-active:{matchId}:{userId}");
+        }
+        await base.OnDisconnectedAsync(exception);
+    }
 
     /// <summary>
     /// Send a chat message: persists to match_messages then broadcasts to the group.
@@ -93,8 +126,8 @@ public sealed class ChatHub : Hub
             return;
         }
 
-        // Verify user is a participant in this match
-        if (!await IsMatchParticipantAsync(userId, matchId))
+        // Verify user is a participant in this match — use cached result from JoinChat/Heartbeat
+        if (!Context.Items.ContainsKey($"auth:{matchId}") && !await IsMatchParticipantAsync(userId, matchId))
         {
             await Clients.Caller.SendAsync(ChatHubEvents.Error, "You are not a participant in this match.");
             return;
@@ -102,19 +135,20 @@ public sealed class ChatHub : Hub
 
         try
         {
+            var userIdGuid = Guid.Parse(userId);
+            var matchIdGuid = Guid.Parse(matchId);
+
             using var conn = _db.CreateConnection();
 
             var competitorId = await BracketCompetitorResolver.GetUserCompetitorIdInMatchAsync(
-                conn, Guid.Parse(userId), Guid.Parse(matchId));
+                conn, userIdGuid, matchIdGuid);
 
-            var userInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT username FROM profiles p WHERE p.id = @UserId",
-                new { UserId = Guid.Parse(userId) });
-
-            var username = (string?)(userInfo?.username) ?? "Unknown";
+            var username = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT username FROM profiles WHERE id = @UserId",
+                new { UserId = userIdGuid }) ?? "Unknown";
             var userCtx = HubAuthHelper.GetUserContext(Context);
             var isOrganizer = userCtx is not null && await StaffAuthHelper.IsMatchOrganizerOrStaffAsync(
-                conn, userCtx.UserIdGuid, Guid.Parse(matchId), userCtx);
+                conn, userCtx.UserIdGuid, matchIdGuid, userCtx);
 
             const string sql = """
                 INSERT INTO match_messages (match_id, sender_id, sender_name, team_id, content, message_type, created_at)
@@ -124,8 +158,8 @@ public sealed class ChatHub : Hub
 
             var message = await conn.QuerySingleAsync<MessageDto>(sql, new
             {
-                MatchId = Guid.Parse(matchId),
-                SenderId = Guid.Parse(userId),
+                MatchId = matchIdGuid,
+                SenderId = userIdGuid,
                 SenderName = username,
                 TeamId = competitorId,
                 Content = content.Trim(),
@@ -154,6 +188,7 @@ public sealed class ChatHub : Hub
     {
         var userId = Context.UserIdentifier;
         if (userId is null) return;
+        if (!Context.Items.ContainsKey($"auth:{matchId}") && !await IsMatchParticipantAsync(userId, matchId)) return;
 
         // Cache username to avoid DB hit on every keystroke
         if (Context.Items.TryGetValue("username", out var cached))
@@ -178,6 +213,17 @@ public sealed class ChatHub : Hub
                 username ?? "Unknown");
     }
 
+    /// <summary>Marks all chat messages in the match as read by the current user.</summary>
+    public async Task MarkRead(string matchId)
+    {
+        var userId = Context.UserIdentifier;
+        if (userId is null) return;
+
+        if (!Context.Items.ContainsKey($"auth:{matchId}") && !await IsMatchParticipantAsync(userId, matchId)) return;
+
+        await TryMarkReadInternalAsync(matchId, userId);
+    }
+
     // ── Group name helper ─────────────────────────────────────────────────────
 
     public static string ChatGroup(string matchId) => $"chat:{matchId}";
@@ -190,6 +236,43 @@ public sealed class ChatHub : Hub
             1,
             TimeSpan.FromSeconds(180));
 
+    private async Task TryMarkReadInternalAsync(string matchId, string userId)
+    {
+        try
+        {
+            var userIdGuid = Guid.Parse(userId);
+            var matchIdGuid = Guid.Parse(matchId);
+
+            var userCtx = HubAuthHelper.GetUserContext(Context);
+            if (userCtx is null) return;
+
+            using var conn = _db.CreateConnection();
+
+            if (await StaffAuthHelper.IsMatchOrganizerOrStaffAsync(conn, userIdGuid, matchIdGuid, userCtx))
+            {
+                _logger.LogDebug("TryMarkReadInternalAsync: organizer {UserId} skipped for match {MatchId}", userId, matchId);
+                return;
+            }
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO match_chat_reads (match_id, user_id, last_read_at)
+                VALUES (@MatchId, @UserId, NOW())
+                ON CONFLICT (match_id, user_id)
+                DO UPDATE SET last_read_at = NOW()
+                """,
+                new { MatchId = matchIdGuid, UserId = userIdGuid });
+
+            await Clients.OthersInGroup(ChatGroup(matchId))
+                .SendAsync(ChatHubEvents.MessagesSeen,
+                    new MessageSeenPayload(matchId, userId, DateTime.UtcNow));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "TryMarkReadInternalAsync failed for match {MatchId}, user {UserId}", matchId, userId);
+        }
+    }
+
     // ── Email dispatch ────────────────────────────────────────────────────────
 
     private async Task DispatchChatEmailsAsync(
@@ -198,80 +281,114 @@ public sealed class ChatHub : Hub
     {
         try
         {
-            using var conn = _db.CreateConnection();
+            var matchIdGuid = Guid.Parse(matchId);
+            var senderUserIdGuid = Guid.Parse(senderUserId);
+            var oppUserIdValue = Guid.Empty;
+            var senderTeamName = senderName;
+            string? email = null;
+            var matchRoomUrl = string.Empty;
+            var unreadCount = 1;
 
-            var recipients = await conn.QueryAsync<(string UserId, string Email, string SenderTeamName)>(
-                """
-                SELECT
-                    opp_p.id::text        AS UserId,
-                    opp_p.email           AS Email,
-                    sender_tp.team_name   AS SenderTeamName
-                FROM brkt_matches bm
-                JOIN tournament_participants sender_tp
-                  ON sender_tp.id = @SenderCompetitorId
-                JOIN tournament_participants opp_tp
-                  ON opp_tp.id IN (bm.team1_id, bm.team2_id)
-                 AND opp_tp.id != @SenderCompetitorId
-                JOIN profiles opp_p ON opp_p.id = opp_tp.user_id
-                WHERE bm.id = @MatchId
-                  AND opp_p.email IS NOT NULL
-                  AND opp_p.id != @SenderUserId
-                """,
-                new
-                {
-                    SenderCompetitorId = senderCompetitorId,
-                    MatchId = Guid.Parse(matchId),
-                    SenderUserId = Guid.Parse(senderUserId),
-                });
-
-            var matchPath = await CaptainMatchLinkBuilder.BuildAsync(conn, Guid.Parse(matchId));
-            var matchRoomUrl = $"{_frontendUrl}{matchPath}";
-            var preview = messageContent.Length > 120
-                ? messageContent[..120] + "…"
-                : messageContent;
-
-            foreach (var (recipientUserId, email, senderTeamName) in recipients)
+            using (var conn = _db.CreateConnection())
             {
-                var activeKey = $"chat-active:{matchId}:{recipientUserId}";
-                var cooldownKey = $"chat-email-sent:{matchId}:{recipientUserId}";
+                // 1. Get opposing competitor slot (works for both solo and team)
+                var oppCompetitorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT CASE WHEN team1_id = @c THEN team2_id ELSE team1_id END FROM brkt_matches WHERE id = @matchId",
+                    new { c = senderCompetitorId, matchId = matchIdGuid });
+                if (oppCompetitorId is null) return;
 
-                // Skip if the recipient is currently active in this chat room
-                if (await _redis.KeyExistsAsync(activeKey)) continue;
+                // 2. Get opposing captain user ID — needed for Redis key before heavier queries
+                var oppUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(conn, oppCompetitorId.Value);
+                if (oppUserId is null || oppUserId == senderUserIdGuid) return;
+                oppUserIdValue = oppUserId.Value;
 
-                // Skip if already notified within the cooldown window (5 min)
-                if (!await _redis.StringSetAsync(cooldownKey, 1, TimeSpan.FromSeconds(300), When.NotExists))
-                    continue;
+                var recipientId = oppUserIdValue.ToString();
+                // 3. Gate early: skip if recipient is in the chat room
+                if (await _redis.KeyExistsAsync($"chat-active:{matchId}:{recipientId}"))
+                {
+                    _logger.LogDebug("Chat notification suppressed — recipient {RecipientId} is active in match {MatchId}", recipientId, matchId);
+                    return;
+                }
+                // 4. Gate early: skip if already notified within cooldown window (5 min), atomic
+                if (!await _redis.StringSetAsync($"chat-email-sent:{matchId}:{recipientId}", 1, TimeSpan.FromSeconds(300), When.NotExists))
+                {
+                    _logger.LogDebug("Chat notification suppressed — cooldown active for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
+                    return;
+                }
 
+                // 4b. Count unread messages for notification copy — fall back to 1 on failure (AC-206)
                 try
                 {
-                    await _email.SendAsync(email, EmailType.MatchChatMessage, new
-                    {
-                        senderTeamName = senderTeamName ?? senderName,
-                        messagePreview = preview,
-                        matchRoomUrl,
-                    });
+                    unreadCount = await conn.ExecuteScalarAsync<int>(
+                        """
+                        SELECT COUNT(*)::int
+                        FROM match_messages
+                        WHERE match_id = @MatchId
+                          AND sender_id != @RecipientId
+                          AND message_type = 'user'
+                          AND created_at > COALESCE(
+                              (SELECT last_read_at FROM match_chat_reads
+                               WHERE match_id = @MatchId AND user_id = @RecipientId),
+                              '1970-01-01'::timestamptz
+                          )
+                        """,
+                        new { MatchId = matchIdGuid, RecipientId = oppUserIdValue });
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Chat email failed for recipient {UserId} in match {MatchId}",
-                        recipientUserId, matchId);
+                    _logger.LogWarning(ex,
+                        "Chat unread COUNT failed for match {MatchId}, recipient {RecipientId} — defaulting to 1",
+                        matchId, oppUserIdValue);
                 }
 
-                if (Guid.TryParse(recipientUserId, out var recipientGuid))
-                {
-                    var dmPreview = messageContent.Length > 120
-                        ? string.Concat(messageContent.AsSpan(0, 120), "…")
-                        : messageContent;
-                    await _discord.TrySendDmAsync(recipientGuid, "match_chat_message",
-                        $"New message from {senderName}",
-                        $"\"{dmPreview}\" — {matchRoomUrl}");
-                }
+                // 5. Fetch display name, email, and URL only after passing both gates
+                senderTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(conn, senderCompetitorId) ?? senderName;
+                email = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT email FROM profiles WHERE id = @userId AND email IS NOT NULL",
+                    new { userId = oppUserId });
+                var matchPath = await CaptainMatchLinkBuilder.BuildAsync(conn, matchIdGuid);
+                matchRoomUrl = $"{_frontendUrl}{matchPath}";
             }
+            // Connection returned to pool here — HTTP calls follow outside the using block
+
+            if (oppUserIdValue == Guid.Empty) return;
+
+            var preview = messageContent.Length > 120 ? messageContent[..120] + "…" : messageContent;
+            await SendChatNotificationsAsync(matchId, oppUserIdValue, email, senderTeamName, preview, matchRoomUrl, unreadCount);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "DispatchChatEmails failed for match {MatchId}", matchId);
         }
+    }
+
+    private async Task SendChatNotificationsAsync(
+        string matchId, Guid recipientUserId, string? email,
+        string senderTeamName, string preview, string matchRoomUrl, int unreadCount)
+    {
+        if (email is not null)
+        {
+            try
+            {
+                await _email.SendAsync(email, EmailType.MatchChatMessage, new
+                {
+                    senderTeamName,
+                    messagePreview = preview,
+                    matchRoomUrl,
+                    unreadCount,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Chat email failed for recipient in match {MatchId}", matchId);
+            }
+        }
+
+        await _discord.TrySendDmAsync(
+            recipientUserId,
+            "match_chat_message",
+            $"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")} from {senderTeamName}",
+            matchRoomUrl);
     }
 
     // ── Membership check ──────────────────────────────────────────────────────
@@ -304,6 +421,8 @@ public sealed record MessageDto(
     DateTime CreatedAt,
     bool IsOrganizer);
 
+public sealed record MessageSeenPayload(string MatchId, string UserId, DateTime LastReadAt);
+
 /// <summary>Events broadcast to chat group clients.</summary>
 public static class ChatHubEvents
 {
@@ -311,4 +430,5 @@ public static class ChatHubEvents
     public const string TypingStart = "TypingStart";
     public const string TypingStop = "TypingStop";
     public const string Error = "Error";
+    public const string MessagesSeen = "MessagesSeen";
 }

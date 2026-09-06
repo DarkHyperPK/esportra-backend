@@ -560,12 +560,12 @@ public static class EmailTemplates
         };
 
     public static (string Subject, string Html) MatchChatMessage(
-        string senderTeamName, string messagePreview, string matchRoomUrl)
+        string senderTeamName, string messagePreview, string matchRoomUrl, int unreadCount = 1)
     {
-        var subject = $"New message from {senderTeamName} in your match";
+        var subject = $"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")} from {senderTeamName}";
         var body = $"""
             {Eyebrow("match comms")}
-            {H1("New message")}
+            {H1($"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")}")}
             {P($"<strong style=\"color:{Headline};\">{E(senderTeamName)}</strong> sent a message in your match room.")}
             <div style="margin:20px 0;padding:16px 20px;border-left:3px solid {Rose};background:rgba(244,63,94,0.06);">
               <p style="margin:0;font-size:14px;line-height:1.6;color:{BodyText};font-style:italic;">&ldquo;{E(messagePreview)}&rdquo;</p>

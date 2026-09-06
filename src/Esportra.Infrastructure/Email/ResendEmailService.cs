@@ -138,7 +138,10 @@ public sealed class ResendEmailService(
 
             EmailType.MatchChatMessage =>
                 EmailTemplates.MatchChatMessage(
-                    Get("senderTeamName"), Get("messagePreview"), Get("matchRoomUrl")),
+                    Get("senderTeamName"),
+                    Get("messagePreview"),
+                    Get("matchRoomUrl"),
+                    int.TryParse(Get("unreadCount"), out var uc) ? uc : 1),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
