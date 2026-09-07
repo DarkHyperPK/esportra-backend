@@ -9,10 +9,12 @@ using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Bracket;
 using Esportra.Core.Tournaments;
+using Esportra.Infrastructure.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
+using StackExchange.Redis;
 
 namespace Esportra.Api.Endpoints;
 
@@ -2472,6 +2474,7 @@ public static class TournamentEndpoints
                        td.resolution_notes, td.evidence_url, td.created_at, td.updated_at,
                        td.tournament_id, td.match_id, td.raised_by_user_id, td.team_id,
                        t.name AS tournament_name,
+                       t.format AS tournament_format, t.start_date AS tournament_start_date, t.game AS tournament_game,
                        COALESCE(p.full_name, p.username, 'Unknown') AS raised_by_name,
                        td_team.name AS team_name,
                        CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
@@ -2722,16 +2725,15 @@ public static class TournamentEndpoints
             if (!await tournamentAuth.CanManageTournamentAsync(userCtx, tournamentId.Value, ct: ct))
                 return Results.Forbid();
 
-            var setClauses = new List<string>();
+            var parts = new List<string> { "updated_at = NOW()" };
             var parameters = new DynamicParameters();
             parameters.Add("disputeId", disputeId);
 
-            if (req.Status is not null) { setClauses.Add("status = @status"); parameters.Add("status", req.Status); }
-            if (req.AssignedToUserId is not null) { setClauses.Add("assigned_to_user_id = @assignedTo"); parameters.Add("assignedTo", Guid.Parse(req.AssignedToUserId)); }
-            if (req.ResolutionNotes is not null) { setClauses.Add("resolution_notes = @notes"); parameters.Add("notes", req.ResolutionNotes); }
-            setClauses.Add("updated_at = NOW()");
+            if (req.Status is not null) { parts.Add("status = @status"); parameters.Add("status", req.Status); }
+            if (req.AssignedToUserId is not null) { parts.Add("assigned_to_user_id = @assignedTo"); parameters.Add("assignedTo", Guid.Parse(req.AssignedToUserId)); }
+            if (req.ResolutionNotes is not null) { parts.Add("resolution_notes = @notes"); parameters.Add("notes", req.ResolutionNotes); }
 
-            var sql = $"UPDATE tournament_disputes SET {string.Join(", ", setClauses)} WHERE id = @disputeId";
+            var sql = $"UPDATE tournament_disputes SET {string.Join(", ", parts)} WHERE id = @disputeId";
             await conn.ExecuteAsync(sql, parameters);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -2783,6 +2785,10 @@ public static class TournamentEndpoints
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
             IHubContext<MatchHub> matchHub,
+            IEmailService emailService,
+            IConfiguration config,
+            IConnectionMultiplexer redis,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -2794,13 +2800,28 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
+            // Authorization check: organizer/staff with disputes:assist or platform admin
+            var disputeAccess = await conn.QuerySingleOrDefaultAsync<(Guid TournamentId, Guid RaisedBy)>(
+                "SELECT tournament_id, raised_by_user_id FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+            if (disputeAccess == default) return Results.NotFound();
+
+            var canManage = await StaffAuthHelper.CanActOnTournamentAsync(
+                conn, userCtx.UserIdGuid, disputeAccess.TournamentId, StaffAuthHelper.PermDisputesAssist);
+            if (!canManage && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            // Validate comment content
+            if (string.IsNullOrWhiteSpace(req.Comment) && string.IsNullOrWhiteSpace(req.AttachmentUrl))
+                return Results.BadRequest(new { error = "Comment text or attachment is required." });
+
             // Insert comment
             await conn.ExecuteAsync(
                 """
                 INSERT INTO dispute_comments (dispute_id, user_id, comment, is_internal, attachment_url)
-                VALUES (@disputeId, @userId, @comment, FALSE, @attachmentUrl)
+                VALUES (@disputeId, @userId, @comment, @isInternal, @attachmentUrl)
                 """,
-                new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", attachmentUrl = req.AttachmentUrl });
+                new { disputeId, userId = userCtx.UserIdGuid, comment = req.Comment ?? "", isInternal = req.IsInternal, attachmentUrl = req.AttachmentUrl });
 
             await conn.ExecuteAsync(
                 "UPDATE tournament_disputes SET updated_at = NOW() WHERE id = @disputeId",
@@ -2814,6 +2835,110 @@ public static class TournamentEndpoints
                     .SendAsync(MatchHubEvents.DisputeCommentAdded,
                         new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
 
+            // Fire-and-forget email notifications
+            _ = Task.Run(async () =>
+            {
+                var logger = loggerFactory.CreateLogger("DisputeComment");
+                try
+                {
+                    using var emailConn = db.CreateConnection();
+
+                    var disputeInfo = await emailConn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT td.raised_by_user_id, td.reference_number, td.title,
+                               t.name AS tournament_name, t.organizer_id,
+                               p_filer.email AS filer_email, p_org.email AS organizer_email
+                        FROM tournament_disputes td
+                        JOIN tournaments t ON t.id = td.tournament_id
+                        LEFT JOIN profiles p_filer ON p_filer.id = td.raised_by_user_id
+                        LEFT JOIN profiles p_org ON p_org.id = t.organizer_id
+                        WHERE td.id = @disputeId
+                        """, new { disputeId });
+
+                    if (disputeInfo is null) return;
+
+                    Guid filerId = (Guid)disputeInfo.raised_by_user_id;
+                    Guid organizerId = (Guid)disputeInfo.organizer_id;
+                    string referenceNumber = ((string?)disputeInfo.reference_number) ?? "";
+                    string tournamentName = ((string?)disputeInfo.tournament_name) ?? "";
+                    string? filerEmail = (string?)disputeInfo.filer_email;
+                    string? organizerEmail = (string?)disputeInfo.organizer_email;
+
+                    var commentText = req.Comment ?? "";
+                    var commentPreview = commentText.Length > 200 ? commentText[..200] + "..." : commentText;
+
+                    var commenterName = await emailConn.ExecuteScalarAsync<string>(
+                        "SELECT COALESCE(full_name, username, 'Unknown') FROM profiles WHERE id = @userId",
+                        new { userId = userCtx.UserIdGuid });
+
+                    var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
+                    var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
+                    var organizerDisputeUrl = $"{frontendUrl}/organizer/disputes?disputeId={disputeId}";
+
+                    var redisDb = redis.GetDatabase();
+
+                    // Email to filer (if commenter is not filer and filer has email, and comment is not internal)
+                    if (userCtx.UserIdGuid != filerId && filerEmail is not null && !req.IsInternal)
+                    {
+                        var cooldownKey = $"dispute-comment-email:{disputeId}:{filerId}";
+                        if (await redisDb.StringSetAsync(cooldownKey, 1, TimeSpan.FromSeconds(300), StackExchange.Redis.When.NotExists))
+                        {
+                            try
+                            {
+                                await emailService.SendAsync(filerEmail, EmailType.DisputeComment, new
+                                {
+                                    referenceNumber,
+                                    commenterName,
+                                    commentPreview,
+                                    disputeUrl = filerDisputeUrl,
+                                    tournamentName,
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "DisputeComment email to filer failed for dispute {DisputeId}", disputeId);
+                            }
+                        }
+                    }
+                    else if (userCtx.UserIdGuid != filerId && filerEmail is null && !req.IsInternal)
+                    {
+                        logger.LogWarning("Dispute {DisputeId}: skipping email — {Role} has no email address on profile", disputeId, "filer");
+                    }
+
+                    // Email to organizer (if commenter is not organizer and organizer has email)
+                    if (userCtx.UserIdGuid != organizerId && organizerEmail is not null)
+                    {
+                        var cooldownKey = $"dispute-comment-email:{disputeId}:{organizerId}";
+                        if (await redisDb.StringSetAsync(cooldownKey, 1, TimeSpan.FromSeconds(300), StackExchange.Redis.When.NotExists))
+                        {
+                            try
+                            {
+                                await emailService.SendAsync(organizerEmail, EmailType.DisputeComment, new
+                                {
+                                    referenceNumber,
+                                    commenterName,
+                                    commentPreview,
+                                    disputeUrl = organizerDisputeUrl,
+                                    tournamentName,
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "DisputeComment email to organizer failed for dispute {DisputeId}", disputeId);
+                            }
+                        }
+                    }
+                    else if (userCtx.UserIdGuid != organizerId && organizerEmail is null)
+                    {
+                        logger.LogWarning("Dispute {DisputeId}: skipping email — {Role} has no email address on profile", disputeId, "organizer");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "DisputeComment email dispatch failed for dispute {DisputeId}", disputeId);
+                }
+            });
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
@@ -2826,6 +2951,8 @@ public static class TournamentEndpoints
             IHubContext<NotificationHub> notifHub,
             IHubContext<MatchHub> matchHub,
             IHubContext<BracketHub> bracketHub,
+            IEmailService emailService,
+            IConfiguration config,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -2887,7 +3014,7 @@ public static class TournamentEndpoints
                 if (enforceHubState is not null)
                     await FireEnforceSignalRAsync(enforceHubState, bracketHub, notifHub, ct);
 
-                await NotifyDisputeFilerAsync(disputeId, status!, notifHub, conn, logger, ct);
+                await NotifyDisputeFilerAsync(disputeId, status!, notifHub, conn, emailService, config, logger, ct);
 
                 return Results.Ok(new { success = true });
             }
@@ -3064,6 +3191,7 @@ public static class TournamentEndpoints
                         AND td.updated_at > NOW() - INTERVAL '48 hours'
                         AND td.raised_by_user_id = @userId) AS can_reopen,
                        t.name AS tournament_name, t.slug AS tournament_slug,
+                       t.format AS tournament_format, t.start_date AS tournament_start_date, t.game AS tournament_game,
                        CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
                            'match_number', bm.match_number,
                            'round_index', bm.round_index,
@@ -3209,12 +3337,87 @@ public static class TournamentEndpoints
                 SELECT td.id, td.reference_number, td.tournament_id, td.match_id, td.raised_by_user_id,
                        td.team_id, td.title, td.description, td.evidence_url,
                        td.status, td.resolution_notes, td.dispute_reason,
-                       td.created_at, td.updated_at,
-                       t.name AS tournament_name
+                       td.created_at, td.updated_at, td.reopen_count,
+                       (SELECT COUNT(*) FROM dispute_comments dc
+                        WHERE dc.dispute_id = td.id AND dc.is_internal = false) AS comment_count,
+                       (td.status IN ('resolved', 'rejected') AND td.reopen_count = 0
+                        AND td.updated_at > NOW() - INTERVAL '48 hours'
+                        AND td.raised_by_user_id = @userId) AS can_reopen,
+                       t.name AS tournament_name, t.slug AS tournament_slug,
+                       t.format AS tournament_format, t.start_date AS tournament_start_date, t.game AS tournament_game,
+                       CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
+                           'match_number', bm.match_number,
+                           'round_index', bm.round_index,
+                           'best_of', bm.best_of,
+                           'bracket_type', bm.bracket_type,
+                           'scheduled_time', bm.scheduled_time,
+                           'team1_score', bm.team1_score,
+                           'team2_score', bm.team2_score,
+                           'team1_name', t1.name,
+                           'team2_name', t2.name,
+                           'team1_id', bm.team1_id,
+                           'team2_id', bm.team2_id
+                       ) ELSE NULL END AS match,
+                       (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                           'id', mrr.id,
+                           'game_number', mrr.game_number,
+                           'reported_by_team_id', mrr.reported_by_team_id,
+                           'riot_match_id', mrr.riot_match_id,
+                           'map_name', mrr.map_name,
+                           'team1_score', mrr.team1_score,
+                           'team2_score', mrr.team2_score,
+                           'match_data', mrr.match_data,
+                           'screenshot_urls', mrr.screenshot_urls,
+                           'status', mrr.status,
+                           'created_at', mrr.created_at
+                       ) ORDER BY mrr.game_number, mrr.created_at), '[]'::jsonb)
+                       FROM match_result_reports mrr
+                       WHERE mrr.match_id = td.match_id) AS reports,
+                       (SELECT row_to_json(sub)::jsonb FROM (
+                           SELECT md.id, md.reason,
+                                  CASE
+                                      WHEN md.evidence_urls IS NOT NULL
+                                           AND COALESCE(array_length(md.evidence_urls, 1), 0) > 0
+                                      THEN md.evidence_urls
+                                      WHEN td.evidence_url IS NOT NULL
+                                      THEN ARRAY[td.evidence_url]::text[]
+                                      ELSE COALESCE(md.evidence_urls, '{}'::text[])
+                                  END AS evidence_urls,
+                                  md.disputed_by_team_id, md.disputed_by_user_id, md.created_at, md.status,
+                                  COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
+                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
+                                       WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
+                                       ELSE td_team.name END AS disputed_by_team_name
+                           FROM match_disputes md
+                           LEFT JOIN profiles pr_md ON pr_md.id = md.disputed_by_user_id
+                           WHERE md.match_id = td.match_id
+                           ORDER BY md.created_at DESC
+                           LIMIT 1
+                       ) sub) AS match_dispute,
+                       CASE WHEN bm.id IS NOT NULL THEN (
+                           SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                               'team_id', tm.team_id,
+                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN t1.name ELSE t2.name END,
+                               'user_id', tm.user_id,
+                               'username', COALESCE(pr.full_name, pr.username),
+                               'game_name', ra.game_name,
+                               'tag_line', ra.tag_line,
+                               'puuid', ra.puuid
+                           )), '[]'::jsonb)
+                           FROM team_members tm
+                           INNER JOIN riot_accounts ra ON ra.user_id = tm.user_id
+                           LEFT JOIN profiles pr ON pr.id = tm.user_id
+                           WHERE tm.team_id IN (bm.team1_id, bm.team2_id)
+                             AND tm.is_active = true
+                       ) ELSE '[]'::jsonb END AS riot_accounts
                 FROM public.tournament_disputes td
                 LEFT JOIN public.tournaments t ON t.id = td.tournament_id
+                LEFT JOIN teams td_team ON td_team.id = td.team_id
+                LEFT JOIN brkt_matches bm ON bm.id = td.match_id
+                LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN teams t2 ON t2.id = bm.team2_id
                 WHERE td.id = @disputeId
-                """, new { disputeId });
+                """, new { disputeId, userId = userCtx.UserIdGuid });
 
             if (dispute is null) return Results.NotFound();
 
@@ -3229,6 +3432,7 @@ public static class TournamentEndpoints
                     return Results.Forbid();
             }
 
+            DapperJsonbHelper.FixJsonb(dispute);
             return Results.Ok(dispute);
         }).RequireAuthorization("Authenticated");
 
@@ -3263,6 +3467,10 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<MatchHub> matchHub,
+            IEmailService emailService,
+            IConfiguration config,
+            IConnectionMultiplexer redis,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -3273,6 +3481,34 @@ public static class TournamentEndpoints
             if (req is null) return Results.BadRequest("Invalid body");
 
             using var conn = db.CreateConnection();
+
+            // Authorization check: filer, match participant, staff with disputes:assist, or platform admin
+            var disputeAccess = await conn.QuerySingleOrDefaultAsync<(Guid RaisedBy, Guid TournamentId, Guid? MatchId, string? Status)>(
+                "SELECT raised_by_user_id, tournament_id, match_id, status FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+            if (disputeAccess == default) return Results.NotFound();
+
+            var isFiler = disputeAccess.RaisedBy == userCtx.UserIdGuid;
+            var isParticipant = disputeAccess.MatchId is not null && await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM brkt_matches bm
+                    JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                    WHERE bm.id = @matchId AND tm.user_id = @userId AND tm.is_active = true
+                )
+                """, new { matchId = disputeAccess.MatchId, userId = userCtx.UserIdGuid });
+            var canAssist = await StaffAuthHelper.CanActOnTournamentAsync(
+                conn, userCtx.UserIdGuid, disputeAccess.TournamentId, StaffAuthHelper.PermDisputesAssist);
+
+            if (!isFiler && !isParticipant && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
+            if (disputeAccess.Status != "open" && disputeAccess.Status != "in_review")
+                return Results.BadRequest(new { error = "This dispute is closed. Reopen it before adding comments." });
+
+            // Validate comment content
+            if (string.IsNullOrWhiteSpace(req.Comment) && string.IsNullOrWhiteSpace(req.AttachmentUrl))
+                return Results.BadRequest(new { error = "Comment text or attachment is required." });
 
             await conn.ExecuteAsync(
                 """
@@ -3292,6 +3528,110 @@ public static class TournamentEndpoints
                 await matchHub.Clients.Group(MatchHub.MatchGroup(matchId2.Value.ToString()))
                     .SendAsync(MatchHubEvents.DisputeCommentAdded,
                         new { disputeId, userId = userCtx.UserIdGuid.ToString() }, ct);
+
+            // Fire-and-forget email notifications
+            _ = Task.Run(async () =>
+            {
+                var logger = loggerFactory.CreateLogger("DisputeComment");
+                try
+                {
+                    using var emailConn = db.CreateConnection();
+
+                    var disputeInfo = await emailConn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT td.raised_by_user_id, td.reference_number, td.title,
+                               t.name AS tournament_name, t.organizer_id,
+                               p_filer.email AS filer_email, p_org.email AS organizer_email
+                        FROM tournament_disputes td
+                        JOIN tournaments t ON t.id = td.tournament_id
+                        LEFT JOIN profiles p_filer ON p_filer.id = td.raised_by_user_id
+                        LEFT JOIN profiles p_org ON p_org.id = t.organizer_id
+                        WHERE td.id = @disputeId
+                        """, new { disputeId });
+
+                    if (disputeInfo is null) return;
+
+                    Guid filerId = (Guid)disputeInfo.raised_by_user_id;
+                    Guid organizerId = (Guid)disputeInfo.organizer_id;
+                    string referenceNumber = ((string?)disputeInfo.reference_number) ?? "";
+                    string tournamentName = ((string?)disputeInfo.tournament_name) ?? "";
+                    string? filerEmail = (string?)disputeInfo.filer_email;
+                    string? organizerEmail = (string?)disputeInfo.organizer_email;
+
+                    var commentText = req.Comment ?? "";
+                    var commentPreview = commentText.Length > 200 ? commentText[..200] + "..." : commentText;
+
+                    var commenterName = await emailConn.ExecuteScalarAsync<string>(
+                        "SELECT COALESCE(full_name, username, 'Unknown') FROM profiles WHERE id = @userId",
+                        new { userId = userCtx.UserIdGuid });
+
+                    var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
+                    var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
+                    var organizerDisputeUrl = $"{frontendUrl}/organizer/disputes?disputeId={disputeId}";
+
+                    var redisDb = redis.GetDatabase();
+
+                    // Email to filer (if commenter is not filer, filer has email, and comment is not internal)
+                    if (userCtx.UserIdGuid != filerId && filerEmail is not null && !req.IsInternal)
+                    {
+                        var cooldownKey = $"dispute-comment-email:{disputeId}:{filerId}";
+                        if (await redisDb.StringSetAsync(cooldownKey, 1, TimeSpan.FromSeconds(300), StackExchange.Redis.When.NotExists))
+                        {
+                            try
+                            {
+                                await emailService.SendAsync(filerEmail, EmailType.DisputeComment, new
+                                {
+                                    referenceNumber,
+                                    commenterName,
+                                    commentPreview,
+                                    disputeUrl = filerDisputeUrl,
+                                    tournamentName,
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "DisputeComment email to filer failed for dispute {DisputeId}", disputeId);
+                            }
+                        }
+                    }
+                    else if (userCtx.UserIdGuid != filerId && filerEmail is null && !req.IsInternal)
+                    {
+                        logger.LogWarning("Dispute {DisputeId}: skipping email — {Role} has no email address on profile", disputeId, "filer");
+                    }
+
+                    // Email to organizer (if commenter is not organizer and organizer has email)
+                    if (userCtx.UserIdGuid != organizerId && organizerEmail is not null)
+                    {
+                        var cooldownKey = $"dispute-comment-email:{disputeId}:{organizerId}";
+                        if (await redisDb.StringSetAsync(cooldownKey, 1, TimeSpan.FromSeconds(300), StackExchange.Redis.When.NotExists))
+                        {
+                            try
+                            {
+                                await emailService.SendAsync(organizerEmail, EmailType.DisputeComment, new
+                                {
+                                    referenceNumber,
+                                    commenterName,
+                                    commentPreview,
+                                    disputeUrl = organizerDisputeUrl,
+                                    tournamentName,
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogWarning(ex, "DisputeComment email to organizer failed for dispute {DisputeId}", disputeId);
+                            }
+                        }
+                    }
+                    else if (userCtx.UserIdGuid != organizerId && organizerEmail is null)
+                    {
+                        logger.LogWarning("Dispute {DisputeId}: skipping email — {Role} has no email address on profile", disputeId, "organizer");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "DisputeComment email dispatch failed for dispute {DisputeId}", disputeId);
+                }
+            });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -3325,13 +3665,13 @@ public static class TournamentEndpoints
                 if (!isOrganizer) return Results.Forbid();
             }
 
-            if (isFiler && req.Status is not null && req.Status != "open")
-                return Results.BadRequest(new { error = "Filers may not set this status directly." });
+            if (isFiler && req.Status is not null)
+                return Results.BadRequest(new { error = "Use the reopen endpoint to change dispute status." });
 
-            var setClauses = new List<string> { "updated_at = NOW()" };
-            if (req.Status is not null) setClauses.Add("status = @status::text");
+            var parts = new List<string> { "updated_at = NOW()" };
+            if (req.Status is not null) parts.Add("status = @status::text");
 
-            var sql = $"UPDATE tournament_disputes SET {string.Join(", ", setClauses)} WHERE id = @disputeId";
+            var sql = $"UPDATE tournament_disputes SET {string.Join(", ", parts)} WHERE id = @disputeId";
             await conn.ExecuteAsync(sql, new { disputeId, status = req.Status });
 
             return Results.Ok(new { success = true });
@@ -5352,18 +5692,37 @@ public static class TournamentEndpoints
     private static async Task NotifyDisputeFilerAsync(
         Guid disputeId, string status,
         IHubContext<NotificationHub> notifHub, IDbConnection conn,
+        IEmailService emailService, IConfiguration config,
         ILogger logger, CancellationToken ct)
     {
         try
         {
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
+                """
+                SELECT td.raised_by_user_id, td.title, td.reference_number, td.resolution_notes,
+                       t.name AS tournament_name, t.organizer_id,
+                       p_filer.email AS filer_email, p_org.email AS organizer_email,
+                       COALESCE(p_filer.full_name, p_filer.username, 'Unknown') AS filer_name
+                FROM tournament_disputes td
+                JOIN tournaments t ON t.id = td.tournament_id
+                LEFT JOIN profiles p_filer ON p_filer.id = td.raised_by_user_id
+                LEFT JOIN profiles p_org ON p_org.id = t.organizer_id
+                WHERE td.id = @disputeId
+                """,
                 new { disputeId });
 
             if (dispute is not null)
             {
                 Guid filerId = (Guid)dispute.raised_by_user_id;
+                Guid organizerId = (Guid)dispute.organizer_id;
                 string title = ((string?)dispute.title) ?? "Your dispute";
+                string referenceNumber = ((string?)dispute.reference_number) ?? "";
+                string resolutionNotes = ((string?)dispute.resolution_notes) ?? "";
+                string tournamentName = ((string?)dispute.tournament_name) ?? "";
+                string? filerEmail = (string?)dispute.filer_email;
+                string? organizerEmail = (string?)dispute.organizer_email;
+                string filerName = ((string?)dispute.filer_name) ?? "Unknown";
+
                 var notifType = status == "resolved" ? "dispute_resolved" : "dispute_rejected";
                 var notifTitle = status == "resolved" ? "✅ Dispute Resolved" : "❌ Dispute Rejected";
                 var notifMsg = status == "resolved"
@@ -5387,6 +5746,61 @@ public static class TournamentEndpoints
 
                 await notifHub.Clients.Group($"user:{filerId}")
                     .SendAsync("NewNotification", new { type = notifType }, ct);
+
+                var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
+                var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
+                var organizerDisputeUrl = $"{frontendUrl}/organizer/disputes?disputeId={disputeId}";
+
+                // Email to filer
+                if (filerEmail is not null)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await emailService.SendAsync(filerEmail, EmailType.DisputeResolved, new
+                            {
+                                referenceNumber,
+                                title,
+                                status,
+                                resolutionNotes,
+                                tournamentName,
+                                disputeUrl = filerDisputeUrl,
+                                recipientType = "filer",
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex, "DisputeResolved email to filer failed for dispute {DisputeId}", disputeId);
+                        }
+                    });
+                }
+
+                // Email to organizer
+                if (organizerEmail is not null)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await emailService.SendAsync(organizerEmail, EmailType.DisputeResolved, new
+                            {
+                                referenceNumber,
+                                title,
+                                status,
+                                resolutionNotes,
+                                tournamentName,
+                                disputeUrl = organizerDisputeUrl,
+                                recipientType = "organizer",
+                                filerName,
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex, "DisputeResolved email to organizer failed for dispute {DisputeId}", disputeId);
+                        }
+                    });
+                }
             }
         }
         catch (Exception notifEx)

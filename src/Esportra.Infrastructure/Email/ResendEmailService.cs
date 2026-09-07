@@ -143,6 +143,18 @@ public sealed class ResendEmailService(
                     Get("matchRoomUrl"),
                     int.TryParse(Get("unreadCount"), out var uc) ? uc : 1),
 
+            EmailType.DisputeResolved =>
+                EmailTemplates.DisputeResolved(
+                    Get("referenceNumber"), Get("title"), Get("status"),
+                    Get("resolutionNotes"), Get("tournamentName"),
+                    Get("disputeUrl"), Get("recipientType"), Get("filerName")),
+
+            EmailType.DisputeComment =>
+                EmailTemplates.DisputeComment(
+                    Get("referenceNumber"), Get("commenterName"),
+                    Get("commentPreview"), Get("disputeUrl"),
+                    Get("tournamentName")),
+
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };
     }

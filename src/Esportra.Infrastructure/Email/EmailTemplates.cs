@@ -376,11 +376,11 @@ public static class EmailTemplates
               </td></tr>
               <tr><td style="padding:0;">
                 <table width="100%" cellpadding="0" cellspacing="0" style="background:{CardBg};">
-                  {(string.IsNullOrWhiteSpace(licenseId) ? "" : InfoRow("License ID", licenseId))}
-                  {InfoRow("Type", FormatLicenseType(licenseType))}
+                  {(string.IsNullOrWhiteSpace(licenseId) ? "" : InfoRow("License ID", E(licenseId)))}
+                  {InfoRow("Type", E(FormatLicenseType(licenseType)))}
                   {InfoRow("Status", "Active")}
-                  {InfoRow("Issued", string.IsNullOrWhiteSpace(issuedAt) ? DateTime.UtcNow.ToString("MMM dd, yyyy") : issuedAt)}
-                  {InfoRow("Expires", string.IsNullOrWhiteSpace(expiresAt) ? DateTime.UtcNow.AddYears(1).ToString("MMM dd, yyyy") : expiresAt, isLast: true)}
+                  {InfoRow("Issued", string.IsNullOrWhiteSpace(issuedAt) ? DateTime.UtcNow.ToString("MMM dd, yyyy") : E(issuedAt))}
+                  {InfoRow("Expires", string.IsNullOrWhiteSpace(expiresAt) ? DateTime.UtcNow.AddYears(1).ToString("MMM dd, yyyy") : E(expiresAt), isLast: true)}
                 </table>
               </td></tr>
             </table>
@@ -562,7 +562,7 @@ public static class EmailTemplates
     public static (string Subject, string Html) MatchChatMessage(
         string senderTeamName, string messagePreview, string matchRoomUrl, int unreadCount = 1)
     {
-        var subject = $"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")} from {senderTeamName} in your match room";
+        var subject = $"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")} from {E(senderTeamName)} in your match room";
         var body = $"""
             {Eyebrow("match comms")}
             {H1($"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")}")}
@@ -576,6 +576,56 @@ public static class EmailTemplates
             """;
 
         var html = Wrap("New message from your opponent in the match room.", subject, body);
+        return (subject, html);
+    }
+
+    public static (string Subject, string Html) DisputeResolved(
+        string referenceNumber, string title, string status, string resolutionNotes,
+        string tournamentName, string disputeUrl, string recipientType, string filerName = "")
+    {
+        var statusText = status == "resolved" ? "resolved" : "rejected";
+        var subject = recipientType == "filer"
+            ? $"Your dispute #{referenceNumber} has been {statusText}"
+            : $"Dispute #{referenceNumber} {statusText} in {tournamentName}";
+
+        var body = $"""
+            {Eyebrow("dispute update")}
+            {H1($"Dispute {statusText}")}
+            {P($"Dispute <strong style=\"color:{Headline};\">{E(referenceNumber)}</strong> has been {statusText} by the tournament organizer.")}
+            {SpecOpen()}
+            {InfoRow("Dispute", E(title))}
+            {InfoRow("Status", statusText == "resolved" ? "✅ Resolved" : "❌ Rejected")}
+            {InfoRow("Tournament", E(tournamentName))}
+            {(recipientType == "organizer" && !string.IsNullOrEmpty(filerName) ? InfoRow("Filed by", E(filerName)) : "")}
+            {InfoRow("Resolution Notes", E(resolutionNotes), isLast: true)}
+            {SpecClose}
+            {Btn(disputeUrl, "View dispute details")}
+            """;
+
+        var preheader = $"Your dispute #{referenceNumber} has been {statusText}.";
+        var html = Wrap(preheader, subject, body);
+        return (subject, html);
+    }
+
+    public static (string Subject, string Html) DisputeComment(
+        string referenceNumber, string commenterName, string commentPreview,
+        string disputeUrl, string tournamentName)
+    {
+        var subject = $"New comment on your dispute #{referenceNumber}";
+        var body = $"""
+            {Eyebrow("dispute activity")}
+            {H1("New comment on your dispute")}
+            {P($"<strong style=\"color:{Headline};\">{E(commenterName)}</strong> added a comment to dispute <strong style=\"color:{Headline};\">{E(referenceNumber)}</strong> in {E(tournamentName)}.")}
+            <div style="margin:20px 0;padding:16px 20px;border-left:3px solid {Rose};background:rgba(244,63,94,0.06);">
+              <p style="margin:0;font-size:14px;line-height:1.6;color:{BodyText};font-style:italic;">&ldquo;{E(commentPreview)}&rdquo;</p>
+            </div>
+            {Btn(disputeUrl, "View full discussion")}
+            {Divider()}
+            {P($"<span style=\"color:{SubtleText};font-size:13px;\">You will not receive another notification for this dispute for the next 5 minutes.</span>")}
+            """;
+
+        var preheader = $"New comment from {E(commenterName)} on your dispute.";
+        var html = Wrap(preheader, subject, body);
         return (subject, html);
     }
 }
