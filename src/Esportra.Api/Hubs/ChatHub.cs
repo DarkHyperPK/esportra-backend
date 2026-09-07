@@ -66,7 +66,6 @@ public sealed class ChatHub : Hub
         Context.Items["joinedMatches"] = joined;
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ChatGroup(matchId));
-        _ = TryMarkReadInternalAsync(matchId, userId);
         try
         {
             await SetPresenceAsync(matchId, userId);
@@ -78,15 +77,20 @@ public sealed class ChatHub : Hub
         _logger.LogDebug("Client {Conn} joined chat:{MatchId}", Context.ConnectionId, matchId);
     }
 
-    /// <summary>Refreshes the presence key — called by the client every ~90 s while the chat is open.</summary>
-    public async Task Heartbeat(string matchId)
+    /// <summary>
+    /// Refreshes the presence key — called by the client every ~90 s while the chat is open.
+    /// isChatOpen: true when the chat panel is visible; triggers a MarkRead upsert so the
+    /// Seen indicator stays current during long sessions where the panel stays open.
+    /// </summary>
+    public async Task Heartbeat(string matchId, bool isChatOpen = false)
     {
         var userId = Context.UserIdentifier;
         if (userId is null) return;
         if (!await IsMatchParticipantAsync(userId, matchId)) return;
         Context.Items[$"auth:{matchId}"] = true;
         await SetPresenceAsync(matchId, userId);
-        _ = TryMarkReadInternalAsync(matchId, userId);
+        if (isChatOpen)
+            _ = TryMarkReadInternalAsync(matchId, userId);
     }
 
     public async Task LeaveChat(string matchId)
