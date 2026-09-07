@@ -68,7 +68,16 @@ public sealed class SmtpEmailService(
             System.Text.Json.JsonSerializer.Serialize(data)) ?? [];
 
         string Get(string key, string fallback = "") =>
-            dict.TryGetValue(key, out var v) ? v.GetString() ?? fallback : fallback;
+            dict.TryGetValue(key, out var v)
+                ? v.ValueKind switch
+                {
+                    JsonValueKind.String => v.GetString() ?? fallback,
+                    JsonValueKind.Number => v.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    _ => fallback
+                }
+                : fallback;
 
         return type switch
         {
