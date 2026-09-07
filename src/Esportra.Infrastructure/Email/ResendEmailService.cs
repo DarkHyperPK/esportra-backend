@@ -75,7 +75,16 @@ public sealed class ResendEmailService(
             JsonSerializer.Serialize(data)) ?? [];
 
         string Get(string key, string fallback = "") =>
-            d.TryGetValue(key, out var v) ? v.GetString() ?? fallback : fallback;
+            d.TryGetValue(key, out var v)
+                ? v.ValueKind switch
+                {
+                    JsonValueKind.String => v.GetString() ?? fallback,
+                    JsonValueKind.Number => v.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    _ => fallback
+                }
+                : fallback;
 
         return type switch
         {
