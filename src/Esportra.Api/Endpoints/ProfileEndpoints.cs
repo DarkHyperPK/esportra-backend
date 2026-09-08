@@ -862,7 +862,6 @@ public static class ProfileEndpoints
         app.MapDelete("/api/profiles/me/discord", async (
             HttpContext ctx,
             IDbConnectionFactory db,
-            ISupabaseAdminClient supabaseAdmin,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -910,12 +909,16 @@ public static class ProfileEndpoints
                 return Results.NotFound(new { error = "Discord account not linked" });
             }
 
+            // Delete the Discord identity directly. GoTrue's admin identity-unlink HTTP endpoint
+            // was added in GoTrue v2.114.0 and is absent on older self-hosted instances.
+            // Direct SQL is equivalent: GoTrue performs the same DELETE internally.
+            await conn.ExecuteAsync(
+                "DELETE FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
+                new { userId = userCtx.UserIdGuid }, txn);
+
             txn.Commit();
 
-            await supabaseAdmin.UnlinkIdentityAsync(userCtx.UserId, identity.Id, ct);
-
             // Post-unlink audit: detect any concurrent registration that slipped through the guard window.
-            // The Supabase API call is outside the Postgres transaction, so a narrow race remains possible.
             var postUnlinkBlocked = await conn.ExecuteScalarAsync<bool>(
                 """
                 SELECT EXISTS(
