@@ -871,7 +871,6 @@ public static class ProfileEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var txn = conn.BeginTransaction();
 
             var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
