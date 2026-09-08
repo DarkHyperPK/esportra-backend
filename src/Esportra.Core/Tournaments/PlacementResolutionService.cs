@@ -265,21 +265,22 @@ public sealed class PlacementResolutionService(
         var seen = new HashSet<Guid>();
         int nextPlacement = 1;
 
-        var grandFinal = matches.FirstOrDefault(m =>
-            string.Equals((string?)m.bracket_type, "final", StringComparison.OrdinalIgnoreCase));
+        // In a reset grand final there are two bracket_type='final' matches.
+        // The decisive match always has the higher round_index (reset is inserted at original + 1).
+        var grandFinal = matches
+            .Where(m => string.Equals((string?)m.bracket_type, "final", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(m => (int)m.round_index)
+            .FirstOrDefault();
         nextPlacement = CollectGrandFinalPlacements(grandFinal, result, seen, nextPlacement);
 
         var loserMatches = matches
             .Where(m => string.Equals((string?)m.bracket_type, "losers", StringComparison.OrdinalIgnoreCase))
             .GroupBy(m => (int)m.round_index)
             .OrderByDescending(g => g.Key);
-        nextPlacement = CollectBandPlacements(loserMatches, result, seen, nextPlacement);
-
-        var winnerMatches = matches
-            .Where(m => string.Equals((string?)m.bracket_type, "winners", StringComparison.OrdinalIgnoreCase))
-            .GroupBy(m => (int)m.round_index)
-            .OrderByDescending(g => g.Key);
-        CollectBandPlacements(winnerMatches, result, seen, nextPlacement);
+        // Only losers-bracket eliminations and the grand final determine placement in DE.
+        // WB losers are not yet eliminated -- they drop to LB and must not get a standing until
+        // their losers-bracket match or the grand final completes.
+        CollectBandPlacements(loserMatches, result, seen, nextPlacement);
 
         return result;
     }

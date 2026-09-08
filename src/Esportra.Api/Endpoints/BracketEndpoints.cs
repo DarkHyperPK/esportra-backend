@@ -1102,12 +1102,14 @@ public static class BracketEndpoints
         CancellationToken ct)
     {
         var placements = await placementSvc.ComputeForStageAsync(stageId, conn, ct);
-        if (placements.Count == 0) return [];
-
         var matchStats = (await standingsSvc.CalculateStandingsAsync(stageId, ct: ct))
             .ToDictionary(s => s.TeamId);
 
-        return placements
+        if (placements.Count == 0 && matchStats.Count == 0) return [];
+
+        var placedTeamIds = placements.Select(p => p.TeamId).ToHashSet();
+
+        var eliminated = placements
             .OrderBy(p => p.Placement)
             .Select(p =>
             {
@@ -1116,14 +1118,35 @@ public static class BracketEndpoints
                 {
                     teamId = p.TeamId,
                     teamName = p.TeamName,
-                    placement = p.Placement,
+                    placement = (int?)p.Placement,
                     placementLabel = p.PlacementLabel,
                     played = stats?.Played ?? 0,
                     wins = stats?.Wins ?? 0,
                     losses = stats?.Losses ?? 0,
                 };
-            })
-            .ToList();
+            });
+
+        var active = matchStats
+            .Where(kvp => !placedTeamIds.Contains(kvp.Key))
+            .OrderByDescending(kvp => kvp.Value.Wins)
+            .ThenBy(kvp => kvp.Value.Losses)
+            .ThenBy(kvp => kvp.Value.TeamName)
+            .Select(kvp =>
+            {
+                var s = kvp.Value;
+                return (object)new
+                {
+                    teamId = s.TeamId,
+                    teamName = s.TeamName,
+                    placement = (int?)null,
+                    placementLabel = "–",
+                    played = s.Played,
+                    wins = s.Wins,
+                    losses = s.Losses,
+                };
+            });
+
+        return eliminated.Concat(active).ToList();
     }
 
     private static async Task ClearTournamentWinnerIfMatchesContainWinnerAsync(
