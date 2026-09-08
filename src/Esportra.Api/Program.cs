@@ -292,8 +292,11 @@ builder.Services.AddCors(opts =>
               .SetPreflightMaxAge(TimeSpan.FromHours(2)));
 });
 
-// ── Email service (SMTP via MailKit) ─────────────────────────────────────────
-builder.Services.AddScoped<IEmailService, ResendEmailService>();
+// ── Email service ────────────────────────────────────────────────────────────
+// Singleton: no per-request state; IHttpClientFactory (singleton) is injected so
+// the service is safe to use from fire-and-forget tasks that outlive the hub scope.
+builder.Services.AddHttpClient("Resend");
+builder.Services.AddSingleton<IEmailService, ResendEmailService>();
 
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
@@ -503,6 +506,8 @@ using (var scope = app.Services.CreateScope())
         "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         "leaderboard-refresh", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RoundDeadlineEscalationJob>(
+        "round-deadline-escalation", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
 
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         j => j.ExecuteAsync(CancellationToken.None));

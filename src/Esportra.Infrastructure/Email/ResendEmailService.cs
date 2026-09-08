@@ -10,7 +10,7 @@ namespace Esportra.Infrastructure.Email;
 /// Config required: Resend:ApiKey, Resend:FromEmail, Resend:FromName
 /// </summary>
 public sealed class ResendEmailService(
-    HttpClient http,
+    IHttpClientFactory httpClientFactory,
     IConfiguration config,
     ILogger<ResendEmailService> logger) : IEmailService
 {
@@ -45,6 +45,9 @@ public sealed class ResendEmailService(
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
             request.Content = JsonContent.Create(payload);
 
+            // Create client per-send from the factory so the underlying pooled handler is reused
+            // but this wrapper is never tied to a DI scope that may be disposed under fire-and-forget.
+            using var http = httpClientFactory.CreateClient("Resend");
             var response = await http.SendAsync(request, cts.Token);
 
             if (!response.IsSuccessStatusCode)
