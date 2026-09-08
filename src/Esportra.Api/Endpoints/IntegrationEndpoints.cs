@@ -228,7 +228,7 @@ public static class IntegrationEndpoints
                     WHERE tp.user_id = @userId
                       AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                       AND t.status NOT IN ('completed', 'cancelled')
-                      AND (t.settings->>'assistedReportingEnabled')::boolean = true
+                      AND (t.settings->>'assistedReportingEnabled')::boolean IS TRUE
                 )
                 """,
                 new { userId = userGuid });

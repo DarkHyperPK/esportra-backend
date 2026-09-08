@@ -19,18 +19,7 @@ public sealed class DiscordNotificationService
     private readonly string? _botToken;
     private readonly string? _guildId;
 
-    // Notification types that trigger Discord DMs
-    private static readonly HashSet<string> DmEligibleTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "match_ready",
-        "result_reported",
-        "result_disputed",
-        "dispute_resolved",
-        "tournament_registered",
-        "tournament_announcement",
-        "result_accepted",
-        "match_completed"
-    };
+    private static readonly HashSet<string> DmEligibleTypes = DiscordNotificationTypes.DmEligibleTypes;
 
     public DiscordNotificationService(
         IHttpClientFactory httpFactory,
@@ -72,7 +61,11 @@ public sealed class DiscordNotificationService
                 """,
                 new { userId });
 
-            if (!prefs.enabled || string.IsNullOrEmpty(prefs.discordId)) return;
+            if (!prefs.enabled || string.IsNullOrEmpty(prefs.discordId))
+            {
+                _logger.LogInformation("Discord DM skipped for user {UserId} — no linked Discord account or DMs disabled", userId);
+                return;
+            }
 
             await SendDiscordDmAsync(prefs.discordId, title, message, notificationType);
         }
@@ -101,9 +94,10 @@ public sealed class DiscordNotificationService
     /// Adds a user to the Esportra Discord server using their OAuth access token.
     /// Requires the guilds.join scope on the user's OAuth token.
     /// </summary>
-    public async Task<bool> TryAutoJoinGuildAsync(string discordUserId, string userAccessToken)
+    public async Task<DiscordJoinOutcome> TryAutoJoinGuildAsync(string discordUserId, string userAccessToken)
     {
-        if (!IsConfigured || string.IsNullOrEmpty(_guildId)) return false;
+        if (!IsConfigured || string.IsNullOrEmpty(_guildId))
+            return DiscordJoinOutcome.Failed("not_configured");
 
         try
         {
@@ -119,21 +113,27 @@ public sealed class DiscordNotificationService
             var resp = await http.SendAsync(req);
 
             // 201 = added, 204 = already a member — both are success
-            if (resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.NoContent)
+            if (resp.IsSuccessStatusCode)
             {
                 _logger.LogInformation("Discord user {DiscordId} auto-joined guild", discordUserId);
-                return true;
+                return DiscordJoinOutcome.Succeeded;
             }
 
             var body = await resp.Content.ReadAsStringAsync();
             _logger.LogWarning("Failed to auto-join Discord user {DiscordId}: {Status} {Body}",
                 discordUserId, resp.StatusCode, body);
-            return false;
+
+            return resp.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Unauthorized => DiscordJoinOutcome.Failed("token_expired"),
+                System.Net.HttpStatusCode.Forbidden => DiscordJoinOutcome.Failed("missing_scope"),
+                _ => DiscordJoinOutcome.Failed("discord_api_error"),
+            };
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to auto-join Discord user {DiscordId} to guild", discordUserId);
-            return false;
+            return DiscordJoinOutcome.Failed("discord_api_error");
         }
     }
 
@@ -236,4 +236,10 @@ public sealed class DiscordNotificationService
         [JsonPropertyName("text")]
         public string? Text { get; set; }
     }
+}
+
+public sealed record DiscordJoinOutcome(bool Success, string? Reason = null)
+{
+    public static readonly DiscordJoinOutcome Succeeded = new(true);
+    public static DiscordJoinOutcome Failed(string reason) => new(false, reason);
 }

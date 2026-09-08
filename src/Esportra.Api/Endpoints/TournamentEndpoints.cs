@@ -4729,6 +4729,13 @@ public static class TournamentEndpoints
         if (req.MaxTeams > 0 && reservedSlots > req.MaxTeams)
             return "Reserved invite slots cannot exceed max teams.";
 
+        if (req.DiscordLinkCount.HasValue)
+        {
+            var maxAllowed = req.TeamSize ?? 20;
+            if (req.DiscordLinkCount.Value < 0 || req.DiscordLinkCount.Value > maxAllowed)
+                return $"Discord link count must be between 0 and {maxAllowed}.";
+        }
+
         var dateOrderError = TournamentTimelineValidator.ValidateDateOrder(
             req.StartDate, req.EndDate ?? req.StartDate.AddHours(2));
         if (dateOrderError is not null) return dateOrderError;
@@ -5286,6 +5293,13 @@ public static class TournamentEndpoints
                 catalogResult.catalog!.TeamSize,
                 catalogResult.catalog!.SupportsAssistedReporting);
             if (accountLinkError is not null) return (null, Results.BadRequest(new { error = accountLinkError }));
+        }
+
+        if (req.DiscordLinkCount.HasValue)
+        {
+            var maxAllowed = existingTeamSize ?? catalogResult.catalog!.TeamSize;
+            if (req.DiscordLinkCount.Value < 0 || req.DiscordLinkCount.Value > maxAllowed)
+                return (null, Results.BadRequest(new { error = $"Discord link count must be between 0 and {maxAllowed}." }));
         }
 
         var datesResult = ValidateDates(req, existingStartDate, existingEndDate, existingRegistrationDeadline);

@@ -869,6 +869,8 @@ public static class ProfileEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+            conn.Open();
+            using var txn = conn.BeginTransaction();
 
             var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
                 """
@@ -880,26 +882,34 @@ public static class ProfileEndpoints
                       AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
                       AND t.status NOT IN ('completed', 'cancelled')
                       AND (
-                    COALESCE((t.settings->>'discordLinkCount')::int, 0) > 0
-                    OR (t.settings->>'requireDiscordLink')::boolean = true
+                    COALESCE(NULLIF(t.settings->>'discordLinkCount', '')::int, 0) > 0
+                    OR (t.settings->>'requireDiscordLink')::boolean IS TRUE
                 )
                 )
                 """,
-                new { userId = userCtx.UserIdGuid });
+                new { userId = userCtx.UserIdGuid }, txn);
 
             if (blockedByTournament)
+            {
+                txn.Rollback();
                 return Results.BadRequest(new
                 {
                     error = "active_registration",
                     message = "You are registered in a tournament that requires a linked Discord account. Withdraw from all such tournaments before unlinking.",
                 });
+            }
 
             var identity = await conn.QuerySingleOrDefaultAsync<(string Id, string ProviderId)>(
                 "SELECT id::text AS Id, provider_id AS ProviderId FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
-                new { userId = userCtx.UserIdGuid });
+                new { userId = userCtx.UserIdGuid }, txn);
 
             if (identity == default)
+            {
+                txn.Rollback();
                 return Results.NotFound(new { error = "Discord account not linked" });
+            }
+
+            txn.Commit();
 
             await supabaseAdmin.UnlinkIdentityAsync(userCtx.UserId, identity.Id, ct);
 
