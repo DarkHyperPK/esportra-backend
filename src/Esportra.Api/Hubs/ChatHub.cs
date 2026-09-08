@@ -24,6 +24,7 @@ public sealed class ChatHub : Hub
     private readonly IDatabase _redis;
     private readonly string _frontendUrl;
     private readonly DiscordNotificationService _discord;
+    private readonly IHubContext<ChatHub> _hubContext;
 
     public ChatHub(
         IDbConnectionFactory db,
@@ -31,7 +32,8 @@ public sealed class ChatHub : Hub
         IEmailService email,
         IConnectionMultiplexer redis,
         IConfiguration config,
-        DiscordNotificationService discord)
+        DiscordNotificationService discord,
+        IHubContext<ChatHub> hubContext)
     {
         _db = db;
         _logger = logger;
@@ -39,6 +41,7 @@ public sealed class ChatHub : Hub
         _redis = redis.GetDatabase();
         _frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
         _discord = discord;
+        _hubContext = hubContext;
     }
 
     // ── Client-callable methods ───────────────────────────────────────────────
@@ -86,13 +89,15 @@ public sealed class ChatHub : Hub
     {
         var userId = Context.UserIdentifier;
         if (userId is null) return;
+        // Capture ConnectionId before any await — Context is invalid after hub disposal.
+        var connId = Context.ConnectionId;
         if (!await IsMatchParticipantAsync(userId, matchId)) return;
         Context.Items[$"auth:{matchId}"] = true;
         await SetPresenceAsync(matchId, userId);
         if (isChatOpen)
         {
             await SetPanelOpenAsync(matchId, userId);
-            _ = TryMarkReadInternalAsync(matchId, userId);
+            _ = TryMarkReadInternalAsync(matchId, userId, connId);
         }
         else
         {
@@ -235,10 +240,11 @@ public sealed class ChatHub : Hub
     {
         var userId = Context.UserIdentifier;
         if (userId is null) return;
+        var connId = Context.ConnectionId;
 
         if (!Context.Items.ContainsKey($"auth:{matchId}") && !await IsMatchParticipantAsync(userId, matchId)) return;
 
-        await TryMarkReadInternalAsync(matchId, userId);
+        await TryMarkReadInternalAsync(matchId, userId, connId);
     }
 
     // ── Group name helper ─────────────────────────────────────────────────────
@@ -265,7 +271,7 @@ public sealed class ChatHub : Hub
     private Task ClearPanelOpenAsync(string matchId, string userId) =>
         _redis.KeyDeleteAsync($"chat-panel-open:{matchId}:{userId}");
 
-    private async Task TryMarkReadInternalAsync(string matchId, string userId)
+    private async Task TryMarkReadInternalAsync(string matchId, string userId, string callerConnectionId)
     {
         try
         {
@@ -292,7 +298,10 @@ public sealed class ChatHub : Hub
                 """,
                 new { MatchId = matchIdGuid, UserId = userIdGuid });
 
-            await Clients.OthersInGroup(ChatGroup(matchId))
+            // Use IHubContext (singleton) + GroupExcept rather than this.Clients.OthersInGroup
+            // (hub-lifetime) so this method is safe from fire-and-forget tasks that outlive
+            // the hub instance. callerConnectionId is captured before any await in the caller.
+            await _hubContext.Clients.GroupExcept(ChatGroup(matchId), callerConnectionId)
                 .SendAsync(ChatHubEvents.MessagesSeen,
                     new MessageSeenPayload(matchId, userId, DateTime.UtcNow));
         }
