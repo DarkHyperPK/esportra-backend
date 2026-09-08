@@ -245,14 +245,28 @@ public sealed class PlacementResolutionService(
     private async Task<List<TeamPlacement>> ResolveDoubleEliminationAsync(
         IDbConnection conn, Guid stageId, CancellationToken ct)
     {
+        // loser_id may be null on older matches where only winner_id was written.
+        // Derive it from team1_id/team2_id + winner_id so placements are always correct.
         var matches = (await conn.QueryAsync<dynamic>(
             """
-            SELECT m.round_index, m.bracket_type, m.winner_id, m.loser_id,
-                   wt.name AS winner_name, lt.name AS loser_name
+            SELECT m.round_index,
+                   m.bracket_type,
+                   m.winner_id,
+                   COALESCE(m.loser_id,
+                       CASE WHEN m.winner_id = m.team1_id THEN m.team2_id
+                            WHEN m.winner_id = m.team2_id THEN m.team1_id
+                            ELSE NULL END)                  AS loser_id,
+                   wt.name                                  AS winner_name,
+                   COALESCE(lt.name,
+                       CASE WHEN m.winner_id = m.team1_id THEN t2.name
+                            WHEN m.winner_id = m.team2_id THEN t1.name
+                            ELSE NULL END)                  AS loser_name
             FROM brkt_matches m
-            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN brkt_versions v  ON v.id  = m.version_id
             LEFT JOIN teams wt ON wt.id = m.winner_id
             LEFT JOIN teams lt ON lt.id = m.loser_id
+            LEFT JOIN teams t1 ON t1.id = m.team1_id
+            LEFT JOIN teams t2 ON t2.id = m.team2_id
             WHERE v.stage_id = @stageId
               AND m.status = 'completed'
             ORDER BY
