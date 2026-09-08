@@ -256,14 +256,16 @@ public static class PrizeDistributionEndpoints
                       AND m.status = 'completed'
                       AND m.team2_id IS NOT NULL
                 )
-                SELECT team_id,
+                SELECT s.team_id,
+                       COALESCE(t.name, 'Unknown') AS team_name,
                        COUNT(*)              AS played,
-                       COUNT(*) FILTER (WHERE won)  AS wins,
-                       COUNT(*) FILTER (WHERE lost) AS losses,
-                       COUNT(*) FILTER (WHERE tied) AS ties,
-                       SUM(sd)              AS score_diff
-                FROM sides
-                GROUP BY team_id
+                       COUNT(*) FILTER (WHERE s.won)  AS wins,
+                       COUNT(*) FILTER (WHERE s.lost) AS losses,
+                       COUNT(*) FILTER (WHERE s.tied) AS ties,
+                       SUM(s.sd)              AS score_diff
+                FROM sides s
+                LEFT JOIN teams t ON t.id = s.team_id
+                GROUP BY s.team_id, t.name
                 """,
                 new { id });
 
@@ -276,19 +278,21 @@ public static class PrizeDistributionEndpoints
                 p => (Guid)p.team_id,
                 p => p);
 
-            var result = (livePlacements ?? []).Select(p =>
+            var placedTeamIds = (livePlacements ?? []).Select(p => p.TeamId).ToHashSet();
+
+            var eliminated = (livePlacements ?? []).Select(p =>
             {
                 var persisted = persistedLookup.GetValueOrDefault(p.TeamId);
                 var stats = statsLookup.GetValueOrDefault(p.TeamId);
                 var rewards = persisted is not null
                     ? ParseRewards((string?)persisted.prize_rewards)
                     : p.Rewards.Select(r => (object)new { type = r.Type, title = r.Title, description = r.Description, estimated_value = r.EstimatedValue, quantity = r.Quantity }).ToList();
-                return new
+                return (object)new
                 {
                     team_id = p.TeamId,
                     team_name = p.TeamName,
                     team_logo = persisted is not null ? (string?)persisted.team_logo : null,
-                    placement = p.Placement,
+                    placement = (int?)p.Placement,
                     placement_label = p.PlacementLabel,
                     prize_amount = persisted is not null ? ((decimal?)persisted.prize_amount ?? 0m) : p.PrizeAmount,
                     currency,
@@ -302,6 +306,36 @@ public static class PrizeDistributionEndpoints
                     score_diff = stats is not null ? (int)(long)stats.score_diff : 0,
                 };
             });
+
+            var active = statsLookup
+                .Where(kvp => !placedTeamIds.Contains(kvp.Key))
+                .OrderByDescending(kvp => (long)kvp.Value.wins)
+                .ThenBy(kvp => (long)kvp.Value.losses)
+                .ThenBy(kvp => (string)kvp.Value.team_name)
+                .Select(kvp =>
+                {
+                    var s = kvp.Value;
+                    return (object)new
+                    {
+                        team_id = (Guid)s.team_id,
+                        team_name = (string)s.team_name,
+                        team_logo = (string?)null,
+                        placement = (int?)null,
+                        placement_label = "–",
+                        prize_amount = 0m,
+                        currency,
+                        rewards = (List<object>)[],
+                        is_tied = false,
+                        resolved_at = (DateTime?)null,
+                        played = (int)(long)s.played,
+                        wins = (int)(long)s.wins,
+                        losses = (int)(long)s.losses,
+                        ties = (int)(long)s.ties,
+                        score_diff = (int)(long)s.score_diff,
+                    };
+                });
+
+            var result = eliminated.Concat(active);
 
             return Results.Ok(new
             {
