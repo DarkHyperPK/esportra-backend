@@ -37,18 +37,19 @@ public sealed class DiscordNotificationService
     public bool IsConfigured => !string.IsNullOrEmpty(_botToken) && !string.IsNullOrEmpty(_guildId);
 
     /// <summary>
-    /// Attempts to send a Discord DM for a notification. Fire-and-forget safe — never throws.
+    /// Attempts to send a Discord DM for a notification. Returns true if the DM was delivered,
+    /// false if skipped (not configured, not eligible, no linked account) or if the Discord API failed.
+    /// Never throws.
     /// </summary>
-    public async Task TrySendDmAsync(Guid userId, string notificationType, string title, string message)
+    public async Task<bool> TrySendDmAsync(Guid userId, string notificationType, string title, string message)
     {
-        if (!IsConfigured) return;
-        if (!DmEligibleTypes.Contains(notificationType)) return;
+        if (!IsConfigured) return false;
+        if (!DmEligibleTypes.Contains(notificationType)) return false;
 
         try
         {
             using var conn = _db.CreateConnection();
 
-            // Check if user has Discord DMs enabled
             var prefs = await conn.QuerySingleOrDefaultAsync<(bool enabled, string? discordId)>(
                 """
                 SELECT
@@ -64,15 +65,15 @@ public sealed class DiscordNotificationService
             if (!prefs.enabled || string.IsNullOrEmpty(prefs.discordId))
             {
                 _logger.LogInformation("Discord DM skipped for user {UserId} — no linked Discord account or DMs disabled", userId);
-                return;
+                return false;
             }
 
-            await SendDiscordDmAsync(prefs.discordId, title, message, notificationType);
+            return await SendDiscordDmAsync(prefs.discordId, title, message, notificationType);
         }
         catch (Exception ex)
         {
-            // Never let Discord failures affect the main notification flow
             _logger.LogWarning(ex, "Failed to send Discord DM for user {UserId}, type {Type}", userId, notificationType);
+            return false;
         }
     }
 
@@ -137,7 +138,7 @@ public sealed class DiscordNotificationService
         }
     }
 
-    private async Task SendDiscordDmAsync(string discordUserId, string title, string message, string notificationType)
+    private async Task<bool> SendDiscordDmAsync(string discordUserId, string title, string message, string notificationType)
     {
         var http = _httpFactory.CreateClient("Discord");
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bot", _botToken);
@@ -154,13 +155,13 @@ public sealed class DiscordNotificationService
         {
             var body = await dmChannelResp.Content.ReadAsStringAsync();
             _logger.LogWarning("Failed to open DM channel for Discord user {DiscordId}: {Status} {Body}",
-                discordUserId, dmChannelResp.StatusCode, body);
-            return;
+                discordUserId, dmChannelResp.StatusCode, body.Length > 200 ? body[..200] + "..." : body);
+            return false;
         }
 
         var channelJson = await dmChannelResp.Content.ReadAsStringAsync();
         var channelData = JsonSerializer.Deserialize<DiscordChannel>(channelJson);
-        if (channelData?.Id is null) return;
+        if (channelData?.Id is null) return false;
 
         // Step 2: Send the message as an embed
         var embed = new DiscordEmbed
@@ -179,17 +180,17 @@ public sealed class DiscordNotificationService
         };
         var msgResp = await http.SendAsync(msgReq);
 
-        var msgBody = await msgResp.Content.ReadAsStringAsync();
         if (msgResp.IsSuccessStatusCode)
         {
-            _logger.LogInformation("✅ Discord DM sent to {DiscordId} (channel {Channel}), type={Type}",
+            _logger.LogInformation("Discord DM sent to {DiscordId} (channel {Channel}), type={Type}",
                 discordUserId, channelData.Id, notificationType);
+            return true;
         }
-        else
-        {
-            _logger.LogWarning("Failed to send DM to Discord user {DiscordId}: {Status} {Body}",
-                discordUserId, msgResp.StatusCode, msgBody);
-        }
+
+        var msgBody = await msgResp.Content.ReadAsStringAsync();
+        _logger.LogWarning("Failed to send DM to Discord user {DiscordId}: {Status} {Body}",
+            discordUserId, msgResp.StatusCode, msgBody.Length > 200 ? msgBody[..200] + "..." : msgBody);
+        return false;
     }
 
     private static int GetColorForType(string type) => type switch
@@ -203,6 +204,7 @@ public sealed class DiscordNotificationService
         "tournament_announcement" => 0x3B82F6, // blue
         "result_accepted" => 0x22C55E, // green
         "match_walkover" => 0xF59E0B, // amber
+        "match_chat_message" => 0x6366F1, // indigo
         _ => 0xF43F5E, // rose (brand)
     };
 

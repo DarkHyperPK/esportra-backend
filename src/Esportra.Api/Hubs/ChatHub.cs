@@ -1,9 +1,11 @@
 using Dapper;
 using Esportra.Api.Helpers;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Api.Services;
 using Esportra.Core.Notifications;
 using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Email;
+using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Configuration;
@@ -23,7 +25,6 @@ public sealed class ChatHub : Hub
     private readonly IEmailService _email;
     private readonly IDatabase _redis;
     private readonly string _frontendUrl;
-    private readonly DiscordNotificationService _discord;
     private readonly IHubContext<ChatHub> _hubContext;
 
     public ChatHub(
@@ -32,7 +33,6 @@ public sealed class ChatHub : Hub
         IEmailService email,
         IConnectionMultiplexer redis,
         IConfiguration config,
-        DiscordNotificationService discord,
         IHubContext<ChatHub> hubContext)
     {
         _db = db;
@@ -40,7 +40,6 @@ public sealed class ChatHub : Hub
         _email = email;
         _redis = redis.GetDatabase();
         _frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
-        _discord = discord;
         _hubContext = hubContext;
     }
 
@@ -385,7 +384,17 @@ public sealed class ChatHub : Hub
                     return;
                 }
 
-                // 5. Cooldown gate: at most one email per 5-minute window per recipient (atomic set-if-not-exists)
+                // 5a. Discord DM gate: schedule deferred DM job if no session already pending/in-cooldown
+                if (!await _redis.KeyExistsAsync($"chat-dm-pending:{matchId}:{oppUserIdValue}") &&
+                    !await _redis.KeyExistsAsync($"chat-dm-cooldown:{matchId}:{oppUserIdValue}"))
+                {
+                    BackgroundJob.Schedule<ChatUnreadDmJob>(
+                        job => job.ExecuteAsync(matchIdGuid, oppUserIdValue, CancellationToken.None),
+                        TimeSpan.FromMinutes(5));
+                    await _redis.StringSetAsync($"chat-dm-pending:{matchId}:{oppUserIdValue}", 1, TimeSpan.FromMinutes(6), When.NotExists);
+                }
+
+                // 5b. Cooldown gate: at most one email per 5-minute window per recipient (atomic set-if-not-exists)
                 if (!await _redis.StringSetAsync($"chat-email-sent:{matchId}:{recipientId}", 1, TimeSpan.FromSeconds(300), When.NotExists))
                 {
                     _logger.LogDebug("Chat notification suppressed — cooldown active for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
@@ -407,7 +416,7 @@ public sealed class ChatHub : Hub
             if (oppUserIdValue == Guid.Empty) return;
 
             var preview = messageContent.Length > 120 ? messageContent[..120] + "…" : messageContent;
-            await SendChatNotificationsAsync(matchId, oppUserIdValue, email, senderTeamName, preview, matchRoomUrl, unreadCount);
+            await SendChatNotificationsAsync(matchId, email, senderTeamName, preview, matchRoomUrl, unreadCount);
         }
         catch (Exception ex)
         {
@@ -416,7 +425,7 @@ public sealed class ChatHub : Hub
     }
 
     private async Task SendChatNotificationsAsync(
-        string matchId, Guid recipientUserId, string? email,
+        string matchId, string? email,
         string senderTeamName, string preview, string matchRoomUrl, int unreadCount)
     {
         if (email is not null)
@@ -437,11 +446,6 @@ public sealed class ChatHub : Hub
             }
         }
 
-        await _discord.TrySendDmAsync(
-            recipientUserId,
-            "match_chat_message",
-            $"You have {unreadCount} unread message{(unreadCount == 1 ? "" : "s")} from {senderTeamName}",
-            matchRoomUrl);
     }
 
     // ── Membership check ──────────────────────────────────────────────────────
