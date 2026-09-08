@@ -90,7 +90,14 @@ public sealed class ChatHub : Hub
         Context.Items[$"auth:{matchId}"] = true;
         await SetPresenceAsync(matchId, userId);
         if (isChatOpen)
+        {
+            await SetPanelOpenAsync(matchId, userId);
             _ = TryMarkReadInternalAsync(matchId, userId);
+        }
+        else
+        {
+            await ClearPanelOpenAsync(matchId, userId);
+        }
     }
 
     public async Task LeaveChat(string matchId)
@@ -98,7 +105,10 @@ public sealed class ChatHub : Hub
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, ChatGroup(matchId));
         var userId = Context.UserIdentifier;
         if (userId is not null)
+        {
             await _redis.KeyDeleteAsync($"chat-active:{matchId}:{userId}");
+            await ClearPanelOpenAsync(matchId, userId);
+        }
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -107,7 +117,10 @@ public sealed class ChatHub : Hub
         if (userId is not null && Context.Items.TryGetValue("joinedMatches", out var raw) && raw is List<string> matches)
         {
             foreach (var matchId in matches)
+            {
                 await _redis.KeyDeleteAsync($"chat-active:{matchId}:{userId}");
+                await ClearPanelOpenAsync(matchId, userId);
+            }
         }
         await base.OnDisconnectedAsync(exception);
     }
@@ -240,6 +253,18 @@ public sealed class ChatHub : Hub
             1,
             TimeSpan.FromSeconds(180));
 
+    // Tracks whether the chat panel is visibly open. TTL > heartbeat interval (90 s) so the
+    // key stays alive while the panel is open, and expires ~120 s after the panel is closed or
+    // the tab is closed. Used to suppress email notifications when the user is actively reading.
+    private Task SetPanelOpenAsync(string matchId, string userId) =>
+        _redis.StringSetAsync(
+            $"chat-panel-open:{matchId}:{userId}",
+            1,
+            TimeSpan.FromSeconds(120));
+
+    private Task ClearPanelOpenAsync(string matchId, string userId) =>
+        _redis.KeyDeleteAsync($"chat-panel-open:{matchId}:{userId}");
+
     private async Task TryMarkReadInternalAsync(string matchId, string userId)
     {
         try
@@ -308,9 +333,19 @@ public sealed class ChatHub : Hub
 
                 var recipientId = oppUserIdValue.ToString();
 
-                // 3. Count unread messages — primary gate: only email when messages are genuinely unread.
-                // This replaces the Redis presence check, which was suppressing emails whenever the
-                // recipient had the match page open (regardless of whether they'd actually read messages).
+                // 3. Panel-open gate: if the recipient's chat panel is currently visible, they can see
+                // the message in real-time — SignalR will deliver it before an email would arrive.
+                // This key is only set/refreshed when isChatOpen=true in Heartbeat (TTL 120 s), so it
+                // correctly expires after the panel is closed, unlike the old presence key which was
+                // refreshed unconditionally and prevented emails even when the panel was hidden.
+                if (await _redis.KeyExistsAsync($"chat-panel-open:{matchId}:{recipientId}"))
+                {
+                    _logger.LogDebug("Chat notification suppressed — recipient {RecipientId} has panel open in match {MatchId}", recipientId, matchId);
+                    return;
+                }
+
+                // 4. Count unread messages — secondary gate: confirms messages are genuinely unread
+                // (handles the race where the recipient read everything just before this dispatch runs).
                 try
                 {
                     unreadCount = await conn.ExecuteScalarAsync<int>(
@@ -341,14 +376,14 @@ public sealed class ChatHub : Hub
                     return;
                 }
 
-                // 4. Cooldown gate: at most one email per 5-minute window per recipient (atomic set-if-not-exists)
+                // 5. Cooldown gate: at most one email per 5-minute window per recipient (atomic set-if-not-exists)
                 if (!await _redis.StringSetAsync($"chat-email-sent:{matchId}:{recipientId}", 1, TimeSpan.FromSeconds(300), When.NotExists))
                 {
                     _logger.LogDebug("Chat notification suppressed — cooldown active for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
                     return;
                 }
 
-                // 5. Fetch display name, email, and URL only after passing all gates
+                // 6. Fetch display name, email, and URL only after passing all gates
                 senderTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(conn, senderCompetitorId) ?? senderName;
                 email = await conn.QuerySingleOrDefaultAsync<string?>(
                     "SELECT email FROM profiles WHERE id = @userId AND email IS NOT NULL",
