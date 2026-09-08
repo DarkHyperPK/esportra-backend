@@ -507,7 +507,8 @@ public static class MatchEndpoints
             try
             {
                 var success = await finalizer.FinalizeAsync(
-                    matchId, (int)match.version, winnerId, loserId, team1Score, team2Score, ct);
+                    matchId, (int)match.version,
+                    new FinalizeMatchOptions(winnerId, loserId, team1Score, team2Score), ct);
 
                 if (!success)
                     return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
@@ -557,7 +558,7 @@ public static class MatchEndpoints
                 matchId, requestedWinnerId, requestedLoserId, conn);
             if (winnerResolveError is not null) return winnerResolveError;
 
-            var success = await finalizer.FinalizeAsync(matchId, winnerId, loserId, ct: ct);
+            var success = await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(winnerId, loserId), ct);
 
             if (isOrgTeamActor && success)
             {
@@ -584,6 +585,7 @@ public static class MatchEndpoints
             IDbConnectionFactory db,
             StaffTournamentAuditService staffAudit,
             IHubContext<MatchHub> matchHub,
+            IHubContext<BracketHub> bracketHub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -612,7 +614,7 @@ public static class MatchEndpoints
             try
             {
                 var success = await finalizer.FinalizeAsync(
-                    matchId, req.WinnerId, req.LoserId, req.Team1Score, req.Team2Score, ct);
+                    matchId, new FinalizeMatchOptions(req.WinnerId, req.LoserId, req.Team1Score, req.Team2Score), ct);
 
                 if (!success) return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
 
@@ -635,10 +637,26 @@ public static class MatchEndpoints
                 return Results.Conflict(new { error = "This match was updated by someone else. Please refresh and try again." });
             }
 
+            await conn.ExecuteAsync(
+                "UPDATE brkt_matches SET is_walkover = TRUE WHERE id = @matchId",
+                new { matchId });
+
+            var walkoverVersionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT version_id FROM brkt_matches WHERE id = @matchId",
+                new { matchId });
+
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
                 .SendAsync(MatchHubEvents.StatusChanged,
                     new { matchId, status = "completed" }, ct);
+
+            if (walkoverVersionId is not null)
+            {
+                await bracketHub.Clients
+                    .Group(BracketHub.BracketGroup(walkoverVersionId.Value.ToString()))
+                    .SendAsync(BracketHubEvents.MatchUpdated,
+                        new { versionId = walkoverVersionId, matchId }, ct);
+            }
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -841,6 +859,8 @@ public static class MatchEndpoints
             StaffTournamentAuditService staffAudit,
             IHubContext<MatchHub> matchHub,
             IHubContext<BracketHub> bracketHub,
+            IHubContext<NotificationHub> notifHub,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -889,6 +909,21 @@ public static class MatchEndpoints
 
             await BroadcastGoLiveEventAsync(matchId, code, canForceGoLive, versionId, userCtx.UserIdGuid,
                 matchHub, bracketHub, staffAudit, conn, ct);
+
+            // Notify team2 captain that team1 submitted the party code (self-play only)
+            if (!string.IsNullOrEmpty(code) && callerCompetitorId.HasValue)
+            {
+                var opponentCompId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    "SELECT CASE WHEN team1_id = @c THEN team2_id ELSE team1_id END FROM brkt_matches WHERE id = @matchId",
+                    new { c = callerCompetitorId.Value, matchId });
+                if (opponentCompId.HasValue)
+                {
+                    var opponentUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(
+                        conn, opponentCompId.Value);
+                    if (opponentUserId.HasValue)
+                        await NotifyPartyCodeSubmittedAsync(conn, opponentUserId.Value, matchId, notifHub, discord, ct);
+                }
+            }
 
             return Results.Ok(new { success = true, status = "in_progress", partyCode = code });
         }).RequireAuthorization("Authenticated");
@@ -1086,6 +1121,33 @@ public static class MatchEndpoints
             return (default, default, Results.BadRequest(new { error = "Scores are tied — a winner can't be determined automatically." }));
         var wId = (int)m.team1_score > (int)m.team2_score ? (Guid)m.team1_id : (Guid)m.team2_id;
         return (wId, wId == (Guid)m.team1_id ? (Guid)m.team2_id : (Guid)m.team1_id, null);
+    }
+
+    private static async Task NotifyPartyCodeSubmittedAsync(
+        System.Data.IDbConnection conn,
+        Guid recipientUserId,
+        Guid matchId,
+        IHubContext<NotificationHub> notifHub,
+        DiscordNotificationService discord,
+        CancellationToken ct)
+    {
+        const string title = "Party code submitted";
+        const string message = "Your opponent has submitted the lobby party code. Check the match room to join.";
+        try
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO notifications (user_id, type, title, message, is_read)
+                VALUES (@userId, 'party_code_submitted'::notification_type, @title, @message, FALSE)
+                """,
+                new { userId = recipientUserId, title, message });
+            await notifHub.Clients
+                .Group(NotificationHub.UserGroup(recipientUserId.ToString()))
+                .SendAsync(NotificationHubEvents.NewNotification,
+                    new { type = "party_code_submitted", title, message }, ct);
+        }
+        catch { /* non-critical */ }
+        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", title, message);
     }
 
     private static async Task<IResult?> ValidateGoLivePermissionAsync(

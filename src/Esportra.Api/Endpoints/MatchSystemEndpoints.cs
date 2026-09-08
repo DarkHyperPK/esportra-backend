@@ -252,11 +252,17 @@ public static class MatchSystemEndpoints
                 """,
                     new { rid, matchId = id, userId = userCtx.UserIdGuid }, tx);
 
-                var (processedWinnerId, seriesComplete, conflictResult) = await AutoProcessAcceptedReportAsync(
+                var (processedWinnerId, seriesComplete, stageComplete, stageId, conflictResult) = await AutoProcessAcceptedReportAsync(
                     id, rid, conn, tx, vetoService, finalizer, bracketHub, matchHub, db, logger, ctx, ct);
                 if (conflictResult is not null) return conflictResult;
 
                 tx.Commit();
+
+                if (seriesComplete)
+                {
+                    var hooks = ctx.RequestServices.GetService<IEnumerable<ILeaderboardSourceChangeHook>>();
+                    await LeaderboardSourceChangeHooks.FireAsync(hooks, logger, "accept-report", ct);
+                }
 
                 // Notify via SignalR
                 await matchHub.Clients
@@ -272,6 +278,8 @@ public static class MatchSystemEndpoints
                     riotMatchId = req.RiotMatchId,
                     processed = processedWinnerId is not null,
                     seriesComplete,
+                    stageComplete,
+                    stageId,
                 });
             }
             catch (Exception ex)
@@ -1653,7 +1661,7 @@ public static class MatchSystemEndpoints
         _ => "We couldn't submit your report. Please verify scores and try again.",
     };
 
-    private static async Task<(Guid? WinnerId, bool SeriesComplete, IResult? ConflictResult)>
+    private static async Task<(Guid? WinnerId, bool SeriesComplete, bool StageComplete, Guid? StageId, IResult? ConflictResult)>
         AutoProcessAcceptedReportAsync(
             Guid matchId, Guid rid,
             System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
@@ -1661,6 +1669,15 @@ public static class MatchSystemEndpoints
             IHubContext<BracketHub> bracketHub, IHubContext<MatchHub> matchHub,
             IDbConnectionFactory db, ILogger logger, HttpContext ctx, CancellationToken ct)
     {
+        // Phase 1: game recording — non-fatal if it fails (scores already committed by caller).
+        // Phase 2: finalization — fatal; errors must propagate so the caller's tx is rolled back.
+        // The two phases are separated to prevent the swallowing catch from masking a partial
+        // brkt_matches write (winner_id set, bracket not advanced) as a silent success.
+
+        Guid matchTeam1Id = default, matchTeam2Id = default;
+        Guid? matchVersionId = null;
+        int matchVersion = 0, team1Wins = 0, team2Wins = 0, winsNeeded = 0, bestOf = 0;
+
         try
         {
             var report = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -1670,17 +1687,17 @@ public static class MatchSystemEndpoints
                        screenshot_urls, game_number, reported_by_team_id
                 FROM match_result_reports WHERE id = @rid
                 """, new { rid }, tx);
-            if (report is null) return (null, false, null);
+            if (report is null) return (null, false, false, null, null);
 
             var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT version, team1_id, team2_id, version_id, best_of FROM brkt_matches WHERE id = @matchId",
                 new { matchId }, tx);
-            if (match is null) return (null, false, null);
+            if (match is null) return (null, false, false, null, null);
 
             int t1 = Convert.ToInt32(report.team1_score);
             int t2 = Convert.ToInt32(report.team2_score);
-            int bestOf = Convert.ToInt32(match.best_of ?? 1);
-            int winsNeeded = (bestOf / 2) + 1;
+            bestOf = Convert.ToInt32(match.best_of ?? 1);
+            winsNeeded = (bestOf / 2) + 1;
 
             logger.LogInformation(
                 "Accept report for match {MatchId}: game score {T1}-{T2}, bestOf={BestOf}, winsNeeded={WinsNeeded}",
@@ -1695,7 +1712,7 @@ public static class MatchSystemEndpoints
             if (gameWinnerId is null)
             {
                 logger.LogWarning("Cannot auto-process match {MatchId}: tied scores {T1}-{T2} and no explicit winner", matchId, t1, t2);
-                return (null, false, null);
+                return (null, false, false, null, null);
             }
 
             var gameLoserId = gameWinnerId == (Guid)match.team1_id ? (Guid)match.team2_id : (Guid)match.team1_id;
@@ -1711,8 +1728,8 @@ public static class MatchSystemEndpoints
                 """,
                 new { matchId, team1Id = (Guid)match.team1_id, team2Id = (Guid)match.team2_id }, tx);
 
-            int team1Wins = Convert.ToInt32(seriesWins.team1_wins);
-            int team2Wins = Convert.ToInt32(seriesWins.team2_wins);
+            team1Wins = Convert.ToInt32(seriesWins.team1_wins);
+            team2Wins = Convert.ToInt32(seriesWins.team2_wins);
 
             logger.LogInformation(
                 "Match {MatchId} series update: {T1Wins}-{T2Wins} (need {WinsNeeded} for BO{BestOf})",
@@ -1722,32 +1739,34 @@ public static class MatchSystemEndpoints
                 "UPDATE brkt_matches SET team1_score = @team1Wins, team2_score = @team2Wins, updated_at = NOW() WHERE id = @matchId",
                 new { matchId, team1Wins, team2Wins }, tx);
 
-            Guid matchTeam1Id = (Guid)match.team1_id;
-            Guid matchTeam2Id = (Guid)match.team2_id;
-            int matchVersion = Convert.ToInt32(match.version);
-            Guid? matchVersionId = match.version_id is Guid mvid ? (Guid?)mvid : null;
-
-            (Guid? seriesWinnerId, bool seriesComplete, IResult? conflict) = await FinalizeSeriesAsync(
-                matchId, rid, matchTeam1Id, matchTeam2Id, matchVersion, matchVersionId,
-                team1Wins, team2Wins, winsNeeded, bestOf,
-                finalizer, conn, tx, bracketHub, matchHub, db, logger, ctx, ct);
-            if (conflict is not null) return (null, false, conflict);
-
-            if (matchVersionId is not null)
-            {
-                var vid = matchVersionId.Value;
-                await bracketHub.Clients
-                    .Group(BracketHub.BracketGroup(vid.ToString()))
-                    .SendAsync(BracketHubEvents.MatchUpdated, new { versionId = vid, matchId }, ct);
-            }
-
-            return (seriesWinnerId, seriesComplete, null);
+            matchTeam1Id = (Guid)match.team1_id;
+            matchTeam2Id = (Guid)match.team2_id;
+            matchVersion = Convert.ToInt32(match.version);
+            matchVersionId = match.version_id is Guid mvid ? (Guid?)mvid : null;
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Auto-process after accept failed for match {MatchId} (non-fatal)", matchId);
-            return (null, false, null);
+            logger.LogWarning(ex, "Auto-process game recording failed for match {MatchId} (non-fatal)", matchId);
+            return (null, false, false, null, null);
         }
+
+        // Phase 2: finalization — outside the swallowing catch.
+        // Any exception here propagates to the accept endpoint, which rolls back the tx via Dispose.
+        var (seriesWinnerId, seriesComplete, stageComplete, stageId, conflict) = await FinalizeSeriesAsync(
+            matchId, rid, matchTeam1Id, matchTeam2Id, matchVersion, matchVersionId,
+            team1Wins, team2Wins, winsNeeded, bestOf,
+            finalizer, conn, tx, bracketHub, matchHub, db, logger, ctx, ct);
+        if (conflict is not null) return (null, false, false, null, conflict);
+
+        if (matchVersionId is not null)
+        {
+            var vid = matchVersionId.Value;
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(vid.ToString()))
+                .SendAsync(BracketHubEvents.MatchUpdated, new { versionId = vid, matchId }, ct);
+        }
+
+        return (seriesWinnerId, seriesComplete, stageComplete, stageId, null);
     }
 
     private static async Task RecordGameResultAsync(
@@ -1829,7 +1848,7 @@ public static class MatchSystemEndpoints
         }
     }
 
-    private static async Task<(Guid? SeriesWinnerId, bool SeriesComplete, IResult? ConflictResult)> FinalizeSeriesAsync(
+    private static async Task<(Guid? SeriesWinnerId, bool SeriesComplete, bool StageComplete, Guid? StageId, IResult? ConflictResult)> FinalizeSeriesAsync(
         Guid matchId, Guid rid, Guid team1Id, Guid team2Id, int matchVersion, Guid? matchVersionId,
         int team1Wins, int team2Wins, int winsNeeded, int bestOf,
         MatchFinalizationService finalizer, System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
@@ -1841,7 +1860,7 @@ public static class MatchSystemEndpoints
             logger.LogInformation(
                 "Match {MatchId} series in progress: {T1Wins}-{T2Wins}, need {WinsNeeded} wins (BO{BestOf})",
                 matchId, team1Wins, team2Wins, winsNeeded, bestOf);
-            return (null, false, null);
+            return (null, false, false, null, null);
         }
 
         var winnerId = team1Wins >= winsNeeded ? team1Id : team2Id;
@@ -1849,8 +1868,14 @@ public static class MatchSystemEndpoints
 
         try
         {
-            var finalized = await finalizer.FinalizeAsync(
-                matchId, matchVersion, winnerId, loserId, team1Wins, team2Wins, ct);
+            // Use FinalizeInTransactionAsync to avoid a deadlock: the caller's transaction already holds
+            // a FOR UPDATE lock on this match row, and FinalizeAsync opens a new connection that would
+            // block waiting for that same lock indefinitely (application-level deadlock, no DB detection).
+            var finalized = await finalizer.FinalizeInTransactionAsync(
+                matchId, matchVersion,
+                new FinalizeMatchOptions(winnerId, loserId, team1Wins, team2Wins),
+                conn, tx, ct);
+
             if (finalized)
             {
                 logger.LogInformation(
@@ -1859,22 +1884,12 @@ public static class MatchSystemEndpoints
                 var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
                 _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
                     matchId, db, dathostSvc, matchHub, logger, CancellationToken.None));
-                try
-                {
-                    if (matchVersionId is not null)
-                        await StageCompletionHelper.CheckBracketStageCompletionAsync(
-                            conn, tx: null, matchVersionId.Value);
-                }
-                catch (Exception stageEx)
-                {
-                    logger.LogWarning(stageEx, "Stage completion check failed for match {MatchId} (non-fatal)", matchId);
-                }
             }
         }
         catch (InvalidOperationException ex)
         {
             logger.LogWarning(ex, "Match {MatchId} finalization version conflict", matchId);
-            return (null, true, Results.Conflict(new
+            return (null, true, false, null, Results.Conflict(new
             {
                 success = false,
                 error = "version_conflict",
@@ -1885,7 +1900,20 @@ public static class MatchSystemEndpoints
             }));
         }
 
-        return (winnerId, true, null);
+        bool stageComplete = false;
+        Guid? stageId = null;
+        try
+        {
+            if (matchVersionId is not null)
+                (stageComplete, stageId) = await StageCompletionHelper.CheckBracketStageCompletionAsync(
+                    conn, tx, matchVersionId.Value);
+        }
+        catch (Exception stageEx)
+        {
+            logger.LogWarning(stageEx, "Stage completion check failed for match {MatchId} (non-fatal)", matchId);
+        }
+
+        return (winnerId, true, stageComplete, stageId, null);
     }
 
     private static IResult SelfPlayGuardResponse(SelfPlayGuardResult guard)

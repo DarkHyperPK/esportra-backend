@@ -4403,7 +4403,7 @@ public static class TournamentEndpoints
                     // FinalizeAsync uses its own connection — cannot participate in our tx.
                     // TODO: If our tx rolls back (e.g. notification INSERT fails), these match
                     // forfeits are already committed. Track as a known partial-state risk.
-                    await finalizer.FinalizeAsync(matchId, opponent.Value, bannedSlotId, t1Score, t2Score, ct);
+                    await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(opponent.Value, bannedSlotId, t1Score, t2Score), ct);
                 }
                 else
                 {

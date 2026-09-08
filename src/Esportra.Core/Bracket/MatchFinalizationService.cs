@@ -6,6 +6,13 @@ using Microsoft.Extensions.Logging;
 
 namespace Esportra.Core.Bracket;
 
+/// <summary>Groups the result parameters passed to a match finalization call.</summary>
+public sealed record FinalizeMatchOptions(
+    Guid WinnerId,
+    Guid? LoserId = null,
+    int? Team1Score = null,
+    int? Team2Score = null);
+
 /// <summary>
 /// Replaces the PostgreSQL <c>finalize_match_locked()</c> RPC function.
 /// Handles pessimistic locking, version check, score update, bracket advancement,
@@ -16,87 +23,33 @@ public sealed class MatchFinalizationService(
     IEnumerable<ILeaderboardSourceChangeHook> leaderboardHooks,
     ILogger<MatchFinalizationService> logger)
 {
-
     /// <summary>
-    /// Replaces the PostgreSQL <c>finalize_match_locked()</c> RPC function.
-    /// Handles pessimistic locking, version check, score update, bracket advancement,
-    /// and event logging — all in .NET with Dapper.
+    /// Acquires a pessimistic row lock on the match, validates the version, and finalizes
+    /// the match in its own connection and transaction. Leaderboard hooks fire after commit.
     /// </summary>
-    /// <returns>True if finalized successfully; false if match not found.</returns>
+    /// <returns>True if finalized; false if match not found.</returns>
     /// <exception cref="InvalidOperationException">Version mismatch (concurrent modification).</exception>
     public async Task<bool> FinalizeAsync(
         Guid matchId,
         int expectedVersion,
-        Guid winnerId,
-        Guid? loserId,
-        int? team1Score = null,
-        int? team2Score = null,
+        FinalizeMatchOptions options,
         CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
         using var tx = conn.BeginTransaction();
-
         try
         {
-            // 1. Pessimistic lock — acquire row lock on the match
-            var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT m.version, v.tournament_id
-                FROM public.brkt_matches m
-                JOIN public.brkt_versions v ON m.version_id = v.id
-                WHERE m.id = @matchId
-                FOR UPDATE
-                """,
-                new { matchId },
-                tx);
+            var locked = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM public.brkt_matches WHERE id = @matchId FOR UPDATE)",
+                new { matchId }, tx);
+            if (!locked) return false;
 
-            if (match is null) return false;
-
-            int actualVersion = (int)match.version;
-
-            // 2. Optimistic concurrency check
-            if (actualVersion != expectedVersion)
-                throw new InvalidOperationException(
-                    $"Match version mismatch. Expected {expectedVersion}, got {actualVersion}.");
-
-            // 3. Atomic score + status update
-            await conn.ExecuteAsync(
-                """
-                UPDATE public.brkt_matches
-                SET winner_id   = @winnerId,
-                    loser_id    = @loserId,
-                    team1_score = COALESCE(@team1Score, team1_score),
-                    team2_score = COALESCE(@team2Score, team2_score),
-                    status      = 'completed',
-                    version     = version + 1,
-                    updated_at  = NOW()
-                WHERE id = @matchId
-                """,
-                new { matchId, winnerId, loserId = (object?)loserId ?? DBNull.Value, team1Score, team2Score },
-                tx);
-
-            // 4. Advance teams through bracket edges
-            await AdvanceTeamInternalAsync(conn, tx, matchId, winnerId, "winner");
-            if (loserId.HasValue)
-                await AdvanceTeamInternalAsync(conn, tx, matchId, loserId.Value, "loser");
-
-            // 5. Log completion event (audit trail)
-            try
-            {
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
-                    VALUES (@matchId, @winnerId, @loserId, 'processed')
-                    """,
-                    new { matchId, winnerId, loserId = (object?)loserId ?? DBNull.Value },
-                    tx);
-            }
-            catch { /* Non-critical if loser_id FK fails on audit table */ }
-
+            var finalized = await FinalizeInTransactionAsync(matchId, expectedVersion, options, conn, tx, ct);
             tx.Commit();
 
-            await LeaderboardSourceChangeHooks.FireAsync(leaderboardHooks, logger, nameof(MatchFinalizationService), ct);
-            return true;
+            if (finalized)
+                await LeaderboardSourceChangeHooks.FireAsync(leaderboardHooks, logger, nameof(MatchFinalizationService), ct);
+            return finalized;
         }
         catch
         {
@@ -106,15 +59,87 @@ public sealed class MatchFinalizationService(
     }
 
     /// <summary>
+    /// Finalizes a match within an already-open transaction.
+    /// Use this when the caller holds a FOR UPDATE lock on the match row — avoids the
+    /// application-level deadlock that occurs when a second connection tries to acquire
+    /// the same row lock while the first connection is still open.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction,
+    /// and for firing leaderboard hooks after a successful commit.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Version mismatch (concurrent modification).</exception>
+    public async Task<bool> FinalizeInTransactionAsync(
+        Guid matchId,
+        int expectedVersion,
+        FinalizeMatchOptions options,
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        CancellationToken ct = default)
+    {
+        // Skip FOR UPDATE — the caller's transaction already holds the row lock.
+        var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT version FROM public.brkt_matches WHERE id = @matchId",
+            new { matchId }, tx);
+
+        if (match is null) return false;
+
+        if ((int)match.version != expectedVersion)
+            throw new InvalidOperationException(
+                $"Match version mismatch. Expected {expectedVersion}, got {(int)match.version}.");
+
+        await conn.ExecuteAsync(
+            """
+            UPDATE public.brkt_matches
+            SET winner_id   = @winnerId,
+                loser_id    = @loserId,
+                team1_score = COALESCE(@team1Score, team1_score),
+                team2_score = COALESCE(@team2Score, team2_score),
+                status      = 'completed',
+                version     = version + 1,
+                updated_at  = NOW()
+            WHERE id = @matchId
+            """,
+            new
+            {
+                matchId,
+                winnerId = options.WinnerId,
+                loserId = (object?)options.LoserId ?? DBNull.Value,
+                team1Score = options.Team1Score,
+                team2Score = options.Team2Score,
+            },
+            tx);
+
+        await AdvanceTeamInternalAsync(conn, tx, matchId, options.WinnerId, "winner");
+        if (options.LoserId.HasValue)
+            await AdvanceTeamInternalAsync(conn, tx, matchId, options.LoserId.Value, "loser");
+
+        try
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
+                VALUES (@matchId, @winnerId, @loserId, 'processed')
+                """,
+                new
+                {
+                    matchId,
+                    winnerId = options.WinnerId,
+                    loserId = (object?)options.LoserId ?? DBNull.Value,
+                },
+                tx);
+        }
+        catch { /* Non-critical if loser_id FK fails on audit table */ }
+
+        return true;
+    }
+
+    /// <summary>
     /// Simplified overload for cases where version is unknown (e.g., organizer force-finalize).
     /// Fetches current version automatically.
     /// </summary>
     public async Task<bool> FinalizeAsync(
         Guid matchId,
-        Guid winnerId,
-        Guid? loserId,
-        int? team1Score = null,
-        int? team2Score = null,
+        FinalizeMatchOptions options,
         CancellationToken ct = default)
     {
         using var conn = db.CreateConnection();
@@ -124,7 +149,7 @@ public sealed class MatchFinalizationService(
 
         if (version is null) return false;
 
-        return await FinalizeAsync(matchId, version.Value, winnerId, loserId, team1Score, team2Score, ct);
+        return await FinalizeAsync(matchId, version.Value, options, ct);
     }
 
     private static async Task AdvanceTeamInternalAsync(
@@ -134,13 +159,10 @@ public sealed class MatchFinalizationService(
         Guid teamId,
         string edgeType)
     {
-        // Fetch source match to get team seeds
         var sourceMatch = await conn.QuerySingleOrDefaultAsync<dynamic>(
             "SELECT team1_id, team2_id, team1_seed, team2_seed FROM public.brkt_matches WHERE id = @sourceMatchId",
-            new { sourceMatchId },
-            tx);
+            new { sourceMatchId }, tx);
 
-        // Determine the seed of the advancing team
         int? teamSeed = null;
         if (sourceMatch is not null)
         {
@@ -156,19 +178,19 @@ public sealed class MatchFinalizationService(
             FROM public.brkt_advancements
             WHERE source_match_id = @sourceMatchId AND type = @edgeType
             """,
-            new { sourceMatchId, edgeType },
-            tx)).AsList();
+            new { sourceMatchId, edgeType }, tx)).AsList();
 
         foreach (var edge in edges)
         {
-            string teamCol = (int)edge.target_slot == 1 ? "team1_id" : "team2_id";
-            string seedCol = (int)edge.target_slot == 1 ? "team1_seed" : "team2_seed";
-            await conn.ExecuteAsync(
-                $"UPDATE public.brkt_matches SET {teamCol} = @teamId, {seedCol} = @teamSeed WHERE id = @targetId",
-                new { teamId, teamSeed, targetId = (Guid)edge.target_match_id },
-                tx);
+            if ((int)edge.target_slot == 1)
+                await conn.ExecuteAsync(
+                    "UPDATE public.brkt_matches SET team1_id = @teamId, team1_seed = @teamSeed WHERE id = @targetId",
+                    new { teamId, teamSeed, targetId = (Guid)edge.target_match_id }, tx);
+            else
+                await conn.ExecuteAsync(
+                    "UPDATE public.brkt_matches SET team2_id = @teamId, team2_seed = @teamSeed WHERE id = @targetId",
+                    new { teamId, teamSeed, targetId = (Guid)edge.target_match_id }, tx);
 
-            // Check if both teams are now assigned → notify captains
             await NotifyIfMatchReadyAsync(conn, tx, (Guid)edge.target_match_id);
         }
     }
