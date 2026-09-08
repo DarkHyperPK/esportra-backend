@@ -65,8 +65,8 @@ public sealed class SmtpEmailService(
 
     private static (string Subject, string Html) BuildTemplate(EmailType type, object data)
     {
-        var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
-            System.Text.Json.JsonSerializer.Serialize(data)) ?? [];
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+            JsonSerializer.Serialize(data)) ?? [];
 
         string Get(string key, string fallback = "") =>
             dict.TryGetValue(key, out var v)

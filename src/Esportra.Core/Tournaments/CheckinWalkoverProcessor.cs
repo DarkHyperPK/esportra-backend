@@ -145,7 +145,7 @@ public sealed class CheckinWalkoverProcessor(
         Guid? loserId = team1Won ? ctx.Team2Id : ctx.Team1Id;
         int t1Score = team1Won ? winnerScore : 0;
         int t2Score = team1Won ? 0 : winnerScore;
-        var success = await finalizer.FinalizeAsync(ctx.MatchId, winnerId, loserId, t1Score, t2Score, ct);
+        var success = await finalizer.FinalizeAsync(ctx.MatchId, new FinalizeMatchOptions(winnerId, loserId, t1Score, t2Score), ct);
         return success
             ? CheckinWalkoverOutcome.Walkover(winnerId, ctx.Team1CheckedIn, ctx.Team2CheckedIn)
             : CheckinWalkoverOutcome.Failed;
