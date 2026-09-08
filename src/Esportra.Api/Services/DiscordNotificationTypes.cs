@@ -15,5 +15,8 @@ public static class DiscordNotificationTypes
         "match_walkover",
         "match_schedule_changed",
         "match_chat_message",
+        "checkin_open",
+        "party_code_submitted",
+        "scheduling_escalation",
     };
 }

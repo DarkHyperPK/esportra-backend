@@ -31,16 +31,18 @@ public sealed class DiscordDmPollJob(
             FROM notifications n
             INNER JOIN profiles p ON p.id = n.user_id
             INNER JOIN auth.identities ai ON ai.user_id = p.id AND ai.provider = 'discord'
-            WHERE n.created_at > NOW() - INTERVAL '2 minutes'
+            WHERE n.created_at > NOW() - INTERVAL '30 minutes'
               AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) = TRUE
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
               AND n.type IN (
                   'match_ready', 'result_reported', 'result_disputed',
                   'dispute_resolved', 'tournament_registered',
-                  'tournament_announcement', 'result_accepted', 'match_completed'
+                  'tournament_announcement', 'result_accepted', 'match_completed',
+                  'match_walkover', 'match_schedule_changed', 'checkin_open',
+                  'party_code_submitted', 'scheduling_escalation'
               )
             ORDER BY n.created_at ASC
-            LIMIT 20
+            LIMIT 100
             """)).AsList();
 
         if (pending.Count == 0) return;

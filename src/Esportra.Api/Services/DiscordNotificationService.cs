@@ -205,6 +205,9 @@ public sealed class DiscordNotificationService
         "result_accepted" => 0x22C55E, // green
         "match_walkover" => 0xF59E0B, // amber
         "match_chat_message" => 0x6366F1, // indigo
+        "checkin_open" => 0xF59E0B, // amber
+        "party_code_submitted" => 0x22C55E, // green
+        "scheduling_escalation" => 0xEF4444, // red
         _ => 0xF43F5E, // rose (brand)
     };
 
