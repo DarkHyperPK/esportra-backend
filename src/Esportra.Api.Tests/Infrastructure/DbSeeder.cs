@@ -92,7 +92,7 @@ public sealed class DbSeeder(string connectionString)
             INSERT INTO public.tournament_participants
                 (id, tournament_id, user_id, status, participant_type, created_at, updated_at)
             VALUES
-                (@id, @tournamentId, @userId, @status, 'solo', NOW(), NOW())
+                (@id, @tournamentId, @userId, @status::registration_status, 'solo', NOW(), NOW())
             ON CONFLICT DO NOTHING
             """,
             new { id = Guid.NewGuid(), tournamentId, userId, status });

@@ -28,6 +28,17 @@ CREATE TABLE IF NOT EXISTS auth.users (
   raw_user_meta_data JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS auth.identities (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  identity_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (provider, provider_id)
+);
+
 CREATE OR REPLACE FUNCTION auth.uid()
 RETURNS UUID
 LANGUAGE sql
@@ -126,7 +137,10 @@ CREATE TABLE IF NOT EXISTS public.br_lobby_evidence (id UUID PRIMARY KEY DEFAULT
 CREATE TABLE IF NOT EXISTS public.br_lobby_results (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.brkt_match_games (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.brkt_matches (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE IF NOT EXISTS public.brkt_versions (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.dispute_comments (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE IF NOT EXISTS public.match_checkins (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE IF NOT EXISTS public.match_completed_events (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.match_map_veto_actions (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.match_map_vetos (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.match_messages (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
@@ -140,6 +154,7 @@ CREATE TABLE IF NOT EXISTS public.sponsor_impressions (id UUID PRIMARY KEY DEFAU
 CREATE TABLE IF NOT EXISTS public.sponsors (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.staff_audit_log (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.staff_tournament_assignments (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+CREATE TABLE IF NOT EXISTS public.stage_participants (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.team_members (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.teams (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
 CREATE TABLE IF NOT EXISTS public.tournament_disputes (id UUID PRIMARY KEY DEFAULT gen_random_uuid());

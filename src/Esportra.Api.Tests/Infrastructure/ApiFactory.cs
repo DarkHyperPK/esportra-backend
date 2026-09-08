@@ -127,6 +127,24 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             "ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS email_confirmed_at timestamptz;",
             conn);
         await patch.ExecuteNonQueryAsync();
+
+        // auth.identities is managed by Supabase and absent from the replay schema.
+        // Discord unlink endpoint and seeder both query/insert it.
+        await using var identitiesPatch = new NpgsqlCommand(
+            """
+            CREATE TABLE IF NOT EXISTS auth.identities (
+                id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+                provider text NOT NULL,
+                provider_id text NOT NULL,
+                identity_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+                created_at timestamptz DEFAULT NOW(),
+                updated_at timestamptz DEFAULT NOW(),
+                UNIQUE (provider, provider_id)
+            );
+            """,
+            conn);
+        await identitiesPatch.ExecuteNonQueryAsync();
     }
 
     private void RunMigrations()
