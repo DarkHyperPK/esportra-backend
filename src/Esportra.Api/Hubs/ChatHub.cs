@@ -291,7 +291,7 @@ public sealed class ChatHub : Hub
             var senderTeamName = senderName;
             string? email = null;
             var matchRoomUrl = string.Empty;
-            var unreadCount = 1;
+            var unreadCount = 1; // fallback value; overwritten by DB query below
 
             using (var conn = _db.CreateConnection())
             {
@@ -307,20 +307,10 @@ public sealed class ChatHub : Hub
                 oppUserIdValue = oppUserId.Value;
 
                 var recipientId = oppUserIdValue.ToString();
-                // 3. Gate early: skip if recipient is in the chat room
-                if (await _redis.KeyExistsAsync($"chat-active:{matchId}:{recipientId}"))
-                {
-                    _logger.LogDebug("Chat notification suppressed — recipient {RecipientId} is active in match {MatchId}", recipientId, matchId);
-                    return;
-                }
-                // 4. Gate early: skip if already notified within cooldown window (5 min), atomic
-                if (!await _redis.StringSetAsync($"chat-email-sent:{matchId}:{recipientId}", 1, TimeSpan.FromSeconds(300), When.NotExists))
-                {
-                    _logger.LogDebug("Chat notification suppressed — cooldown active for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
-                    return;
-                }
 
-                // 4b. Count unread messages for notification copy — fall back to 1 on failure (AC-206)
+                // 3. Count unread messages — primary gate: only email when messages are genuinely unread.
+                // This replaces the Redis presence check, which was suppressing emails whenever the
+                // recipient had the match page open (regardless of whether they'd actually read messages).
                 try
                 {
                     unreadCount = await conn.ExecuteScalarAsync<int>(
@@ -345,11 +335,26 @@ public sealed class ChatHub : Hub
                         matchId, oppUserIdValue);
                 }
 
-                // 5. Fetch display name, email, and URL only after passing both gates
+                if (unreadCount == 0)
+                {
+                    _logger.LogDebug("Chat notification suppressed — all messages read by recipient {RecipientId} in match {MatchId}", recipientId, matchId);
+                    return;
+                }
+
+                // 4. Cooldown gate: at most one email per 5-minute window per recipient (atomic set-if-not-exists)
+                if (!await _redis.StringSetAsync($"chat-email-sent:{matchId}:{recipientId}", 1, TimeSpan.FromSeconds(300), When.NotExists))
+                {
+                    _logger.LogDebug("Chat notification suppressed — cooldown active for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
+                    return;
+                }
+
+                // 5. Fetch display name, email, and URL only after passing all gates
                 senderTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(conn, senderCompetitorId) ?? senderName;
                 email = await conn.QuerySingleOrDefaultAsync<string?>(
                     "SELECT email FROM profiles WHERE id = @userId AND email IS NOT NULL",
                     new { userId = oppUserId });
+                if (email is null)
+                    _logger.LogInformation("Chat email skipped — no email on profile for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
                 var matchPath = await CaptainMatchLinkBuilder.BuildAsync(conn, matchIdGuid);
                 matchRoomUrl = $"{_frontendUrl}{matchPath}";
             }
