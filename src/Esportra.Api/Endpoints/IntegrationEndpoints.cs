@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dapper;
 using Esportra.Api.Services;
+using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
@@ -210,12 +211,10 @@ public static class IntegrationEndpoints
 
         // ── DELETE /api/integrations/riot ─────────────────────────────────────
         app.MapDelete("/api/integrations/riot", async (
-            IDbConnectionFactory db, HttpContext ctx, CancellationToken ct) =>
+            HttpContext ctx, IDbConnectionFactory db, CancellationToken ct) =>
         {
-            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
-                      ?? ctx.User.FindFirstValue("sub");
-            if (userId is null || !Guid.TryParse(userId, out var userGuid))
-                return Results.Unauthorized();
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
 
@@ -231,7 +230,7 @@ public static class IntegrationEndpoints
                       AND (t.settings->>'assistedReportingEnabled')::boolean IS TRUE
                 )
                 """,
-                new { userId = userGuid });
+                new { userId = userCtx.UserIdGuid });
 
             if (blockedByTournament)
                 return Results.BadRequest(new
@@ -241,9 +240,9 @@ public static class IntegrationEndpoints
                 });
 
             await conn.ExecuteAsync(
-                "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userGuid });
+                "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userCtx.UserIdGuid });
             await conn.ExecuteAsync(
-                "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId = userGuid });
+                "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

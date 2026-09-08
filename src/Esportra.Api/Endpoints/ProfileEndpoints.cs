@@ -863,8 +863,10 @@ public static class ProfileEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             ISupabaseAdminClient supabaseAdmin,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            var logger = loggerFactory.CreateLogger("ProfileEndpoints.DiscordUnlink");
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -912,6 +914,30 @@ public static class ProfileEndpoints
             txn.Commit();
 
             await supabaseAdmin.UnlinkIdentityAsync(userCtx.UserId, identity.Id, ct);
+
+            // Post-unlink audit: detect any concurrent registration that slipped through the guard window.
+            // The Supabase API call is outside the Postgres transaction, so a narrow race remains possible.
+            var postUnlinkBlocked = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND (
+                    COALESCE(NULLIF(t.settings->>'discordLinkCount', '')::int, 0) > 0
+                    OR (t.settings->>'requireDiscordLink')::boolean IS TRUE
+                )
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            if (postUnlinkBlocked)
+                logger.LogWarning(
+                    "[DiscordUnlink] User {UserId} has active Discord-required registrations after unlink — concurrent registration race detected",
+                    userCtx.UserId);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

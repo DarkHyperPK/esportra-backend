@@ -64,7 +64,8 @@ public sealed class DbSeeder(string connectionString)
         string format = "single_elimination",
         string status = "draft",
         int maxTeams = 8,
-        Guid? id = null)
+        Guid? id = null,
+        string? settings = null)
     {
         id ??= Guid.NewGuid();
         await using var conn = OpenConnection();
@@ -72,15 +73,50 @@ public sealed class DbSeeder(string connectionString)
             INSERT INTO public.tournaments
                 (id, name, game, format, status, organizer_id, max_teams,
                  is_public, slug, start_date, end_date, registration_deadline,
-                 created_at, updated_at)
+                 settings, created_at, updated_at)
             VALUES
                 (@id, @name, 'test-game', @format, @status::tournament_status, @organizerId, @maxTeams,
                  FALSE, @slug, NOW(), NOW() + INTERVAL '7 days', NOW() - INTERVAL '1 day',
-                 NOW(), NOW())
+                 @settings::jsonb, NOW(), NOW())
             ON CONFLICT (id) DO NOTHING
             """,
-            new { id = id.Value, name, format, status, organizerId, maxTeams, slug = $"test-{id.Value:N}"[..20] });
+            new { id = id.Value, name, format, status, organizerId, maxTeams, slug = $"test-{id.Value:N}"[..20], settings });
         return id.Value;
+    }
+
+    /// <summary>Seeds a tournament_participants row.</summary>
+    public async Task SeedParticipantAsync(Guid userId, Guid tournamentId, string status = "approved")
+    {
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.tournament_participants
+                (id, tournament_id, user_id, status, participant_type, created_at, updated_at)
+            VALUES
+                (@id, @tournamentId, @userId, @status, 'solo', NOW(), NOW())
+            ON CONFLICT DO NOTHING
+            """,
+            new { id = Guid.NewGuid(), tournamentId, userId, status });
+    }
+
+    /// <summary>Seeds a Discord identity in auth.identities. Returns the identity UUID.</summary>
+    public async Task<Guid> SeedDiscordIdentityAsync(Guid userId, string discordUserId = "")
+    {
+        if (string.IsNullOrEmpty(discordUserId))
+            discordUserId = $"discord_{userId:N}"[..18];
+
+        var identityId = Guid.NewGuid();
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO auth.identities
+                (id, user_id, provider, provider_id, identity_data, created_at, updated_at)
+            VALUES
+                (@id, @userId, 'discord', @discordUserId,
+                 jsonb_build_object('sub', @discordUserId, 'provider_id', @discordUserId),
+                 NOW(), NOW())
+            ON CONFLICT (provider, provider_id) DO NOTHING
+            """,
+            new { id = identityId, userId, discordUserId });
+        return identityId;
     }
 
     /// <summary>Grants the user a super_admin panel role.</summary>
