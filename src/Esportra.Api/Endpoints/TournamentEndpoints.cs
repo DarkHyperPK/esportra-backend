@@ -40,7 +40,7 @@ public static class TournamentEndpoints
     private static string? SerializeTournamentSettings(
         object? settings, bool supportsMapVeto,
         bool? assistedReportingEnabled = null, int? requiredAccountLinks = null,
-        bool? requireDiscordLink = null)
+        int? discordLinkCount = null)
     {
         JsonObject obj;
 
@@ -50,7 +50,7 @@ public static class TournamentEndpoints
             var node = JsonNode.Parse(json);
             obj = node is JsonObject parsed ? parsed : new JsonObject();
         }
-        else if (assistedReportingEnabled.HasValue || requireDiscordLink.HasValue)
+        else if (assistedReportingEnabled.HasValue || discordLinkCount.HasValue)
         {
             obj = new JsonObject();
         }
@@ -69,8 +69,8 @@ public static class TournamentEndpoints
                 obj["requiredAccountLinks"] = requiredAccountLinks.Value;
         }
 
-        if (requireDiscordLink.HasValue)
-            obj["requireDiscordLink"] = requireDiscordLink.Value;
+        if (discordLinkCount.HasValue)
+            obj["discordLinkCount"] = discordLinkCount.Value;
 
         return obj.ToJsonString();
     }
@@ -666,7 +666,7 @@ public static class TournamentEndpoints
                         autoRemoveUnchecked = defaults.AutoRemoveUnchecked,
                         rewards = req.Rewards,
                         streamUrl = req.StreamUrl,
-                        settings = SerializeTournamentSettingsOrEmpty(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.RequireDiscordLink),
+                        settings = SerializeTournamentSettingsOrEmpty(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.DiscordLinkCount),
                         organizerId = userCtx.UserIdGuid,
                         rules = req.Rules,
                         paymentInstructions = req.PaymentInstructions,
@@ -822,7 +822,7 @@ public static class TournamentEndpoints
                     paymentInstructions = req.PaymentInstructions,
                     region = req.Region,
                     currency = req.Currency,
-                    settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.RequireDiscordLink),
+                    settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.DiscordLinkCount),
                     accountLinkPatch = BuildAccountLinkPatch(req.AssistedReportingEnabled, req.RequiredAccountLinks),
                     prizeDistribution = SerializeJson(req.PrizeDistribution),
                     reservedInviteSlots = reservedSlotsForUpdate,
@@ -1040,7 +1040,8 @@ public static class TournamentEndpoints
                 conn, txn, id, userCtx.UserIdGuid, (int?)tourn.max_teams, reservedSlots);
             if (capacityError is not null) { txn.Rollback(); return capacityError; }
 
-            if (IsDiscordLinkRequired((string?)tourn.settings))
+            var requiredDiscordLinks = GetDiscordLinkCount((string?)tourn.settings);
+            if (requiredDiscordLinks > 0)
             {
                 var hasDiscord = await conn.ExecuteScalarAsync<bool>(
                     """
@@ -1056,8 +1057,29 @@ public static class TournamentEndpoints
                     return Results.BadRequest(new
                     {
                         error = "discord_link_required",
-                        message = "The organizer requires captains to link their Discord account before registering.",
+                        message = "The organizer requires your Discord account to be linked before registering.",
                     });
+                }
+
+                if (requiredDiscordLinks > 1 && req.TeamId is not null && Guid.TryParse(req.TeamId, out var teamGuidForDiscord))
+                {
+                    var linkedCount = await conn.ExecuteScalarAsync<int>(
+                        """
+                        SELECT COUNT(*)
+                        FROM team_members tm
+                        INNER JOIN auth.identities ai ON ai.user_id = tm.user_id AND ai.provider = 'discord'
+                        WHERE tm.team_id = @teamId AND tm.is_active = TRUE
+                        """,
+                        new { teamId = teamGuidForDiscord }, txn);
+                    if (linkedCount < requiredDiscordLinks)
+                    {
+                        txn.Rollback();
+                        return Results.BadRequest(new
+                        {
+                            error = "discord_link_required",
+                            message = $"This tournament requires at least {requiredDiscordLinks} team members to have Discord linked. Currently {linkedCount} member(s) have linked their Discord account.",
+                        });
+                    }
                 }
             }
 
@@ -4752,18 +4774,24 @@ public static class TournamentEndpoints
             VenueId: Guid.TryParse(req.VenueId, out var vg) ? vg : (Guid?)null,
             PayoutMethod: req.PayoutMethod is "gateway" ? "gateway" : "manual");
 
-    private static bool IsDiscordLinkRequired(string? settingsJson)
+    private static int GetDiscordLinkCount(string? settingsJson)
     {
-        if (string.IsNullOrEmpty(settingsJson)) return false;
-        try { return JsonNode.Parse(settingsJson)?["requireDiscordLink"]?.GetValue<bool>() == true; }
-        catch { return false; }
+        if (string.IsNullOrEmpty(settingsJson)) return 0;
+        try
+        {
+            var node = JsonNode.Parse(settingsJson);
+            var count = node?["discordLinkCount"]?.GetValue<int?>();
+            if (count.HasValue) return count.Value;
+            return node?["requireDiscordLink"]?.GetValue<bool>() == true ? 1 : 0;
+        }
+        catch { return 0; }
     }
 
     private static string SerializeTournamentSettingsOrEmpty(
         object? settings, bool supportsMapVeto,
         bool? assistedReportingEnabled = null, int? requiredAccountLinks = null,
-        bool? requireDiscordLink = null)
-        => SerializeTournamentSettings(settings, supportsMapVeto, assistedReportingEnabled, requiredAccountLinks, requireDiscordLink) ?? "{}";
+        int? discordLinkCount = null)
+        => SerializeTournamentSettings(settings, supportsMapVeto, assistedReportingEnabled, requiredAccountLinks, discordLinkCount) ?? "{}";
 
     private static DateTimeOffset? ParseStageDateTimeOffset(string? value)
         => value is not null && DateTimeOffset.TryParse(value, out var result) ? result : (DateTimeOffset?)null;
@@ -6011,7 +6039,7 @@ public sealed record CreateTournamentRequest(
     string? ManualPayoutNotes = null,
     bool? AssistedReportingEnabled = null,
     int? RequiredAccountLinks = null,
-    bool? RequireDiscordLink = null);
+    int? DiscordLinkCount = null);
 
 public sealed record StageRequest(
     string Name,
@@ -6062,7 +6090,7 @@ public sealed record UpdateTournamentRequest(
     string? ManualPayoutNotes = null,
     bool? AssistedReportingEnabled = null,
     int? RequiredAccountLinks = null,
-    bool? RequireDiscordLink = null);
+    int? DiscordLinkCount = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId = null,

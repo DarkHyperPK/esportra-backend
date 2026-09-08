@@ -244,4 +244,16 @@ public sealed class SupabaseAdminClient(
 
         logger.LogInformation("[SupabaseAdmin] Force-logged-out user {UserId} (ban/unban cycle)", userId);
     }
+
+    public async Task UnlinkIdentityAsync(string userId, string identityId, CancellationToken ct = default)
+    {
+        var req = BuildRequest(HttpMethod.Delete, $"/users/{userId}/identities/{identityId}");
+        var res = await http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException($"UnlinkIdentity failed: {body}");
+        }
+        logger.LogInformation("[SupabaseAdmin] Unlinked identity {IdentityId} from user {UserId}", identityId, userId);
+    }
 }

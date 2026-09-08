@@ -218,6 +218,28 @@ public static class IntegrationEndpoints
                 return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND (t.settings->>'assistedReportingEnabled')::boolean = true
+                )
+                """,
+                new { userId = userGuid });
+
+            if (blockedByTournament)
+                return Results.BadRequest(new
+                {
+                    error = "active_registration",
+                    message = "You are registered in a tournament that requires a linked Riot account. Withdraw from all such tournaments before unlinking.",
+                });
+
             await conn.ExecuteAsync(
                 "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userGuid });
             await conn.ExecuteAsync(

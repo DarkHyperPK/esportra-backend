@@ -6,6 +6,7 @@ using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
+using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 
@@ -855,6 +856,56 @@ public static class ProfileEndpoints
             return Results.Ok(new { discord_dm_enabled = result.enabled, has_discord = result.hasDiscord });
         }).RequireAuthorization("Authenticated");
 
+        // ── DELETE /api/profiles/me/discord ─────────────────────────────────
+        // Unlink the Discord identity from the authenticated user.
+        // Blocked if the user has active registrations in tournaments that require Discord.
+        app.MapDelete("/api/profiles/me/discord", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ISupabaseAdminClient supabaseAdmin,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND (
+                    COALESCE((t.settings->>'discordLinkCount')::int, 0) > 0
+                    OR (t.settings->>'requireDiscordLink')::boolean = true
+                )
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            if (blockedByTournament)
+                return Results.BadRequest(new
+                {
+                    error = "active_registration",
+                    message = "You are registered in a tournament that requires a linked Discord account. Withdraw from all such tournaments before unlinking.",
+                });
+
+            var identity = await conn.QuerySingleOrDefaultAsync<(string Id, string ProviderId)>(
+                "SELECT id::text AS Id, provider_id AS ProviderId FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
+                new { userId = userCtx.UserIdGuid });
+
+            if (identity == default)
+                return Results.NotFound(new { error = "Discord account not linked" });
+
+            await supabaseAdmin.UnlinkIdentityAsync(userCtx.UserId, identity.Id, ct);
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/profiles/me/discord-join ──────────────────────────────
         // Auto-join the user to the Esportra Discord server using their OAuth token
         app.MapPost("/api/profiles/me/discord-join", async (
@@ -880,9 +931,9 @@ public static class ProfileEndpoints
             if (string.IsNullOrEmpty(discordId))
                 return Results.BadRequest(new { error = "Discord account not linked" });
 
-            var joined = await discord.TryAutoJoinGuildAsync(discordId, req.ProviderToken);
+            var outcome = await discord.TryAutoJoinGuildAsync(discordId, req.ProviderToken);
 
-            return Results.Ok(new { success = joined });
+            return Results.Ok(new { success = outcome.Success, reason = outcome.Reason });
         }).RequireAuthorization("Authenticated");
     }
 }
