@@ -387,6 +387,14 @@ builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapServi
 builder.Services.AddScoped<Esportra.Core.Tournaments.PrizeDistributionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.PlacementResolutionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.LeaderboardStatsService>();
+
+// Tournament Standings (PROJ-014)
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.SeStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.DeStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.RrStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.SwissStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.BrStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.StandingsResolutionService>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>(sp =>
     sp.GetRequiredService<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>());
@@ -641,6 +649,7 @@ app.MapOrganizationEndpoints();
 app.MapNotificationEndpoints();
 app.MapStageEndpoints();
 app.MapPrizeDistributionEndpoints();
+app.MapStandingsEndpoints();
 app.MapBRGroupEndpoints();
 app.MapReviewEndpoints();
 app.MapOrganizerEndpoints();

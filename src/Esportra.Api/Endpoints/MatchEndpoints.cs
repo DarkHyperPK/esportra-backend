@@ -455,6 +455,7 @@ public static class MatchEndpoints
             MatchFinalizationService finalizer,
             TournamentAuthorizationService tournamentAuth,
             IHubContext<MatchHub> matchHub,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -530,6 +531,8 @@ public static class MatchEndpoints
                     new { matchId, status = "completed", winnerId, team1Score, team2Score },
                     ct);
 
+            await cache.RemoveAsync($"standings:{(Guid)match.tournament_id}", ct);
+
             return Results.Ok(new { success = true, matchId, winnerId, team1Score, team2Score });
         }).RequireAuthorization("Authenticated");
 
@@ -542,6 +545,7 @@ public static class MatchEndpoints
             IDbConnectionFactory db,
             StaffTournamentAuditService staffAudit,
             IHubContext<MatchHub> matchHub,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -558,6 +562,15 @@ public static class MatchEndpoints
                 matchId, requestedWinnerId, requestedLoserId, conn);
             if (winnerResolveError is not null) return winnerResolveError;
 
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT v.tournament_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId });
+
             var success = await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(winnerId, loserId), ct);
 
             if (isOrgTeamActor && success)
@@ -573,6 +586,9 @@ public static class MatchEndpoints
                     new { matchId, status = "completed" },
                     ct);
 
+            if (tournamentId.HasValue)
+                await cache.RemoveAsync($"standings:{tournamentId.Value}", ct);
+
             return Results.Ok(new { success, matchId });
         }).RequireAuthorization("Authenticated");
 
@@ -586,6 +602,7 @@ public static class MatchEndpoints
             StaffTournamentAuditService staffAudit,
             IHubContext<MatchHub> matchHub,
             IHubContext<BracketHub> bracketHub,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -641,9 +658,18 @@ public static class MatchEndpoints
                 "UPDATE brkt_matches SET is_walkover = TRUE WHERE id = @matchId",
                 new { matchId });
 
-            var walkoverVersionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT version_id FROM brkt_matches WHERE id = @matchId",
+            var walkoverInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT m.version_id, ts.tournament_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournament_stages ts ON ts.id = v.stage_id
+                WHERE m.id = @matchId
+                """,
                 new { matchId });
+
+            Guid? walkoverVersionId = walkoverInfo?.version_id;
+            Guid? walkoverTournamentId = walkoverInfo?.tournament_id;
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
@@ -657,6 +683,9 @@ public static class MatchEndpoints
                     .SendAsync(BracketHubEvents.MatchUpdated,
                         new { versionId = walkoverVersionId, matchId }, ct);
             }
+
+            if (walkoverTournamentId.HasValue)
+                await cache.RemoveAsync($"standings:{walkoverTournamentId.Value}", ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
