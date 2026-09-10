@@ -27,7 +27,7 @@ public sealed class StandingsService(IDbConnectionFactory db)
             JOIN public.brkt_matches m ON m.id = mg.match_id
             JOIN public.brkt_versions v ON v.id = m.version_id
             WHERE v.stage_id = @stageId
-              AND mg.status = 'completed'";
+              AND m.status = 'completed'";
 
         if (groupId is not null) gamesSql += " AND m.group_id = @groupId";
 
