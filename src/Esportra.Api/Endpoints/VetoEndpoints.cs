@@ -85,6 +85,7 @@ public static class VetoEndpoints
             IDbConnectionFactory db,
             GameCatalogService gameCatalog,
             IHubContext<VetoHub> hub,
+            VetoSettingsService vetoSettings,
             ILogger<VetoDbService> logger,
             CancellationToken ct) =>
         {
@@ -95,6 +96,9 @@ public static class VetoEndpoints
             {
                 var (existing, shouldReturn) = await CheckOrReturnExistingVetoAsync(matchId, veto, ct);
                 if (shouldReturn) return Results.Ok(existing);
+
+                if (existing is not null && existing.BestOf != req.BestOf)
+                    await vetoSettings.ClearAsync(matchId, ct);
 
                 using var conn = db.CreateConnection();
                 var (tournamentRow, tournamentErr) = await ValidateVetoTournamentGateAsync(req.TournamentId, gameCatalog, conn, ct);

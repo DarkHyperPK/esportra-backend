@@ -77,3 +77,21 @@ public sealed record VetoHistoryEntry(
     string? MapImageUrl,
     string? Side,
     string? CreatedAt);
+
+// ── Veto settings ────────────────────────────────────────────────────────────
+
+public enum VetoMode { Default, Custom }
+
+/// <summary>Persisted veto settings for a match. Null row = Default mode.</summary>
+public sealed record VetoSettings(
+    Guid MatchId,
+    VetoMode Mode,
+    VetoStep[]? Sequence);
+
+/// <summary>Full settings payload returned to clients.</summary>
+public sealed record VetoSettingsDto(
+    Guid MatchId,
+    VetoMode Mode,
+    IReadOnlyList<VetoStep> DefaultSequence,
+    VetoStep[]? CustomSequence,
+    IReadOnlyList<VetoStep> EffectiveSequence);
