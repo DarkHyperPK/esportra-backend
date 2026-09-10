@@ -16,21 +16,33 @@ public sealed class SeStandingsResolver(
         var statsLookup = standingsList.ToDictionary(s => s.TeamId);
         var placedIds = placementList.Select(p => p.TeamId).ToHashSet();
 
-        var rows = BuildEliminatedRows(placementList, statsLookup, bracketSide: null);
-        rows.AddRange(BuildActiveRows(standingsList, placedIds, ComputeNextRank(placementList), bracketSide: null));
+        var rows = BuildActiveRows(standingsList, placedIds, startRank: 1, bracketSide: null);
+        rows.AddRange(BuildEliminatedRows(placementList, startRank: rows.Count + 1, statsLookup, bracketSide: null));
         return rows;
     }
 
-    private static List<StandingsRow> BuildEliminatedRows(
+    internal static List<StandingsRow> BuildEliminatedRows(
         List<ResolvedPlacement> eliminations,
+        int startRank,
         Dictionary<Guid, TeamStanding> stats,
         string? bracketSide)
     {
-        return eliminations.Select(p =>
+        var ordered = eliminations.OrderBy(p => p.Placement).ToList();
+        var result = new List<StandingsRow>(ordered.Count);
+        int rank = startRank;
+        for (int i = 0; i < ordered.Count;)
         {
-            var s = stats.GetValueOrDefault(p.TeamId);
-            return BuildRow(p.Placement, p.TeamId, p.TeamName, p.IsTied, s, bracketSide);
-        }).ToList();
+            int j = i;
+            while (j < ordered.Count && ordered[j].Placement == ordered[i].Placement) j++;
+            for (int k = i; k < j; k++)
+            {
+                var s = stats.GetValueOrDefault(ordered[k].TeamId);
+                result.Add(BuildRow(rank, ordered[k].TeamId, ordered[k].TeamName, ordered[k].IsTied, s, bracketSide));
+            }
+            rank += j - i;
+            i = j;
+        }
+        return result;
     }
 
     internal static List<StandingsRow> BuildActiveRows(
@@ -64,12 +76,8 @@ public sealed class SeStandingsResolver(
             Losses = stats?.Losses ?? 0,
             Ties = stats?.Ties ?? 0,
             ScoreDiff = stats?.ScoreDiff ?? 0,
+            RoundDiff = stats?.RoundDiff ?? 0,
         };
     }
 
-    internal static int ComputeNextRank(List<ResolvedPlacement> placed)
-    {
-        if (placed.Count == 0) return 1;
-        return placed.GroupBy(p => p.Placement).Max(g => g.Key + g.Count());
-    }
 }

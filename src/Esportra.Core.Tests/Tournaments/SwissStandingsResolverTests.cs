@@ -19,6 +19,7 @@ public sealed class SwissStandingsResolverTests
             Points: points,
             Buchholz: buchholz,
             ScoreDiff: scoreDiff,
+            RoundDiff: 0,
             Rank: 0);
 
     [Fact]
@@ -92,7 +93,7 @@ public sealed class SwissStandingsResolverTests
         var standings = new List<TeamStanding>
         {
             new(TeamId: teamId, TeamName: "Alpha", Played: 2, Wins: 2,
-                Losses: 0, Ties: 0, Points: 6, Buchholz: 4, ScoreDiff: 3, Rank: 0),
+                Losses: 0, Ties: 0, Points: 6, Buchholz: 4, ScoreDiff: 3, RoundDiff: 0, Rank: 0),
         };
         var roundResults = new Dictionary<Guid, IReadOnlyList<string>>
         {

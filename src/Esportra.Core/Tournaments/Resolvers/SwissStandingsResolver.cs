@@ -121,6 +121,7 @@ public sealed class SwissStandingsResolver(StandingsService standings) : IStandi
             Points = s.Points,
             Buchholz = s.Buchholz,
             ScoreDiff = s.ScoreDiff,
+            RoundDiff = s.RoundDiff,
             RoundResults = roundResults,
         };
 }

@@ -16,20 +16,9 @@ public sealed class DeStandingsResolver(
         var statsLookup = standingsList.ToDictionary(s => s.TeamId);
         var placedIds = placementList.Select(p => p.TeamId).ToHashSet();
 
-        var rows = BuildEliminatedRows(placementList, statsLookup);
-        rows.AddRange(BuildDeActiveRows(standingsList, placedIds, SeStandingsResolver.ComputeNextRank(placementList)));
+        var rows = BuildDeActiveRows(standingsList, placedIds, startRank: 1);
+        rows.AddRange(SeStandingsResolver.BuildEliminatedRows(placementList, startRank: rows.Count + 1, statsLookup, bracketSide: null));
         return rows;
-    }
-
-    private static List<StandingsRow> BuildEliminatedRows(
-        List<ResolvedPlacement> eliminations,
-        Dictionary<Guid, TeamStanding> stats)
-    {
-        return eliminations.Select(p =>
-        {
-            var s = stats.GetValueOrDefault(p.TeamId);
-            return SeStandingsResolver.BuildRow(p.Placement, p.TeamId, p.TeamName, p.IsTied, s, bracketSide: null);
-        }).ToList();
     }
 
     private static List<StandingsRow> BuildDeActiveRows(

@@ -38,6 +38,7 @@ public sealed class RrStandingsResolver(StandingsService standings) : IStandings
             Points = s.Points,
             Buchholz = s.Buchholz,
             ScoreDiff = s.ScoreDiff,
+            RoundDiff = s.RoundDiff,
         };
 
     private static List<(List<StandingsRow> Group, Guid[] TiedIds)> FindTiedGroups(
@@ -156,6 +157,7 @@ public sealed class RrStandingsResolver(StandingsService standings) : IStandings
             Points = row.Points,
             Buchholz = row.Buchholz,
             ScoreDiff = row.ScoreDiff,
+            RoundDiff = row.RoundDiff,
         };
 }
 

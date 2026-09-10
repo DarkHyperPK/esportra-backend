@@ -10,10 +10,10 @@ public sealed class StandingsResolutionService(
 {
     private static readonly Dictionary<string, string[]> FormatColumns = new()
     {
-        ["single_elimination"] = ["rank", "team", "wins", "losses"],
-        ["double_elimination"] = ["rank", "team", "bracket_side", "wins", "losses"],
-        ["round_robin"] = ["rank", "team", "played", "wins", "losses", "ties", "points", "score_diff"],
-        ["swiss"] = ["rank", "team", "played", "wins", "losses", "points", "buchholz", "round_results"],
+        ["single_elimination"] = ["rank", "team", "wins", "losses", "score_diff", "round_diff"],
+        ["double_elimination"] = ["rank", "team", "bracket_side", "wins", "losses", "score_diff", "round_diff"],
+        ["round_robin"] = ["rank", "team", "played", "wins", "losses", "ties", "points", "score_diff", "round_diff"],
+        ["swiss"] = ["rank", "team", "played", "wins", "losses", "points", "buchholz", "round_results", "score_diff", "round_diff"],
         ["battle_royale"] = ["rank", "team", "played", "points", "kills", "wins"],
     };
 

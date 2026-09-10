@@ -16,7 +16,8 @@ public sealed class StandingsRow
     public int Wins { get; init; }
     public int Losses { get; init; }
     public int Ties { get; init; }
-    public int ScoreDiff { get; init; }
+    public int ScoreDiff { get; init; }           // map/game differential (e.g. +1 in a 2-1 series)
+    public int RoundDiff { get; init; }           // round differential from brkt_match_games (e.g. +5 on 13-8 map)
     public int Points { get; init; }             // RR, Swiss, BR; 0 for SE/DE
     public int Buchholz { get; init; }           // Swiss only; 0 for other formats
     public IReadOnlyList<string>? RoundResults { get; init; }  // Swiss: ["win","loss","win"] per round

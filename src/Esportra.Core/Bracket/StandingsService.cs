@@ -21,7 +21,18 @@ public sealed class StandingsService(IDbConnectionFactory db)
 
         if (groupId is not null) sql += " AND m.group_id = @groupId";
 
+        var gamesSql = @"
+            SELECT mg.team1_score, mg.team2_score, m.team1_id, m.team2_id
+            FROM public.brkt_match_games mg
+            JOIN public.brkt_matches m ON m.id = mg.match_id
+            JOIN public.brkt_versions v ON v.id = m.version_id
+            WHERE v.stage_id = @stageId
+              AND mg.status = 'completed'";
+
+        if (groupId is not null) gamesSql += " AND m.group_id = @groupId";
+
         var matches = (await conn.QueryAsync(sql, new { stageId, groupId })).AsList();
+        var games = (await conn.QueryAsync(gamesSql, new { stageId, groupId })).AsList();
 
         var map = new Dictionary<Guid, (
             int Played, int Wins, int Losses, int Ties, int Points, int Buchholz, int ScoreDiff)>();
@@ -33,6 +44,7 @@ public sealed class StandingsService(IDbConnectionFactory db)
 
         AggregateMatchResults(matches, map, Ensure);
         ApplyBuchholzScores(matches, map);
+        var roundDiffMap = ComputeRoundDiffs(games);
 
         var teamIds = map.Keys.ToList();
         var teamNames = new Dictionary<Guid, string>();
@@ -61,6 +73,7 @@ public sealed class StandingsService(IDbConnectionFactory db)
                 Points: x.Stats.Points,
                 Buchholz: x.Stats.Buchholz,
                 ScoreDiff: x.Stats.ScoreDiff,
+                RoundDiff: roundDiffMap.GetValueOrDefault(x.Id, 0),
                 Rank: idx + 1))
             .ToList();
     }
@@ -106,6 +119,20 @@ public sealed class StandingsService(IDbConnectionFactory db)
                 map[onlyT2] = t2;
             }
         }
+    }
+
+    private static Dictionary<Guid, int> ComputeRoundDiffs(IList<dynamic> games)
+    {
+        var result = new Dictionary<Guid, int>();
+        foreach (var g in games)
+        {
+            if (g.team1_id is not Guid t1 || g.team2_id is not Guid t2) continue;
+            int s1 = g.team1_score ?? 0;
+            int s2 = g.team2_score ?? 0;
+            result[t1] = result.GetValueOrDefault(t1) + (s1 - s2);
+            result[t2] = result.GetValueOrDefault(t2) + (s2 - s1);
+        }
+        return result;
     }
 
     private static void ApplyBuchholzScores(
