@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Esportra.Core.Match;
 
 // ── Veto State Machine Types ───────────────────────────────────────────────
@@ -80,6 +82,7 @@ public sealed record VetoHistoryEntry(
 
 // ── Veto settings ────────────────────────────────────────────────────────────
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum VetoMode { Default, Custom }
 
 /// <summary>Persisted veto settings for a match. Null row = Default mode.</summary>
