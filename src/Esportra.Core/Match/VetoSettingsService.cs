@@ -44,9 +44,6 @@ public sealed class VetoSettingsService(IVetoSettingsRepository settingsRepo, ID
         if (config is null)
             throw new InvalidOperationException("INVALID_SEQUENCE: veto not found.");
 
-        if (config.Status == "in_progress")
-            throw new InvalidOperationException("CONFLICT: veto is in_progress");
-
         if (mode == VetoMode.Custom)
             ValidateCustomSequence(sequence, config);
 
