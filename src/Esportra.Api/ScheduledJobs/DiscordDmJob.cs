@@ -30,7 +30,7 @@ public sealed class DiscordDmJob(
             WHERE n.id = @notificationId
               AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) = TRUE
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
-              AND n.type = ANY(@eligibleTypes)
+              AND n.type::text = ANY(@eligibleTypes)
             """,
             new { notificationId, eligibleTypes = DiscordNotificationTypes.DmEligibleTypes.ToArray() });
 

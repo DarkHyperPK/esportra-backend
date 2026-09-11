@@ -36,7 +36,7 @@ public sealed class DiscordDmPollJob(
             WHERE n.created_at > NOW() - INTERVAL '30 minutes'
               AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) = TRUE
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
-              AND n.type = ANY(@eligibleTypes)
+              AND n.type::text = ANY(@eligibleTypes)
             ORDER BY n.created_at ASC
             LIMIT 100
             """,
