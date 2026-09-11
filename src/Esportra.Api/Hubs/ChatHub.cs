@@ -1,14 +1,10 @@
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.ScheduledJobs;
-using Esportra.Api.Services;
-using Esportra.Core.Notifications;
 using Esportra.Core.Tournaments;
-using Esportra.Infrastructure.Email;
 using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.Configuration;
 using StackExchange.Redis;
 
 namespace Esportra.Api.Hubs;
@@ -22,25 +18,22 @@ public sealed class ChatHub : Hub
 {
     private readonly IDbConnectionFactory _db;
     private readonly ILogger<ChatHub> _logger;
-    private readonly IEmailService _email;
     private readonly IDatabase _redis;
-    private readonly string _frontendUrl;
     private readonly IHubContext<ChatHub> _hubContext;
+    private readonly IBackgroundJobClient _bgJobs;
 
     public ChatHub(
         IDbConnectionFactory db,
         ILogger<ChatHub> logger,
-        IEmailService email,
         IConnectionMultiplexer redis,
-        IConfiguration config,
-        IHubContext<ChatHub> hubContext)
+        IHubContext<ChatHub> hubContext,
+        IBackgroundJobClient backgroundJobClient)
     {
         _db = db;
         _logger = logger;
-        _email = email;
         _redis = redis.GetDatabase();
-        _frontendUrl = (config["FrontendUrl"] ?? "https://esportra.com").TrimEnd('/');
         _hubContext = hubContext;
+        _bgJobs = backgroundJobClient;
     }
 
     // ── Client-callable methods ───────────────────────────────────────────────
@@ -95,12 +88,7 @@ public sealed class ChatHub : Hub
         await SetPresenceAsync(matchId, userId);
         if (isChatOpen)
         {
-            await SetPanelOpenAsync(matchId, userId);
             _ = TryMarkReadInternalAsync(matchId, userId, connId);
-        }
-        else
-        {
-            await ClearPanelOpenAsync(matchId, userId);
         }
     }
 
@@ -111,7 +99,6 @@ public sealed class ChatHub : Hub
         if (userId is not null)
         {
             await _redis.KeyDeleteAsync($"chat-active:{matchId}:{userId}");
-            await ClearPanelOpenAsync(matchId, userId);
         }
     }
 
@@ -123,7 +110,6 @@ public sealed class ChatHub : Hub
             foreach (var matchId in matches)
             {
                 await _redis.KeyDeleteAsync($"chat-active:{matchId}:{userId}");
-                await ClearPanelOpenAsync(matchId, userId);
             }
         }
         await base.OnDisconnectedAsync(exception);
@@ -190,11 +176,10 @@ public sealed class ChatHub : Hub
             await Clients.Group(ChatGroup(matchId))
                 .SendAsync(ChatHubEvents.MessageReceived, message);
 
-            // Fire-and-forget: notify offline opposing team members via email
+            // AC-009: skip notification scheduling for organizer messages (no competitorId)
             if (competitorId.HasValue)
             {
-                _ = DispatchChatEmailsAsync(
-                    matchId, userId, competitorId.Value, message.Content, message.SenderName);
+                _ = ScheduleNotificationJobAsync(matchIdGuid, userIdGuid, competitorId.Value);
             }
         }
         catch (Exception ex)
@@ -258,17 +243,53 @@ public sealed class ChatHub : Hub
             1,
             TimeSpan.FromSeconds(180));
 
-    // Tracks whether the chat panel is visibly open. TTL > heartbeat interval (90 s) so the
-    // key stays alive while the panel is open, and expires ~120 s after the panel is closed or
-    // the tab is closed. Used to suppress email notifications when the user is actively reading.
-    private Task SetPanelOpenAsync(string matchId, string userId) =>
-        _redis.StringSetAsync(
-            $"chat-panel-open:{matchId}:{userId}",
-            1,
-            TimeSpan.FromSeconds(120));
+    // ── Notification scheduling ───────────────────────────────────────────────
 
-    private Task ClearPanelOpenAsync(string matchId, string userId) =>
-        _redis.KeyDeleteAsync($"chat-panel-open:{matchId}:{userId}");
+    /// <summary>
+    /// Cancels any pending notification job for the recipient and schedules a fresh
+    /// 2-minute sliding-window job. Fire-and-forget — failure is logged but non-fatal.
+    /// </summary>
+    private async Task ScheduleNotificationJobAsync(Guid matchId, Guid senderUserId, Guid senderCompetitorId)
+    {
+        try
+        {
+            using var conn = _db.CreateConnection();
+
+            var recipientCompId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT CASE WHEN team1_id = @c THEN team2_id ELSE team1_id END FROM brkt_matches WHERE id = @matchId",
+                new { c = senderCompetitorId, matchId });
+            if (recipientCompId is null) return;
+
+            var recipientUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(
+                conn, recipientCompId.Value);
+            if (recipientUserId is null || recipientUserId == senderUserId) return;
+
+            var recipientUserIdGuid = recipientUserId.Value;
+
+            var existingJobId = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT notification_job_id FROM match_chat_reads WHERE match_id = @matchId AND user_id = @recipientUserIdGuid",
+                new { matchId, recipientUserIdGuid });
+
+            if (existingJobId is not null)
+                _bgJobs.Delete(existingJobId);
+
+            var newJobId = _bgJobs.Schedule<ChatNotificationJob>(
+                job => job.ExecuteAsync(matchId, recipientUserIdGuid),
+                TimeSpan.FromMinutes(2));
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO match_chat_reads (match_id, user_id, notification_job_id)
+                VALUES (@matchId, @recipientUserIdGuid, @newJobId)
+                ON CONFLICT (match_id, user_id) DO UPDATE SET notification_job_id = @newJobId
+                """,
+                new { matchId, recipientUserIdGuid, newJobId });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ScheduleNotificationJob failed for match {MatchId}", matchId);
+        }
+    }
 
     private async Task TryMarkReadInternalAsync(string matchId, string userId, string callerConnectionId)
     {
@@ -288,14 +309,22 @@ public sealed class ChatHub : Hub
                 return;
             }
 
+            // Read current job id before clearing it so we can cancel it
+            var pendingJobId = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT notification_job_id FROM match_chat_reads WHERE match_id = @matchIdGuid AND user_id = @userIdGuid",
+                new { matchIdGuid, userIdGuid });
+
             await conn.ExecuteAsync(
                 """
-                INSERT INTO match_chat_reads (match_id, user_id, last_read_at)
-                VALUES (@MatchId, @UserId, NOW())
+                INSERT INTO match_chat_reads (match_id, user_id, last_read_at, notification_job_id)
+                VALUES (@MatchId, @UserId, NOW(), NULL)
                 ON CONFLICT (match_id, user_id)
-                DO UPDATE SET last_read_at = NOW()
+                DO UPDATE SET last_read_at = NOW(), notification_job_id = NULL
                 """,
                 new { MatchId = matchIdGuid, UserId = userIdGuid });
+
+            if (pendingJobId is not null)
+                _bgJobs.Delete(pendingJobId);
 
             // Use IHubContext (singleton) + GroupExcept rather than this.Clients.OthersInGroup
             // (hub-lifetime) so this method is safe from fire-and-forget tasks that outlive
@@ -308,144 +337,6 @@ public sealed class ChatHub : Hub
         {
             _logger.LogWarning(ex, "TryMarkReadInternalAsync failed for match {MatchId}, user {UserId}", matchId, userId);
         }
-    }
-
-    // ── Email dispatch ────────────────────────────────────────────────────────
-
-    private async Task DispatchChatEmailsAsync(
-        string matchId, string senderUserId, Guid senderCompetitorId,
-        string messageContent, string senderName)
-    {
-        try
-        {
-            var matchIdGuid = Guid.Parse(matchId);
-            var senderUserIdGuid = Guid.Parse(senderUserId);
-            var oppUserIdValue = Guid.Empty;
-            var senderTeamName = senderName;
-            string? email = null;
-            var matchRoomUrl = string.Empty;
-            var unreadCount = 1; // fallback value; overwritten by DB query below
-
-            using (var conn = _db.CreateConnection())
-            {
-                // 1. Get opposing competitor slot (works for both solo and team)
-                var oppCompetitorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                    "SELECT CASE WHEN team1_id = @c THEN team2_id ELSE team1_id END FROM brkt_matches WHERE id = @matchId",
-                    new { c = senderCompetitorId, matchId = matchIdGuid });
-                if (oppCompetitorId is null) return;
-
-                // 2. Get opposing captain user ID — needed for Redis key before heavier queries
-                var oppUserId = await BracketCompetitorResolver.GetPrimaryUserIdForCompetitorAsync(conn, oppCompetitorId.Value);
-                if (oppUserId is null || oppUserId == senderUserIdGuid) return;
-                oppUserIdValue = oppUserId.Value;
-
-                var recipientId = oppUserIdValue.ToString();
-
-                // 3. Panel-open gate: if the recipient's chat panel is currently visible, they can see
-                // the message in real-time — SignalR will deliver it before an email would arrive.
-                // This key is only set/refreshed when isChatOpen=true in Heartbeat (TTL 120 s), so it
-                // correctly expires after the panel is closed, unlike the old presence key which was
-                // refreshed unconditionally and prevented emails even when the panel was hidden.
-                if (await _redis.KeyExistsAsync($"chat-panel-open:{matchId}:{recipientId}"))
-                {
-                    _logger.LogDebug("Chat notification suppressed — recipient {RecipientId} has panel open in match {MatchId}", recipientId, matchId);
-                    return;
-                }
-
-                // 4. Count unread messages — secondary gate: confirms messages are genuinely unread
-                // (handles the race where the recipient read everything just before this dispatch runs).
-                try
-                {
-                    unreadCount = await conn.ExecuteScalarAsync<int>(
-                        """
-                        SELECT COUNT(*)::int
-                        FROM match_messages
-                        WHERE match_id = @MatchId
-                          AND sender_id != @RecipientId
-                          AND message_type = 'user'
-                          AND created_at > COALESCE(
-                              (SELECT last_read_at FROM match_chat_reads
-                               WHERE match_id = @MatchId AND user_id = @RecipientId),
-                              '1970-01-01'::timestamptz
-                          )
-                        """,
-                        new { MatchId = matchIdGuid, RecipientId = oppUserIdValue });
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex,
-                        "Chat unread COUNT failed for match {MatchId}, recipient {RecipientId} — defaulting to 1",
-                        matchId, oppUserIdValue);
-                }
-
-                if (unreadCount == 0)
-                {
-                    _logger.LogDebug("Chat notification suppressed — all messages read by recipient {RecipientId} in match {MatchId}", recipientId, matchId);
-                    return;
-                }
-
-                // 5a. Discord DM gate: schedule deferred DM job if no session already pending/in-cooldown
-                if (!await _redis.KeyExistsAsync($"chat-dm-pending:{matchId}:{oppUserIdValue}") &&
-                    !await _redis.KeyExistsAsync($"chat-dm-cooldown:{matchId}:{oppUserIdValue}"))
-                {
-                    BackgroundJob.Schedule<ChatUnreadDmJob>(
-                        job => job.ExecuteAsync(matchIdGuid, oppUserIdValue, CancellationToken.None),
-                        TimeSpan.FromMinutes(5));
-                    await _redis.StringSetAsync($"chat-dm-pending:{matchId}:{oppUserIdValue}", 1, TimeSpan.FromMinutes(6), When.NotExists);
-                }
-
-                // 5b. Cooldown gate: at most one email per 5-minute window per recipient (atomic set-if-not-exists)
-                if (!await _redis.StringSetAsync($"chat-email-sent:{matchId}:{recipientId}", 1, TimeSpan.FromSeconds(300), When.NotExists))
-                {
-                    _logger.LogDebug("Chat notification suppressed — cooldown active for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
-                    return;
-                }
-
-                // 6. Fetch display name, email, and URL only after passing all gates
-                senderTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(conn, senderCompetitorId) ?? senderName;
-                email = await conn.QuerySingleOrDefaultAsync<string?>(
-                    "SELECT email FROM profiles WHERE id = @userId AND email IS NOT NULL",
-                    new { userId = oppUserId });
-                if (email is null)
-                    _logger.LogInformation("Chat email skipped — no email on profile for recipient {RecipientId} in match {MatchId}", recipientId, matchId);
-                var matchPath = await CaptainMatchLinkBuilder.BuildAsync(conn, matchIdGuid);
-                matchRoomUrl = $"{_frontendUrl}{matchPath}";
-            }
-            // Connection returned to pool here — HTTP calls follow outside the using block
-
-            if (oppUserIdValue == Guid.Empty) return;
-
-            var preview = messageContent.Length > 120 ? messageContent[..120] + "…" : messageContent;
-            await SendChatNotificationsAsync(matchId, email, senderTeamName, preview, matchRoomUrl, unreadCount);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "DispatchChatEmails failed for match {MatchId}", matchId);
-        }
-    }
-
-    private async Task SendChatNotificationsAsync(
-        string matchId, string? email,
-        string senderTeamName, string preview, string matchRoomUrl, int unreadCount)
-    {
-        if (email is not null)
-        {
-            try
-            {
-                await _email.SendAsync(email, EmailType.MatchChatMessage, new
-                {
-                    senderTeamName,
-                    messagePreview = preview,
-                    matchRoomUrl,
-                    unreadCount,
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Chat email failed for recipient in match {MatchId}", matchId);
-            }
-        }
-
     }
 
     // ── Membership check ──────────────────────────────────────────────────────
