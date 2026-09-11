@@ -2974,6 +2974,7 @@ public static class TournamentEndpoints
             IHubContext<MatchHub> matchHub,
             IHubContext<BracketHub> bracketHub,
             IEmailService emailService,
+            DiscordNotificationService discord,
             IConfiguration config,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
@@ -3036,7 +3037,7 @@ public static class TournamentEndpoints
                 if (enforceHubState is not null)
                     await FireEnforceSignalRAsync(enforceHubState, bracketHub, notifHub, ct);
 
-                await NotifyDisputeFilerAsync(disputeId, status!, notifHub, conn, emailService, config, logger, ct);
+                await NotifyDisputeFilerAsync(disputeId, status!, notifHub, discord, conn, emailService, config, logger, ct);
 
                 return Results.Ok(new { success = true });
             }
@@ -3053,6 +3054,7 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
+            DiscordNotificationService discord,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -3090,7 +3092,7 @@ public static class TournamentEndpoints
                 await InsertReopenAuditCommentAsync(conn, disputeId, userCtx.UserIdGuid, tx);
                 tx.Commit();
 
-                await NotifyDisputeReopenedAsync(disputeId, notifHub, conn, logger, ct);
+                await NotifyDisputeReopenedAsync(disputeId, notifHub, discord, conn, logger, ct);
 
                 return Results.Ok(new { success = true });
             }
@@ -4252,6 +4254,7 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
+            DiscordNotificationService discord,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -4286,7 +4289,7 @@ public static class TournamentEndpoints
                 await InsertReopenAuditCommentAsync(conn, disputeId, userCtx.UserIdGuid, tx);
                 tx.Commit();
 
-                await NotifyPlayerReopenAsync(disputeId, notifHub, conn, logger, ct);
+                await NotifyPlayerReopenAsync(disputeId, notifHub, discord, conn, logger, ct);
 
                 return Results.Ok(new { success = true });
             }
@@ -5733,8 +5736,8 @@ public static class TournamentEndpoints
 
     private static async Task NotifyDisputeFilerAsync(
         Guid disputeId, string status,
-        IHubContext<NotificationHub> notifHub, IDbConnection conn,
-        IEmailService emailService, IConfiguration config,
+        IHubContext<NotificationHub> notifHub, DiscordNotificationService discord,
+        IDbConnection conn, IEmailService emailService, IConfiguration config,
         ILogger logger, CancellationToken ct)
     {
         try
@@ -5788,6 +5791,8 @@ public static class TournamentEndpoints
 
                 await notifHub.Clients.Group($"user:{filerId}")
                     .SendAsync("NewNotification", new { type = notifType }, ct);
+
+                await discord.TrySendDmAsync(filerId, notifType, notifTitle, notifMsg);
 
                 var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
                 var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
@@ -5886,6 +5891,7 @@ public static class TournamentEndpoints
     private static async Task NotifyDisputeReopenedAsync(
         Guid disputeId,
         IHubContext<NotificationHub> notifHub,
+        DiscordNotificationService discord,
         IDbConnection conn,
         ILogger logger,
         CancellationToken ct)
@@ -5916,6 +5922,8 @@ public static class TournamentEndpoints
 
             await notifHub.Clients.Group($"user:{filerId}")
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
+
+            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened", message);
         }
         catch (Exception ex)
         {
@@ -5926,6 +5934,7 @@ public static class TournamentEndpoints
     private static async Task NotifyPlayerReopenAsync(
         Guid disputeId,
         IHubContext<NotificationHub> notifHub,
+        DiscordNotificationService discord,
         IDbConnection conn, ILogger logger, CancellationToken ct)
     {
         try
@@ -5943,15 +5952,17 @@ public static class TournamentEndpoints
             Guid organizerId = (Guid)dispute.organizer_id;
             string disputeTitle = ((string?)dispute.title) ?? "Your dispute";
             var data = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId });
+            var filerMessage = $"Your dispute \"{disputeTitle}\" has been reopened successfully.";
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                 VALUES (@userId, 'dispute_reopened', 'Dispute Reopened',
                         @message, '/user/my-disputes', @data::jsonb, FALSE)
                 """,
-                new { userId = filerId, message = $"Your dispute \"{disputeTitle}\" has been reopened successfully.", data });
+                new { userId = filerId, message = filerMessage, data });
             await notifHub.Clients.Group($"user:{filerId}")
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
+            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened", filerMessage);
             if (organizerId != filerId)
             {
                 await conn.ExecuteAsync(

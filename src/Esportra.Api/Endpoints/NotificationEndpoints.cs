@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -240,6 +241,7 @@ public static class NotificationEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -321,6 +323,12 @@ public static class NotificationEndpoints
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "team_invite_response", title = $"✅ {acceptedPlayerName} Joined {acceptedTeamName ?? "Your Team"}!" }, ct);
 
+            await discord.TrySendDmAsync(
+                (Guid)invite.invited_by_user_id,
+                "team_invite_response",
+                "Invite Response",
+                $"{acceptedPlayerName ?? "A player"} accepted your team invitation.");
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
@@ -330,6 +338,7 @@ public static class NotificationEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -389,6 +398,12 @@ public static class NotificationEndpoints
                 .Group(NotificationHub.UserGroup(invite.invited_by_user_id.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "team_invite_response", title = $"❌ Invite Declined — {rejectedTeamName ?? "Your Team"}" }, ct);
+
+            await discord.TrySendDmAsync(
+                (Guid)invite.invited_by_user_id,
+                "team_invite_response",
+                "Invite Response",
+                $"{rejectedPlayerName ?? "A player"} declined your team invitation.");
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

@@ -116,13 +116,12 @@ public sealed class DiscordNotificationService
             // 201 = added, 204 = already a member — both are success
             if (resp.IsSuccessStatusCode)
             {
-                _logger.LogInformation("Discord user {DiscordId} auto-joined guild", discordUserId);
+                _logger.LogInformation("Discord user auto-joined guild");
                 return DiscordJoinOutcome.Succeeded;
             }
 
             var body = await resp.Content.ReadAsStringAsync();
-            _logger.LogWarning("Failed to auto-join Discord user {DiscordId}: {Status} {Body}",
-                discordUserId, resp.StatusCode, body);
+            _logger.LogWarning("Failed to auto-join Discord user: {Status}", resp.StatusCode);
 
             return resp.StatusCode switch
             {
@@ -133,7 +132,7 @@ public sealed class DiscordNotificationService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to auto-join Discord user {DiscordId} to guild", discordUserId);
+            _logger.LogWarning(ex, "Failed to auto-join Discord user to guild");
             return DiscordJoinOutcome.Failed("discord_api_error");
         }
     }
@@ -153,9 +152,7 @@ public sealed class DiscordNotificationService
 
         if (!dmChannelResp.IsSuccessStatusCode)
         {
-            var body = await dmChannelResp.Content.ReadAsStringAsync();
-            _logger.LogWarning("Failed to open DM channel for Discord user {DiscordId}: {Status} {Body}",
-                discordUserId, dmChannelResp.StatusCode, body.Length > 200 ? body[..200] + "..." : body);
+            _logger.LogWarning("Failed to open DM channel: {Status}", dmChannelResp.StatusCode);
             return false;
         }
 
@@ -182,14 +179,11 @@ public sealed class DiscordNotificationService
 
         if (msgResp.IsSuccessStatusCode)
         {
-            _logger.LogInformation("Discord DM sent to {DiscordId} (channel {Channel}), type={Type}",
-                discordUserId, channelData.Id, notificationType);
+            _logger.LogInformation("Discord DM sent, type={Type}", notificationType);
             return true;
         }
 
-        var msgBody = await msgResp.Content.ReadAsStringAsync();
-        _logger.LogWarning("Failed to send DM to Discord user {DiscordId}: {Status} {Body}",
-            discordUserId, msgResp.StatusCode, msgBody.Length > 200 ? msgBody[..200] + "..." : msgBody);
+        _logger.LogWarning("Failed to send Discord DM: {Status}, type={Type}", msgResp.StatusCode, notificationType);
         return false;
     }
 
@@ -208,6 +202,18 @@ public sealed class DiscordNotificationService
         "checkin_open" => 0xF59E0B, // amber
         "party_code_submitted" => 0x22C55E, // green
         "scheduling_escalation" => 0xEF4444, // red
+        "dispute_rejected" => 0xEF4444, // red
+        "tournament_invite" => 0x22C55E, // green
+        "team_invite" => 0x22C55E, // green
+        "team_invite_response" => 0x22C55E, // green
+        "team_captain_changed" => 0x6366F1, // indigo
+        "team_member_removed" => 0xEF4444, // red
+        "br_round_active" => 0xF59E0B, // amber
+        "dispute_reopened" => 0xF59E0B, // amber
+        "time_proposal_received" => 0x3B82F6, // blue
+        "time_proposal_accepted" => 0x22C55E, // green
+        "time_proposal_rejected" => 0xEF4444, // red
+        "time_proposal_countered" => 0xF59E0B, // amber
         _ => 0xF43F5E, // rose (brand)
     };
 

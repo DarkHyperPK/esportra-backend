@@ -398,6 +398,7 @@ public static class TeamEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> hub,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -465,6 +466,9 @@ public static class TeamEndpoints
                 await TeamNotifications.PushAsync(hub, others,
                     TeamNotifications.RosterUpdated, updateTitle, updateMessage);
 
+                await discord.TrySendDmAsync(userId, "team_member_removed",
+                    "Removed from Team", "You have been removed from the team.");
+
                 return Results.Ok(new { success = true, removed = affected > 0 });
             }
             catch
@@ -482,6 +486,7 @@ public static class TeamEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> hub,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -550,6 +555,9 @@ public static class TeamEndpoints
                     TeamNotifications.CaptainChanged, captainTitle, captainMessage);
                 await TeamNotifications.PushAsync(hub, others,
                     TeamNotifications.RosterUpdated, updateTitle, updateMessage);
+
+                await discord.TrySendDmAsync(newCaptainIdGuid, "team_captain_changed",
+                    "You're Now Captain", "You are now the captain of the team.");
             }
             catch
             {
@@ -645,6 +653,7 @@ public static class TeamEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IEmailService emailService,
+            DiscordNotificationService discord,
             IConfiguration config,
             CancellationToken ct) =>
         {
@@ -721,6 +730,9 @@ public static class TeamEndpoints
                     msg = $"You've been recruited to join {inviteTeamName ?? "a team"}. Accept the invite and jump into the action!",
                     data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = ((Guid)invite.id).ToString() })
                 });
+
+            await discord.TrySendDmAsync(reqUserIdGuid, "team_invite", "Team Invitation",
+                "You've been invited to join the team.");
 
             // Send team invite email
             try
@@ -1395,7 +1407,8 @@ public static class TeamEndpoints
             [FromBody] RosterInviteRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
-            IHubContext<NotificationHub> hub) =>
+            IHubContext<NotificationHub> hub,
+            DiscordNotificationService discord) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1451,6 +1464,9 @@ public static class TeamEndpoints
 
             await hub.Clients.Group(NotificationHub.UserGroup(req.UserId))
                 .SendAsync(NotificationHubEvents.NewNotification, new { type = "team_invite" });
+
+            await discord.TrySendDmAsync(reqUserIdGuid, "team_invite", "Team Invitation",
+                "You've been invited to join the team.");
 
             return Results.Ok(invite);
         }).RequireAuthorization("Authenticated");

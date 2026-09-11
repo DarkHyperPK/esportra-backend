@@ -1207,8 +1207,11 @@ public static partial class BRGroupEndpoints
             IHubContext<NotificationHub> notifHub,
             IHubContext<BRHub> brHub,
             BrScheduleNotificationService scheduleNotify,
+            DiscordNotificationService discord,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            var logger = loggerFactory.CreateLogger(nameof(BRGroupEndpoints));
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
@@ -1782,11 +1785,16 @@ public static partial class BRGroupEndpoints
                                 .SendAsync(NotificationHubEvents.NewNotification,
                                     new { type, title, message, link });
                         }
+
+                        await discord.TrySendBatchDmAsync(
+                            userIds.Select(Guid.Parse),
+                            "br_round_active",
+                            title,
+                            message);
                     }
                     catch (Exception ex)
                     {
-                        // Best-effort: log but don't fail the PATCH response
-                        Console.Error.WriteLine($"[BRGroupEndpoints] Notification error for round {lobbyId}: {ex.Message}");
+                        logger.LogWarning(ex, "Notification error for BR round {LobbyId}", lobbyId);
                     }
                 });
             }

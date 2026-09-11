@@ -11,14 +11,8 @@ public sealed class DiscordDmJob(
     DiscordNotificationService discord,
     ILogger<DiscordDmJob> logger)
 {
-    private static readonly HashSet<string> DmEligibleTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "match_ready", "result_reported", "result_disputed",
-        "dispute_resolved", "tournament_registered",
-        "tournament_announcement", "result_accepted", "match_completed"
-    };
-
-    public static bool IsDmEligibleType(string type) => DmEligibleTypes.Contains(type);
+    public static bool IsDmEligibleType(string type) =>
+        DiscordNotificationTypes.DmEligibleTypes.Contains(type);
 
     public async Task ExecuteAsync(Guid notificationId, CancellationToken ct)
     {
@@ -38,7 +32,7 @@ public sealed class DiscordDmJob(
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
               AND n.type = ANY(@eligibleTypes)
             """,
-            new { notificationId, eligibleTypes = DmEligibleTypes.ToArray() });
+            new { notificationId, eligibleTypes = DiscordNotificationTypes.DmEligibleTypes.ToArray() });
 
         if (dm is null)
             return;

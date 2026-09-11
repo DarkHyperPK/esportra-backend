@@ -187,6 +187,7 @@ public static class TournamentInvitationEndpoints
             GameCatalogService catalog,
             IHubContext<NotificationHub> notifHub,
             AuditService audit,
+            DiscordNotificationService discord,
             IConfiguration config,
             CancellationToken ct) =>
         {
@@ -313,6 +314,15 @@ public static class TournamentInvitationEndpoints
                             data = notification.data,
                         },
                         ct);
+            }
+
+            foreach (var notification in pushedNotifications)
+            {
+                await discord.TrySendDmAsync(
+                    (Guid)notification.user_id,
+                    "tournament_invite",
+                    "Tournament Invitation",
+                    "You've been invited to join a tournament.");
             }
 
             var sentCount = 0;

@@ -1416,6 +1416,7 @@ public static class MatchSystemEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             StaffTournamentAuditService staffAudit,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1463,8 +1464,8 @@ public static class MatchSystemEndpoints
                     ? "✅ Dispute Resolved"
                     : "❌ Dispute Rejected";
                 var notifMessage = req.Status == "resolved"
-                    ? $"Your match dispute has been resolved in your favor. Organizer note: {req.Resolution}"
-                    : $"Your match dispute was reviewed and rejected. Organizer note: {req.Resolution}";
+                    ? "Your match dispute has been resolved. View the outcome in your match room."
+                    : "Your match dispute was reviewed and rejected. View the outcome in your match room.";
 
                 var disputeContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, matchId);
                 var disputeLink = CaptainMatchLinkBuilder.BuildLink(disputeContext.TournamentSlug, matchId);
@@ -1489,6 +1490,9 @@ public static class MatchSystemEndpoints
                         link = disputeLink,
                         data = notifDataWithSlug
                     });
+
+                await discord.TrySendDmAsync(
+                    (Guid)dispute.disputed_by_user_id, notifType, notifTitle, notifMessage);
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1515,6 +1519,8 @@ public static class MatchSystemEndpoints
                             link = disputeLink,
                             data = notifDataWithSlug
                         });
+
+                    await discord.TrySendDmAsync(reporter.Value, notifType, notifTitle, notifMessage);
                 }
             }
 

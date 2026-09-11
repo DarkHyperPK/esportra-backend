@@ -2,6 +2,7 @@ using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Hangfire;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.ScheduledJobs;
@@ -22,8 +23,12 @@ public sealed class MatchCheckinOpenJob(
         {
             using var conn = db.CreateConnection();
 
-            var matchRow = await conn.QuerySingleOrDefaultAsync<(string Status, DateTime? ScheduledTime)>(
-                "SELECT status AS Status, scheduled_time AS ScheduledTime FROM brkt_matches WHERE id = @matchId",
+            var matchRow = await conn.QuerySingleOrDefaultAsync<(string Status, DateTime? ScheduledTime, DateTime? CheckInDeadline)>(
+                """
+                SELECT status AS Status, scheduled_time AS ScheduledTime,
+                       check_in_deadline AS CheckInDeadline
+                FROM brkt_matches WHERE id = @matchId
+                """,
                 new { matchId });
 
             // Only notify if the match is still pending and scheduled
@@ -78,6 +83,18 @@ public sealed class MatchCheckinOpenJob(
             }
 
             logger.LogInformation("[CheckinOpen] Notified {Count} captain(s) for match {MatchId}", captainUserIds.Count, matchId);
+
+            var deadline = (matchRow.CheckInDeadline ?? matchRow.ScheduledTime)?.ToUniversalTime();
+            if (deadline.HasValue)
+            {
+                var reminderFireAt = deadline.Value - TimeSpan.FromMinutes(15);
+                if (reminderFireAt > DateTime.UtcNow)
+                {
+                    BackgroundJob.Schedule<CheckinReminderJob>(
+                        j => j.ExecuteAsync(matchId, CancellationToken.None),
+                        reminderFireAt);
+                }
+            }
         }
         catch (Exception ex)
         {
