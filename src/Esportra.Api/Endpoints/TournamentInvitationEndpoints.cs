@@ -316,13 +316,18 @@ public static class TournamentInvitationEndpoints
                         ct);
             }
 
+            var tournamentInviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             foreach (var notification in pushedNotifications)
             {
+                var tournamentInviteLink = (string?)notification.link;
+                var dmTournamentMsg = string.IsNullOrWhiteSpace(tournamentInviteLink)
+                    ? "You've been invited to join a tournament."
+                    : $"You've been invited to join a tournament.\n\n[View →]({tournamentInviteUrlBase}{tournamentInviteLink})";
                 await discord.TrySendDmAsync(
                     (Guid)notification.user_id,
                     "tournament_invite",
                     "Tournament Invitation",
-                    "You've been invited to join a tournament.");
+                    dmTournamentMsg);
             }
 
             var sentCount = 0;

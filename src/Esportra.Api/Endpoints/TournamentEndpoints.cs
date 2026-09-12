@@ -732,7 +732,8 @@ public static class TournamentEndpoints
                 """
                 SELECT organizer_id, game, game_mode, team_size, format, status,
                        start_date, end_date, registration_deadline, max_teams,
-                       COALESCE((settings->>'assistedReportingEnabled')::boolean, false) AS assisted_reporting_enabled
+                       COALESCE((settings->>'assistedReportingEnabled')::boolean, false) AS assisted_reporting_enabled,
+                       COALESCE((settings->>'requiredAccountLinks')::int, 0) AS required_account_links
                 FROM tournaments
                 WHERE id = @id
                 """,
@@ -3055,6 +3056,7 @@ public static class TournamentEndpoints
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -3088,11 +3090,21 @@ public static class TournamentEndpoints
                 if (row.Status == "open")
                     return Results.BadRequest(new { error = "Dispute is already open." });
 
-                await ReopenDisputeAsync(conn, disputeId, tx);
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE tournament_disputes
+                    SET status = 'open',
+                        resolution_notes = NULL,
+                        assigned_to_user_id = NULL,
+                        updated_at = NOW()
+                    WHERE id = @disputeId
+                    """,
+                    new { disputeId },
+                    tx);
                 await InsertReopenAuditCommentAsync(conn, disputeId, userCtx.UserIdGuid, tx);
                 tx.Commit();
 
-                await NotifyDisputeReopenedAsync(disputeId, notifHub, discord, conn, logger, ct);
+                await NotifyDisputeReopenedAsync(disputeId, notifHub, discord, conn, logger, config, ct);
 
                 return Results.Ok(new { success = true });
             }
@@ -4255,6 +4267,7 @@ public static class TournamentEndpoints
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -4289,7 +4302,7 @@ public static class TournamentEndpoints
                 await InsertReopenAuditCommentAsync(conn, disputeId, userCtx.UserIdGuid, tx);
                 tx.Commit();
 
-                await NotifyPlayerReopenAsync(disputeId, notifHub, discord, conn, logger, ct);
+                await NotifyPlayerReopenAsync(disputeId, notifHub, discord, conn, logger, config, ct);
 
                 return Results.Ok(new { success = true });
             }
@@ -4753,8 +4766,8 @@ public static class TournamentEndpoints
         int teamSize,
         bool supportsAssistedReporting)
     {
-        if (requiredAccountLinks.HasValue && (requiredAccountLinks.Value < 1 || requiredAccountLinks.Value > teamSize))
-            return $"Required account links must be between 1 and {teamSize}.";
+        if (requiredAccountLinks.HasValue && (requiredAccountLinks.Value < 0 || requiredAccountLinks.Value > teamSize))
+            return $"Required account links must be between 0 and {teamSize}.";
 
         if (assistedReportingEnabled != true) return null;
 
@@ -5283,13 +5296,23 @@ public static class TournamentEndpoints
         var catalogResult = await ResolveCatalogAsync(conn, req, existingGame, existingGameMode, existingTeamSize, existingFormat, gameCatalog);
         if (catalogResult.error is not null) return (null, catalogResult.error);
 
-        if (req.AssistedReportingEnabled.HasValue || req.RequiredAccountLinks.HasValue)
+        var isTighteningAccountLinks = req.RequiredAccountLinks.HasValue
+            && req.RequiredAccountLinks.Value > (int)(existing.required_account_links ?? 0);
+
+        var isTighteningAssistedReporting = req.AssistedReportingEnabled == true
+            && (bool?)existing.assisted_reporting_enabled != true;
+
+        if (isTighteningAccountLinks || isTighteningAssistedReporting)
         {
             var canEditStatus = existingStatus is "draft" or "open";
-            var beforeDeadline = existingRegistrationDeadline is null || existingRegistrationDeadline > DateTimeOffset.UtcNow;
+            var beforeDeadline = existingRegistrationDeadline is null
+                || existingRegistrationDeadline > DateTimeOffset.UtcNow;
             if (!canEditStatus || !beforeDeadline)
-                return (null, Results.BadRequest(new { error = "Account link settings can only be changed while the tournament is in draft or open status and before the registration deadline." }));
+                return (null, Results.BadRequest(new { error = "Account link requirements can only be tightened while the tournament is in draft or open status and before the registration deadline." }));
+        }
 
+        if (req.AssistedReportingEnabled.HasValue || req.RequiredAccountLinks.HasValue)
+        {
             var accountLinkError = ValidateAccountLinkSettings(
                 req.AssistedReportingEnabled ?? (bool?)existing.assisted_reporting_enabled,
                 req.RequiredAccountLinks,
@@ -5792,7 +5815,9 @@ public static class TournamentEndpoints
                 await notifHub.Clients.Group($"user:{filerId}")
                     .SendAsync("NewNotification", new { type = notifType }, ct);
 
-                await discord.TrySendDmAsync(filerId, notifType, notifTitle, notifMsg);
+                var disputeFilerUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+                await discord.TrySendDmAsync(filerId, notifType, notifTitle,
+                    $"{notifMsg}\n\n[View →]({disputeFilerUrlBase}/user/my-disputes)");
 
                 var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
                 var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
@@ -5894,6 +5919,7 @@ public static class TournamentEndpoints
         DiscordNotificationService discord,
         IDbConnection conn,
         ILogger logger,
+        IConfiguration config,
         CancellationToken ct)
     {
         try
@@ -5923,7 +5949,9 @@ public static class TournamentEndpoints
             await notifHub.Clients.Group($"user:{filerId}")
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
 
-            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened", message);
+            var reopenUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened",
+                $"{message}\n\n[View →]({reopenUrlBase}/user/my-disputes)");
         }
         catch (Exception ex)
         {
@@ -5935,7 +5963,7 @@ public static class TournamentEndpoints
         Guid disputeId,
         IHubContext<NotificationHub> notifHub,
         DiscordNotificationService discord,
-        IDbConnection conn, ILogger logger, CancellationToken ct)
+        IDbConnection conn, ILogger logger, IConfiguration config, CancellationToken ct)
     {
         try
         {
@@ -5962,7 +5990,9 @@ public static class TournamentEndpoints
                 new { userId = filerId, message = filerMessage, data });
             await notifHub.Clients.Group($"user:{filerId}")
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
-            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened", filerMessage);
+            var playerReopenUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened",
+                $"{filerMessage}\n\n[View →]({playerReopenUrlBase}/user/my-disputes)");
             if (organizerId != filerId)
             {
                 await conn.ExecuteAsync(

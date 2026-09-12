@@ -13,6 +13,7 @@ namespace Esportra.Api.ScheduledJobs;
 public sealed class CheckinReminderJob(
     IDbConnectionFactory db,
     DiscordNotificationService discord,
+    IConfiguration config,
     ILogger<CheckinReminderJob> logger)
 {
     public async Task ExecuteAsync(Guid matchId, CancellationToken ct)
@@ -42,9 +43,11 @@ public sealed class CheckinReminderJob(
 
         const string title = "Check-in Reminder";
         const string message = "15 minutes left to check in for your match.";
+        var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+        var dmMessage = $"{message}\n\n[View →]({frontendUrl}/notifications)";
 
         foreach (var userId in uncheckedUserIds)
-            await discord.TrySendDmAsync(userId, "check_in_reminder", title, message);
+            await discord.TrySendDmAsync(userId, "check_in_reminder", title, dmMessage);
 
         logger.LogInformation(
             "[CheckinReminder] Sent DM reminders to {Count} unchecked captain(s) for match {MatchId}.",

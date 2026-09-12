@@ -1035,6 +1035,7 @@ public static class MatchSystemEndpoints
             IHubContext<MatchHub> matchHub,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
@@ -1086,7 +1087,8 @@ public static class MatchSystemEndpoints
                             "time_proposal_received",
                             "New match time proposal",
                             "Your opponent has proposed a match time. Review and respond.",
-                            matchId, discord, notifHub, ct);
+                            matchId, discord, notifHub,
+                            config["FrontendUrl"] ?? "https://esportra.com", ct);
                 }
 
                 return Results.Ok(proposal);
@@ -1110,6 +1112,7 @@ public static class MatchSystemEndpoints
             IHubContext<MatchHub> matchHub,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1197,7 +1200,8 @@ public static class MatchSystemEndpoints
                         "time_proposal_accepted",
                         "Your time proposal was accepted",
                         "Your opponent accepted your proposed match time. The match is now scheduled.",
-                        matchId, discord, notifHub, ct);
+                        matchId, discord, notifHub,
+                        config["FrontendUrl"] ?? "https://esportra.com", ct);
             }
 
             return Results.Ok(new { success = true, matchId, proposalId });
@@ -1214,6 +1218,7 @@ public static class MatchSystemEndpoints
             IHubContext<MatchHub> matchHub,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1255,7 +1260,8 @@ public static class MatchSystemEndpoints
                         "time_proposal_rejected",
                         "Your time proposal was rejected",
                         "Your opponent rejected your proposed time. You can propose a new one.",
-                        matchId, discord, notifHub, ct);
+                        matchId, discord, notifHub,
+                        config["FrontendUrl"] ?? "https://esportra.com", ct);
             }
 
             return Results.Ok(new { success = true, matchId, proposalId });
@@ -1273,6 +1279,7 @@ public static class MatchSystemEndpoints
             IHubContext<MatchHub> matchHub,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1326,7 +1333,8 @@ public static class MatchSystemEndpoints
                     "time_proposal_countered",
                     "Your time proposal was countered",
                     "Your opponent countered your proposed time with a new suggestion. Review and respond.",
-                    matchId, discord, notifHub, ct);
+                    matchId, discord, notifHub,
+                    config["FrontendUrl"] ?? "https://esportra.com", ct);
 
             return Results.Ok(newProposal);
         }).RequireAuthorization("Authenticated");
@@ -1417,6 +1425,7 @@ public static class MatchSystemEndpoints
             IDbConnectionFactory db,
             StaffTournamentAuditService staffAudit,
             DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1469,6 +1478,8 @@ public static class MatchSystemEndpoints
 
                 var disputeContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, matchId);
                 var disputeLink = CaptainMatchLinkBuilder.BuildLink(disputeContext.TournamentSlug, matchId);
+                var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
+                var dmDisputeMessage = $"{notifMessage}\n\n[View →]({frontendUrl}{disputeLink})";
                 var notifDataWithSlug = JsonSerializer.Serialize(new
                 {
                     match_id = matchId,
@@ -1492,7 +1503,7 @@ public static class MatchSystemEndpoints
                     });
 
                 await discord.TrySendDmAsync(
-                    (Guid)dispute.disputed_by_user_id, notifType, notifTitle, notifMessage);
+                    (Guid)dispute.disputed_by_user_id, notifType, notifTitle, dmDisputeMessage);
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1520,7 +1531,7 @@ public static class MatchSystemEndpoints
                             data = notifDataWithSlug
                         });
 
-                    await discord.TrySendDmAsync(reporter.Value, notifType, notifTitle, notifMessage);
+                    await discord.TrySendDmAsync(reporter.Value, notifType, notifTitle, dmDisputeMessage);
                 }
             }
 
@@ -2326,6 +2337,7 @@ public static class MatchSystemEndpoints
         Guid matchId,
         DiscordNotificationService discord,
         IHubContext<NotificationHub> notifHub,
+        string baseUrl,
         CancellationToken ct)
     {
         try
@@ -2344,7 +2356,8 @@ public static class MatchSystemEndpoints
         }
         catch { /* non-critical */ }
 
-        await discord.TrySendDmAsync(recipientUserId, notificationType, title, message);
+        await discord.TrySendDmAsync(recipientUserId, notificationType, title,
+            $"{message}\n\n[View →]({baseUrl}/notifications)");
     }
 
     private static async Task NotifyWalkoverFailureAsync(

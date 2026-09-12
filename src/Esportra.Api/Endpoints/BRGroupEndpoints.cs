@@ -1705,6 +1705,8 @@ public static partial class BRGroupEndpoints
             if (body.TryGetProperty("status", out var notifStatusProp) &&
                 notifStatusProp.GetString() == "active")
             {
+                var frontendUrl = ctx.RequestServices.GetRequiredService<IConfiguration>()["FrontendUrl"]
+                    ?? "https://esportra.com";
                 _ = Task.Run(async () =>
                 {
                     try
@@ -1786,11 +1788,13 @@ public static partial class BRGroupEndpoints
                                     new { type, title, message, link });
                         }
 
+                        var brRoomUrl = $"{frontendUrl}/tournaments/{tournamentSlug}/br-game-room";
+                        var discordMessage = $"{message}\n\n[View →]({brRoomUrl})";
                         await discord.TrySendBatchDmAsync(
                             userIds.Select(Guid.Parse),
                             "br_round_active",
                             title,
-                            message);
+                            discordMessage);
                     }
                     catch (Exception ex)
                     {

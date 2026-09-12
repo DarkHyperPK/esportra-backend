@@ -242,6 +242,7 @@ public static class NotificationEndpoints
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -323,11 +324,12 @@ public static class NotificationEndpoints
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "team_invite_response", title = $"✅ {acceptedPlayerName} Joined {acceptedTeamName ?? "Your Team"}!" }, ct);
 
+            var acceptUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             await discord.TrySendDmAsync(
                 (Guid)invite.invited_by_user_id,
                 "team_invite_response",
                 "Invite Response",
-                $"{acceptedPlayerName ?? "A player"} accepted your team invitation.");
+                $"{acceptedPlayerName ?? "A player"} accepted your team invitation.\n\n[View →]({acceptUrlBase}/player/teams)");
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -339,6 +341,7 @@ public static class NotificationEndpoints
             IDbConnectionFactory db,
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -399,11 +402,12 @@ public static class NotificationEndpoints
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "team_invite_response", title = $"❌ Invite Declined — {rejectedTeamName ?? "Your Team"}" }, ct);
 
+            var rejectUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             await discord.TrySendDmAsync(
                 (Guid)invite.invited_by_user_id,
                 "team_invite_response",
                 "Invite Response",
-                $"{rejectedPlayerName ?? "A player"} declined your team invitation.");
+                $"{rejectedPlayerName ?? "A player"} declined your team invitation.\n\n[View →]({rejectUrlBase}/player/teams)");
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
