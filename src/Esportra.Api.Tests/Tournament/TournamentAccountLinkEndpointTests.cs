@@ -53,7 +53,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { requiredAccountLinks = 1 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -66,7 +67,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { requiredAccountLinks = 0 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -79,7 +81,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { requiredAccountLinks = 3 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -92,7 +95,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { assistedReportingEnabled = false });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -105,7 +109,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingArDisabledTournamentId}",
             new { assistedReportingEnabled = true });
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -118,7 +123,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { assistedReportingEnabled = true });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -133,7 +139,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { assistedReportingEnabled = false, requiredAccountLinks = 5 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -146,7 +153,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OngoingTournamentId}",
             new { discordLinkCount = 0 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     // ── Open tournament, past registration deadline ───────────────────────────
@@ -161,7 +169,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OpenPastDeadlineTournamentId}",
             new { requiredAccountLinks = 3 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -174,7 +183,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{OpenPastDeadlineTournamentId}",
             new { requiredAccountLinks = 0 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     // ── Draft tournament, future registration deadline ────────────────────────
@@ -189,7 +199,8 @@ public sealed class TournamentAccountLinkEndpointTests
             $"/api/tournaments/{DraftFutureTournamentId}",
             new { requiredAccountLinks = 3 });
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            await response.Content.ReadAsStringAsync());
     }
 
     // ── Seed helpers ──────────────────────────────────────────────────────────
