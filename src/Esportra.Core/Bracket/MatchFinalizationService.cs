@@ -113,22 +113,18 @@ public sealed class MatchFinalizationService(
         if (options.LoserId.HasValue)
             await AdvanceTeamInternalAsync(conn, tx, matchId, options.LoserId.Value, "loser");
 
-        try
-        {
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
-                VALUES (@matchId, @winnerId, @loserId, 'processed')
-                """,
-                new
-                {
-                    matchId,
-                    winnerId = options.WinnerId,
-                    loserId = (object?)options.LoserId ?? DBNull.Value,
-                },
-                tx);
-        }
-        catch { /* Non-critical if loser_id FK fails on audit table */ }
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO public.match_completed_events (match_id, winner_id, loser_id, status)
+            VALUES (@matchId, @winnerId, @loserId, 'processed')
+            """,
+            new
+            {
+                matchId,
+                winnerId = options.WinnerId,
+                loserId = (object?)options.LoserId ?? DBNull.Value,
+            },
+            tx);
 
         return true;
     }
@@ -218,6 +214,16 @@ public sealed class MatchFinalizationService(
             WHERE tm.team_id = ANY(@teamIds) AND tm.role = 'captain' AND tm.is_active = true
             """,
             new { teamIds }, tx)).AsList();
+
+        if (captainIds.Count == 0)
+        {
+            captainIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT user_id FROM public.tournament_participants
+                WHERE id = ANY(@teamIds) AND user_id IS NOT NULL
+                """,
+                new { teamIds }, tx)).AsList();
+        }
 
         var matchContext = await CaptainMatchLinkBuilder.ResolveContextAsync(conn, matchId, tx);
         var matchLink = CaptainMatchLinkBuilder.BuildLink(matchContext.TournamentSlug, matchId);

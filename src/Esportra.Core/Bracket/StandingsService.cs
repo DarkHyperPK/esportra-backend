@@ -55,6 +55,21 @@ public sealed class StandingsService(IDbConnectionFactory db)
                 new { ids = teamIds.ToArray() });
             foreach (var t in teams)
                 teamNames[(Guid)t.id] = (string)t.name;
+
+            var missing = teamIds.Where(id => !teamNames.ContainsKey(id)).ToArray();
+            if (missing.Length > 0)
+            {
+                var participants = await conn.QueryAsync(
+                    """
+                    SELECT tp.id, COALESCE(tp.team_name, p.username, 'Unknown') AS name
+                    FROM public.tournament_participants tp
+                    LEFT JOIN public.profiles p ON p.id = tp.user_id
+                    WHERE tp.id = ANY(@ids)
+                    """,
+                    new { ids = missing });
+                foreach (var p in participants)
+                    teamNames[(Guid)p.id] = (string)p.name;
+            }
         }
 
         return map
