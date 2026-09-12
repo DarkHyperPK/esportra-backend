@@ -730,7 +730,7 @@ public static class TournamentEndpoints
 
             var existingTournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT organizer_id, game, game_mode, team_size, format, status,
+                SELECT organizer_id, game, game_mode, team_size, format, status::text AS status,
                        start_date, end_date, registration_deadline, max_teams,
                        COALESCE((settings->>'assistedReportingEnabled')::boolean, false) AS assisted_reporting_enabled,
                        COALESCE((settings->>'requiredAccountLinks')::int, 0) AS required_account_links
@@ -791,7 +791,7 @@ public static class TournamentEndpoints
                 WHERE id = @id
                 RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
-                         status, banner_url, logo_url, organization_id, venue_id, is_public,
+                         status::text AS status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
                          rewards, stream_url, rules, payment_instructions, region, currency, settings,
                          reserved_invite_slots, invite_expiry_days, organizer_id, created_at, updated_at
