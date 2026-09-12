@@ -266,7 +266,9 @@ public sealed class TournamentAccountLinkEndpointTests
                  @status::tournament_status, @organizerId, 8,
                  FALSE, @slug, @start, @end, @deadline,
                  @settings::jsonb, NOW(), NOW())
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE SET
+                settings = EXCLUDED.settings,
+                status   = EXCLUDED.status
             """,
             new
             {
