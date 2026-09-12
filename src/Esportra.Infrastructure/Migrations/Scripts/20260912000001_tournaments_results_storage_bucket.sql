@@ -66,7 +66,7 @@ BEGIN
             CREATE POLICY tournaments_results_auth_delete
                 ON storage.objects FOR DELETE
                 TO authenticated
-                USING (bucket_id = 'tournaments.results' AND owner = auth.uid()::text)
+                USING (bucket_id = 'tournaments.results' AND owner = auth.uid())
         $sql$;
     END IF;
 END;
