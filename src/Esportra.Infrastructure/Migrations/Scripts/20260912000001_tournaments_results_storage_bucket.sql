@@ -4,9 +4,10 @@
 
 DO $$
 BEGIN
-    -- storage schema only exists in Supabase — skip in plain Postgres (CI replay, local dev)
+    -- storage.buckets only exists in Supabase — skip in plain Postgres (CI replay, local dev)
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.schemata WHERE schema_name = 'storage'
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'storage' AND table_name = 'buckets'
     ) THEN
         RETURN;
     END IF;
