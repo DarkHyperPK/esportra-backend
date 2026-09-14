@@ -105,6 +105,7 @@ public sealed class CheckinReminderJobTests
         var jobDb = new FakeDbConnectionFactory();
         // matchRow: pending, future deadline
         jobDb.EnqueueSingleRowResult("pending", DateTime.UtcNow.AddHours(1));
+        jobDb.EnqueueEmptyResult(); // gameSlug query (added in PROJ-023)
         // allCaptains query: one captain
         jobDb.EnqueueMultiRowResult([[CaptainId1]]);
         // checkedIn query: same captain is already checked in
@@ -130,6 +131,7 @@ public sealed class CheckinReminderJobTests
         var jobDb = new FakeDbConnectionFactory();
         // matchRow: pending, future deadline
         jobDb.EnqueueSingleRowResult("pending", DateTime.UtcNow.AddHours(1));
+        jobDb.EnqueueEmptyResult(); // gameSlug query (added in PROJ-023)
         // allCaptains: two captains
         jobDb.EnqueueMultiRowResult([[CaptainId1], [CaptainId2]]);
         // checkedIn: only CaptainId1 checked in → CaptainId2 is unchecked
@@ -157,6 +159,7 @@ public sealed class CheckinReminderJobTests
     {
         var jobDb = new FakeDbConnectionFactory();
         jobDb.EnqueueSingleRowResult("pending", DateTime.UtcNow.AddHours(1));
+        jobDb.EnqueueEmptyResult(); // gameSlug query (added in PROJ-023)
         // both captains present, neither checked in
         jobDb.EnqueueMultiRowResult([[CaptainId1], [CaptainId2]]);
         jobDb.EnqueueEmptyResult(); // no checkins
