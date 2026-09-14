@@ -150,17 +150,10 @@ public static class MatchEndpoints
                     .Where(a => (Guid)a.team_id == (Guid)match.team2_id)
                     .Select(a => (string)a.puuid).ToHashSet();
 
-                // 5. Fetch matchlist from Riot API (cached 5 min per PUUID)
-                var matchlistJson = await cache.GetOrCreateAsync(
-                    $"riot:matchlist:{scannerPuuid}",
-                    async (_) =>
-                    {
-                        var (s, b) = await riotApi.ProxyAsync(
-                            shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
-                        return s == 200 ? b : null;
-                    },
-                    new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
-                    cancellationToken: ct);
+                // 5. Fetch matchlist from Riot API — no cache, always real-time
+                var (mlStatus, mlBody) = await riotApi.ProxyAsync(
+                    shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
+                var matchlistJson = mlStatus == 200 ? mlBody : null;
 
                 if (matchlistJson is null)
                 {
@@ -168,11 +161,12 @@ public static class MatchEndpoints
                     return Results.Ok(new { matches = Array.Empty<object>(), reason = "Could not fetch match history from Riot" });
                 }
 
-                // 6. Parse matchlist — take last 10 entries
+                // 6. Parse matchlist — take last 20 entries to cover custom games that may be
+                // further back in history (e.g. player played ranked/deathmatch after the tournament game)
                 using var listDoc = JsonDocument.Parse(matchlistJson);
                 var history = listDoc.RootElement.GetProperty("history");
                 var recentIds = history.EnumerateArray()
-                    .Take(10)
+                    .Take(20)
                     .Select(e => e.GetProperty("matchId").GetString()!)
                     .ToList();
 
@@ -209,6 +203,14 @@ public static class MatchEndpoints
                             string.Equals(mapDisplayName, req.MapName, StringComparison.OrdinalIgnoreCase);
 
                         var queueId = info.GetProperty("queueId").GetString() ?? "";
+
+                        // Only surface custom (tournament/scrim) lobby games — skip ranked, deathmatch, etc.
+                        if (!string.Equals(queueId, "custom", StringComparison.OrdinalIgnoreCase))
+                        {
+                            log.LogDebug("Skipping match {RiotId}: queueId '{Queue}' is not custom", riotMatchId, queueId);
+                            continue;
+                        }
+
                         var gameLengthMillis = info.GetProperty("gameLengthMillis").GetInt64();
                         var gameStartMillis = info.GetProperty("gameStartMillis").GetInt64();
 
