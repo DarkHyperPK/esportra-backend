@@ -1718,7 +1718,8 @@ public static partial class BRGroupEndpoints
                             """
                             SELECT g.id AS group_id, r.wave_number, r.lobby_code,
                                    g.name AS group_name,
-                                   t.slug AS tournament_slug
+                                   t.slug AS tournament_slug,
+                                   t.game AS game
                             FROM br_lobbies r
                             JOIN br_lobby_groups lg ON lg.lobby_id = r.id
                             JOIN br_groups g ON g.id = lg.group_id
@@ -1734,6 +1735,7 @@ public static partial class BRGroupEndpoints
                         int waveNumber = Convert.ToInt32(roundMeta.wave_number);
                         string groupName = (string)roundMeta.group_name;
                         string tournamentSlug = (string)roundMeta.tournament_slug;
+                        string? gameSlug = roundMeta.game as string;
 
                         // Get all participant user IDs in the group
                         var userIds = (await notifConn.QueryAsync<string>(
@@ -1794,7 +1796,8 @@ public static partial class BRGroupEndpoints
                             userIds.Select(Guid.Parse),
                             "br_round_active",
                             title,
-                            discordMessage);
+                            discordMessage,
+                            gameSlug);
                     }
                     catch (Exception ex)
                     {

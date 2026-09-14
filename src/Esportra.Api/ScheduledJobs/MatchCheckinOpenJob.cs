@@ -35,6 +35,17 @@ public sealed class MatchCheckinOpenJob(
             if (matchRow == default || matchRow.Status != "pending" || matchRow.ScheduledTime is null)
                 return;
 
+            var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                """
+                SELECT t.game
+                FROM brkt_matches bm
+                JOIN brkt_rounds r ON r.id = bm.round_id
+                JOIN stages s ON s.id = r.stage_id
+                JOIN tournaments t ON t.id = s.tournament_id
+                WHERE bm.id = @matchId
+                """,
+                new { matchId });
+
             var captainUserIds = (await conn.QueryAsync<Guid>(
                 """
                 SELECT DISTINCT user_id FROM (
@@ -65,11 +76,15 @@ public sealed class MatchCheckinOpenJob(
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO notifications (user_id, type, title, message, is_read)
-                        VALUES (@userId, 'checkin_open'::notification_type, @title, @message, FALSE)
+                        INSERT INTO notifications (user_id, type, title, message, data, is_read)
+                        VALUES (@userId, 'checkin_open'::notification_type, @title, @message,
+                                CASE WHEN @gameSlug IS NOT NULL
+                                     THEN jsonb_build_object('game_slug', @gameSlug)
+                                     ELSE '{}'::jsonb
+                                END, FALSE)
                         ON CONFLICT DO NOTHING
                         """,
-                        new { userId, title, message });
+                        new { userId, title, message, gameSlug });
                     await notifHub.Clients
                         .Group(NotificationHub.UserGroup(userId.ToString()))
                         .SendAsync(NotificationHubEvents.NewNotification,
@@ -79,7 +94,7 @@ public sealed class MatchCheckinOpenJob(
                 {
                     logger.LogWarning(ex, "[CheckinOpen] Failed to notify user {UserId} for match {MatchId}", userId, matchId);
                 }
-                await discord.TrySendDmAsync(userId, "checkin_open", title, message);
+                await discord.TrySendDmAsync(userId, "checkin_open", title, message, gameSlug);
             }
 
             logger.LogInformation("[CheckinOpen] Notified {Count} captain(s) for match {MatchId}", captainUserIds.Count, matchId);

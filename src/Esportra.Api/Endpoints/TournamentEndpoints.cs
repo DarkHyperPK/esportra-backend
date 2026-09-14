@@ -5797,7 +5797,7 @@ public static class TournamentEndpoints
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT td.raised_by_user_id, td.title, td.reference_number, td.resolution_notes,
-                       t.name AS tournament_name, t.organizer_id,
+                       t.name AS tournament_name, t.organizer_id, t.game,
                        p_filer.email AS filer_email, p_org.email AS organizer_email,
                        COALESCE(p_filer.full_name, p_filer.username, 'Unknown') AS filer_name
                 FROM tournament_disputes td
@@ -5816,6 +5816,7 @@ public static class TournamentEndpoints
                 string referenceNumber = ((string?)dispute.reference_number) ?? "";
                 string resolutionNotes = ((string?)dispute.resolution_notes) ?? "";
                 string tournamentName = ((string?)dispute.tournament_name) ?? "";
+                string? gameSlug = (string?)dispute.game;
                 string? filerEmail = (string?)dispute.filer_email;
                 string? organizerEmail = (string?)dispute.organizer_email;
                 string filerName = ((string?)dispute.filer_name) ?? "Unknown";
@@ -5846,7 +5847,7 @@ public static class TournamentEndpoints
 
                 var disputeFilerUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
                 await discord.TrySendDmAsync(filerId, notifType, notifTitle,
-                    $"{notifMsg}\n\n[View →]({disputeFilerUrlBase}/user/my-disputes)");
+                    $"{notifMsg}\n\n[View →]({disputeFilerUrlBase}/user/my-disputes)", gameSlug);
 
                 var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
                 var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
@@ -5954,12 +5955,18 @@ public static class TournamentEndpoints
         try
         {
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT raised_by_user_id, title FROM tournament_disputes WHERE id = @disputeId",
+                """
+                SELECT td.raised_by_user_id, td.title, t.game
+                FROM tournament_disputes td
+                JOIN tournaments t ON t.id = td.tournament_id
+                WHERE td.id = @disputeId
+                """,
                 new { disputeId });
             if (dispute is null) return;
 
             Guid filerId = (Guid)dispute.raised_by_user_id;
             string disputeTitle = ((string?)dispute.title) ?? "Your dispute";
+            string? gameSlug = dispute.game as string;
             var message = $"Your dispute \"{disputeTitle}\" has been reopened. An organizer will review it again.";
 
             await conn.ExecuteAsync(
@@ -5980,7 +5987,7 @@ public static class TournamentEndpoints
 
             var reopenUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened",
-                $"{message}\n\n[View →]({reopenUrlBase}/user/my-disputes)");
+                $"{message}\n\n[View →]({reopenUrlBase}/user/my-disputes)", gameSlug);
         }
         catch (Exception ex)
         {
@@ -5998,7 +6005,7 @@ public static class TournamentEndpoints
         {
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT td.raised_by_user_id, td.title, t.organizer_id
+                SELECT td.raised_by_user_id, td.title, t.organizer_id, t.game
                 FROM tournament_disputes td
                 JOIN tournaments t ON t.id = td.tournament_id
                 WHERE td.id = @disputeId
@@ -6008,6 +6015,7 @@ public static class TournamentEndpoints
             Guid filerId = (Guid)dispute.raised_by_user_id;
             Guid organizerId = (Guid)dispute.organizer_id;
             string disputeTitle = ((string?)dispute.title) ?? "Your dispute";
+            string? gameSlug = dispute.game as string;
             var data = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId });
             var filerMessage = $"Your dispute \"{disputeTitle}\" has been reopened successfully.";
             await conn.ExecuteAsync(
@@ -6021,7 +6029,7 @@ public static class TournamentEndpoints
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
             var playerReopenUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened",
-                $"{filerMessage}\n\n[View →]({playerReopenUrlBase}/user/my-disputes)");
+                $"{filerMessage}\n\n[View →]({playerReopenUrlBase}/user/my-disputes)", gameSlug);
             if (organizerId != filerId)
             {
                 await conn.ExecuteAsync(

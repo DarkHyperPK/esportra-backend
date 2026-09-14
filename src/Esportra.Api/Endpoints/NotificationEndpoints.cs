@@ -299,9 +299,11 @@ public static class NotificationEndpoints
             var acceptedPlayerName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT COALESCE(full_name, username, 'A player') FROM profiles WHERE id = @id",
                 new { id = userCtx.UserIdGuid });
-            var acceptedTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @teamId",
+            var teamInfo = await conn.QuerySingleOrDefaultAsync<(string? Name, string? Game)>(
+                "SELECT name, game FROM teams WHERE id = @teamId",
                 new { teamId = Guid.Parse(req.TeamId) });
+            var acceptedTeamName = teamInfo.Name;
+            var gameSlug = teamInfo.Game;
             var notifData = JsonSerializer.Serialize(new { team_id = req.TeamId });
             await conn.ExecuteAsync(
                 """
@@ -329,7 +331,8 @@ public static class NotificationEndpoints
                 (Guid)invite.invited_by_user_id,
                 "team_invite_response",
                 "Invite Response",
-                $"{acceptedPlayerName ?? "A player"} accepted your team invitation.\n\n[View →]({acceptUrlBase}/player/teams)");
+                $"{acceptedPlayerName ?? "A player"} accepted your team invitation.\n\n[View →]({acceptUrlBase}/player/teams)",
+                gameSlug);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -378,9 +381,11 @@ public static class NotificationEndpoints
             var rejectedPlayerName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT COALESCE(full_name, username, 'A player') FROM profiles WHERE id = @id",
                 new { id = userCtx.UserIdGuid });
-            var rejectedTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @teamId",
+            var teamInfo = await conn.QuerySingleOrDefaultAsync<(string? Name, string? Game)>(
+                "SELECT name, game FROM teams WHERE id = @teamId",
                 new { teamId = Guid.Parse(req.TeamId) });
+            var rejectedTeamName = teamInfo.Name;
+            var gameSlug = teamInfo.Game;
             var notifData = JsonSerializer.Serialize(new { team_id = req.TeamId });
             await conn.ExecuteAsync(
                 """
@@ -407,7 +412,8 @@ public static class NotificationEndpoints
                 (Guid)invite.invited_by_user_id,
                 "team_invite_response",
                 "Invite Response",
-                $"{rejectedPlayerName ?? "A player"} declined your team invitation.\n\n[View →]({rejectUrlBase}/player/teams)");
+                $"{rejectedPlayerName ?? "A player"} declined your team invitation.\n\n[View →]({rejectUrlBase}/player/teams)",
+                gameSlug);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

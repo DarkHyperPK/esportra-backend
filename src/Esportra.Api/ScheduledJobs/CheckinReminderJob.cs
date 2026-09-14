@@ -36,6 +36,17 @@ public sealed class CheckinReminderJob(
         if (matchRow.CheckInDeadline.HasValue && matchRow.CheckInDeadline.Value.ToUniversalTime() < DateTime.UtcNow)
             return;
 
+        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT t.game
+            FROM brkt_matches bm
+            JOIN brkt_rounds r ON r.id = bm.round_id
+            JOIN stages s ON s.id = r.stage_id
+            JOIN tournaments t ON t.id = s.tournament_id
+            WHERE bm.id = @matchId
+            """,
+            new { matchId });
+
         var uncheckedUserIds = await QueryUncheckedCaptainsAsync(conn, matchId);
 
         if (uncheckedUserIds.Count == 0)
@@ -47,7 +58,7 @@ public sealed class CheckinReminderJob(
         var dmMessage = $"{message}\n\n[View →]({frontendUrl}/notifications)";
 
         foreach (var userId in uncheckedUserIds)
-            await discord.TrySendDmAsync(userId, "check_in_reminder", title, dmMessage);
+            await discord.TrySendDmAsync(userId, "check_in_reminder", title, dmMessage, gameSlug);
 
         logger.LogInformation(
             "[CheckinReminder] Sent DM reminders to {Count} unchecked captain(s) for match {MatchId}.",

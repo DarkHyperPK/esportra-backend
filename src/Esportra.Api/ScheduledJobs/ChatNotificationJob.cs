@@ -51,12 +51,23 @@ public sealed class ChatNotificationJob(
                 return;
             }
 
+            var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                """
+                SELECT t.game
+                FROM brkt_matches bm
+                JOIN brkt_rounds r ON r.id = bm.round_id
+                JOIN stages s ON s.id = r.stage_id
+                JOIN tournaments t ON t.id = s.tournament_id
+                WHERE bm.id = @matchId
+                """,
+                new { matchId });
+
             var senderTeamName = await GetSenderTeamNameAsync(conn, matchId, recipientUserId);
             var preview = await GetMessagePreviewAsync(conn, matchId, recipientUserId);
             var matchRoomUrl = await BuildMatchRoomUrlAsync(conn, matchId);
 
             await SendEmailAsync(recipientEmail, senderTeamName, preview, matchRoomUrl, unreadCount);
-            await SendDiscordDmAsync(recipientUserId, senderTeamName, preview, matchRoomUrl, unreadCount);
+            await SendDiscordDmAsync(recipientUserId, senderTeamName, preview, matchRoomUrl, unreadCount, gameSlug);
 
             logger.LogDebug("[ChatNotification] Sent for match {MatchId}, recipient {RecipientId}, {Count} unread",
                 matchId, recipientUserId, unreadCount);
@@ -149,7 +160,7 @@ public sealed class ChatNotificationJob(
 
     private async Task SendDiscordDmAsync(
         Guid recipientUserId, string senderTeamName,
-        string preview, string matchRoomUrl, int unreadCount)
+        string preview, string matchRoomUrl, int unreadCount, string? gameSlug)
     {
         var plural = unreadCount == 1 ? "" : "s";
         var description =
@@ -157,6 +168,6 @@ public sealed class ChatNotificationJob(
             $"[View match room]({matchRoomUrl})";
 
         await discordNotification.TrySendDmAsync(
-            recipientUserId, "match_chat_message", "Unread Match Chat Messages", description);
+            recipientUserId, "match_chat_message", "Unread Match Chat Messages", description, gameSlug);
     }
 }

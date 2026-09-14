@@ -41,7 +41,12 @@ public sealed class DiscordNotificationService
     /// false if skipped (not configured, not eligible, no linked account) or if the Discord API failed.
     /// Never throws.
     /// </summary>
-    public async Task<bool> TrySendDmAsync(Guid userId, string notificationType, string title, string message)
+    public async Task<bool> TrySendDmAsync(
+        Guid userId,
+        string notificationType,
+        string title,
+        string message,
+        string? gameSlug = null)
     {
         if (!IsConfigured) return false;
         if (!DmEligibleTypes.Contains(notificationType)) return false;
@@ -49,6 +54,18 @@ public sealed class DiscordNotificationService
         try
         {
             using var conn = _db.CreateConnection();
+
+            if (gameSlug is not null)
+            {
+                if (!await IsAllowedByGameConfigAsync(conn, gameSlug, notificationType))
+                {
+                    _logger.LogInformation(
+                        "Discord DM skipped — type {Type} not enabled for game {Game}",
+                        notificationType,
+                        gameSlug);
+                    return false;
+                }
+            }
 
             var prefs = await conn.QuerySingleOrDefaultAsync<(bool enabled, string? discordId)>(
                 """
@@ -80,15 +97,40 @@ public sealed class DiscordNotificationService
     /// <summary>
     /// Batch version — sends DMs to multiple users for the same notification.
     /// </summary>
-    public async Task TrySendBatchDmAsync(IEnumerable<Guid> userIds, string notificationType, string title, string message)
+    public async Task TrySendBatchDmAsync(
+        IEnumerable<Guid> userIds,
+        string notificationType,
+        string title,
+        string message,
+        string? gameSlug = null)
     {
         if (!IsConfigured) return;
         if (!DmEligibleTypes.Contains(notificationType)) return;
 
         foreach (var userId in userIds)
         {
-            await TrySendDmAsync(userId, notificationType, title, message);
+            await TrySendDmAsync(userId, notificationType, title, message, gameSlug);
         }
+    }
+
+    private async Task<bool> IsAllowedByGameConfigAsync(
+        System.Data.IDbConnection conn,
+        string gameSlug,
+        string notificationType)
+    {
+        var result = await conn.QuerySingleOrDefaultAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.game_catalog_games g
+                JOIN public.game_catalog_versions v ON v.id = g.version_id AND v.is_active = TRUE
+                WHERE g.slug = @gameSlug
+                  AND (g.features->'discordNotifications'->>'enabled')::boolean = TRUE
+                  AND g.features->'discordNotifications'->'dmTypes' ? @notificationType
+            )
+            """,
+            new { gameSlug, notificationType });
+
+        return result;
     }
 
     /// <summary>

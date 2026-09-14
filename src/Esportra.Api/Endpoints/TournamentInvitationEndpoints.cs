@@ -327,7 +327,8 @@ public static class TournamentInvitationEndpoints
                     (Guid)notification.user_id,
                     "tournament_invite",
                     "Tournament Invitation",
-                    dmTournamentMsg);
+                    dmTournamentMsg,
+                    tournamentGame);
             }
 
             var sentCount = 0;

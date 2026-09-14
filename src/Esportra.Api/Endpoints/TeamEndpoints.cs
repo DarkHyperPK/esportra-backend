@@ -467,10 +467,13 @@ public static class TeamEndpoints
                 await TeamNotifications.PushAsync(hub, others,
                     TeamNotifications.RosterUpdated, updateTitle, updateMessage);
 
+                var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT game FROM teams WHERE id = @id", new { id });
                 var teamUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
                 await discord.TrySendDmAsync(userId, "team_member_removed",
                     "Removed from Team",
-                    $"You have been removed from the team.\n\n[View →]({teamUrlBase}/player/teams)");
+                    $"You have been removed from the team.\n\n[View →]({teamUrlBase}/player/teams)",
+                    gameSlug);
 
                 return Results.Ok(new { success = true, removed = affected > 0 });
             }
@@ -560,10 +563,13 @@ public static class TeamEndpoints
                 await TeamNotifications.PushAsync(hub, others,
                     TeamNotifications.RosterUpdated, updateTitle, updateMessage);
 
+                var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT game FROM teams WHERE id = @id", new { id });
                 var captainUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
                 await discord.TrySendDmAsync(newCaptainIdGuid, "team_captain_changed",
                     "You're Now Captain",
-                    $"You are now the captain of the team.\n\n[View →]({captainUrlBase}/player/teams)");
+                    $"You are now the captain of the team.\n\n[View →]({captainUrlBase}/player/teams)",
+                    gameSlug);
             }
             catch
             {
@@ -721,8 +727,10 @@ public static class TeamEndpoints
             }
 
             // Notification to invitee
-            var inviteTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @id", new { id });
+            var teamInfo = await conn.QuerySingleOrDefaultAsync<(string? Name, string? Game)>(
+                "SELECT name, game FROM teams WHERE id = @id", new { id });
+            var inviteTeamName = teamInfo.Name;
+            var gameSlug = teamInfo.Game;
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
@@ -739,7 +747,8 @@ public static class TeamEndpoints
 
             var inviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             await discord.TrySendDmAsync(reqUserIdGuid, "team_invite", "Team Invitation",
-                $"You've been invited to join the team.\n\n[View →]({inviteUrlBase}/player/teams)");
+                $"You've been invited to join the team.\n\n[View →]({inviteUrlBase}/player/teams)",
+                gameSlug);
 
             // Send team invite email
             try
@@ -1451,8 +1460,10 @@ public static class TeamEndpoints
                 new { teamId = id, rosterId, userId = reqUserIdGuid, email = req.Email, invitedBy = userCtx.UserIdGuid });
 
             // Notification
-            var teamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @id", new { id });
+            var teamInfo = await conn.QuerySingleOrDefaultAsync<(string? Name, string? Game)>(
+                "SELECT name, game FROM teams WHERE id = @id", new { id });
+            var teamName = teamInfo.Name;
+            var gameSlug = teamInfo.Game;
             var rosterName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM team_rosters WHERE id = @rosterId", new { rosterId });
 
@@ -1475,7 +1486,8 @@ public static class TeamEndpoints
 
             var rosterInviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
             await discord.TrySendDmAsync(reqUserIdGuid, "team_invite", "Team Invitation",
-                $"You've been invited to join the team.\n\n[View →]({rosterInviteUrlBase}/player/teams)");
+                $"You've been invited to join the team.\n\n[View →]({rosterInviteUrlBase}/player/teams)",
+                gameSlug);
 
             return Results.Ok(invite);
         }).RequireAuthorization("Authenticated");

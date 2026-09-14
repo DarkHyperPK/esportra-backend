@@ -1468,6 +1468,16 @@ public static class MatchSystemEndpoints
 
             if (dispute is not null)
             {
+                var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                    """
+                    SELECT t.game
+                    FROM brkt_matches m
+                    JOIN brkt_versions v ON v.id = m.version_id
+                    JOIN tournaments t ON t.id = v.tournament_id
+                    WHERE m.id = @matchId
+                    """,
+                    new { matchId });
+
                 var notifType = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
                 var notifTitle = req.Status == "resolved"
                     ? "✅ Dispute Resolved"
@@ -1503,7 +1513,7 @@ public static class MatchSystemEndpoints
                     });
 
                 await discord.TrySendDmAsync(
-                    (Guid)dispute.disputed_by_user_id, notifType, notifTitle, dmDisputeMessage);
+                    (Guid)dispute.disputed_by_user_id, notifType, notifTitle, dmDisputeMessage, gameSlug);
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1531,7 +1541,7 @@ public static class MatchSystemEndpoints
                             data = notifDataWithSlug
                         });
 
-                    await discord.TrySendDmAsync(reporter.Value, notifType, notifTitle, dmDisputeMessage);
+                    await discord.TrySendDmAsync(reporter.Value, notifType, notifTitle, dmDisputeMessage, gameSlug);
                 }
             }
 
@@ -1568,7 +1578,8 @@ public static class MatchSystemEndpoints
                     m.scheduling_escalated_at AS LastEscalatedAt,
                     v.tournament_id AS TournamentId,
                     t.organizer_id AS OrganizerId,
-                    t.name AS TournamentName
+                    t.name AS TournamentName,
+                    t.game AS Game
                 FROM brkt_matches m
                 JOIN brkt_versions v ON v.id = m.version_id
                 JOIN tournaments t ON t.id = v.tournament_id
@@ -1653,7 +1664,7 @@ public static class MatchSystemEndpoints
             }
             catch { /* non-critical */ }
 
-            await discord.TrySendDmAsync(match.OrganizerId, "scheduling_escalation", orgTitle, orgMsg);
+            await discord.TrySendDmAsync(match.OrganizerId, "scheduling_escalation", orgTitle, orgMsg, match.Game);
 
             // Nudge the non-responding team's captains (all captains except the caller's competitor)
             var opponentCaptains = captains.Where(c => c != userCtx.UserIdGuid).ToList();
@@ -1861,6 +1872,15 @@ public static class MatchSystemEndpoints
     {
         var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
             "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
+        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT t.game
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
+            WHERE m.id = @matchId
+            """,
+            new { matchId });
         var tournamentSlug = match?.version_id is not null
             ? await conn.QuerySingleOrDefaultAsync<string?>(
                 """
@@ -1914,7 +1934,8 @@ public static class MatchSystemEndpoints
 
             await discord.TrySendDmAsync(opposingUserId.Value, "result_reported",
                 "⚔️ Match Result Submitted",
-                $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.");
+                $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
+                gameSlug);
         }
         catch (Exception notifyEx)
         {
@@ -2343,6 +2364,16 @@ public static class MatchSystemEndpoints
         string baseUrl,
         CancellationToken ct)
     {
+        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT t.game
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
+            WHERE m.id = @matchId
+            """,
+            new { matchId });
+
         try
         {
             await conn.ExecuteAsync(
@@ -2360,7 +2391,7 @@ public static class MatchSystemEndpoints
         catch { /* non-critical */ }
 
         await discord.TrySendDmAsync(recipientUserId, notificationType, title,
-            $"{message}\n\n[View →]({baseUrl}/notifications)");
+            $"{message}\n\n[View →]({baseUrl}/notifications)", gameSlug);
     }
 
     private static async Task NotifyWalkoverFailureAsync(
@@ -2410,7 +2441,8 @@ internal sealed record MatchEscalationContext(
     DateTime? LastEscalatedAt,
     Guid TournamentId,
     Guid OrganizerId,
-    string TournamentName);
+    string TournamentName,
+    string? Game);
 
 // ── Request records ───────────────────────────────────────────────────────────
 

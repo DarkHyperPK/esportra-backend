@@ -1162,6 +1162,16 @@ public static class MatchEndpoints
         DiscordNotificationService discord,
         CancellationToken ct)
     {
+        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+            """
+            SELECT t.game
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
+            WHERE m.id = @matchId
+            """,
+            new { matchId });
+
         const string title = "Party code submitted";
         const string message = "Your opponent has submitted the lobby party code. Check the match room to join.";
         try
@@ -1178,7 +1188,7 @@ public static class MatchEndpoints
                     new { type = "party_code_submitted", title, message }, ct);
         }
         catch { /* non-critical */ }
-        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", title, message);
+        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", title, message, gameSlug);
     }
 
     private static async Task<IResult?> ValidateGoLivePermissionAsync(

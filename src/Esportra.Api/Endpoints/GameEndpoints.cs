@@ -373,6 +373,41 @@ public static class GameEndpoints
 
             return Results.Ok(new { banner = assets.Banners.Count > 0 ? assets.Banners[0] : null, cover = assets.Cover, isCached = false });
         }); // Public
+
+        // ── GET /api/game-catalog/notification-configs ───────────────────────
+        // Returns Discord notification types grouped by category for all active games
+        app.MapGet("/api/game-catalog/notification-configs", async (IDbConnectionFactory db) =>
+        {
+            using var conn = db.CreateConnection();
+
+            var rows = (await conn.QueryAsync<(string GameSlug, string GameName, string? LogoUrl, string? ConfigJson)>(
+                """
+                SELECT g.slug AS GameSlug,
+                       g.name AS GameName,
+                       g.logo_url AS LogoUrl,
+                       (g.features->'discordNotifications')::text AS ConfigJson
+                FROM public.game_catalog_games g
+                JOIN public.game_catalog_versions v ON v.id = g.version_id AND v.is_active = TRUE
+                WHERE g.features->'discordNotifications' IS NOT NULL
+                  AND (g.features->'discordNotifications'->>'enabled')::boolean = TRUE
+                ORDER BY g.sort_order ASC, g.name ASC
+                """)).AsList();
+
+            var result = rows.Select(r =>
+            {
+                var dmTypes = DiscordNotificationCategories.ParseDmTypes(r.ConfigJson);
+                var categories = DiscordNotificationCategories.GroupByCategory(dmTypes);
+                return new
+                {
+                    r.GameSlug,
+                    r.GameName,
+                    r.LogoUrl,
+                    Categories = categories
+                };
+            });
+
+            return Results.Ok(result);
+        }).RequireAuthorization();
     }
 
     private static IgdbAssetsBatchItem? DeserializeIgdbAssets(string json)
