@@ -856,6 +856,70 @@ public static class ProfileEndpoints
             return Results.Ok(new { discord_dm_enabled = result.enabled, has_discord = result.hasDiscord });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/profiles/me/timezone ────────────────────────────────────
+        app.MapGet("/api/profiles/me/timezone", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var tzIana = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT settings->>'timezone_iana' FROM profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { timezone_iana = tzIana });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/timezone ─────────────────────────────────────
+        app.MapPut("/api/profiles/me/timezone", async (
+            [FromBody] SetTimezoneRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (string.IsNullOrWhiteSpace(req.TimezoneIana)
+                || !TimeZoneInfo.TryFindSystemTimeZoneById(req.TimezoneIana, out _))
+                return Results.BadRequest(new { error = "Invalid IANA timezone identifier." });
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE profiles
+                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('timezone_iana', @tzIana)
+                WHERE id = @userId
+                """,
+                new { userId = userCtx.UserIdGuid, tzIana = req.TimezoneIana });
+
+            return Results.Ok(new { timezone_iana = req.TimezoneIana });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/country ──────────────────────────────────────
+        app.MapPut("/api/profiles/me/country", async (
+            [FromBody] SetCountryRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!ProfileFieldValidator.TryValidateCountryCode(req.CountryCode, out var normalized, out var error))
+                return Results.BadRequest(new { error });
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE profiles SET country_code = @countryCode WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid, countryCode = normalized });
+
+            return Results.Ok(new { country_code = normalized });
+        }).RequireAuthorization("Authenticated");
+
         // ── DELETE /api/profiles/me/discord ─────────────────────────────────
         // Unlink the Discord identity from the authenticated user.
         // Blocked if the user has active registrations in tournaments that require Discord.
@@ -976,6 +1040,8 @@ public static class ProfileEndpoints
     }
 }
 
+public sealed record SetTimezoneRequest(string? TimezoneIana);
+public sealed record SetCountryRequest(string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
 public sealed record UpdateSkillLevelRequest(string SkillLevel);

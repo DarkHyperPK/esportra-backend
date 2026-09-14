@@ -1,4 +1,5 @@
 using System.Data;
+using System.Globalization;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
@@ -60,18 +61,18 @@ public sealed class BrScheduleNotificationService(
                 return;
 
             var contextLabel = BuildContextLabel(meta.StageName, meta.StageOrder, meta.GroupLabel, meta.WaveNumber);
-            var timeLabel = FormatScheduleTime(scheduledAt);
             var title = scheduledAt is null
                 ? $"Game {meta.GameNumber} schedule cleared"
                 : $"Game {meta.GameNumber} rescheduled";
-            var message = scheduledAt is null
-                ? $"{contextLabel} — Game {meta.GameNumber} no longer has a scheduled start time."
-                : $"{contextLabel} — Game {meta.GameNumber} is scheduled for {timeLabel}.";
-            if (!string.IsNullOrWhiteSpace(meta.LobbyCode))
-                message += $" Lobby code: {meta.LobbyCode.Trim()}.";
+            var lobbyCodeSuffix = !string.IsNullOrWhiteSpace(meta.LobbyCode)
+                ? $" Lobby code: {meta.LobbyCode.Trim()}."
+                : string.Empty;
+            Func<string, string> buildMessage = timeLabel => scheduledAt is null
+                ? $"{contextLabel} — Game {meta.GameNumber} no longer has a scheduled start time.{lobbyCodeSuffix}"
+                : $"{contextLabel} — Game {meta.GameNumber} is scheduled for {timeLabel}.{lobbyCodeSuffix}";
 
             var link = BuildBrRoomLink(meta.TournamentSlug);
-            await InsertAndPushAsync(conn, userIds, "br_game_schedule_changed", title, message, link, new
+            await InsertAndPushAsync(conn, userIds, "br_game_schedule_changed", title, scheduledAt, buildMessage, link, new
             {
                 game_id = meta.GameId.ToString(),
                 lobby_id = meta.LobbyId.ToString(),
@@ -133,19 +134,19 @@ public sealed class BrScheduleNotificationService(
                 return;
 
             var contextLabel = BuildContextLabel(meta.StageName, meta.StageOrder, meta.GroupLabel, meta.WaveNumber);
-            var timeLabel = FormatScheduleTime(scheduledAt);
             var roundLabel = meta.WaveNumber > 0 ? $"Round {meta.WaveNumber}" : "Lobby";
             var title = scheduledAt is null
                 ? $"{roundLabel} schedule cleared"
                 : $"{roundLabel} rescheduled";
-            var message = scheduledAt is null
-                ? $"{contextLabel} — {roundLabel} no longer has a scheduled start time."
-                : $"{contextLabel} — {roundLabel} is scheduled for {timeLabel}.";
-            if (!string.IsNullOrWhiteSpace(meta.LobbyCode))
-                message += $" Lobby code: {meta.LobbyCode.Trim()}.";
+            var lobbyCodeSuffix = !string.IsNullOrWhiteSpace(meta.LobbyCode)
+                ? $" Lobby code: {meta.LobbyCode.Trim()}."
+                : string.Empty;
+            Func<string, string> buildMessage = timeLabel => scheduledAt is null
+                ? $"{contextLabel} — {roundLabel} no longer has a scheduled start time.{lobbyCodeSuffix}"
+                : $"{contextLabel} — {roundLabel} is scheduled for {timeLabel}.{lobbyCodeSuffix}";
 
             var link = BuildBrRoomLink(meta.TournamentSlug);
-            await InsertAndPushAsync(conn, userIds, "br_lobby_schedule_changed", title, message, link, new
+            await InsertAndPushAsync(conn, userIds, "br_lobby_schedule_changed", title, scheduledAt, buildMessage, link, new
             {
                 lobby_id = meta.LobbyId.ToString(),
                 wave_number = meta.WaveNumber,
@@ -198,7 +199,8 @@ public sealed class BrScheduleNotificationService(
         IReadOnlyList<Guid> userIds,
         string type,
         string title,
-        string message,
+        DateTimeOffset? scheduledAt,
+        Func<string, string> buildMessage,
         string link,
         object data,
         CancellationToken ct)
@@ -206,6 +208,10 @@ public sealed class BrScheduleNotificationService(
         var dataJson = JsonSerializer.Serialize(data);
         foreach (var userId in userIds)
         {
+            var tzIana = await FetchUserTimezoneAsync(conn, userId, ct);
+            var timeLabel = FormatScheduleTimeForUser(scheduledAt, tzIana);
+            var message = buildMessage(timeLabel);
+
             var notificationId = await conn.QuerySingleAsync<Guid>(
                 """
                 INSERT INTO notifications
@@ -242,8 +248,30 @@ public sealed class BrScheduleNotificationService(
             : $"{stage} · {group}";
     }
 
-    private static string FormatScheduleTime(DateTimeOffset? scheduledAt) =>
-        scheduledAt?.ToUniversalTime().ToString("MMM d, yyyy 'at' h:mm tt 'UTC'") ?? "TBD";
+    private static async Task<string?> FetchUserTimezoneAsync(
+        IDbConnection conn, Guid userId, CancellationToken ct)
+    {
+        return await conn.QuerySingleOrDefaultAsync<string?>(
+            "SELECT settings->>'timezone_iana' FROM profiles WHERE id = @userId",
+            new { userId });
+    }
+
+    internal static string FormatScheduleTimeForUser(DateTimeOffset? scheduledAt, string? tzIana)
+    {
+        if (!scheduledAt.HasValue)
+            return "TBD";
+
+        var utc = scheduledAt.Value.ToUniversalTime();
+
+        if (!string.IsNullOrWhiteSpace(tzIana)
+            && TimeZoneInfo.TryFindSystemTimeZoneById(tzIana, out var tz))
+        {
+            var local = TimeZoneInfo.ConvertTime(utc, tz);
+            return local.ToString("MMM d, yyyy 'at' h:mm tt", CultureInfo.InvariantCulture);
+        }
+
+        return utc.ToString("MMM d, yyyy 'at' h:mm tt", CultureInfo.InvariantCulture);
+    }
 
     private static string BuildBrRoomLink(string? tournamentSlug) =>
         !string.IsNullOrWhiteSpace(tournamentSlug)
