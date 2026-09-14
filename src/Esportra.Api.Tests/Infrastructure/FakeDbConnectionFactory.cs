@@ -16,6 +16,7 @@ namespace Esportra.Api.Tests.Infrastructure;
 internal sealed class FakeDbConnectionFactory : IDbConnectionFactory
 {
     private readonly Queue<object?[][]> _queue = new();
+    private readonly Queue<int> _nonQueryQueue = new();
 
     public int QueueCount => _queue.Count;
 
@@ -28,12 +29,16 @@ internal sealed class FakeDbConnectionFactory : IDbConnectionFactory
     public void EnqueueEmptyResult()
         => _queue.Enqueue([]);
 
-    public IDbConnection CreateConnection() => new FakeDbConnection(_queue);
+    /// <summary>Enqueues a rows-affected count returned by Dapper's ExecuteAsync.</summary>
+    public void EnqueueNonQueryResult(int rowsAffected)
+        => _nonQueryQueue.Enqueue(rowsAffected);
+
+    public IDbConnection CreateConnection() => new FakeDbConnection(_queue, _nonQueryQueue);
 }
 
 // ── Connection ────────────────────────────────────────────────────────────────
 
-internal sealed class FakeDbConnection(Queue<object?[][]> queue) : DbConnection
+internal sealed class FakeDbConnection(Queue<object?[][]> queue, Queue<int> nonQueryQueue) : DbConnection
 {
     public override string ConnectionString { get; set; } = "fake";
     public override string Database => "fake";
@@ -48,12 +53,12 @@ internal sealed class FakeDbConnection(Queue<object?[][]> queue) : DbConnection
     protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
         => throw new NotSupportedException();
 
-    protected override DbCommand CreateDbCommand() => new FakeDbCommand(queue);
+    protected override DbCommand CreateDbCommand() => new FakeDbCommand(queue, nonQueryQueue);
 }
 
 // ── Command ───────────────────────────────────────────────────────────────────
 
-internal sealed class FakeDbCommand(Queue<object?[][]> queue) : DbCommand
+internal sealed class FakeDbCommand(Queue<object?[][]> queue, Queue<int> nonQueryQueue) : DbCommand
 {
     private readonly FakeDbParameterCollection _params = new();
 
@@ -79,7 +84,13 @@ internal sealed class FakeDbCommand(Queue<object?[][]> queue) : DbCommand
         => Task.FromResult(ExecuteDbDataReader(behavior));
 
     public override void Cancel() { }
-    public override int ExecuteNonQuery() => 0;
+
+    public override int ExecuteNonQuery()
+        => nonQueryQueue.Count > 0 ? nonQueryQueue.Dequeue() : 0;
+
+    public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
+        => Task.FromResult(ExecuteNonQuery());
+
     public override object? ExecuteScalar() => null;
     public override void Prepare() { }
 }
