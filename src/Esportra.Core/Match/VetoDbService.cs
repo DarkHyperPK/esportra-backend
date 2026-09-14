@@ -146,7 +146,7 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
             SELECT a.action_number,
                    COALESCE(a.team_side, 'team1') AS team_side,
                    a.team_id,
-                   t.name AS team_name,
+                   COALESCE(t.name, tpart.team_name, solop.username) AS team_name,
                    a.action_type AS action,
                    a.map_id::text AS map_id,
                    gm.map_name,
@@ -155,6 +155,9 @@ public sealed class VetoDbService(IDbConnectionFactory db, IVetoSettingsReposito
                    a.created_at::text AS created_at
             FROM public.match_map_veto_actions a
             LEFT JOIN public.teams t ON t.id = a.team_id
+            LEFT JOIN public.tournament_participants tpart ON tpart.id = a.team_id
+              AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
+            LEFT JOIN public.profiles solop ON solop.id = tpart.user_id
             LEFT JOIN public.game_maps gm ON gm.id = a.map_id
             WHERE a.match_id = @matchId
             ORDER BY a.action_number ASC",

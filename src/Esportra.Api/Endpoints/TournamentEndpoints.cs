@@ -2499,7 +2499,7 @@ public static class TournamentEndpoints
                        t.name AS tournament_name,
                        t.format AS tournament_format, t.start_date AS tournament_start_date, t.game AS tournament_game,
                        COALESCE(p.full_name, p.username, 'Unknown') AS raised_by_name,
-                       td_team.name AS team_name,
+                       COALESCE(td_team.name, td_tpart.team_name, td_sp.username) AS team_name,
                        CASE WHEN bm.id IS NOT NULL THEN jsonb_build_object(
                            'match_number', bm.match_number,
                            'round_index', bm.round_index,
@@ -2508,8 +2508,8 @@ public static class TournamentEndpoints
                            'scheduled_time', bm.scheduled_time,
                            'team1_score', bm.team1_score,
                            'team2_score', bm.team2_score,
-                           'team1_name', t1.name,
-                           'team2_name', t2.name,
+                           'team1_name', COALESCE(t1.name, tp1.team_name, sp1.username),
+                           'team2_name', COALESCE(t2.name, tp2.team_name, sp2.username),
                            'team1_id', bm.team1_id,
                            'team2_id', bm.team2_id
                        ) ELSE NULL END AS match,
@@ -2533,7 +2533,7 @@ public static class TournamentEndpoints
                        CASE WHEN bm.id IS NOT NULL THEN (
                            SELECT COALESCE(jsonb_agg(jsonb_build_object(
                                'team_id', tm.team_id,
-                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN t1.name ELSE t2.name END,
+                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN COALESCE(t1.name, tp1.team_name, sp1.username) ELSE COALESCE(t2.name, tp2.team_name, sp2.username) END,
                                'user_id', tm.user_id,
                                'username', COALESCE(pr.full_name, pr.username),
                                'game_name', ra.game_name,
@@ -2559,9 +2559,9 @@ public static class TournamentEndpoints
                                   END AS evidence_urls,
                                   md.disputed_by_team_id, md.disputed_by_user_id, md.created_at, md.status,
                                   COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
-                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
-                                       WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
-                                       ELSE td_team.name END AS disputed_by_team_name
+                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN COALESCE(t1.name, tp1.team_name, sp1.username)
+                                       WHEN md.disputed_by_team_id = bm.team2_id THEN COALESCE(t2.name, tp2.team_name, sp2.username)
+                                       ELSE COALESCE(td_team.name, td_tpart.team_name, td_sp.username) END AS disputed_by_team_name
                            FROM match_disputes md
                            LEFT JOIN profiles pr_md ON pr_md.id = md.disputed_by_user_id
                            WHERE md.match_id = td.match_id
@@ -2572,9 +2572,18 @@ public static class TournamentEndpoints
                 JOIN tournaments t ON t.id = td.tournament_id
                 LEFT JOIN profiles p ON p.id = td.raised_by_user_id
                 LEFT JOIN teams td_team ON td_team.id = td.team_id
+                LEFT JOIN tournament_participants td_tpart ON td_tpart.id = td.team_id
+                  AND (td_tpart.is_mock = TRUE OR td_tpart.participant_type = 'solo')
+                LEFT JOIN profiles td_sp ON td_sp.id = td_tpart.user_id
                 LEFT JOIN brkt_matches bm ON bm.id = td.match_id
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN tournament_participants tp1 ON tp1.id = bm.team1_id
+                  AND (tp1.is_mock = TRUE OR tp1.participant_type = 'solo')
+                LEFT JOIN profiles sp1 ON sp1.id = tp1.user_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                LEFT JOIN tournament_participants tp2 ON tp2.id = bm.team2_id
+                  AND (tp2.is_mock = TRUE OR tp2.participant_type = 'solo')
+                LEFT JOIN profiles sp2 ON sp2.id = tp2.user_id
                 WHERE (t.organizer_id = @userId
                    OR __STAFF_ACCESS__)
                   AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
@@ -3236,8 +3245,8 @@ public static class TournamentEndpoints
                            'scheduled_time', bm.scheduled_time,
                            'team1_score', bm.team1_score,
                            'team2_score', bm.team2_score,
-                           'team1_name', t1.name,
-                           'team2_name', t2.name,
+                           'team1_name', COALESCE(t1.name, tp1.team_name, sp1.username),
+                           'team2_name', COALESCE(t2.name, tp2.team_name, sp2.username),
                            'team1_id', bm.team1_id,
                            'team2_id', bm.team2_id
                        ) ELSE NULL END AS match,
@@ -3259,7 +3268,7 @@ public static class TournamentEndpoints
                        CASE WHEN bm.id IS NOT NULL THEN (
                            SELECT COALESCE(jsonb_agg(jsonb_build_object(
                                'team_id', tm.team_id,
-                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN t1.name ELSE t2.name END,
+                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN COALESCE(t1.name, tp1.team_name, sp1.username) ELSE COALESCE(t2.name, tp2.team_name, sp2.username) END,
                                'user_id', tm.user_id,
                                'username', COALESCE(pr.full_name, pr.username),
                                'game_name', ra.game_name,
@@ -3284,9 +3293,9 @@ public static class TournamentEndpoints
                                   END AS evidence_urls,
                                   md.disputed_by_team_id, md.disputed_by_user_id, md.created_at, md.status,
                                   COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
-                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
-                                       WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
-                                       ELSE td_team.name END AS disputed_by_team_name
+                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN COALESCE(t1.name, tp1.team_name, sp1.username)
+                                       WHEN md.disputed_by_team_id = bm.team2_id THEN COALESCE(t2.name, tp2.team_name, sp2.username)
+                                       ELSE COALESCE(td_team.name, td_tpart.team_name, td_sp.username) END AS disputed_by_team_name
                            FROM match_disputes md
                            LEFT JOIN profiles pr_md ON pr_md.id = md.disputed_by_user_id
                            WHERE md.match_id = td.match_id
@@ -3296,9 +3305,18 @@ public static class TournamentEndpoints
                 FROM public.tournament_disputes td
                 LEFT JOIN public.tournaments t ON t.id = td.tournament_id
                 LEFT JOIN teams td_team ON td_team.id = td.team_id
+                LEFT JOIN tournament_participants td_tpart ON td_tpart.id = td.team_id
+                  AND (td_tpart.is_mock = TRUE OR td_tpart.participant_type = 'solo')
+                LEFT JOIN profiles td_sp ON td_sp.id = td_tpart.user_id
                 LEFT JOIN brkt_matches bm ON bm.id = td.match_id
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN tournament_participants tp1 ON tp1.id = bm.team1_id
+                  AND (tp1.is_mock = TRUE OR tp1.participant_type = 'solo')
+                LEFT JOIN profiles sp1 ON sp1.id = tp1.user_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                LEFT JOIN tournament_participants tp2 ON tp2.id = bm.team2_id
+                  AND (tp2.is_mock = TRUE OR tp2.participant_type = 'solo')
+                LEFT JOIN profiles sp2 ON sp2.id = tp2.user_id
                 WHERE (td.raised_by_user_id = @userId
                    OR EXISTS (
                        SELECT 1 FROM brkt_matches bm2
@@ -3389,8 +3407,8 @@ public static class TournamentEndpoints
                            'scheduled_time', bm.scheduled_time,
                            'team1_score', bm.team1_score,
                            'team2_score', bm.team2_score,
-                           'team1_name', t1.name,
-                           'team2_name', t2.name,
+                           'team1_name', COALESCE(t1.name, tp1.team_name, sp1.username),
+                           'team2_name', COALESCE(t2.name, tp2.team_name, sp2.username),
                            'team1_id', bm.team1_id,
                            'team2_id', bm.team2_id
                        ) ELSE NULL END AS match,
@@ -3421,9 +3439,9 @@ public static class TournamentEndpoints
                                   END AS evidence_urls,
                                   md.disputed_by_team_id, md.disputed_by_user_id, md.created_at, md.status,
                                   COALESCE(pr_md.full_name, pr_md.username) AS disputed_by_name,
-                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN t1.name
-                                       WHEN md.disputed_by_team_id = bm.team2_id THEN t2.name
-                                       ELSE td_team.name END AS disputed_by_team_name
+                                  CASE WHEN md.disputed_by_team_id = bm.team1_id THEN COALESCE(t1.name, tp1.team_name, sp1.username)
+                                       WHEN md.disputed_by_team_id = bm.team2_id THEN COALESCE(t2.name, tp2.team_name, sp2.username)
+                                       ELSE COALESCE(td_team.name, td_tpart.team_name, td_sp.username) END AS disputed_by_team_name
                            FROM match_disputes md
                            LEFT JOIN profiles pr_md ON pr_md.id = md.disputed_by_user_id
                            WHERE md.match_id = td.match_id
@@ -3433,7 +3451,7 @@ public static class TournamentEndpoints
                        CASE WHEN bm.id IS NOT NULL THEN (
                            SELECT COALESCE(jsonb_agg(jsonb_build_object(
                                'team_id', tm.team_id,
-                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN t1.name ELSE t2.name END,
+                               'team_name', CASE WHEN tm.team_id = bm.team1_id THEN COALESCE(t1.name, tp1.team_name, sp1.username) ELSE COALESCE(t2.name, tp2.team_name, sp2.username) END,
                                'user_id', tm.user_id,
                                'username', COALESCE(pr.full_name, pr.username),
                                'game_name', ra.game_name,
@@ -3449,9 +3467,18 @@ public static class TournamentEndpoints
                 FROM public.tournament_disputes td
                 LEFT JOIN public.tournaments t ON t.id = td.tournament_id
                 LEFT JOIN teams td_team ON td_team.id = td.team_id
+                LEFT JOIN tournament_participants td_tpart ON td_tpart.id = td.team_id
+                  AND (td_tpart.is_mock = TRUE OR td_tpart.participant_type = 'solo')
+                LEFT JOIN profiles td_sp ON td_sp.id = td_tpart.user_id
                 LEFT JOIN brkt_matches bm ON bm.id = td.match_id
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
+                LEFT JOIN tournament_participants tp1 ON tp1.id = bm.team1_id
+                  AND (tp1.is_mock = TRUE OR tp1.participant_type = 'solo')
+                LEFT JOIN profiles sp1 ON sp1.id = tp1.user_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
+                LEFT JOIN tournament_participants tp2 ON tp2.id = bm.team2_id
+                  AND (tp2.is_mock = TRUE OR tp2.participant_type = 'solo')
+                LEFT JOIN profiles sp2 ON sp2.id = tp2.user_id
                 WHERE td.id = @disputeId
                 """, new { disputeId, userId = userCtx.UserIdGuid });
 
@@ -5343,9 +5370,11 @@ public static class TournamentEndpoints
         {
             var byName = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 """
-                SELECT tp.team_id FROM tournament_participants tp
-                JOIN teams t ON t.id = tp.team_id
-                WHERE tp.tournament_id = @id AND t.name = @teamName
+                SELECT COALESCE(tp.team_id, tp.id) FROM tournament_participants tp
+                LEFT JOIN teams t ON t.id = tp.team_id
+                LEFT JOIN profiles p ON p.id = tp.user_id
+                WHERE tp.tournament_id = @id
+                  AND COALESCE(t.name, tp.team_name, p.username) = @teamName
                 LIMIT 1
                 """,
                 new { id, teamName = req.WinnerTeamName });

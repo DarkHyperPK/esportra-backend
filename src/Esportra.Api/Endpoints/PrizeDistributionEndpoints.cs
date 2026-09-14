@@ -194,9 +194,14 @@ public static class PrizeDistributionEndpoints
                 """
                 SELECT tp.placement, tp.placement_label, tp.prize_amount,
                        tp.prize_rewards, tp.is_tied, tp.resolved_at,
-                       tp.team_id, t.name AS team_name, t.logo_url AS team_logo
+                       tp.team_id,
+                       COALESCE(t.name, tpart.team_name, solop.username) AS team_name,
+                       COALESCE(t.logo_url, solop.avatar_url) AS team_logo
                 FROM tournament_placements tp
-                JOIN teams t ON t.id = tp.team_id
+                LEFT JOIN teams t ON t.id = tp.team_id
+                LEFT JOIN tournament_participants tpart ON tpart.id = tp.team_id
+                  AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
+                LEFT JOIN profiles solop ON solop.id = tpart.user_id
                 WHERE tp.tournament_id = @id
                 ORDER BY tp.placement
                 """,
@@ -401,16 +406,21 @@ public static class PrizeDistributionEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT rd.id, rd.team_id, t.name AS team_name, rd.placement,
+                SELECT rd.id, rd.team_id,
+                       COALESCE(t.name, tpart.team_name, solop.username) AS team_name,
+                       rd.placement,
                        rd.reward_index, rd.reward_title, rd.reward_type,
                        rd.status, rd.notes, rd.distributed_by, rd.distributed_at,
                        tp.placement_label
                 FROM tournament_reward_distributions rd
-                JOIN teams t ON t.id = rd.team_id
+                LEFT JOIN teams t ON t.id = rd.team_id
+                LEFT JOIN tournament_participants tpart ON tpart.id = rd.team_id
+                  AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
+                LEFT JOIN profiles solop ON solop.id = tpart.user_id
                 LEFT JOIN tournament_placements tp ON tp.tournament_id = rd.tournament_id
                     AND tp.team_id = rd.team_id
                 WHERE rd.tournament_id = @id
-                ORDER BY rd.placement, rd.reward_index, t.name
+                ORDER BY rd.placement, rd.reward_index, COALESCE(t.name, tpart.team_name, solop.username)
                 """,
                 new { id });
 
@@ -529,17 +539,22 @@ public static class PrizeDistributionEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 """
-                SELECT cp.id, cp.team_id, t.name AS team_name, cp.placement,
+                SELECT cp.id, cp.team_id,
+                       COALESCE(t.name, tpart.team_name, solop.username) AS team_name,
+                       cp.placement,
                        cp.amount, cp.currency, cp.payment_method, cp.manual_payment_notes,
                        cp.status, cp.initiated_by, cp.initiated_at, cp.paid_at, cp.failed_reason,
                        cp.created_at, cp.updated_at,
                        tp.placement_label
                 FROM tournament_cash_payouts cp
-                JOIN teams t ON t.id = cp.team_id
+                LEFT JOIN teams t ON t.id = cp.team_id
+                LEFT JOIN tournament_participants tpart ON tpart.id = cp.team_id
+                  AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
+                LEFT JOIN profiles solop ON solop.id = tpart.user_id
                 LEFT JOIN tournament_placements tp ON tp.tournament_id = cp.tournament_id
                     AND tp.team_id = cp.team_id
                 WHERE cp.tournament_id = @id
-                ORDER BY cp.placement, t.name
+                ORDER BY cp.placement, COALESCE(t.name, tpart.team_name, solop.username)
                 """,
                 new { id });
 

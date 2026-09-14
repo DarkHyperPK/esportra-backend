@@ -1762,10 +1762,13 @@ public static class MatchSystemEndpoints
             var reports = await conn.QueryAsync<dynamic>(
                 """
                 SELECT mrr.*, COALESCE(p.full_name, p.username) AS reported_by_name,
-                       rpt.name AS reported_by_team_name
+                       COALESCE(rpt.name, rpt_tp.team_name, rpt_sp.username) AS reported_by_team_name
                 FROM match_result_reports mrr
                 LEFT JOIN profiles p ON p.id = mrr.reported_by
                 LEFT JOIN teams rpt ON rpt.id = mrr.reported_by_team_id
+                LEFT JOIN tournament_participants rpt_tp ON rpt_tp.id = mrr.reported_by_team_id
+                  AND (rpt_tp.is_mock = TRUE OR rpt_tp.participant_type = 'solo')
+                LEFT JOIN profiles rpt_sp ON rpt_sp.id = rpt_tp.user_id
                 WHERE mrr.match_id = @matchId
                 ORDER BY mrr.game_number, mrr.created_at
                 """, new { matchId = id });

@@ -139,12 +139,19 @@ public sealed class StandingsResolutionService(
         var rows = await conn.QueryAsync<dynamic>(
             """
             SELECT m.team1_id, m.team2_id,
-                   t1.name AS team1_name, t2.name AS team2_name
+                   COALESCE(t1.name, tp1.team_name, sp1.username) AS team1_name,
+                   COALESCE(t2.name, tp2.team_name, sp2.username) AS team2_name
             FROM brkt_matches m
             JOIN brkt_versions v ON v.id = m.version_id
             JOIN tournament_stages ts ON ts.id = v.stage_id
             LEFT JOIN teams t1 ON t1.id = m.team1_id
+            LEFT JOIN tournament_participants tp1 ON tp1.id = m.team1_id
+              AND (tp1.is_mock = TRUE OR tp1.participant_type = 'solo')
+            LEFT JOIN profiles sp1 ON sp1.id = tp1.user_id
             LEFT JOIN teams t2 ON t2.id = m.team2_id
+            LEFT JOIN tournament_participants tp2 ON tp2.id = m.team2_id
+              AND (tp2.is_mock = TRUE OR tp2.participant_type = 'solo')
+            LEFT JOIN profiles sp2 ON sp2.id = tp2.user_id
             WHERE ts.tournament_id = @tournamentId
               AND m.status = 'in_progress'
             """,
