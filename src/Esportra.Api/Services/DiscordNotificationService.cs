@@ -46,7 +46,8 @@ public sealed class DiscordNotificationService
         string notificationType,
         string title,
         string message,
-        string? gameSlug = null)
+        string? gameSlug = null,
+        Guid? tournamentId = null)
     {
         if (!IsConfigured) return false;
         if (!DmEligibleTypes.Contains(notificationType)) return false;
@@ -85,6 +86,10 @@ public sealed class DiscordNotificationService
                 return false;
             }
 
+            if (tournamentId.HasValue
+                && !await IsAllowedByTournamentPrefAsync(conn, userId, tournamentId.Value))
+                return false;
+
             return await SendDiscordDmAsync(prefs.discordId, title, message, notificationType);
         }
         catch (Exception ex)
@@ -102,15 +107,30 @@ public sealed class DiscordNotificationService
         string notificationType,
         string title,
         string message,
-        string? gameSlug = null)
+        string? gameSlug = null,
+        Guid? tournamentId = null)
     {
         if (!IsConfigured) return;
         if (!DmEligibleTypes.Contains(notificationType)) return;
 
         foreach (var userId in userIds)
         {
-            await TrySendDmAsync(userId, notificationType, title, message, gameSlug);
+            await TrySendDmAsync(userId, notificationType, title, message, gameSlug, tournamentId);
         }
+    }
+
+    private async Task<bool> IsAllowedByTournamentPrefAsync(
+        System.Data.IDbConnection conn,
+        Guid userId,
+        Guid tournamentId)
+    {
+        var pref = await conn.QuerySingleOrDefaultAsync<bool?>(
+            "SELECT discord_dms_enabled FROM user_tournament_discord_prefs " +
+            "WHERE user_id = @userId AND tournament_id = @tournamentId",
+            new { userId, tournamentId });
+
+        // Missing row = default true (opt-in by default, backward compatible).
+        return !pref.HasValue || pref.Value;
     }
 
     private async Task<bool> IsAllowedByGameConfigAsync(

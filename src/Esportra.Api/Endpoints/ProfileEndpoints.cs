@@ -1037,9 +1037,77 @@ public static class ProfileEndpoints
 
             return Results.Ok(new { success = outcome.Success, reason = outcome.Reason });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/tournament-discord-prefs ───────────────────
+        app.MapGet("/api/profiles/me/tournament-discord-prefs", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT t.id AS TournamentId, t.name AS TournamentName, t.game AS Game,
+                       t.start_date AS StartDate,
+                       COALESCE(p.discord_dms_enabled, true) AS DiscordDmsEnabled
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                LEFT JOIN user_tournament_discord_prefs p
+                    ON p.user_id = @callerId AND p.tournament_id = t.id
+                WHERE (tp.user_id = @callerId OR tp.team_captain_id = @callerId)
+                  AND tp.status NOT IN ('cancelled', 'rejected')
+                ORDER BY t.start_date DESC
+                """,
+                new { callerId = userCtx.UserIdGuid });
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/tournament-discord-prefs/{tournamentId} ────
+        app.MapPut("/api/profiles/me/tournament-discord-prefs/{tournamentId}", async (
+            Guid tournamentId,
+            [FromBody] ToggleTournamentDiscordPrefRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isParticipant = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM tournament_participants
+                    WHERE (user_id = @callerId OR team_captain_id = @callerId)
+                      AND tournament_id = @tournamentId
+                      AND status NOT IN ('cancelled', 'rejected')
+                )
+                """,
+                new { callerId = userCtx.UserIdGuid, tournamentId });
+
+            if (!isParticipant)
+                return Results.Forbid();
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_tournament_discord_prefs (user_id, tournament_id, discord_dms_enabled)
+                VALUES (@userId, @tournamentId, @enabled)
+                ON CONFLICT (user_id, tournament_id) DO UPDATE
+                    SET discord_dms_enabled = @enabled
+                """,
+                new { userId = userCtx.UserIdGuid, tournamentId, enabled = req.Enabled });
+
+            return Results.Ok(new { success = true, tournamentId, enabled = req.Enabled });
+        }).RequireAuthorization("Authenticated");
     }
 }
 
+public sealed record ToggleTournamentDiscordPrefRequest(bool Enabled);
 public sealed record SetTimezoneRequest(string? TimezoneIana);
 public sealed record SetCountryRequest(string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);

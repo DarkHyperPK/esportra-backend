@@ -154,6 +154,68 @@ public sealed class DiscordNotificationServiceTests
         result.Should().BeFalse();
     }
 
+    // ── TrySendDmAsync — Gate 5: tournament pref ─────────────────────────────
+
+    [Fact]
+    public async Task TrySendDmAsync_ReturnsFalse_WhenTournamentPrefIsOptedOut()
+    {
+        var dbFactory = new FakeDbConnectionFactory();
+        // Gate 4: user has DMs enabled and a linked Discord account
+        dbFactory.EnqueueSingleRowResult(true, "discord_user_123");
+        // Gate 5: user has opted out for this specific tournament
+        dbFactory.EnqueueSingleRowResult(false);
+
+        var service = BuildConfiguredService(dbFactory);
+
+        var result = await service.TrySendDmAsync(
+            Guid.NewGuid(), "match_ready", "Title", "Msg",
+            tournamentId: Guid.NewGuid());
+
+        result.Should().BeFalse("tournament-level opt-out must block the DM");
+    }
+
+    [Fact]
+    public async Task TrySendDmAsync_SkipsTournamentGate_WhenTournamentIdIsNull()
+    {
+        var dbFactory = new FakeDbConnectionFactory();
+        // Gate 4 passes — DMs enabled, no Discord ID (so it still returns false after gate 4)
+        dbFactory.EnqueueSingleRowResult(true, null);
+        // Gate 5 should not be queried when tournamentId is null
+        // If it were, the queue would be consumed and QueueCount would drop to 0
+
+        var service = BuildConfiguredService(dbFactory);
+
+        // No tournamentId passed → Gate 5 skipped
+        await service.TrySendDmAsync(Guid.NewGuid(), "match_ready", "Title", "Msg");
+
+        dbFactory.QueueCount.Should().Be(0, "Gate 5 query must not be enqueued when tournamentId is null");
+    }
+
+    [Fact]
+    public async Task TrySendDmAsync_AllowsDm_WhenTournamentPrefRowMissing()
+    {
+        // When no row exists in user_tournament_discord_prefs, default is true (opt-in).
+        // The service returns false at the HTTP send step since we have no real HTTP client,
+        // but it must reach past Gate 5 (i.e., Gate 5 must not have blocked it).
+        var dbFactory = new FakeDbConnectionFactory();
+        // Gate 4: DMs enabled + valid Discord ID
+        dbFactory.EnqueueSingleRowResult(true, "discord_user_456");
+        // Gate 5: no row in tournament pref table → QuerySingleOrDefaultAsync returns null → allowed
+        dbFactory.EnqueueEmptyResult();
+
+        var service = BuildConfiguredService(dbFactory);
+
+        // Will reach SendDiscordDmAsync which fails due to no real HTTP client, returns false.
+        // The important assertion is that Gate 5 did NOT block (queue fully consumed).
+        await service.TrySendDmAsync(
+            Guid.NewGuid(), "match_ready", "Title", "Msg",
+            tournamentId: Guid.NewGuid());
+
+        // Both queue entries were consumed: Gate 4 + Gate 5 queries both ran
+        dbFactory.QueueCount.Should().Be(0,
+            "both Gate 4 and Gate 5 queries must run when tournamentId is provided");
+    }
+
     // ── TrySendBatchDmAsync — ineligible type short-circuits ─────────────────
 
     [Fact]

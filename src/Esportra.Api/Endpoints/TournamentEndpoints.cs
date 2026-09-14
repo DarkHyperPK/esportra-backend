@@ -1181,6 +1181,7 @@ public static class TournamentEndpoints
             Guid participantId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            DiscordNotificationService discord,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1202,25 +1203,28 @@ public static class TournamentEndpoints
 
             if (affected == 0) return Results.NotFound(new { error = "Participant not found or not pending payment." });
 
-            // Create in-app notification for the player
+            // Notify the approved participant
             var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT tp.user_id, t.name AS tournament_name FROM tournament_participants tp JOIN tournaments t ON t.id = tp.tournament_id WHERE tp.id = @participantId",
+                """
+                SELECT tp.user_id, tp.team_captain_id,
+                       t.name AS tournament_name, t.slug AS tournament_slug, t.game AS game_slug
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE tp.id = @participantId
+                """,
                 new { participantId });
             if (participant is not null)
             {
-                await conn.ExecuteAsync(
-                    """
-                    INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament_announcement', @title,
-                            @message, @data::jsonb)
-                    """,
-                    new
-                    {
-                        userId = (Guid)participant.user_id,
-                        title = $"💰 Payment Confirmed!",
-                        message = $"You're officially in! Your payment for {(string)participant.tournament_name} has been approved. Time to prepare for battle!",
-                        data = $"{{\"tournament_id\":\"{id}\"}}"
-                    });
+                Guid? participantUserId = (Guid?)participant.user_id ?? (Guid?)participant.team_captain_id;
+                if (participantUserId.HasValue)
+                {
+                    await SendTournamentRegisteredNotifAsync(
+                        conn, participantUserId.Value, id,
+                        (string)participant.tournament_name,
+                        (string?)participant.tournament_slug ?? id.ToString(),
+                        (string?)participant.game_slug,
+                        discord);
+                }
             }
 
             return Results.Ok(new { success = true });
@@ -5797,7 +5801,7 @@ public static class TournamentEndpoints
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT td.raised_by_user_id, td.title, td.reference_number, td.resolution_notes,
-                       t.name AS tournament_name, t.organizer_id, t.game,
+                       t.id AS tournament_id, t.name AS tournament_name, t.organizer_id, t.game,
                        p_filer.email AS filer_email, p_org.email AS organizer_email,
                        COALESCE(p_filer.full_name, p_filer.username, 'Unknown') AS filer_name
                 FROM tournament_disputes td
@@ -5815,6 +5819,7 @@ public static class TournamentEndpoints
                 string title = ((string?)dispute.title) ?? "Your dispute";
                 string referenceNumber = ((string?)dispute.reference_number) ?? "";
                 string resolutionNotes = ((string?)dispute.resolution_notes) ?? "";
+                Guid filerTournamentId = (Guid)dispute.tournament_id;
                 string tournamentName = ((string?)dispute.tournament_name) ?? "";
                 string? gameSlug = (string?)dispute.game;
                 string? filerEmail = (string?)dispute.filer_email;
@@ -5839,15 +5844,20 @@ public static class TournamentEndpoints
                         type = notifType,
                         title = notifTitle,
                         message = notifMsg,
-                        data = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId }),
+                        data = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            dispute_id = disputeId,
+                            tournament_id = filerTournamentId.ToString(),
+                        }),
                     });
 
                 await notifHub.Clients.Group($"user:{filerId}")
                     .SendAsync("NewNotification", new { type = notifType }, ct);
 
                 var disputeFilerUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
-                await discord.TrySendDmAsync(filerId, notifType, notifTitle,
-                    $"{notifMsg}\n\n[View →]({disputeFilerUrlBase}/user/my-disputes)", gameSlug);
+                var filerDmTitle = $"[{tournamentName}] {notifTitle}";
+                await discord.TrySendDmAsync(filerId, notifType, filerDmTitle,
+                    $"{notifMsg}\n\n[View →]({disputeFilerUrlBase}/user/my-disputes)", gameSlug, filerTournamentId);
 
                 var frontendUrl = config["Frontend:BaseUrl"] ?? "https://esportra.com";
                 var filerDisputeUrl = $"{frontendUrl}/user/my-disputes?disputeId={disputeId}";
@@ -5956,7 +5966,8 @@ public static class TournamentEndpoints
         {
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT td.raised_by_user_id, td.title, t.game
+                SELECT td.raised_by_user_id, td.title, t.id AS tournament_id,
+                       t.name AS tournament_name, t.game
                 FROM tournament_disputes td
                 JOIN tournaments t ON t.id = td.tournament_id
                 WHERE td.id = @disputeId
@@ -5967,6 +5978,8 @@ public static class TournamentEndpoints
             Guid filerId = (Guid)dispute.raised_by_user_id;
             string disputeTitle = ((string?)dispute.title) ?? "Your dispute";
             string? gameSlug = dispute.game as string;
+            Guid reopenTournId = (Guid)dispute.tournament_id;
+            string reopenTournName = ((string?)dispute.tournament_name) ?? "";
             var message = $"Your dispute \"{disputeTitle}\" has been reopened. An organizer will review it again.";
 
             await conn.ExecuteAsync(
@@ -5979,15 +5992,22 @@ public static class TournamentEndpoints
                 {
                     userId = filerId,
                     message,
-                    data = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId }),
+                    data = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        dispute_id = disputeId,
+                        tournament_id = reopenTournId.ToString(),
+                    }),
                 });
 
             await notifHub.Clients.Group($"user:{filerId}")
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
 
             var reopenUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
-            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened",
-                $"{message}\n\n[View →]({reopenUrlBase}/user/my-disputes)", gameSlug);
+            var reopenDmTitle = string.IsNullOrWhiteSpace(reopenTournName)
+                ? "Dispute Reopened"
+                : $"[{reopenTournName}] Dispute Reopened";
+            await discord.TrySendDmAsync(filerId, "dispute_reopened", reopenDmTitle,
+                $"{message}\n\n[View →]({reopenUrlBase}/user/my-disputes)", gameSlug, reopenTournId);
         }
         catch (Exception ex)
         {
@@ -6005,7 +6025,8 @@ public static class TournamentEndpoints
         {
             var dispute = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT td.raised_by_user_id, td.title, t.organizer_id, t.game
+                SELECT td.raised_by_user_id, td.title, t.id AS tournament_id,
+                       t.name AS tournament_name, t.organizer_id, t.game
                 FROM tournament_disputes td
                 JOIN tournaments t ON t.id = td.tournament_id
                 WHERE td.id = @disputeId
@@ -6016,7 +6037,13 @@ public static class TournamentEndpoints
             Guid organizerId = (Guid)dispute.organizer_id;
             string disputeTitle = ((string?)dispute.title) ?? "Your dispute";
             string? gameSlug = dispute.game as string;
-            var data = System.Text.Json.JsonSerializer.Serialize(new { dispute_id = disputeId });
+            Guid playerReopenTournId = (Guid)dispute.tournament_id;
+            string playerReopenTournName = ((string?)dispute.tournament_name) ?? "";
+            var data = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                dispute_id = disputeId,
+                tournament_id = playerReopenTournId.ToString(),
+            });
             var filerMessage = $"Your dispute \"{disputeTitle}\" has been reopened successfully.";
             await conn.ExecuteAsync(
                 """
@@ -6028,8 +6055,11 @@ public static class TournamentEndpoints
             await notifHub.Clients.Group($"user:{filerId}")
                 .SendAsync("NewNotification", new { type = "dispute_reopened" }, ct);
             var playerReopenUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
-            await discord.TrySendDmAsync(filerId, "dispute_reopened", "Dispute Reopened",
-                $"{filerMessage}\n\n[View →]({playerReopenUrlBase}/user/my-disputes)", gameSlug);
+            var playerReopenDmTitle = string.IsNullOrWhiteSpace(playerReopenTournName)
+                ? "Dispute Reopened"
+                : $"[{playerReopenTournName}] Dispute Reopened";
+            await discord.TrySendDmAsync(filerId, "dispute_reopened", playerReopenDmTitle,
+                $"{filerMessage}\n\n[View →]({playerReopenUrlBase}/user/my-disputes)", gameSlug, playerReopenTournId);
             if (organizerId != filerId)
             {
                 await conn.ExecuteAsync(
@@ -6047,6 +6077,43 @@ public static class TournamentEndpoints
         {
             logger.LogWarning(ex, "Failed to send player reopen notifications for dispute {DisputeId} (non-fatal)", disputeId);
         }
+    }
+
+    // ── tournament_registered notification helper ────────────────────────────
+
+    private static async Task SendTournamentRegisteredNotifAsync(
+        System.Data.IDbConnection conn,
+        Guid userId,
+        Guid tournamentId,
+        string tournamentName,
+        string tournamentSlug,
+        string? gameSlug,
+        DiscordNotificationService discord)
+    {
+        var notifTitle = $"[{tournamentName}] Registered";
+        var notifMessage = $"You're registered for {tournamentName}. Match notifications will be sent via Discord DM.";
+        var notifData = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            tournament_id = tournamentId.ToString(),
+            game_slug = gameSlug,
+        });
+
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+            VALUES (@userId, 'tournament_registered', @title, @message, @link, @data::jsonb, FALSE)
+            """,
+            new
+            {
+                userId,
+                title = notifTitle,
+                message = notifMessage,
+                link = $"/tournaments/{tournamentSlug}",
+                data = notifData,
+            });
+
+        await discord.TrySendDmAsync(
+            userId, "tournament_registered", notifTitle, notifMessage, gameSlug, tournamentId);
     }
 
     // ── POST /disputes helpers ───────────────────────────────────────────────

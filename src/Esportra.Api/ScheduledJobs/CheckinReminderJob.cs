@@ -36,9 +36,9 @@ public sealed class CheckinReminderJob(
         if (matchRow.CheckInDeadline.HasValue && matchRow.CheckInDeadline.Value.ToUniversalTime() < DateTime.UtcNow)
             return;
 
-        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+        var tournInfo = await conn.QuerySingleOrDefaultAsync<CheckinTournamentInfo>(
             """
-            SELECT t.game
+            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
             FROM brkt_matches bm
             JOIN brkt_rounds r ON r.id = bm.round_id
             JOIN stages s ON s.id = r.stage_id
@@ -46,6 +46,9 @@ public sealed class CheckinReminderJob(
             WHERE bm.id = @matchId
             """,
             new { matchId });
+        var gameSlug = tournInfo?.Game;
+        Guid? tournamentId = tournInfo?.TournamentId is Guid tid && tid != Guid.Empty ? tid : null;
+        var tournamentName = tournInfo?.TournamentName ?? "";
 
         var uncheckedUserIds = await QueryUncheckedCaptainsAsync(conn, matchId);
 
@@ -56,9 +59,12 @@ public sealed class CheckinReminderJob(
         const string message = "15 minutes left to check in for your match.";
         var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
         var dmMessage = $"{message}\n\n[View →]({frontendUrl}/notifications)";
+        var dmTitle = string.IsNullOrWhiteSpace(tournamentName)
+            ? title
+            : $"[{tournamentName}] {title}";
 
         foreach (var userId in uncheckedUserIds)
-            await discord.TrySendDmAsync(userId, "check_in_reminder", title, dmMessage, gameSlug);
+            await discord.TrySendDmAsync(userId, "check_in_reminder", dmTitle, dmMessage, gameSlug, tournamentId);
 
         logger.LogInformation(
             "[CheckinReminder] Sent DM reminders to {Count} unchecked captain(s) for match {MatchId}.",

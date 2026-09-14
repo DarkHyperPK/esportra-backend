@@ -1718,6 +1718,8 @@ public static partial class BRGroupEndpoints
                             """
                             SELECT g.id AS group_id, r.wave_number, r.lobby_code,
                                    g.name AS group_name,
+                                   t.id AS tournament_id,
+                                   t.name AS tournament_name,
                                    t.slug AS tournament_slug,
                                    t.game AS game
                             FROM br_lobbies r
@@ -1736,6 +1738,8 @@ public static partial class BRGroupEndpoints
                         string groupName = (string)roundMeta.group_name;
                         string tournamentSlug = (string)roundMeta.tournament_slug;
                         string? gameSlug = roundMeta.game as string;
+                        Guid brTournamentId = roundMeta.tournament_id;
+                        string brTournamentName = (string?)roundMeta.tournament_name ?? "";
 
                         // Get all participant user IDs in the group
                         var userIds = (await notifConn.QueryAsync<string>(
@@ -1772,14 +1776,19 @@ public static partial class BRGroupEndpoints
                         var type = "br_round_active";
 
                         // Bulk insert notifications
+                        var brNotifData = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            game_slug = gameSlug,
+                            tournament_id = brTournamentId.ToString(),
+                        });
                         await notifConn.ExecuteAsync(
                             """
-                            INSERT INTO notifications (user_id, type, title, message, link, is_read)
-                            SELECT u.id::uuid, @type, @title, @message, @link, FALSE
+                            INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
+                            SELECT u.id::uuid, @type, @title, @message, @link, @data::jsonb, FALSE
                             FROM unnest(@userIds::uuid[]) AS u(id)
                             ON CONFLICT DO NOTHING
                             """,
-                            new { type, title, message, link, userIds = userIds.ToArray() });
+                            new { type, title, message, link, data = brNotifData, userIds = userIds.ToArray() });
 
                         // Push real-time SignalR notification to each participant
                         foreach (var userId in userIds)
@@ -1792,12 +1801,16 @@ public static partial class BRGroupEndpoints
 
                         var brRoomUrl = $"{frontendUrl}/tournaments/{tournamentSlug}/br-game-room";
                         var discordMessage = $"{message}\n\n[View →]({brRoomUrl})";
+                        var brDmTitle = string.IsNullOrWhiteSpace(brTournamentName)
+                            ? title
+                            : $"[{brTournamentName}] {title}";
                         await discord.TrySendBatchDmAsync(
                             userIds.Select(Guid.Parse),
                             "br_round_active",
-                            title,
+                            brDmTitle,
                             discordMessage,
-                            gameSlug);
+                            gameSlug,
+                            brTournamentId);
                     }
                     catch (Exception ex)
                     {

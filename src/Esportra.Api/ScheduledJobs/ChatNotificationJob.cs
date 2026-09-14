@@ -51,9 +51,9 @@ public sealed class ChatNotificationJob(
                 return;
             }
 
-            var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+            var chatTournInfo = await conn.QuerySingleOrDefaultAsync<ChatTournamentInfo>(
                 """
-                SELECT t.game
+                SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
                 FROM brkt_matches bm
                 JOIN brkt_rounds r ON r.id = bm.round_id
                 JOIN stages s ON s.id = r.stage_id
@@ -61,13 +61,18 @@ public sealed class ChatNotificationJob(
                 WHERE bm.id = @matchId
                 """,
                 new { matchId });
+            var gameSlug = chatTournInfo?.Game;
+            Guid? chatTournId = chatTournInfo?.TournamentId is Guid cid && cid != Guid.Empty ? cid : null;
+            var chatTournName = chatTournInfo?.TournamentName ?? "";
 
             var senderTeamName = await GetSenderTeamNameAsync(conn, matchId, recipientUserId);
             var preview = await GetMessagePreviewAsync(conn, matchId, recipientUserId);
             var matchRoomUrl = await BuildMatchRoomUrlAsync(conn, matchId);
 
             await SendEmailAsync(recipientEmail, senderTeamName, preview, matchRoomUrl, unreadCount);
-            await SendDiscordDmAsync(recipientUserId, senderTeamName, preview, matchRoomUrl, unreadCount, gameSlug);
+            await SendDiscordDmAsync(
+                recipientUserId, senderTeamName, preview, matchRoomUrl,
+                unreadCount, gameSlug, chatTournId, chatTournName);
 
             logger.LogDebug("[ChatNotification] Sent for match {MatchId}, recipient {RecipientId}, {Count} unread",
                 matchId, recipientUserId, unreadCount);
@@ -160,14 +165,20 @@ public sealed class ChatNotificationJob(
 
     private async Task SendDiscordDmAsync(
         Guid recipientUserId, string senderTeamName,
-        string preview, string matchRoomUrl, int unreadCount, string? gameSlug)
+        string preview, string matchRoomUrl, int unreadCount,
+        string? gameSlug, Guid? tournamentId, string tournamentName)
     {
         var plural = unreadCount == 1 ? "" : "s";
         var description =
             $"You have **{unreadCount}** unread message{plural} from **{senderTeamName}** in your match. " +
             $"[View match room]({matchRoomUrl})";
+        var dmTitle = string.IsNullOrWhiteSpace(tournamentName)
+            ? "Unread Match Chat Messages"
+            : $"[{tournamentName}] Unread Match Chat Messages";
 
         await discordNotification.TrySendDmAsync(
-            recipientUserId, "match_chat_message", "Unread Match Chat Messages", description, gameSlug);
+            recipientUserId, "match_chat_message", dmTitle, description, gameSlug, tournamentId);
     }
 }
+
+internal sealed record ChatTournamentInfo(string? Game, Guid TournamentId, string? TournamentName);

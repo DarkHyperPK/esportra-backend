@@ -1162,33 +1162,43 @@ public static class MatchEndpoints
         DiscordNotificationService discord,
         CancellationToken ct)
     {
-        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+        var partyGameRow = await conn.QuerySingleOrDefaultAsync<PartyCodeTournamentInfo>(
             """
-            SELECT t.game
+            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
             FROM brkt_matches m
             JOIN brkt_versions v ON v.id = m.version_id
             JOIN tournaments t ON t.id = v.tournament_id
             WHERE m.id = @matchId
             """,
             new { matchId });
+        var gameSlug = partyGameRow?.Game;
+        Guid? partyTournId = partyGameRow?.TournamentId is Guid ptid && ptid != Guid.Empty ? ptid : null;
+        var partyTournName = partyGameRow?.TournamentName ?? "";
 
         const string title = "Party code submitted";
         const string message = "Your opponent has submitted the lobby party code. Check the match room to join.";
+        var dmTitle = string.IsNullOrWhiteSpace(partyTournName)
+            ? title
+            : $"[{partyTournName}] {title}";
         try
         {
+            var partyData = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                tournament_id = partyTournId?.ToString(),
+            });
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, is_read)
-                VALUES (@userId, 'party_code_submitted'::notification_type, @title, @message, FALSE)
+                INSERT INTO notifications (user_id, type, title, message, data, is_read)
+                VALUES (@userId, 'party_code_submitted'::notification_type, @title, @message, @data::jsonb, FALSE)
                 """,
-                new { userId = recipientUserId, title, message });
+                new { userId = recipientUserId, title, message, data = partyData });
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup(recipientUserId.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "party_code_submitted", title, message }, ct);
         }
         catch { /* non-critical */ }
-        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", title, message, gameSlug);
+        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", dmTitle, message, gameSlug, partyTournId);
     }
 
     private static async Task<IResult?> ValidateGoLivePermissionAsync(
@@ -1534,6 +1544,8 @@ public sealed record FinalizeRequest(
     Guid? LoserId = null);
 
 internal sealed record GoLiveGameRow(string Game, string? GameMode);
+
+internal sealed record PartyCodeTournamentInfo(string? Game, Guid TournamentId, string? TournamentName);
 
 public sealed record GoLiveRequest(string? PartyCode, bool Force = false);
 

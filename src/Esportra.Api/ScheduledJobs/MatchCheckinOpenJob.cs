@@ -35,9 +35,9 @@ public sealed class MatchCheckinOpenJob(
             if (matchRow == default || matchRow.Status != "pending" || matchRow.ScheduledTime is null)
                 return;
 
-            var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+            var tournInfo = await conn.QuerySingleOrDefaultAsync<CheckinTournamentInfo>(
                 """
-                SELECT t.game
+                SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
                 FROM brkt_matches bm
                 JOIN brkt_rounds r ON r.id = bm.round_id
                 JOIN stages s ON s.id = r.stage_id
@@ -45,6 +45,9 @@ public sealed class MatchCheckinOpenJob(
                 WHERE bm.id = @matchId
                 """,
                 new { matchId });
+            var gameSlug = tournInfo?.Game;
+            Guid? tournamentId = tournInfo?.TournamentId is Guid tid && tid != Guid.Empty ? tid : null;
+            var tournamentName = tournInfo?.TournamentName ?? "";
 
             var captainUserIds = (await conn.QueryAsync<Guid>(
                 """
@@ -69,22 +72,27 @@ public sealed class MatchCheckinOpenJob(
             var formattedTime = scheduledAt.ToString("MMM d 'at' h:mm tt UTC");
             const string title = "Check-in is now open";
             var message = $"Your match check-in window is open. Match starts at {formattedTime}. Check in now to avoid a walkover.";
+            var dmTitle = string.IsNullOrWhiteSpace(tournamentName)
+                ? title
+                : $"[{tournamentName}] {title}";
 
             foreach (var userId in captainUserIds)
             {
                 try
                 {
+                    var notifData = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        game_slug = gameSlug,
+                        tournament_id = tournamentId?.ToString(),
+                    });
                     await conn.ExecuteAsync(
                         """
                         INSERT INTO notifications (user_id, type, title, message, data, is_read)
                         VALUES (@userId, 'checkin_open'::notification_type, @title, @message,
-                                CASE WHEN @gameSlug IS NOT NULL
-                                     THEN jsonb_build_object('game_slug', @gameSlug)
-                                     ELSE '{}'::jsonb
-                                END, FALSE)
+                                @notifData::jsonb, FALSE)
                         ON CONFLICT DO NOTHING
                         """,
-                        new { userId, title, message, gameSlug });
+                        new { userId, title, message, notifData });
                     await notifHub.Clients
                         .Group(NotificationHub.UserGroup(userId.ToString()))
                         .SendAsync(NotificationHubEvents.NewNotification,
@@ -94,7 +102,7 @@ public sealed class MatchCheckinOpenJob(
                 {
                     logger.LogWarning(ex, "[CheckinOpen] Failed to notify user {UserId} for match {MatchId}", userId, matchId);
                 }
-                await discord.TrySendDmAsync(userId, "checkin_open", title, message, gameSlug);
+                await discord.TrySendDmAsync(userId, "checkin_open", dmTitle, message, gameSlug, tournamentId);
             }
 
             logger.LogInformation("[CheckinOpen] Notified {Count} captain(s) for match {MatchId}", captainUserIds.Count, matchId);
@@ -118,3 +126,5 @@ public sealed class MatchCheckinOpenJob(
         }
     }
 }
+
+internal sealed record CheckinTournamentInfo(string? Game, Guid TournamentId, string? TournamentName);

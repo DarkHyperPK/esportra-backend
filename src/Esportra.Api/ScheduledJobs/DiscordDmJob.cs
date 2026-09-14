@@ -28,7 +28,8 @@ public sealed class DiscordDmJob(
                    n.type AS Type,
                    n.title AS Title,
                    n.message AS Message,
-                   n.data->>'game_slug' AS GameSlug
+                   n.data->>'game_slug' AS GameSlug,
+                   n.data->>'tournament_id' AS TournamentId
             FROM notifications n
             INNER JOIN profiles p ON p.id = n.user_id
             INNER JOIN auth.identities ai ON ai.user_id = p.id AND ai.provider = 'discord'
@@ -51,10 +52,11 @@ public sealed class DiscordDmJob(
             """,
             new { notificationId });
 
-        await discord.TrySendDmAsync(dm.UserId, dm.Type, dm.Title ?? "", dm.Message ?? "", dm.GameSlug);
+        Guid? tournamentId = Guid.TryParse(dm.TournamentId, out var tid) ? tid : null;
+        await discord.TrySendDmAsync(dm.UserId, dm.Type, dm.Title ?? "", dm.Message ?? "", dm.GameSlug, tournamentId);
 
         logger.LogDebug("[DiscordDm] Sent DM for notification {Id} (type={Type}).", notificationId, dm.Type);
     }
 
-    private sealed record PendingDm(Guid Id, Guid UserId, string Type, string? Title, string? Message, string? GameSlug);
+    private sealed record PendingDm(Guid Id, Guid UserId, string Type, string? Title, string? Message, string? GameSlug, string? TournamentId);
 }

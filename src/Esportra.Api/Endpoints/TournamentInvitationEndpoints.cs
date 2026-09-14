@@ -317,6 +317,7 @@ public static class TournamentInvitationEndpoints
             }
 
             var tournamentInviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+            var inviteDmTitle = $"[{tournamentName}] Tournament Invitation";
             foreach (var notification in pushedNotifications)
             {
                 var tournamentInviteLink = (string?)notification.link;
@@ -326,9 +327,10 @@ public static class TournamentInvitationEndpoints
                 await discord.TrySendDmAsync(
                     (Guid)notification.user_id,
                     "tournament_invite",
-                    "Tournament Invitation",
+                    inviteDmTitle,
                     dmTournamentMsg,
-                    tournamentGame);
+                    tournamentGame,
+                    id);
             }
 
             var sentCount = 0;

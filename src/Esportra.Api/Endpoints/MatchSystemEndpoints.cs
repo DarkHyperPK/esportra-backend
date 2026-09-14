@@ -1468,15 +1468,18 @@ public static class MatchSystemEndpoints
 
             if (dispute is not null)
             {
-                var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                var resolveGameRow = await conn.QuerySingleOrDefaultAsync<MatchTournamentSlim>(
                     """
-                    SELECT t.game
+                    SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
                     FROM brkt_matches m
                     JOIN brkt_versions v ON v.id = m.version_id
                     JOIN tournaments t ON t.id = v.tournament_id
                     WHERE m.id = @matchId
                     """,
                     new { matchId });
+                var gameSlug = resolveGameRow?.Game;
+                Guid? resolveTourn = resolveGameRow?.TournamentId is Guid rtid && rtid != Guid.Empty ? rtid : null;
+                var resolveTournName = resolveGameRow?.TournamentName ?? "";
 
                 var notifType = req.Status == "resolved" ? "dispute_resolved" : "dispute_rejected";
                 var notifTitle = req.Status == "resolved"
@@ -1490,10 +1493,14 @@ public static class MatchSystemEndpoints
                 var disputeLink = CaptainMatchLinkBuilder.BuildLink(disputeContext.TournamentSlug, matchId);
                 var frontendUrl = config["FrontendUrl"] ?? "https://esportra.com";
                 var dmDisputeMessage = $"{notifMessage}\n\n[View →]({frontendUrl}{disputeLink})";
+                var dmDisputeTitle = string.IsNullOrWhiteSpace(resolveTournName)
+                    ? notifTitle
+                    : $"[{resolveTournName}] {notifTitle}";
                 var notifDataWithSlug = JsonSerializer.Serialize(new
                 {
                     match_id = matchId,
                     tournament_slug = disputeContext.TournamentSlug,
+                    tournament_id = resolveTourn?.ToString(),
                 });
 
                 // Notify the disputing user
@@ -1513,7 +1520,7 @@ public static class MatchSystemEndpoints
                     });
 
                 await discord.TrySendDmAsync(
-                    (Guid)dispute.disputed_by_user_id, notifType, notifTitle, dmDisputeMessage, gameSlug);
+                    (Guid)dispute.disputed_by_user_id, notifType, dmDisputeTitle, dmDisputeMessage, gameSlug, resolveTourn);
 
                 // Notify the original reporter (opposing party)
                 var reporter = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -1541,7 +1548,7 @@ public static class MatchSystemEndpoints
                             data = notifDataWithSlug
                         });
 
-                    await discord.TrySendDmAsync(reporter.Value, notifType, notifTitle, dmDisputeMessage, gameSlug);
+                    await discord.TrySendDmAsync(reporter.Value, notifType, dmDisputeTitle, dmDisputeMessage, gameSlug, resolveTourn);
                 }
             }
 
@@ -1646,14 +1653,20 @@ public static class MatchSystemEndpoints
 
             var orgTitle = $"Scheduling escalation — {match.TournamentName}";
             var orgMsg = $"A captain has reported their opponent is not responding to scheduling in {match.TournamentName}. Please review and set a time or award a walkover.";
+            var orgDmTitle = $"[{match.TournamentName}] Scheduling Escalation";
+            var escalationData = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                tournament_id = match.TournamentId.ToString(),
+            });
 
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, link, is_read)
+                INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
                 VALUES (@userId, 'scheduling_escalation'::notification_type, @title, @message,
-                        '/organizer/tournaments/' || @tournamentId::text || '/matches', FALSE)
+                        '/organizer/tournaments/' || @tournamentId::text || '/matches',
+                        @data::jsonb, FALSE)
                 """,
-                new { userId = match.OrganizerId, title = orgTitle, message = orgMsg, tournamentId = match.TournamentId });
+                new { userId = match.OrganizerId, title = orgTitle, message = orgMsg, tournamentId = match.TournamentId, data = escalationData });
 
             try
             {
@@ -1664,7 +1677,7 @@ public static class MatchSystemEndpoints
             }
             catch { /* non-critical */ }
 
-            await discord.TrySendDmAsync(match.OrganizerId, "scheduling_escalation", orgTitle, orgMsg, match.Game);
+            await discord.TrySendDmAsync(match.OrganizerId, "scheduling_escalation", orgDmTitle, orgMsg, match.Game, match.TournamentId);
 
             // Nudge the non-responding team's captains (all captains except the caller's competitor)
             var opponentCaptains = captains.Where(c => c != userCtx.UserIdGuid).ToList();
@@ -1872,15 +1885,18 @@ public static class MatchSystemEndpoints
     {
         var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
             "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
-        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+        var reportGameRow = await conn.QuerySingleOrDefaultAsync<MatchTournamentSlim>(
             """
-            SELECT t.game
+            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
             FROM brkt_matches m
             JOIN brkt_versions v ON v.id = m.version_id
             JOIN tournaments t ON t.id = v.tournament_id
             WHERE m.id = @matchId
             """,
             new { matchId });
+        var gameSlug = reportGameRow?.Game;
+        Guid? reportTournId = reportGameRow?.TournamentId is Guid rgid && rgid != Guid.Empty ? rgid : null;
+        var reportTournName = reportGameRow?.TournamentName ?? "";
         var tournamentSlug = match?.version_id is not null
             ? await conn.QuerySingleOrDefaultAsync<string?>(
                 """
@@ -1916,6 +1932,11 @@ public static class MatchSystemEndpoints
             if (opposingUserId is null) return;
             var reporterTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(
                 conn, reportingCompetitorId);
+            var reportTitle = "⚔️ Match Result Submitted";
+            var reportMsg = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.";
+            var reportDmTitle = string.IsNullOrWhiteSpace(reportTournName)
+                ? reportTitle
+                : $"[{reportTournName}] {reportTitle}";
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications
@@ -1926,16 +1947,18 @@ public static class MatchSystemEndpoints
                 new
                 {
                     userId = opposingUserId.Value,
-                    title = $"⚔️ Match Result Submitted",
-                    msg = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
+                    title = reportTitle,
+                    msg = reportMsg,
                     link = matchLink,
-                    data = System.Text.Json.JsonSerializer.Serialize(new { match_id = matchId }),
+                    data = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        match_id = matchId,
+                        tournament_id = reportTournId?.ToString(),
+                    }),
                 });
 
             await discord.TrySendDmAsync(opposingUserId.Value, "result_reported",
-                "⚔️ Match Result Submitted",
-                $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.",
-                gameSlug);
+                reportDmTitle, reportMsg, gameSlug, reportTournId);
         }
         catch (Exception notifyEx)
         {
@@ -2364,24 +2387,34 @@ public static class MatchSystemEndpoints
         string baseUrl,
         CancellationToken ct)
     {
-        var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+        var proposalGameRow = await conn.QuerySingleOrDefaultAsync<MatchTournamentSlim>(
             """
-            SELECT t.game
+            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
             FROM brkt_matches m
             JOIN brkt_versions v ON v.id = m.version_id
             JOIN tournaments t ON t.id = v.tournament_id
             WHERE m.id = @matchId
             """,
             new { matchId });
+        var gameSlug = proposalGameRow?.Game;
+        Guid? proposalTournId = proposalGameRow?.TournamentId is Guid ptid && ptid != Guid.Empty ? ptid : null;
+        var proposalTournName = proposalGameRow?.TournamentName ?? "";
+        var dmTitle = string.IsNullOrWhiteSpace(proposalTournName)
+            ? title
+            : $"[{proposalTournName}] {title}";
 
         try
         {
+            var proposalData = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                tournament_id = proposalTournId?.ToString(),
+            });
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, is_read)
-                VALUES (@userId, @type::notification_type, @title, @message, FALSE)
+                INSERT INTO notifications (user_id, type, title, message, data, is_read)
+                VALUES (@userId, @type::notification_type, @title, @message, @data::jsonb, FALSE)
                 """,
-                new { userId = recipientUserId, type = notificationType, title, message });
+                new { userId = recipientUserId, type = notificationType, title, message, data = proposalData });
 
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup(recipientUserId.ToString()))
@@ -2390,8 +2423,8 @@ public static class MatchSystemEndpoints
         }
         catch { /* non-critical */ }
 
-        await discord.TrySendDmAsync(recipientUserId, notificationType, title,
-            $"{message}\n\n[View →]({baseUrl}/notifications)", gameSlug);
+        await discord.TrySendDmAsync(recipientUserId, notificationType, dmTitle,
+            $"{message}\n\n[View →]({baseUrl}/notifications)", gameSlug, proposalTournId);
     }
 
     private static async Task NotifyWalkoverFailureAsync(
@@ -2432,6 +2465,10 @@ public static class MatchSystemEndpoints
         catch { /* non-critical — log is handled by caller's exception middleware */ }
     }
 }
+
+// ── Shared tournament-context record ─────────────────────────────────────────
+
+internal sealed record MatchTournamentSlim(string? Game, Guid TournamentId, string? TournamentName);
 
 // ── Internal context record for scheduling escalation endpoint ────────────────
 
