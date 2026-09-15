@@ -405,11 +405,12 @@ public sealed class DeveloperAccessRequestIntegrationTests(ApiFactory factory)
     {
         var orgId = Guid.NewGuid();
         await using var conn = _seeder.OpenConnection();
-        await conn.ExecuteAsync(
+        var actualId = await conn.QuerySingleAsync<Guid>(
             """
             INSERT INTO public.organizations (id, owner_id, name, slug, description, logo_url, banner_url, social_links)
             VALUES (@id, @ownerId, @name, @slug, '', '', '', '{}'::jsonb)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (owner_id) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug
+            RETURNING id
             """,
             new { id = orgId, ownerId, name = $"Test Org {orgId:N}"[..30], slug = $"org-{orgId:N}"[..20] });
 
@@ -417,10 +418,10 @@ public sealed class DeveloperAccessRequestIntegrationTests(ApiFactory factory)
         {
             await conn.ExecuteAsync(
                 "UPDATE public.organizations SET is_api_approved = true WHERE id = @id",
-                new { id = orgId });
+                new { id = actualId });
         }
 
-        return orgId;
+        return actualId;
     }
 
     private async Task<Guid> SeedAccessRequestAsync(Guid orgId, Guid requestedBy, string status = "pending")

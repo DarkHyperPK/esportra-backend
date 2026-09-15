@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -312,9 +313,9 @@ public static class DeveloperAccessRequestEndpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
 public sealed record SubmitAccessRequestRequest(
-    string OrganizationId,
-    string? IntendedUse = null);
+    [property: JsonPropertyName("organization_id")] string OrganizationId,
+    [property: JsonPropertyName("intended_use")] string? IntendedUse = null);
 
 public sealed record ReviewAccessRequestRequest(
-    string? Action = null,
-    string? AdminNotes = null);
+    [property: JsonPropertyName("action")] string? Action = null,
+    [property: JsonPropertyName("admin_notes")] string? AdminNotes = null);
