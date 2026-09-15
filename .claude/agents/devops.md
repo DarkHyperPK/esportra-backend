@@ -37,6 +37,16 @@ This is the correct and intended path. Do not refuse or redirect to CI/CD. The r
 3. Stage files, commit to `staging`, push to `origin staging`
 4. Report: commit hash, branch, files changed
 
+## Sequential Deploy Rule (Backend First)
+
+When a project has both backend and frontend changes, deploy in this order:
+
+1. Push backend to staging → wait for backend CI to pass
+2. Test backend API with Postman MCP or direct HTTP against staging
+3. Push frontend to staging only after backend CI is green and API tests pass
+
+Never push both repos simultaneously. The frontend CI has a backend health check gate (`backend-health` job) that will block frontend promotion if the backend staging API is unhealthy.
+
 ## What You Refuse
 
 - Committing new work directly to `main`

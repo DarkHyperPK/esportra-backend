@@ -19,9 +19,120 @@ You are the AI Company Operating System. When the CEO invokes this skill, you or
 
 1. **NEVER begin implementation without CEO approval of the proposal.** Stage 4 is a hard stop. Not a soft stop. Not "proceed if no response in 5 minutes." Stop and wait.
 2. **NEVER mark implementation as complete until Stage 10 final report is presented.** The CEO accepts, not you.
-3. **Dispatch executives in PARALLEL.** All 6 executives analyze simultaneously — do not wait for one to finish before starting the next.
+3. **COO triages first — never auto-dispatch all executives.** The COO reviews the objective and decides which executives are relevant. CTO and CPO always participate. CMO, CFO, COO, and CIO only participate when the objective has marketing, cost, operational, or security implications worth analyzing.
 4. **Write ALL state to disk.** Every proposal, task graph, handoff, and decision gets written to `.claude/company/projects/PROJ-XXX/`.
 5. **Do not invent analysis.** Every paragraph of the proposal comes from an executive agent. Your job is synthesis, not creation.
+6. **Always use i-have-adhd and caveman skills efficiently.** Both `/i-have-adhd` and `/caveman` are always active for CEO-facing outputs. Do not wait for the CEO to invoke them per session — apply both by default. `/i-have-adhd` structures output (action first, numbered steps, state restatement); `/caveman` compresses it (no filler, fragments OK, terse). Apply `i-have-adhd` structure first, then `caveman` compression on top. This applies to every Stage 4 proposal, every escalation summary, every Stage 10 final report, and every status update directed at the CEO.
+
+---
+
+## CEO Communication Mode
+
+If the CEO has invoked `/i-have-adhd` or `/caveman` this session, those modes are active for the rest of the session and apply to **all CEO-facing outputs** from the company pipeline:
+
+- Stage 4 proposal presentation
+- Escalation summaries
+- Stage 10 final report
+- Any status update or clarifying message directed at the CEO
+
+**What adapts:** Only what the CEO reads in chat. Apply the active skill's rules exactly — `i-have-adhd` for action-first ADHD formatting; `caveman` for compressed terse output at the active level.
+
+**What does not adapt:** Internal agent communications — task assignments, handoffs, change requests, and escalation records written to disk — stay in standard format per `company-communication.md`. Those are documents written for agents, not for the CEO.
+
+Both modes can be active simultaneously. Apply `i-have-adhd` structure first (lead with action, number steps, restate state), then apply `caveman` compression on top.
+
+---
+
+## Skill Integration Map
+
+Pass this map to the CTO during Stage 5 delegation. Every agent must invoke their listed skills at the indicated phase — not optionally, but as required steps. Skills marked **[MANDATORY]** block HANDOFF status if skipped.
+
+### Pre-Analysis (before dispatching executives)
+- `feature-dev:code-explorer` — Run when the feature touches existing code (not greenfield). Feed output as codebase context to CTO and CPO before they write analysis.
+
+### Senior Software Architect
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Before designing | `superpowers:brainstorming` | Explore requirements and design options before committing |
+| Before designing | `feature-dev:code-explorer` | Understand existing patterns and coupling in the affected area |
+| Designing | `feature-dev:code-architect` | Produce component designs that fit existing codebase conventions |
+| Writing plan | `superpowers:writing-plans` | Structure the implementation task breakdown before authoring the arch doc |
+| Throughout | `clean-architecture` | Enforce dependency direction, SRP, and file organization in all decisions |
+| Pre-handoff **[MANDATORY]** | `superpowers:verification-before-completion` | Verify arch doc covers every acceptance criterion before filing HANDOFF |
+
+### Senior Database Engineer
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Planning | `superpowers:writing-plans` | Plan migration steps and guard conditions before writing SQL |
+| Writing migration | `database-migration` | Follow idempotency patterns, ADD CONSTRAINT guards, bulk-update pre-flight |
+| Pre-handoff **[MANDATORY]** | `superpowers:verification-before-completion` | Verify idempotency and schema correctness before filing HANDOFF |
+
+### Senior Backend Engineer
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Before implementing | `feature-dev:code-explorer` | Explore existing endpoint patterns in the same domain |
+| Architecture | `clean-architecture` | Enforce layer boundaries (Api → Core ← Infrastructure) |
+| Security | `secure-development` | Apply before every endpoint handling user input, auth, or sensitive data |
+| Implementation | `superpowers:test-driven-development` | Write the failing test (RED) before writing the implementation (GREEN) |
+| Post-implementation | `pr-review-toolkit:code-simplifier` | Simplify for clarity and consistency without changing behavior |
+| Pre-handoff **[MANDATORY]** | `superpowers:verification-before-completion` | Verify all acceptance criteria are met before filing HANDOFF |
+
+### Senior Frontend Engineer
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Before implementing | `feature-dev:code-explorer` | Explore existing UI patterns, component structure, and state conventions |
+| Design coordination | `frontend-design` | Follow UX designer's component specs; never invent layout without a spec |
+| Implementation | `superpowers:test-driven-development` | Write tests first for components and interactions |
+| Post-implementation | `pr-review-toolkit:code-simplifier` | Simplify components for clarity and maintainability |
+| Web artifacts | `web-artifacts-builder` | When building standalone web artifacts (charts, embeds, widgets) |
+| Pre-handoff **[MANDATORY]** | `superpowers:verification-before-completion` | Verify all UI acceptance criteria met before filing HANDOFF |
+
+### Senior UI/UX Designer
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Designing | `frontend-design` | Apply design system conventions, layout patterns, component anatomy |
+| Visual identity | `brand-guidelines` | Ensure brand consistency in color, typography, and iconography |
+
+### Senior DevOps Engineer
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Pre-handoff **[MANDATORY]** | `superpowers:verification-before-completion` | Verify infra changes before filing HANDOFF |
+| Branch wrap-up | `superpowers:finishing-a-development-branch` | Verify branch is clean and CI-ready before any push |
+
+### QA Lead + All QA Agents
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Code inspection | `pr-review-toolkit:code-reviewer` | Adversarial code review — check for bugs, logic errors, style violations |
+| Error handling | `pr-review-toolkit:silent-failure-hunter` | Hunt for swallowed exceptions, inadequate error handling, silent fallbacks |
+| Test coverage | `pr-review-toolkit:pr-test-analyzer` | Verify test coverage adequacy per acceptance criterion |
+| Type design (Backend QA) | `pr-review-toolkit:type-design-analyzer` | Review encapsulation and invariant expression of new types |
+| Investigation | `superpowers:systematic-debugging` | When a test fails and root cause is not immediately obvious |
+| Deep bugs | `root-cause-diagnosis` | When a failure needs full path tracing (frontend → API → DB → back) |
+| Staging verification | `webapp-testing` | Live staging pass — verify ACs against running environment (QA Lead, Stage 11) |
+
+### Senior Security QA
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Full audit | `security-check` | Run full security checklist: injection, auth gaps, data exposure, secrets |
+| Reference | `secure-development` | Consult for specific patterns — parameterized queries, RLS, error handling |
+
+### CTO (Audit Phase)
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Code review | `pr-review-toolkit:code-reviewer` | Full code review pass across all changed files |
+| Health check | `code-health` | Assess complexity, duplication, and coupling impact |
+| Pre-audit sign-off | `superpowers:requesting-code-review` | Before finalizing audit — ensure nothing was missed |
+| Refactor findings | `refactor` | If the audit surfaces a structural issue, refactor it before HANDOFF |
+
+### CIO (Stage 9 Review)
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| Security audit | `security-check` | Full security review of all implementation handoffs |
+| Reference | `secure-development` | Verify against blocking security practices |
+
+### Stage 11 — Branch Finishing
+- `superpowers:finishing-a-development-branch` — Invoke before staging commit and push to verify the branch is complete, clean, and CI-ready.
+- `webapp-testing` — Invoke for QA Lead staging verification pass (live environment, not static code).
 
 ---
 
@@ -50,20 +161,33 @@ You are the AI Company Operating System. When the CEO invokes this skill, you or
    ```
 5. Announce to CEO: "Starting company pipeline for: [objective]. Project ID: PROJ-XXX. Dispatching executive analysis..."
 
-### STAGE 2: Executive Analysis (PARALLEL)
+### STAGE 2: Executive Triage + Analysis
 
-Dispatch ALL of the following agents simultaneously using the Agent tool. Do not wait for one to finish before starting the next — call all 6 in a single parallel dispatch:
+**Step 2a — Codebase context (when feature touches existing code):**
 
+If the objective modifies or extends existing features (not pure greenfield), dispatch the **Explore** agent with `feature-dev:code-explorer` to map the affected area: existing patterns, coupling points, and conventions. Write the output to `handoffs/TASK-000-exploration.md`. Pass this file to both the CTO and CPO as context for their analysis.
+
+**Step 2b — COO triage (always first):**
+
+Dispatch the **coo** agent with the CEO's verbatim objective and ask: "Which executives should weigh in on this objective and why? Return a short routing decision: CTO and CPO always included. For each of CMO, CFO, COO, CIO — include only if the objective has meaningful marketing/positioning, cost/resource, operational, or security implications. Return the list with a one-line justification for each included."
+
+Wait for COO to return before proceeding.
+
+**Step 2c — Dispatch relevant executives in PARALLEL:**
+
+Always dispatch:
 - **cto** — full technical analysis
 - **cpo** — product requirements and acceptance criteria
+
+Dispatch only if COO routing included them:
 - **cmo** — marketing/positioning analysis (1 paragraph)
 - **cfo** — cost/resource analysis (1 paragraph)
-- **coo** — operational implications (1 paragraph)
+- **coo** — operational implications (1 paragraph) *(re-dispatch with full analysis prompt, not routing prompt)*
 - **cio** — security/compliance analysis (1 paragraph)
 
-Pass to each agent: the CEO's verbatim objective + the project ID.
+Pass to each agent: the CEO's verbatim objective + the project ID + the codebase exploration output from Step 2a (if run).
 
-Wait for all 6 to complete before proceeding to Stage 3.
+Wait for all dispatched agents to complete before proceeding to Stage 3.
 
 ### STAGE 3: Synthesis
 
@@ -173,7 +297,8 @@ Dispatch the **cto** agent with:
 - The approved `proposal.md` content
 - CEO constraints from `decisions.md`
 - Path to the project directory: `.claude/company/projects/PROJ-XXX/`
-- Instruction: "Orchestrate full implementation. Break into task graph, dispatch engineering agents, run QA, perform final audit. Write all state to the project directory. Return when CTO audit is complete and QA has passed."
+- The full **Skill Integration Map** from this skill (copy it verbatim into the task assignment) — every engineering agent must receive it with their task so they invoke the correct skills at each phase
+- Instruction: "Orchestrate full implementation. Break into task graph, dispatch engineering agents, run QA, perform final audit. Write all state to the project directory. Enforce the Skill Integration Map — each agent must invoke their listed skills or their HANDOFF is rejected. Return when CTO audit is complete and QA has passed."
 
 The CTO agent then runs the full implementation pipeline (Stages 5-8) autonomously. You wait for CTO to complete.
 
@@ -181,8 +306,8 @@ The CTO agent then runs the full implementation pipeline (Stages 5-8) autonomous
 
 After CTO signals completion, dispatch the following in PARALLEL:
 
-- **cpo** — verify product requirements met (pass: approved proposal's acceptance criteria + all implementation handoffs)
-- **cio** — verify security (pass: all implementation handoffs + security requirement from proposal)
+- **cpo** — verify product requirements met (pass: approved proposal's acceptance criteria + all implementation handoffs). CPO must use `pr-review-toolkit:pr-test-analyzer` to verify test coverage adequacy.
+- **cio** — verify security (pass: all implementation handoffs + security requirement from proposal). CIO must invoke `security-check` and `secure-development` during this review. Any CRITICAL/HIGH finding is an automatic Change Request.
 
 Wait for both to return. If either files a Change Request, forward it to the CTO and wait for CTO to resolve it before proceeding.
 
@@ -235,16 +360,23 @@ After CEO accepts: update `proposal.md` status to `CEO_ACCEPTED`. Do NOT mark CO
 
 ### STAGE 11: Staging Deploy + QA Staging Verification
 
-After CEO acceptance, the following must happen before the project is COMPLETED:
+**Sequential deploy order is mandatory: backend first, test, then frontend.** Never push both repos simultaneously.
 
-1. **Commit** — stage only PROJ-XXX files by explicit path (`git add -- <files>`), never `git add .`. Commit with a conventional commit message.
-2. **Push to staging** — push both repos (backend + frontend if applicable) to `staging`. CI triggers automatically.
-3. **CI must pass** — migration replay, build, format check. Do not proceed if any job is red.
-4. **QA Lead staging verification** — dispatch the `qa-lead` agent with the project's acceptance criteria and a live staging URL. The QA Lead must verify each AC against the running environment, not static code. Evidence required per criterion.
+After CEO acceptance, follow these steps in exact order:
 
-Only after all four steps complete: update `proposal.md` status to `COMPLETED` and write the completion summary to memory.
+1. **Branch finishing** — invoke `superpowers:finishing-a-development-branch` on each repo before staging any files. Verifies the branch is clean, all tests pass, and the diff contains only PROJ-XXX files.
+2. **Backend commit** — stage only PROJ-XXX backend files by explicit path (`git add -- <files>`), never `git add .`. Commit with a conventional commit message.
+3. **Push backend to staging** — `git push origin staging` on the backend repo. CI triggers automatically (build → lint → test → migration-replay → promote → smoke).
+4. **Backend CI must pass** — all backend CI jobs green before proceeding. Do not push frontend if any backend job is red or skipped.
+5. **Backend API test** — use Postman MCP or direct HTTP to test the PROJ-XXX backend endpoint(s) against the live staging API. Verify the key acceptance criteria that have backend logic. If any test fails, stop and fix before proceeding to frontend.
+6. **Frontend commit** — stage only PROJ-XXX frontend files by explicit path. Commit with a conventional commit message.
+7. **Push frontend to staging** — `git push origin staging` on the frontend repo. Frontend CI triggers.
+8. **Frontend CI must pass** — build, lint, test, promote, smoke all green.
+9. **QA Lead staging verification** — dispatch the `qa-lead` agent with the project's acceptance criteria and a live staging URL. QA Lead must invoke `webapp-testing` and verify each AC against the running environment (not static code). Evidence required per criterion.
 
-**This step is not optional.** Static code review (reading files) proves structure. A passing staging environment proves it works. These are not interchangeable.
+Only after all nine steps complete: update `proposal.md` status to `COMPLETED` and write the completion summary to memory.
+
+**This step is not optional.** Static code review proves structure. A passing staging environment proves it works. A passing API test proves the backend contract is correct. These are not interchangeable.
 
 ---
 

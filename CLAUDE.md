@@ -155,6 +155,8 @@ Custom skills defined in `.claude/skills/` for guided workflows:
 | `secure-development` | Security-first development practices for APIs and data handling. Covers input validation, parameterized queries, authorization, error handling, and secrets management. | Building endpoints, handling user input, auth/authz work, sensitive data, external integrations |
 | `root-cause-diagnosis` | Full multi-angle root-cause diagnosis protocol. Traces the complete data path, audits assumptions with evidence, distinguishes defects from intended workflow. | Bug reports, regressions, errors, unexpected behavior, investigating "why does X fail?" |
 | `cyclomatic-complexity` | Audit and enforce cyclomatic complexity limits (CC ≤ 10 hard limit, ≤ 7 preferred). Covers counting rules, violation thresholds, and refactoring patterns. | Writing or modifying any method with branching logic, code reviews, pre-commit checks |
+| `i-have-adhd` | ADHD-optimized output: leads with the next action, numbered steps, state restatement each turn, specific time estimates, no preamble/closers. Session-persistent until "stop adhd mode". **Mandatory for all CEO-facing outputs — always active.** | Invoke with `/i-have-adhd`; affects all subsequent responses including company pipeline CEO-facing outputs |
+| `caveman` | Ultra-compressed output: drops articles/filler, fragments OK, short synonyms. Levels: lite/full/ultra/wenyan variants. Session-persistent until "stop caveman". **Mandatory for all CEO-facing outputs — always active.** | Invoke with `/caveman [level]` for compressed output; affects all CEO-facing responses including company pipeline outputs |
 
 ## Rules
 
