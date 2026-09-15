@@ -128,6 +128,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             conn);
         await patch.ExecuteNonQueryAsync();
 
+        // AdminListAccessRequests joins auth.users for requester_email and requester_name.
+        // raw_user_meta_data is present in production Supabase auth.users but absent from the CI stub.
+        await using var metaPatch = new NpgsqlCommand(
+            "ALTER TABLE auth.users ADD COLUMN IF NOT EXISTS raw_user_meta_data jsonb;",
+            conn);
+        await metaPatch.ExecuteNonQueryAsync();
+
         // auth.identities is managed by Supabase and absent from the replay schema.
         // Discord unlink endpoint and seeder both query/insert it.
         await using var identitiesPatch = new NpgsqlCommand(

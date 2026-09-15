@@ -116,6 +116,8 @@ public static class DeveloperV1Endpoints
         if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "name is required" });
         if (string.IsNullOrWhiteSpace(req.Game)) return Results.BadRequest(new { error = "game is required" });
         if (string.IsNullOrWhiteSpace(req.Format)) return Results.BadRequest(new { error = "format is required" });
+        if (req.MaxParticipants < 2 || req.MaxParticipants > 1024)
+            return Results.BadRequest(new { error = "max_participants must be between 2 and 1024" });
 
         var settingsJson = apiCtx.IsSandbox ? """{"api_sandbox":true}""" : null;
         using var conn = db.CreateConnection();
@@ -256,12 +258,12 @@ public static class DeveloperV1Endpoints
         var apiCtx = ctx.Items["ApiKeyContext"] as ApiKeyContext;
         if (apiCtx is null) return Results.Unauthorized();
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.TournamentsWrite)) return Results.Forbid();
-        if (string.IsNullOrWhiteSpace(req.ExternalId)) return Results.BadRequest(new { error = "external_id is required" });
-
-        var tournamentExists = await VerifyTournamentOrgAsync(db, id, apiCtx.OrgId);
-        if (!tournamentExists) return Results.NotFound();
+        if (string.IsNullOrWhiteSpace(req.ExternalId) || req.ExternalId.Length > 255)
+            return Results.BadRequest(new { error = "external_id is required and must be <= 255 characters" });
 
         using var conn = db.CreateConnection();
+        if (!await VerifyTournamentOrgAsync(conn, id, apiCtx.OrgId)) return Results.NotFound();
+
         try
         {
             var row = await conn.QuerySingleAsync<dynamic>(
@@ -390,18 +392,21 @@ public static class DeveloperV1Endpoints
 
         if (req.Seeds is not { Count: > 0 }) return Results.BadRequest(new { error = "seeds must not be empty" });
 
-        var tournamentExists = await VerifyTournamentOrgAsync(db, id, apiCtx.OrgId);
-        if (!tournamentExists) return Results.NotFound();
-
         using var conn = db.CreateConnection();
-        var seededCount = 0;
-        foreach (var seed in req.Seeds)
-        {
-            var affected = await conn.ExecuteAsync(
-                "UPDATE tournament_external_participants SET seeding = @position WHERE id = @participantId AND tournament_id = @id AND organization_id = @orgId",
-                new { position = seed.Position, participantId = seed.ParticipantId, id, orgId = apiCtx.OrgId });
-            seededCount += affected;
-        }
+        if (!await VerifyTournamentOrgAsync(conn, id, apiCtx.OrgId)) return Results.NotFound();
+
+        var participantIds = req.Seeds.Select(s => s.ParticipantId).ToArray();
+        var positions = req.Seeds.Select(s => s.Position).ToArray();
+        var seededCount = await conn.ExecuteAsync(
+            """
+            UPDATE tournament_external_participants tep
+            SET seeding = seeds.position
+            FROM unnest(@ids::uuid[], @positions::int[]) AS seeds(id, position)
+            WHERE tep.id = seeds.id
+              AND tep.tournament_id = @tournamentId
+              AND tep.organization_id = @orgId
+            """,
+            new { ids = participantIds, positions, tournamentId = id, orgId = apiCtx.OrgId });
 
         return Results.Ok(new { seeded_count = seededCount });
     }
@@ -545,6 +550,9 @@ public static class DeveloperV1Endpoints
         if (apiCtx is null) return Results.Unauthorized();
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.MatchesWrite)) return Results.Forbid();
 
+        if (req.ScoreParticipant1 < 0 || req.ScoreParticipant2 < 0)
+            return Results.BadRequest(new { error = "scores must be non-negative" });
+
         using var conn = db.CreateConnection();
         var existing = await conn.QuerySingleOrDefaultAsync<(string Status, Guid? WinnerId)>(
             """
@@ -562,8 +570,15 @@ public static class DeveloperV1Endpoints
             return Results.Conflict(new { error = "Match result has already been reported." });
 
         await conn.ExecuteAsync(
-            "UPDATE brkt_matches SET winner_id = @winnerId, team1_score = @score1, team2_score = @score2, status = 'completed' WHERE id = @matchId",
-            new { winnerId = req.WinnerId, score1 = req.ScoreParticipant1, score2 = req.ScoreParticipant2, matchId });
+            """
+            UPDATE brkt_matches bm
+            SET winner_id = @winnerId, team1_score = @score1, team2_score = @score2, status = 'completed'
+            FROM brkt_versions bv
+            JOIN tournament_stages s ON s.id = bv.stage_id
+            JOIN tournaments t ON t.id = s.tournament_id
+            WHERE bm.id = @matchId AND bm.version_id = bv.id AND t.organization_id = @orgId
+            """,
+            new { winnerId = req.WinnerId, score1 = req.ScoreParticipant1, score2 = req.ScoreParticipant2, matchId, orgId = apiCtx.OrgId });
 
         return Results.Ok(new { match_id = matchId, winner_id = req.WinnerId, status = "completed" });
     }
@@ -609,7 +624,8 @@ public static class DeveloperV1Endpoints
         if (apiCtx is null) return Results.Unauthorized();
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.VetoRead)) return Results.Forbid();
 
-        if (!await VerifyMatchOrgAsync(db, matchId, apiCtx.OrgId)) return Results.NotFound();
+        using var conn = db.CreateConnection();
+        if (!await VerifyMatchOrgAsync(conn, matchId, apiCtx.OrgId)) return Results.NotFound();
 
         var state = await veto.GetAsync(matchId, ct);
         return state is null ? Results.NotFound() : Results.Ok(state);
@@ -628,7 +644,8 @@ public static class DeveloperV1Endpoints
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.VetoWrite)) return Results.Forbid();
         if (string.IsNullOrWhiteSpace(req.Map)) return Results.BadRequest(new { error = "map is required" });
 
-        if (!await VerifyMatchOrgAsync(db, matchId, apiCtx.OrgId)) return Results.NotFound();
+        using var conn = db.CreateConnection();
+        if (!await VerifyMatchOrgAsync(conn, matchId, apiCtx.OrgId)) return Results.NotFound();
 
         try
         {
@@ -653,18 +670,13 @@ public static class DeveloperV1Endpoints
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────────
 
-    private static async Task<bool> VerifyTournamentOrgAsync(IDbConnectionFactory db, Guid tournamentId, Guid orgId)
-    {
-        using var conn = db.CreateConnection();
-        return await conn.ExecuteScalarAsync<bool>(
+    private static Task<bool> VerifyTournamentOrgAsync(System.Data.IDbConnection conn, Guid tournamentId, Guid orgId)
+        => conn.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organization_id = @orgId)",
             new { tournamentId, orgId });
-    }
 
-    private static async Task<bool> VerifyMatchOrgAsync(IDbConnectionFactory db, Guid matchId, Guid orgId)
-    {
-        using var conn = db.CreateConnection();
-        return await conn.ExecuteScalarAsync<bool>(
+    private static Task<bool> VerifyMatchOrgAsync(System.Data.IDbConnection conn, Guid matchId, Guid orgId)
+        => conn.ExecuteScalarAsync<bool>(
             """
             SELECT EXISTS(
                 SELECT 1 FROM brkt_matches bm
@@ -675,7 +687,6 @@ public static class DeveloperV1Endpoints
             )
             """,
             new { matchId, orgId });
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

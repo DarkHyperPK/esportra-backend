@@ -433,6 +433,7 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
 // ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
+builder.Services.AddHostedService<Esportra.Api.ScheduledJobs.DeveloperApiAuditLogPurgeJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
@@ -695,6 +696,7 @@ app.MapNotificationPreferenceEndpoints();
 app.MapDeveloperV1Endpoints();
 app.MapDeveloperKeyEndpoints();
 app.MapDeveloperAdminEndpoints();
+app.MapDeveloperAccessRequestEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket").RequireCors("EsportraPolicy");

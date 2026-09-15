@@ -26,6 +26,7 @@ public sealed class ApiKeyAuthMiddleware(
 
     public async Task InvokeAsync(HttpContext context)
     {
+        var startTime = Stopwatch.GetTimestamp();
         var rawKey = context.Request.Headers["X-Api-Key"].FirstOrDefault();
         if (string.IsNullOrEmpty(rawKey))
         {
@@ -35,6 +36,7 @@ public sealed class ApiKeyAuthMiddleware(
 
         if (!s_keyFormat.IsMatch(rawKey))
         {
+            RegisterAuditCallback(context, Guid.Empty, Guid.Empty, startTime, logger);
             context.Response.StatusCode = 401;
             await context.Response.WriteAsJsonAsync(new { error = "invalid_api_key" });
             return;
@@ -45,6 +47,9 @@ public sealed class ApiKeyAuthMiddleware(
             $"api-key-ctx:{keyHash}",
             async ct => await LookupKeyAsync(keyHash, ct),
             new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) });
+
+        // Register audit callback now — fires for ALL responses, including 401s
+        RegisterAuditCallback(context, record?.Id ?? Guid.Empty, record?.OrganizationId ?? Guid.Empty, startTime, logger);
 
         var validationResult = ValidateRecord(record);
         if (validationResult is not null)
@@ -57,14 +62,11 @@ public sealed class ApiKeyAuthMiddleware(
         var apiKeyCtx = BuildApiKeyContext(record!);
         SetHttpContextItems(context, apiKeyCtx);
 
-        RegisterAuditCallback(context, apiKeyCtx, logger);
-
         await next(context);
     }
 
     private async Task<ApiKeyRecord?> LookupKeyAsync(string keyHash, CancellationToken ct)
     {
-        using var conn = db.CreateConnection();
         var svc = new ApiKeyValidationService(db);
         return await svc.FindByHashAsync(keyHash, ct);
     }
@@ -73,6 +75,7 @@ public sealed class ApiKeyAuthMiddleware(
     {
         if (record is null) return "invalid_api_key";
         if (record.Status == "revoked") return "api_key_revoked";
+        if (record.Status == "rotating" && record.GracePeriodUntil is null) return "api_key_invalid_state";
         if (record.GracePeriodUntil is not null && record.GracePeriodUntil <= DateTimeOffset.UtcNow)
             return "api_key_expired";
         return null;
@@ -120,10 +123,11 @@ public sealed class ApiKeyAuthMiddleware(
 
     private static void RegisterAuditCallback(
         HttpContext context,
-        ApiKeyContext apiKeyCtx,
+        Guid keyId,
+        Guid orgId,
+        long startTimestamp,
         ILogger logger)
     {
-        var startTime = Stopwatch.GetTimestamp();
         var method = context.Request.Method;
         var path = context.Request.Path.Value ?? string.Empty;
         var ip = context.Connection.RemoteIpAddress?.ToString();
@@ -132,12 +136,12 @@ public sealed class ApiKeyAuthMiddleware(
         {
             try
             {
-                var elapsedMs = (int)Stopwatch.GetElapsedTime(startTime).TotalMilliseconds;
+                var elapsedMs = (int)Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
                 var statusCode = context.Response.StatusCode;
                 var auditSvc = context.RequestServices.GetRequiredService<IDeveloperApiAuditService>();
                 await auditSvc.RecordAsync(new ApiKeyAuditEntry(
-                    apiKeyCtx.KeyId,
-                    apiKeyCtx.OrgId,
+                    keyId,
+                    orgId,
                     method,
                     path,
                     statusCode,
@@ -147,7 +151,7 @@ public sealed class ApiKeyAuthMiddleware(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[ApiKeyAudit] Failed to record audit entry for key {KeyId}", apiKeyCtx.KeyId);
+                logger.LogWarning(ex, "[ApiKeyAudit] Failed to record audit entry for key {KeyId}", keyId);
             }
         });
     }
