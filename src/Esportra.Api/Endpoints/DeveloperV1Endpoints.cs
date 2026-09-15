@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -703,42 +704,49 @@ public static class DeveloperV1Endpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
 public sealed record V1CreateTournamentRequest(
-    string Name,
-    string Game,
-    string Format,
-    int MaxParticipants,
-    DateTimeOffset StartDate,
-    DateTimeOffset? EndDate = null,
-    string? Region = null);
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("game")] string Game,
+    [property: JsonPropertyName("format")] string Format,
+    [property: JsonPropertyName("max_participants")] int MaxParticipants,
+    [property: JsonPropertyName("start_date")] DateTimeOffset StartDate,
+    [property: JsonPropertyName("end_date")] DateTimeOffset? EndDate = null,
+    [property: JsonPropertyName("region")] string? Region = null);
 
 public sealed record V1PatchTournamentRequest(
-    string? Name = null,
-    DateTimeOffset? StartDate = null,
-    DateTimeOffset? EndDate = null,
-    int? MaxParticipants = null,
-    string? Region = null);
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("start_date")] DateTimeOffset? StartDate = null,
+    [property: JsonPropertyName("end_date")] DateTimeOffset? EndDate = null,
+    [property: JsonPropertyName("max_participants")] int? MaxParticipants = null,
+    [property: JsonPropertyName("region")] string? Region = null);
 
 public sealed record V1AddParticipantRequest(
-    string ExternalId,
-    string? Name = null,
-    System.Text.Json.JsonElement? Metadata = null,
-    int? Seeding = null);
+    [property: JsonPropertyName("external_id")] string ExternalId,
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("metadata")] System.Text.Json.JsonElement? Metadata = null,
+    [property: JsonPropertyName("seeding")] int? Seeding = null);
 
 public sealed record V1BracketGenerateRequest(
-    Guid StageId,
-    int BestOf,
-    string? Format = null,
-    int? BracketSize = null);
+    [property: JsonPropertyName("stage_id")] Guid StageId,
+    [property: JsonPropertyName("best_of")] int BestOf,
+    [property: JsonPropertyName("format")] string? Format = null,
+    [property: JsonPropertyName("bracket_size")] int? BracketSize = null);
 
-public sealed record V1SeedItem(Guid ParticipantId, int Position);
+public sealed record V1SeedItem(
+    [property: JsonPropertyName("participant_id")] Guid ParticipantId,
+    [property: JsonPropertyName("position")] int Position);
 
-public sealed record V1SeedBracketRequest(List<V1SeedItem> Seeds);
+public sealed record V1SeedBracketRequest(
+    [property: JsonPropertyName("seeds")] List<V1SeedItem> Seeds);
 
-public sealed record V1MatchResultRequest(Guid WinnerId, int ScoreParticipant1, int ScoreParticipant2);
+public sealed record V1MatchResultRequest(
+    [property: JsonPropertyName("winner_id")] Guid WinnerId,
+    [property: JsonPropertyName("score_participant1")] int ScoreParticipant1,
+    [property: JsonPropertyName("score_participant2")] int ScoreParticipant2);
 
-public sealed record V1ScheduleMatchRequest(DateTimeOffset ScheduledAt);
+public sealed record V1ScheduleMatchRequest(
+    [property: JsonPropertyName("scheduled_at")] DateTimeOffset ScheduledAt);
 
 public sealed record V1VetoPickRequest(
-    string? Action,
-    string Map,
-    Guid ParticipantId);
+    [property: JsonPropertyName("action")] string? Action,
+    [property: JsonPropertyName("map")] string Map,
+    [property: JsonPropertyName("participant_id")] Guid ParticipantId);
