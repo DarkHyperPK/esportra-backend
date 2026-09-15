@@ -1048,7 +1048,7 @@ public static class ProfileEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var rows = await conn.QueryAsync<dynamic>(
+            var rows = await conn.QueryAsync<TournamentDiscordPrefDto>(
                 """
                 SELECT t.id AS TournamentId, t.name AS TournamentName, t.game AS Game,
                        t.start_date AS StartDate,
@@ -1108,6 +1108,7 @@ public static class ProfileEndpoints
     }
 }
 
+public sealed record TournamentDiscordPrefDto(Guid TournamentId, string TournamentName, string Game, DateTimeOffset StartDate, bool DiscordDmsEnabled);
 public sealed record ToggleTournamentDiscordPrefRequest(bool Enabled);
 public sealed record SetTimezoneRequest(string? TimezoneIana);
 public sealed record SetCountryRequest(string? CountryCode);
