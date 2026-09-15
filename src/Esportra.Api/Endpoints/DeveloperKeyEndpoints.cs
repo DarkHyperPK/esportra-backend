@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -418,11 +419,11 @@ public static class DeveloperKeyEndpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
 public sealed record CreateDeveloperKeyRequest(
-    string OrganizationId,
-    string? Name = null,
-    string? Environment = null,
-    string[]? Scopes = null,
-    int? RateLimitPerMin = null);
+    [property: JsonPropertyName("organization_id")] string OrganizationId,
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("environment")] string? Environment = null,
+    [property: JsonPropertyName("scopes")] string[]? Scopes = null,
+    [property: JsonPropertyName("rate_limit_per_min")] int? RateLimitPerMin = null);
 
 public sealed record RotateDeveloperKeyRequest(int? GracePeriodHours = null);
 

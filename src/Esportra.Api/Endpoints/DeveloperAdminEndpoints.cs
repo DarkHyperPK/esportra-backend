@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -449,20 +450,22 @@ public static class DeveloperAdminEndpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
 public sealed record AdminCreateDeveloperKeyRequest(
-    string OrganizationId,
-    string? Name = null,
-    string? Environment = null,
-    string[]? Scopes = null,
-    int? RateLimitPerMin = null);
+    [property: JsonPropertyName("organization_id")] string OrganizationId,
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("environment")] string? Environment = null,
+    [property: JsonPropertyName("scopes")] string[]? Scopes = null,
+    [property: JsonPropertyName("rate_limit_per_min")] int? RateLimitPerMin = null);
 
 public sealed record AdminPatchDeveloperKeyRequest(
-    string? Name = null,
-    string[]? Scopes = null,
-    int? RateLimitPerMin = null);
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("scopes")] string[]? Scopes = null,
+    [property: JsonPropertyName("rate_limit_per_min")] int? RateLimitPerMin = null);
 
-public sealed record AdminRotateDeveloperKeyRequest(int? GracePeriodMinutes = null);
+public sealed record AdminRotateDeveloperKeyRequest(
+    [property: JsonPropertyName("grace_period_minutes")] int? GracePeriodMinutes = null);
 
-public sealed record SetApiApprovalRequest(bool IsApiApproved);
+public sealed record SetApiApprovalRequest(
+    [property: JsonPropertyName("is_api_approved")] bool IsApiApproved);
 
 public sealed record PartnerAnalyticsRow(
     Guid OrganizationId,
