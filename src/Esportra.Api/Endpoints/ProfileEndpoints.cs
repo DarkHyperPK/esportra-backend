@@ -1059,6 +1059,7 @@ public static class ProfileEndpoints
                     ON p.user_id = @callerId AND p.tournament_id = t.id
                 WHERE (tp.user_id = @callerId OR tp.team_captain_id = @callerId)
                   AND tp.status NOT IN ('cancelled', 'rejected')
+                  AND t.status NOT IN ('completed', 'cancelled')
                 ORDER BY t.start_date DESC
                 """,
                 new { callerId = userCtx.UserIdGuid });
