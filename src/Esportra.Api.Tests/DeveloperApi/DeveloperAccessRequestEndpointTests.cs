@@ -110,10 +110,10 @@ public sealed class DeveloperAccessRequestIntegrationTests(ApiFactory factory)
     private readonly ApiFactory _factory = factory;
     private readonly DbSeeder _seeder = factory.Seeder;
 
-    // Shared user IDs — seeded idempotently via SeedUsersAsync()
-    private static readonly Guid OwnerUserId = Guid.NewGuid();
-    private static readonly Guid OtherUserId = Guid.NewGuid();
-    private static readonly Guid AdminUserId = Guid.NewGuid();
+    // Per-test user IDs — fresh GUIDs per test instance for full isolation
+    private readonly Guid OwnerUserId = Guid.NewGuid();
+    private readonly Guid OtherUserId = Guid.NewGuid();
+    private readonly Guid AdminUserId = Guid.NewGuid();
 
     private const string ValidIntendedUse =
         "We plan to build a tournament bracket aggregation service for competitive esports players.";
@@ -405,12 +405,11 @@ public sealed class DeveloperAccessRequestIntegrationTests(ApiFactory factory)
     {
         var orgId = Guid.NewGuid();
         await using var conn = _seeder.OpenConnection();
-        var actualId = await conn.QuerySingleAsync<Guid>(
+        await conn.ExecuteAsync(
             """
             INSERT INTO public.organizations (id, owner_id, name, slug, description, logo_url, banner_url, social_links)
             VALUES (@id, @ownerId, @name, @slug, '', '', '', '{}'::jsonb)
-            ON CONFLICT (owner_id) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug
-            RETURNING id
+            ON CONFLICT (id) DO NOTHING
             """,
             new { id = orgId, ownerId, name = $"Test Org {orgId:N}"[..30], slug = $"org-{orgId:N}"[..20] });
 
@@ -418,10 +417,10 @@ public sealed class DeveloperAccessRequestIntegrationTests(ApiFactory factory)
         {
             await conn.ExecuteAsync(
                 "UPDATE public.organizations SET is_api_approved = true WHERE id = @id",
-                new { id = actualId });
+                new { id = orgId });
         }
 
-        return actualId;
+        return orgId;
     }
 
     private async Task<Guid> SeedAccessRequestAsync(Guid orgId, Guid requestedBy, string status = "pending")
