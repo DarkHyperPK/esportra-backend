@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dapper;
 using Npgsql;
 using Esportra.Api.Helpers;
@@ -1110,8 +1111,8 @@ public static class ProfileEndpoints
 
 public sealed record TournamentDiscordPrefDto(Guid TournamentId, string TournamentName, string Game, DateTimeOffset StartDate, bool DiscordDmsEnabled);
 public sealed record ToggleTournamentDiscordPrefRequest(bool Enabled);
-public sealed record SetTimezoneRequest(string? TimezoneIana);
-public sealed record SetCountryRequest(string? CountryCode);
+public sealed record SetTimezoneRequest([property: JsonPropertyName("timezone_iana")] string? TimezoneIana);
+public sealed record SetCountryRequest([property: JsonPropertyName("country_code")] string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
 public sealed record UpdateSkillLevelRequest(string SkillLevel);
