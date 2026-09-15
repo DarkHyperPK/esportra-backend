@@ -222,9 +222,9 @@ CEO (You)
 
 ### Agent Definitions
 
-All agent files: `.claude/agents/` (version-controlled)
-All rules: `.claude/rules/` (auto-loaded, version-controlled)
-Runtime state: `.claude/company/` (gitignored — local only)
+All agent files: `.claude/agents/` (local only — gitignored)
+All rules: `.claude/rules/` (local only — gitignored)
+Runtime state: `.claude/company/` (local only — gitignored)
 
 ### Natural Language Detection
 
