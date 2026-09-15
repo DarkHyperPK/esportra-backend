@@ -77,10 +77,7 @@ public static class DeveloperKeyEndpoints
 
         var (rawKey, hash, prefix) = GenerateKey(environment);
         var keyId = Guid.NewGuid();
-        var scopes = req.Scopes is { Length: > 0 } ? req.Scopes : DefaultScopes();
-
-        if (req.Scopes is { Length: > 0 } && HasInvalidScopes(scopes))
-            return Results.BadRequest(new { error = "One or more scopes are not valid." });
+        var scopes = DefaultScopes();
 
         await conn.ExecuteAsync(
             """
@@ -399,19 +396,9 @@ public static class DeveloperKeyEndpoints
         ApiKeyScopes.BracketsWrite,
         ApiKeyScopes.MatchesRead,
         ApiKeyScopes.MatchesWrite,
+        ApiKeyScopes.VetoRead,
+        ApiKeyScopes.VetoWrite,
     ];
-
-    internal static bool HasInvalidScopes(string[] scopes)
-    {
-        var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ApiKeyScopes.TournamentsRead, ApiKeyScopes.TournamentsWrite,
-            ApiKeyScopes.BracketsRead, ApiKeyScopes.BracketsWrite,
-            ApiKeyScopes.MatchesRead, ApiKeyScopes.MatchesWrite,
-            ApiKeyScopes.VetoRead, ApiKeyScopes.VetoWrite,
-        };
-        return scopes.Any(s => !known.Contains(s));
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -422,7 +409,6 @@ public sealed record CreateDeveloperKeyRequest(
     [property: JsonPropertyName("organization_id")] string OrganizationId,
     [property: JsonPropertyName("name")] string? Name = null,
     [property: JsonPropertyName("environment")] string? Environment = null,
-    [property: JsonPropertyName("scopes")] string[]? Scopes = null,
     [property: JsonPropertyName("rate_limit_per_min")] int? RateLimitPerMin = null);
 
 public sealed record RotateDeveloperKeyRequest(int? GracePeriodHours = null);

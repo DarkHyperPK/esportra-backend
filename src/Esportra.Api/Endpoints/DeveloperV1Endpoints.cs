@@ -147,9 +147,18 @@ public static class DeveloperV1Endpoints
                 settings = settingsJson ?? "{}",
             });
 
+        Guid tournamentId = (Guid)row.id;
+        var stageId = await conn.ExecuteScalarAsync<Guid>(
+            """
+            INSERT INTO tournament_stages (tournament_id, name, format, capacity, stage_order, sequence_order)
+            VALUES (@tournamentId, 'Main Stage', @format, @capacity, 1, 1)
+            RETURNING id
+            """,
+            new { tournamentId, format = req.Format, capacity = req.MaxParticipants });
+
         return Results.Created(
             $"/api/v1/tournaments/{row.id}",
-            new { id = row.id, name = row.name, status = row.status, environment = apiCtx.Environment, created_at = row.created_at });
+            new { id = row.id, name = row.name, status = row.status, stage_id = stageId, environment = apiCtx.Environment, created_at = row.created_at });
     }
 
     private static async Task<IResult> GetTournament(

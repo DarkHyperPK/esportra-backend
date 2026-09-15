@@ -62,9 +62,6 @@ public static class DeveloperAdminEndpoints
         var keyId = Guid.NewGuid();
         var scopes = req.Scopes is { Length: > 0 } ? req.Scopes : AdminDefaultScopes();
 
-        if (req.Scopes is { Length: > 0 } && DeveloperKeyEndpoints.HasInvalidScopes(scopes))
-            return Results.BadRequest(new { error = "One or more scopes are not valid." });
-
         using var conn = db.CreateConnection();
         await conn.ExecuteAsync(
             """
@@ -168,9 +165,6 @@ public static class DeveloperAdminEndpoints
 
         if (req.Name is { Length: > 100 })
             return Results.BadRequest(new { error = "name must not exceed 100 characters" });
-
-        if (req.Scopes is { Length: > 0 } && DeveloperKeyEndpoints.HasInvalidScopes(req.Scopes))
-            return Results.BadRequest(new { error = "One or more scopes are not valid." });
 
         var affected = await conn.ExecuteAsync(
             """
