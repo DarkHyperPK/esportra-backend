@@ -1,5 +1,4 @@
 using System.Text;
-using Scalar.AspNetCore;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
@@ -434,28 +433,9 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
 // ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
-builder.Services.AddHostedService<Esportra.Api.ScheduledJobs.DeveloperApiAuditLogPurgeJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
-// Only expose developer-facing endpoints — internal admin and operational routes
-// are stripped from the public spec via tag filtering.
-builder.Services.AddOpenApi(options =>
-{
-    options.AddDocumentTransformer((document, context, ct) =>
-    {
-        var paths = document.Paths;
-        var toRemove = paths
-            .Where(p => !p.Value.Operations.Values
-                .Any(op => op.Tags.Any(t => t.Name == "Developer API v1")))
-            .Select(p => p.Key)
-            .ToList();
-        foreach (var path in toRemove)
-            paths.Remove(path);
-        document.Info.Title = "Esportra Developer API";
-        document.Info.Description = "Programmatic tournament management for verified API partners.";
-        return Task.CompletedTask;
-    });
-});
+builder.Services.AddOpenApi();
 
 // ═════════════════════════════════════════════════════════════════════════════
 Console.WriteLine("[STARTUP] Building app...");
@@ -552,14 +532,8 @@ using (var scope = app.Services.CreateScope())
         j => j.ExecuteAsync(CancellationToken.None));
 }
 
-app.MapOpenApi();
-app.MapScalarApiReference("/api/v1/docs", options =>
-{
-    options.Title = "Esportra Developer API";
-    options.OpenApiRoutePattern = "/openapi/v1.json";
-    options.DefaultHttpClient = new(ScalarTarget.Shell, ScalarClient.Curl);
-    options.HideClientButton = false;
-});
+if (app.Environment.IsDevelopment())
+    app.MapOpenApi();
 
 // ── Proxy / forwarded-header support ──────────────────────────────────────────
 // Coolify (and any nginx reverse proxy) terminates TLS and forwards HTTP to
@@ -721,7 +695,6 @@ app.MapNotificationPreferenceEndpoints();
 app.MapDeveloperV1Endpoints();
 app.MapDeveloperKeyEndpoints();
 app.MapDeveloperAdminEndpoints();
-app.MapDeveloperAccessRequestEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket").RequireCors("EsportraPolicy");

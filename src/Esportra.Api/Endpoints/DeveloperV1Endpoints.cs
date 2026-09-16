@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -117,8 +116,6 @@ public static class DeveloperV1Endpoints
         if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "name is required" });
         if (string.IsNullOrWhiteSpace(req.Game)) return Results.BadRequest(new { error = "game is required" });
         if (string.IsNullOrWhiteSpace(req.Format)) return Results.BadRequest(new { error = "format is required" });
-        if (req.MaxParticipants < 2 || req.MaxParticipants > 1024)
-            return Results.BadRequest(new { error = "max_participants must be between 2 and 1024" });
 
         var settingsJson = apiCtx.IsSandbox ? """{"api_sandbox":true}""" : null;
         using var conn = db.CreateConnection();
@@ -148,18 +145,9 @@ public static class DeveloperV1Endpoints
                 settings = settingsJson ?? "{}",
             });
 
-        Guid tournamentId = (Guid)row.id;
-        var stageId = await conn.ExecuteScalarAsync<Guid>(
-            """
-            INSERT INTO tournament_stages (tournament_id, name, format, capacity, stage_order, sequence_order)
-            VALUES (@tournamentId, 'Main Stage', @format, @capacity, 1, 1)
-            RETURNING id
-            """,
-            new { tournamentId, format = req.Format, capacity = req.MaxParticipants });
-
         return Results.Created(
             $"/api/v1/tournaments/{row.id}",
-            new { id = row.id, name = row.name, status = row.status, stage_id = stageId, environment = apiCtx.Environment, created_at = row.created_at });
+            new { id = row.id, name = row.name, status = row.status, environment = apiCtx.Environment, created_at = row.created_at });
     }
 
     private static async Task<IResult> GetTournament(
@@ -268,12 +256,12 @@ public static class DeveloperV1Endpoints
         var apiCtx = ctx.Items["ApiKeyContext"] as ApiKeyContext;
         if (apiCtx is null) return Results.Unauthorized();
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.TournamentsWrite)) return Results.Forbid();
-        if (string.IsNullOrWhiteSpace(req.ExternalId) || req.ExternalId.Length > 255)
-            return Results.BadRequest(new { error = "external_id is required and must be <= 255 characters" });
+        if (string.IsNullOrWhiteSpace(req.ExternalId)) return Results.BadRequest(new { error = "external_id is required" });
+
+        var tournamentExists = await VerifyTournamentOrgAsync(db, id, apiCtx.OrgId);
+        if (!tournamentExists) return Results.NotFound();
 
         using var conn = db.CreateConnection();
-        if (!await VerifyTournamentOrgAsync(conn, id, apiCtx.OrgId)) return Results.NotFound();
-
         try
         {
             var row = await conn.QuerySingleAsync<dynamic>(
@@ -402,21 +390,18 @@ public static class DeveloperV1Endpoints
 
         if (req.Seeds is not { Count: > 0 }) return Results.BadRequest(new { error = "seeds must not be empty" });
 
-        using var conn = db.CreateConnection();
-        if (!await VerifyTournamentOrgAsync(conn, id, apiCtx.OrgId)) return Results.NotFound();
+        var tournamentExists = await VerifyTournamentOrgAsync(db, id, apiCtx.OrgId);
+        if (!tournamentExists) return Results.NotFound();
 
-        var participantIds = req.Seeds.Select(s => s.ParticipantId).ToArray();
-        var positions = req.Seeds.Select(s => s.Position).ToArray();
-        var seededCount = await conn.ExecuteAsync(
-            """
-            UPDATE tournament_external_participants tep
-            SET seeding = seeds.position
-            FROM unnest(@ids::uuid[], @positions::int[]) AS seeds(id, position)
-            WHERE tep.id = seeds.id
-              AND tep.tournament_id = @tournamentId
-              AND tep.organization_id = @orgId
-            """,
-            new { ids = participantIds, positions, tournamentId = id, orgId = apiCtx.OrgId });
+        using var conn = db.CreateConnection();
+        var seededCount = 0;
+        foreach (var seed in req.Seeds)
+        {
+            var affected = await conn.ExecuteAsync(
+                "UPDATE tournament_external_participants SET seeding = @position WHERE id = @participantId AND tournament_id = @id AND organization_id = @orgId",
+                new { position = seed.Position, participantId = seed.ParticipantId, id, orgId = apiCtx.OrgId });
+            seededCount += affected;
+        }
 
         return Results.Ok(new { seeded_count = seededCount });
     }
@@ -560,9 +545,6 @@ public static class DeveloperV1Endpoints
         if (apiCtx is null) return Results.Unauthorized();
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.MatchesWrite)) return Results.Forbid();
 
-        if (req.ScoreParticipant1 < 0 || req.ScoreParticipant2 < 0)
-            return Results.BadRequest(new { error = "scores must be non-negative" });
-
         using var conn = db.CreateConnection();
         var existing = await conn.QuerySingleOrDefaultAsync<(string Status, Guid? WinnerId)>(
             """
@@ -580,15 +562,8 @@ public static class DeveloperV1Endpoints
             return Results.Conflict(new { error = "Match result has already been reported." });
 
         await conn.ExecuteAsync(
-            """
-            UPDATE brkt_matches bm
-            SET winner_id = @winnerId, team1_score = @score1, team2_score = @score2, status = 'completed'
-            FROM brkt_versions bv
-            JOIN tournament_stages s ON s.id = bv.stage_id
-            JOIN tournaments t ON t.id = s.tournament_id
-            WHERE bm.id = @matchId AND bm.version_id = bv.id AND t.organization_id = @orgId
-            """,
-            new { winnerId = req.WinnerId, score1 = req.ScoreParticipant1, score2 = req.ScoreParticipant2, matchId, orgId = apiCtx.OrgId });
+            "UPDATE brkt_matches SET winner_id = @winnerId, team1_score = @score1, team2_score = @score2, status = 'completed' WHERE id = @matchId",
+            new { winnerId = req.WinnerId, score1 = req.ScoreParticipant1, score2 = req.ScoreParticipant2, matchId });
 
         return Results.Ok(new { match_id = matchId, winner_id = req.WinnerId, status = "completed" });
     }
@@ -634,8 +609,7 @@ public static class DeveloperV1Endpoints
         if (apiCtx is null) return Results.Unauthorized();
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.VetoRead)) return Results.Forbid();
 
-        using var conn = db.CreateConnection();
-        if (!await VerifyMatchOrgAsync(conn, matchId, apiCtx.OrgId)) return Results.NotFound();
+        if (!await VerifyMatchOrgAsync(db, matchId, apiCtx.OrgId)) return Results.NotFound();
 
         var state = await veto.GetAsync(matchId, ct);
         return state is null ? Results.NotFound() : Results.Ok(state);
@@ -654,8 +628,7 @@ public static class DeveloperV1Endpoints
         if (!ApiKeyScopes.HasScope(apiCtx.Scopes, ApiKeyScopes.VetoWrite)) return Results.Forbid();
         if (string.IsNullOrWhiteSpace(req.Map)) return Results.BadRequest(new { error = "map is required" });
 
-        using var conn = db.CreateConnection();
-        if (!await VerifyMatchOrgAsync(conn, matchId, apiCtx.OrgId)) return Results.NotFound();
+        if (!await VerifyMatchOrgAsync(db, matchId, apiCtx.OrgId)) return Results.NotFound();
 
         try
         {
@@ -680,13 +653,18 @@ public static class DeveloperV1Endpoints
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────────
 
-    private static Task<bool> VerifyTournamentOrgAsync(System.Data.IDbConnection conn, Guid tournamentId, Guid orgId)
-        => conn.ExecuteScalarAsync<bool>(
+    private static async Task<bool> VerifyTournamentOrgAsync(IDbConnectionFactory db, Guid tournamentId, Guid orgId)
+    {
+        using var conn = db.CreateConnection();
+        return await conn.ExecuteScalarAsync<bool>(
             "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organization_id = @orgId)",
             new { tournamentId, orgId });
+    }
 
-    private static Task<bool> VerifyMatchOrgAsync(System.Data.IDbConnection conn, Guid matchId, Guid orgId)
-        => conn.ExecuteScalarAsync<bool>(
+    private static async Task<bool> VerifyMatchOrgAsync(IDbConnectionFactory db, Guid matchId, Guid orgId)
+    {
+        using var conn = db.CreateConnection();
+        return await conn.ExecuteScalarAsync<bool>(
             """
             SELECT EXISTS(
                 SELECT 1 FROM brkt_matches bm
@@ -697,6 +675,7 @@ public static class DeveloperV1Endpoints
             )
             """,
             new { matchId, orgId });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -704,49 +683,42 @@ public static class DeveloperV1Endpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
 public sealed record V1CreateTournamentRequest(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("game")] string Game,
-    [property: JsonPropertyName("format")] string Format,
-    [property: JsonPropertyName("max_participants")] int MaxParticipants,
-    [property: JsonPropertyName("start_date")] DateTimeOffset StartDate,
-    [property: JsonPropertyName("end_date")] DateTimeOffset? EndDate = null,
-    [property: JsonPropertyName("region")] string? Region = null);
+    string Name,
+    string Game,
+    string Format,
+    int MaxParticipants,
+    DateTimeOffset StartDate,
+    DateTimeOffset? EndDate = null,
+    string? Region = null);
 
 public sealed record V1PatchTournamentRequest(
-    [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("start_date")] DateTimeOffset? StartDate = null,
-    [property: JsonPropertyName("end_date")] DateTimeOffset? EndDate = null,
-    [property: JsonPropertyName("max_participants")] int? MaxParticipants = null,
-    [property: JsonPropertyName("region")] string? Region = null);
+    string? Name = null,
+    DateTimeOffset? StartDate = null,
+    DateTimeOffset? EndDate = null,
+    int? MaxParticipants = null,
+    string? Region = null);
 
 public sealed record V1AddParticipantRequest(
-    [property: JsonPropertyName("external_id")] string ExternalId,
-    [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("metadata")] System.Text.Json.JsonElement? Metadata = null,
-    [property: JsonPropertyName("seeding")] int? Seeding = null);
+    string ExternalId,
+    string? Name = null,
+    System.Text.Json.JsonElement? Metadata = null,
+    int? Seeding = null);
 
 public sealed record V1BracketGenerateRequest(
-    [property: JsonPropertyName("stage_id")] Guid StageId,
-    [property: JsonPropertyName("best_of")] int BestOf,
-    [property: JsonPropertyName("format")] string? Format = null,
-    [property: JsonPropertyName("bracket_size")] int? BracketSize = null);
+    Guid StageId,
+    int BestOf,
+    string? Format = null,
+    int? BracketSize = null);
 
-public sealed record V1SeedItem(
-    [property: JsonPropertyName("participant_id")] Guid ParticipantId,
-    [property: JsonPropertyName("position")] int Position);
+public sealed record V1SeedItem(Guid ParticipantId, int Position);
 
-public sealed record V1SeedBracketRequest(
-    [property: JsonPropertyName("seeds")] List<V1SeedItem> Seeds);
+public sealed record V1SeedBracketRequest(List<V1SeedItem> Seeds);
 
-public sealed record V1MatchResultRequest(
-    [property: JsonPropertyName("winner_id")] Guid WinnerId,
-    [property: JsonPropertyName("score_participant1")] int ScoreParticipant1,
-    [property: JsonPropertyName("score_participant2")] int ScoreParticipant2);
+public sealed record V1MatchResultRequest(Guid WinnerId, int ScoreParticipant1, int ScoreParticipant2);
 
-public sealed record V1ScheduleMatchRequest(
-    [property: JsonPropertyName("scheduled_at")] DateTimeOffset ScheduledAt);
+public sealed record V1ScheduleMatchRequest(DateTimeOffset ScheduledAt);
 
 public sealed record V1VetoPickRequest(
-    [property: JsonPropertyName("action")] string? Action,
-    [property: JsonPropertyName("map")] string Map,
-    [property: JsonPropertyName("participant_id")] Guid ParticipantId);
+    string? Action,
+    string Map,
+    Guid ParticipantId);

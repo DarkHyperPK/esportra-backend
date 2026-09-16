@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -32,9 +31,6 @@ public static class DeveloperKeyEndpoints
         app.MapPost("/api/developer/keys/{keyId}/rotate", RotateKey)
             .RequireAuthorization("Authenticated").WithTags("Developer Keys");
 
-        app.MapPatch("/api/developer/keys/{keyId}", RenameKey)
-            .RequireAuthorization("Authenticated").WithTags("Developer Keys");
-
         app.MapGet("/api/developer/analytics/summary", GetAnalyticsSummary)
             .RequireAuthorization("Authenticated").WithTags("Developer Analytics");
 
@@ -60,11 +56,7 @@ public static class DeveloperKeyEndpoints
         if (!await IsOrgOwnerOrAdmin(conn, orgId, userCtx.UserIdGuid)) return Results.Forbid();
 
         var environment = req.Environment?.ToLowerInvariant() == "live" ? "live" : "sandbox";
-        var rateLimit = req.RateLimitPerMin ?? 60;
-        if (rateLimit < 1 || rateLimit > 300)
-            return Results.BadRequest(new { error = "rate_limit_per_min must be between 1 and 300" });
-
-        if (!await CheckKeyLimitAsync(conn, orgId, environment)) return Results.Conflict(new { error = $"Key limit reached for {environment} environment." });
+        if (!await CheckKeyLimitAsync(conn, orgId, environment)) return Results.BadRequest(new { error = $"Key limit reached for {environment} environment." });
 
         if (environment == "live")
         {
@@ -77,17 +69,17 @@ public static class DeveloperKeyEndpoints
 
         var (rawKey, hash, prefix) = GenerateKey(environment);
         var keyId = Guid.NewGuid();
-        var scopes = DefaultScopes();
+        var scopes = req.Scopes is { Length: > 0 } ? req.Scopes : DefaultScopes();
 
         await conn.ExecuteAsync(
             """
             INSERT INTO developer_api_keys (id, organization_id, name, key_hash, key_prefix, environment, status, scopes, rate_limit_per_min, created_by)
             VALUES (@keyId, @orgId, @name, @hash, @prefix, @environment, 'active', @scopes, @rateLimit, @createdBy)
             """,
-            new { keyId, orgId, name = req.Name ?? $"{environment} key", hash, prefix, environment, scopes, rateLimit, createdBy = userCtx.UserIdGuid });
+            new { keyId, orgId, name = req.Name ?? $"{environment} key", hash, prefix, environment, scopes, rateLimit = req.RateLimitPerMin ?? 60, createdBy = userCtx.UserIdGuid });
 
         return Results.Created($"/api/developer/keys/{keyId}",
-            new { id = keyId, name = req.Name ?? $"{environment} key", key = rawKey, key_prefix = prefix, environment, scopes, rate_limit_per_min = rateLimit, created_at = DateTimeOffset.UtcNow });
+            new { id = keyId, name = req.Name ?? $"{environment} key", key = rawKey, key_prefix = prefix, environment, scopes, rate_limit_per_min = req.RateLimitPerMin ?? 60, created_at = DateTimeOffset.UtcNow });
     }
 
     private static async Task<IResult> ListKeys(
@@ -309,36 +301,6 @@ public static class DeveloperKeyEndpoints
         return Results.Ok(new { endpoints });
     }
 
-    private static async Task<IResult> RenameKey(
-        Guid keyId,
-        [FromBody] RenameKeyRequest req,
-        HttpContext ctx,
-        IDbConnectionFactory db,
-        CancellationToken ct)
-    {
-        var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null) return Results.Unauthorized();
-
-        if (string.IsNullOrWhiteSpace(req.Name))
-            return Results.BadRequest(new { error = "name is required" });
-        if (req.Name.Length > 100)
-            return Results.BadRequest(new { error = "name must not exceed 100 characters" });
-
-        using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<(Guid OrgId, string KeyHash)>(
-            "SELECT organization_id AS OrgId, key_hash AS KeyHash FROM developer_api_keys WHERE id = @keyId",
-            new { keyId });
-
-        if (row == default) return Results.NotFound();
-        if (!await IsOrgOwnerOrAdmin(conn, row.OrgId, userCtx.UserIdGuid)) return Results.Forbid();
-
-        await conn.ExecuteAsync(
-            "UPDATE developer_api_keys SET name = @name WHERE id = @keyId AND organization_id = @orgId",
-            new { keyId, orgId = row.OrgId, name = req.Name });
-
-        return Results.Ok(new { id = keyId, name = req.Name });
-    }
-
     // ─────────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────────
@@ -396,8 +358,6 @@ public static class DeveloperKeyEndpoints
         ApiKeyScopes.BracketsWrite,
         ApiKeyScopes.MatchesRead,
         ApiKeyScopes.MatchesWrite,
-        ApiKeyScopes.VetoRead,
-        ApiKeyScopes.VetoWrite,
     ];
 }
 
@@ -406,11 +366,10 @@ public static class DeveloperKeyEndpoints
 // ─────────────────────────────────────────────────────────────────────────────
 
 public sealed record CreateDeveloperKeyRequest(
-    [property: JsonPropertyName("organization_id")] string OrganizationId,
-    [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("environment")] string? Environment = null,
-    [property: JsonPropertyName("rate_limit_per_min")] int? RateLimitPerMin = null);
+    string OrganizationId,
+    string? Name = null,
+    string? Environment = null,
+    string[]? Scopes = null,
+    int? RateLimitPerMin = null);
 
 public sealed record RotateDeveloperKeyRequest(int? GracePeriodHours = null);
-
-public sealed record RenameKeyRequest(string? Name = null);
