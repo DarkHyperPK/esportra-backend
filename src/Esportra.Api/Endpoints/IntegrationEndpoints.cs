@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dapper;
 using Esportra.Api.Services;
+using Esportra.Contracts.Auth;
 using Esportra.Contracts.Requests;
 using Esportra.Infrastructure.Database;
 using Esportra.Infrastructure.Integrations;
@@ -210,18 +211,38 @@ public static class IntegrationEndpoints
 
         // ── DELETE /api/integrations/riot ─────────────────────────────────────
         app.MapDelete("/api/integrations/riot", async (
-            IDbConnectionFactory db, HttpContext ctx, CancellationToken ct) =>
+            HttpContext ctx, IDbConnectionFactory db, CancellationToken ct) =>
         {
-            var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
-                      ?? ctx.User.FindFirstValue("sub");
-            if (userId is null || !Guid.TryParse(userId, out var userGuid))
-                return Results.Unauthorized();
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND (t.settings->>'assistedReportingEnabled')::boolean IS TRUE
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            if (blockedByTournament)
+                return Results.BadRequest(new
+                {
+                    error = "active_registration",
+                    message = "You are registered in a tournament that requires a linked Riot account. Withdraw from all such tournaments before unlinking.",
+                });
+
             await conn.ExecuteAsync(
-                "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userGuid });
+                "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userCtx.UserIdGuid });
             await conn.ExecuteAsync(
-                "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId = userGuid });
+                "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");

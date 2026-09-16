@@ -31,10 +31,13 @@ public sealed class PlacementResolutionService(
             {
                 var cached = await conn.QueryAsync<dynamic>(
                     """
-                    SELECT tp.team_id, t.name AS team_name, tp.placement, tp.placement_label,
-                           tp.prize_amount, tp.prize_rewards, tp.is_tied
+                    SELECT tp.team_id,
+                           COALESCE(t.name, tpart.team_name, p.username, 'Unknown') AS team_name,
+                           tp.placement, tp.placement_label, tp.prize_amount, tp.prize_rewards, tp.is_tied
                     FROM tournament_placements tp
-                    JOIN teams t ON t.id = tp.team_id
+                    LEFT JOIN teams t ON t.id = tp.team_id
+                    LEFT JOIN tournament_participants tpart ON tpart.id = tp.team_id
+                    LEFT JOIN profiles p ON p.id = tpart.user_id
                     WHERE tp.tournament_id = @tournamentId
                     ORDER BY tp.placement
                     """,
@@ -179,11 +182,16 @@ public sealed class PlacementResolutionService(
         var matches = (await conn.QueryAsync<dynamic>(
             """
             SELECT m.round_index, m.bracket_type, m.winner_id, m.loser_id,
-                   wt.name AS winner_name, lt.name AS loser_name
+                   COALESCE(wt.name, wtp.team_name, wp.username) AS winner_name,
+                   COALESCE(lt.name, ltp.team_name, lp.username) AS loser_name
             FROM brkt_matches m
             JOIN brkt_versions v ON v.id = m.version_id
             LEFT JOIN teams wt ON wt.id = m.winner_id
+            LEFT JOIN tournament_participants wtp ON wtp.id = m.winner_id AND wt.id IS NULL
+            LEFT JOIN profiles wp ON wp.id = wtp.user_id
             LEFT JOIN teams lt ON lt.id = m.loser_id
+            LEFT JOIN tournament_participants ltp ON ltp.id = m.loser_id AND lt.id IS NULL
+            LEFT JOIN profiles lp ON lp.id = ltp.user_id
             WHERE v.stage_id = @stageId
               AND m.status = 'completed'
               AND m.bracket_type IN ('final', 'winners', 'group')
@@ -255,18 +263,28 @@ public sealed class PlacementResolutionService(
                    COALESCE(m.loser_id,
                        CASE WHEN m.winner_id = m.team1_id THEN m.team2_id
                             WHEN m.winner_id = m.team2_id THEN m.team1_id
-                            ELSE NULL END)                  AS loser_id,
-                   wt.name                                  AS winner_name,
-                   COALESCE(lt.name,
-                       CASE WHEN m.winner_id = m.team1_id THEN t2.name
-                            WHEN m.winner_id = m.team2_id THEN t1.name
-                            ELSE NULL END)                  AS loser_name
+                            ELSE NULL END)                                          AS loser_id,
+                   COALESCE(wt.name, wtp.team_name, wp.username)                   AS winner_name,
+                   COALESCE(lt.name, ltp.team_name, lp.username,
+                       CASE WHEN m.winner_id = m.team1_id
+                                 THEN COALESCE(t2.name, t2p.team_name, t2p2.username)
+                            WHEN m.winner_id = m.team2_id
+                                 THEN COALESCE(t1.name, t1p.team_name, t1p2.username)
+                            ELSE NULL END)                                          AS loser_name
             FROM brkt_matches m
-            JOIN brkt_versions v  ON v.id  = m.version_id
-            LEFT JOIN teams wt ON wt.id = m.winner_id
-            LEFT JOIN teams lt ON lt.id = m.loser_id
-            LEFT JOIN teams t1 ON t1.id = m.team1_id
-            LEFT JOIN teams t2 ON t2.id = m.team2_id
+            JOIN brkt_versions v   ON v.id   = m.version_id
+            LEFT JOIN teams wt     ON wt.id  = m.winner_id
+            LEFT JOIN tournament_participants wtp  ON wtp.id = m.winner_id  AND wt.id IS NULL
+            LEFT JOIN profiles wp  ON wp.id  = wtp.user_id
+            LEFT JOIN teams lt     ON lt.id  = m.loser_id
+            LEFT JOIN tournament_participants ltp  ON ltp.id = m.loser_id   AND lt.id IS NULL
+            LEFT JOIN profiles lp  ON lp.id  = ltp.user_id
+            LEFT JOIN teams t1     ON t1.id  = m.team1_id
+            LEFT JOIN tournament_participants t1p  ON t1p.id = m.team1_id   AND t1.id IS NULL
+            LEFT JOIN profiles t1p2 ON t1p2.id = t1p.user_id
+            LEFT JOIN teams t2     ON t2.id  = m.team2_id
+            LEFT JOIN tournament_participants t2p  ON t2p.id = m.team2_id   AND t2.id IS NULL
+            LEFT JOIN profiles t2p2 ON t2p2.id = t2p.user_id
             WHERE v.stage_id = @stageId
               AND m.status = 'completed'
             ORDER BY

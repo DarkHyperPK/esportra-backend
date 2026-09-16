@@ -187,6 +187,7 @@ public static class TournamentInvitationEndpoints
             GameCatalogService catalog,
             IHubContext<NotificationHub> notifHub,
             AuditService audit,
+            DiscordNotificationService discord,
             IConfiguration config,
             CancellationToken ct) =>
         {
@@ -313,6 +314,23 @@ public static class TournamentInvitationEndpoints
                             data = notification.data,
                         },
                         ct);
+            }
+
+            var tournamentInviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+            var inviteDmTitle = $"[{tournamentName}] Tournament Invitation";
+            foreach (var notification in pushedNotifications)
+            {
+                var tournamentInviteLink = (string?)notification.link;
+                var dmTournamentMsg = string.IsNullOrWhiteSpace(tournamentInviteLink)
+                    ? "You've been invited to join a tournament."
+                    : $"You've been invited to join a tournament.\n\n[View →]({tournamentInviteUrlBase}{tournamentInviteLink})";
+                await discord.TrySendDmAsync(
+                    (Guid)notification.user_id,
+                    "tournament_invite",
+                    inviteDmTitle,
+                    dmTournamentMsg,
+                    tournamentGame,
+                    id);
             }
 
             var sentCount = 0;

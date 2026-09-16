@@ -1,6 +1,8 @@
+using System.Data;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using Dapper;
+using Esportra.Api.Helpers;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
 
@@ -297,107 +299,138 @@ public static class StorageEndpoints
         string folder,
         IServiceProvider services)
     {
-        var userId = userCtx.UserId.ToString();
         var normalizedFolder = folder.Replace('\\', '/').Trim('/');
 
-        if (bucket.Equals("tournaments.disputes.evidence", StringComparison.OrdinalIgnoreCase)
-            || bucket.Equals("match-evidence", StringComparison.OrdinalIgnoreCase))
+        if (IsDisputeEvidenceBucket(bucket))
         {
-            if (userCtx.IsSuperAdmin
-                || userCtx.Permissions.Contains(Permissions.DisputesView, StringComparer.OrdinalIgnoreCase)
-                || userCtx.Permissions.Contains(Permissions.DisputesResolve, StringComparer.OrdinalIgnoreCase))
-                return true;
-
-            if (normalizedFolder.StartsWith("temp/", StringComparison.OrdinalIgnoreCase))
-                return normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
-
-            // Match-result dispute evidence (uploaded before tournament_dispute row exists)
-            if (normalizedFolder.StartsWith("matches/", StringComparison.OrdinalIgnoreCase))
-            {
-                var parts = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2 && Guid.TryParse(parts[1], out var matchId))
-                {
-                    var db = services.GetRequiredService<IDbConnectionFactory>();
-                    using var conn = db.CreateConnection();
-                    return await conn.ExecuteScalarAsync<bool>(
-                        """
-                        SELECT EXISTS(
-                            SELECT 1 FROM brkt_matches bm
-                            JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
-                            WHERE bm.id = @matchId
-                              AND tm.user_id = @userId
-                              AND tm.is_active = true
-                        )
-                        OR EXISTS(
-                            SELECT 1 FROM match_result_reports mrr
-                            WHERE mrr.match_id = @matchId AND mrr.reported_by = @userId
-                        )
-                        """,
-                        new { matchId, userId = userCtx.UserIdGuid });
-                }
-            }
-
-            if (normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            var firstSegment = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-            if (firstSegment is not null && Guid.TryParse(firstSegment, out var disputeId))
-            {
-                var db = services.GetRequiredService<IDbConnectionFactory>();
-                using var conn = db.CreateConnection();
-                return await conn.ExecuteScalarAsync<bool>(
-                    """
-                    SELECT EXISTS(
-                        SELECT 1 FROM tournament_disputes
-                        WHERE id = @disputeId AND raised_by_user_id = @userId
-                    )
-                    """,
-                    new { disputeId, userId = userCtx.UserIdGuid });
-            }
-
-            return false;
+            var db = services.GetRequiredService<IDbConnectionFactory>();
+            using var conn = db.CreateConnection();
+            return await ValidateDisputeEvidenceUploadAsync(conn, userCtx, normalizedFolder);
         }
 
         if (bucket.Equals("users.documents.kyc", StringComparison.OrdinalIgnoreCase))
-        {
             return userCtx.IsSuperAdmin
                 || userCtx.Permissions.Contains(Permissions.UsersView, StringComparer.OrdinalIgnoreCase);
-        }
 
         if (IsPlacementAsset(bucket, normalizedFolder))
-        {
             return userCtx.Permissions.Contains(Permissions.SponsorsEdit, StringComparer.OrdinalIgnoreCase);
-        }
 
         if (bucket.StartsWith("users.", StringComparison.OrdinalIgnoreCase))
-        {
-            if (normalizedFolder.StartsWith("Player-cards/", StringComparison.OrdinalIgnoreCase))
-            {
-                var segments = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (segments.Length < 2)
-                    return false;
-
-                return await IsActiveMemberOfTeamWithSlugAsync(
-                    userCtx.UserIdGuid,
-                    segments[1],
-                    services);
-            }
-
-            if (string.IsNullOrWhiteSpace(normalizedFolder)
-                || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Allow known avatar folders (files are namespaced by userId in filename)
-            if (bucket.Equals("users.avatars", StringComparison.OrdinalIgnoreCase)
-                && (normalizedFolder.Equals("profile-pictures", StringComparison.OrdinalIgnoreCase)
-                    || normalizedFolder.Equals("avatars", StringComparison.OrdinalIgnoreCase)))
-                return true;
-
-            return false;
-        }
+            return await ValidateUsersBucketUploadAsync(userCtx, bucket, normalizedFolder, services);
 
         return true;
     }
+
+    private static bool IsDisputeEvidenceBucket(string bucket) =>
+        bucket.Equals("tournaments.disputes.evidence", StringComparison.OrdinalIgnoreCase)
+        || bucket.Equals("match-evidence", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<bool> ValidateDisputeEvidenceUploadAsync(
+        IDbConnection conn, UserContext userCtx, string normalizedFolder)
+    {
+        if (HasDisputeStaffAccess(userCtx)) return true;
+
+        var userId = userCtx.UserId.ToString();
+
+        if (normalizedFolder.StartsWith("temp/", StringComparison.OrdinalIgnoreCase))
+            return normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase);
+
+        // Match-result dispute evidence (uploaded before tournament_dispute row exists)
+        if (normalizedFolder.StartsWith("matches/", StringComparison.OrdinalIgnoreCase))
+            return await ValidateMatchFolderEvidenceAsync(conn, userCtx.UserIdGuid, normalizedFolder);
+
+        if (normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var firstSegment = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (firstSegment is not null && Guid.TryParse(firstSegment, out var disputeId))
+            return await IsDisputeParticipantAsync(conn, disputeId, userCtx.UserIdGuid);
+
+        return false;
+    }
+
+    private static bool HasDisputeStaffAccess(UserContext userCtx) =>
+        userCtx.IsSuperAdmin
+        || userCtx.Permissions.Contains(Permissions.DisputesView, StringComparer.OrdinalIgnoreCase)
+        || userCtx.Permissions.Contains(Permissions.DisputesResolve, StringComparer.OrdinalIgnoreCase)
+        || userCtx.Permissions.Contains(StaffAuthHelper.PermDisputesAssist, StringComparer.OrdinalIgnoreCase);
+
+    private static async Task<bool> ValidateMatchFolderEvidenceAsync(
+        IDbConnection conn, Guid userId, string normalizedFolder)
+    {
+        var parts = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !Guid.TryParse(parts[1], out var matchId))
+            return false;
+
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM brkt_matches bm
+                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE bm.id = @matchId
+                  AND tm.user_id = @userId
+                  AND tm.is_active = true
+            )
+            OR EXISTS(
+                SELECT 1 FROM match_result_reports mrr
+                WHERE mrr.match_id = @matchId AND mrr.reported_by = @userId
+            )
+            """,
+            new { matchId, userId });
+    }
+
+    private static async Task<bool> IsDisputeParticipantAsync(
+        IDbConnection conn, Guid disputeId, Guid userId)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM tournament_disputes
+                WHERE id = @disputeId AND raised_by_user_id = @userId
+            )
+            OR EXISTS(
+                SELECT 1 FROM tournament_disputes td
+                JOIN tournaments t ON t.id = td.tournament_id
+                WHERE td.id = @disputeId AND t.organizer_id = @userId
+            )
+            OR EXISTS(
+                SELECT 1 FROM tournament_disputes td
+                JOIN brkt_matches bm ON bm.id = td.match_id
+                JOIN team_members tm ON tm.team_id IN (bm.team1_id, bm.team2_id)
+                WHERE td.id = @disputeId
+                  AND tm.user_id = @userId
+                  AND tm.is_active = true
+            )
+            """,
+            new { disputeId, userId });
+    }
+
+    private static async Task<bool> ValidateUsersBucketUploadAsync(
+        UserContext userCtx, string bucket, string normalizedFolder, IServiceProvider services)
+    {
+        var userId = userCtx.UserId.ToString();
+
+        if (normalizedFolder.StartsWith("Player-cards/", StringComparison.OrdinalIgnoreCase))
+        {
+            var segments = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length < 2)
+                return false;
+
+            return await IsActiveMemberOfTeamWithSlugAsync(userCtx.UserIdGuid, segments[1], services);
+        }
+
+        if (string.IsNullOrWhiteSpace(normalizedFolder)
+            || normalizedFolder.Contains(userId, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Allow known avatar folders (files are namespaced by userId in filename)
+        return IsKnownAvatarFolder(bucket, normalizedFolder);
+    }
+
+    private static bool IsKnownAvatarFolder(string bucket, string normalizedFolder) =>
+        bucket.Equals("users.avatars", StringComparison.OrdinalIgnoreCase)
+        && (normalizedFolder.Equals("profile-pictures", StringComparison.OrdinalIgnoreCase)
+            || normalizedFolder.Equals("avatars", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsPlacementAsset(string bucket, string folder) =>
         bucket.Equals("system.assets.partners", StringComparison.OrdinalIgnoreCase)

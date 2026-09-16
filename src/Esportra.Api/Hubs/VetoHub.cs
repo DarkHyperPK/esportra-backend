@@ -86,6 +86,11 @@ public static class VetoHubEvents
     /// <summary>Veto action history updated. Payload: array of VetoActionHistory.</summary>
     public const string VetoHistoryUpdated = "VetoHistoryUpdated";
 
+    /// <summary>
+    /// Veto settings were updated by the organizer. Payload: VetoSettingsDto.
+    /// </summary>
+    public const string VetoSettingsSync = "VetoSettingsSync";
+
     /// <summary>Public tool veto session changed. Payload: { sessionId }.</summary>
     public const string PublicVetoUpdated = "PublicVetoUpdated";
 

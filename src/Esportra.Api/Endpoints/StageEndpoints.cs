@@ -457,12 +457,16 @@ public static class StageEndpoints
             var participants = await conn.QueryAsync<dynamic>(
                 """
                 SELECT sp.stage_id, sp.team_id, sp.seed,
-                       t.name AS team_name, t.logo_url AS team_logo,
+                       COALESCE(t.name, tpart.team_name, solop.username) AS team_name,
+                       COALESCE(t.logo_url, solop.avatar_url) AS team_logo,
                        t.tag  AS team_tag
                 FROM stage_participants sp
-                JOIN teams t ON t.id = sp.team_id
+                LEFT JOIN teams t ON t.id = sp.team_id
+                LEFT JOIN tournament_participants tpart ON tpart.id = sp.team_id
+                  AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
+                LEFT JOIN profiles solop ON solop.id = tpart.user_id
                 WHERE sp.stage_id = @id
-                ORDER BY sp.seed ASC NULLS LAST, t.name ASC
+                ORDER BY sp.seed ASC NULLS LAST, COALESCE(t.name, tpart.team_name, solop.username) ASC
                 """, new { id });
             return Results.Ok(participants);
         });
@@ -890,11 +894,12 @@ public static class StageEndpoints
             FROM teams
             WHERE id = ANY(@ids)
             UNION ALL
-            SELECT tp.id, COALESCE(tp.team_name, 'Mock Team') AS name
+            SELECT tp.id, COALESCE(tp.team_name, p.username, 'Unknown') AS name
             FROM tournament_participants tp
             LEFT JOIN teams t ON t.id = tp.id
+            LEFT JOIN profiles p ON p.id = tp.user_id
             WHERE tp.id = ANY(@ids)
-              AND COALESCE(tp.is_mock, FALSE) = TRUE
+              AND (COALESCE(tp.is_mock, FALSE) = TRUE OR tp.participant_type = 'solo')
               AND t.id IS NULL
             """,
             new { ids = teamIds.ToArray() })).AsList();

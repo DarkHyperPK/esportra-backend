@@ -57,4 +57,5 @@ public sealed record TeamStanding(
     int Points,
     int Buchholz,
     int ScoreDiff,
+    int RoundDiff,
     int Rank);

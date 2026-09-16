@@ -10,7 +10,7 @@ namespace Esportra.Infrastructure.Email;
 /// Config required: Resend:ApiKey, Resend:FromEmail, Resend:FromName
 /// </summary>
 public sealed class ResendEmailService(
-    HttpClient http,
+    IHttpClientFactory httpClientFactory,
     IConfiguration config,
     ILogger<ResendEmailService> logger) : IEmailService
 {
@@ -45,6 +45,9 @@ public sealed class ResendEmailService(
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
             request.Content = JsonContent.Create(payload);
 
+            // Create client per-send from the factory so the underlying pooled handler is reused
+            // but this wrapper is never tied to a DI scope that may be disposed under fire-and-forget.
+            using var http = httpClientFactory.CreateClient("Resend");
             var response = await http.SendAsync(request, cts.Token);
 
             if (!response.IsSuccessStatusCode)
@@ -75,7 +78,16 @@ public sealed class ResendEmailService(
             JsonSerializer.Serialize(data)) ?? [];
 
         string Get(string key, string fallback = "") =>
-            d.TryGetValue(key, out var v) ? v.GetString() ?? fallback : fallback;
+            d.TryGetValue(key, out var v)
+                ? v.ValueKind switch
+                {
+                    JsonValueKind.String => v.GetString() ?? fallback,
+                    JsonValueKind.Number => v.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    _ => fallback
+                }
+                : fallback;
 
         return type switch
         {
@@ -138,7 +150,22 @@ public sealed class ResendEmailService(
 
             EmailType.MatchChatMessage =>
                 EmailTemplates.MatchChatMessage(
-                    Get("senderTeamName"), Get("messagePreview"), Get("matchRoomUrl")),
+                    Get("senderTeamName"),
+                    Get("messagePreview"),
+                    Get("matchRoomUrl"),
+                    int.TryParse(Get("unreadCount"), out var uc) ? uc : 1),
+
+            EmailType.DisputeResolved =>
+                EmailTemplates.DisputeResolved(
+                    Get("referenceNumber"), Get("title"), Get("status"),
+                    Get("resolutionNotes"), Get("tournamentName"),
+                    Get("disputeUrl"), Get("recipientType"), Get("filerName")),
+
+            EmailType.DisputeComment =>
+                EmailTemplates.DisputeComment(
+                    Get("referenceNumber"), Get("commenterName"),
+                    Get("commentPreview"), Get("disputeUrl"),
+                    Get("tournamentName")),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };

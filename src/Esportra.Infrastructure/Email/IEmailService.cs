@@ -20,4 +20,6 @@ public enum EmailType
     TournamentInvite,
     Broadcast,
     MatchChatMessage,
+    DisputeResolved,
+    DisputeComment,
 }

@@ -69,7 +69,16 @@ public sealed class SmtpEmailService(
             JsonSerializer.Serialize(data)) ?? [];
 
         string Get(string key, string fallback = "") =>
-            dict.TryGetValue(key, out var v) ? v.GetString() ?? fallback : fallback;
+            dict.TryGetValue(key, out var v)
+                ? v.ValueKind switch
+                {
+                    JsonValueKind.String => v.GetString() ?? fallback,
+                    JsonValueKind.Number => v.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    _ => fallback
+                }
+                : fallback;
 
         return type switch
         {
@@ -132,7 +141,22 @@ public sealed class SmtpEmailService(
 
             EmailType.MatchChatMessage =>
                 EmailTemplates.MatchChatMessage(
-                    Get("senderTeamName"), Get("messagePreview"), Get("matchRoomUrl")),
+                    Get("senderTeamName"),
+                    Get("messagePreview"),
+                    Get("matchRoomUrl"),
+                    int.TryParse(Get("unreadCount"), out var uc) ? uc : 1),
+
+            EmailType.DisputeResolved =>
+                EmailTemplates.DisputeResolved(
+                    Get("referenceNumber"), Get("title"), Get("status"),
+                    Get("resolutionNotes"), Get("tournamentName"),
+                    Get("disputeUrl"), Get("recipientType"), Get("filerName")),
+
+            EmailType.DisputeComment =>
+                EmailTemplates.DisputeComment(
+                    Get("referenceNumber"), Get("commenterName"),
+                    Get("commentPreview"), Get("disputeUrl"),
+                    Get("tournamentName")),
 
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown email type")
         };

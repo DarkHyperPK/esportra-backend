@@ -26,7 +26,37 @@
         ],
         "hasSidePick": true,
         "isTeamGame": true,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -140,7 +170,37 @@
         ],
         "hasSidePick": true,
         "isTeamGame": true,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -212,7 +272,37 @@
         ],
         "hasSidePick": true,
         "isTeamGame": true,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -284,7 +374,37 @@
         ],
         "hasSidePick": false,
         "isTeamGame": true,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -355,7 +475,37 @@
         ],
         "hasSidePick": false,
         "isTeamGame": true,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -431,7 +581,31 @@
         "seriesFormats": [],
         "hasSidePick": false,
         "isTeamGame": false,
-        "isBattleRoyale": true
+        "isBattleRoyale": true,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "br_round_active",
+            "dispute_reopened"
+          ]
+        }
       },
       "brConfig": {
         "playersPerLobby": 100,
@@ -549,7 +723,31 @@
         "seriesFormats": [],
         "hasSidePick": false,
         "isTeamGame": true,
-        "isBattleRoyale": true
+        "isBattleRoyale": true,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "br_round_active",
+            "dispute_reopened"
+          ]
+        }
       },
       "brConfig": {
         "playersPerLobby": 60,
@@ -654,7 +852,31 @@
         "seriesFormats": [],
         "hasSidePick": false,
         "isTeamGame": false,
-        "isBattleRoyale": true
+        "isBattleRoyale": true,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "br_round_active",
+            "dispute_reopened"
+          ]
+        }
       },
       "brConfig": {
         "playersPerLobby": 64,
@@ -692,15 +914,42 @@
             "Rondo"
           ],
           "items": [
-            { "name": "Erangel", "imageUrl": "/games/pubg/maps/erangel.webp" },
-            { "name": "Miramar", "imageUrl": "/games/pubg/maps/miramar.webp" },
-            { "name": "Sanhok", "imageUrl": "/games/pubg/maps/sanhok.webp" },
-            { "name": "Karakin", "imageUrl": "/games/pubg/maps/karakin.webp" },
-            { "name": "Paramo", "imageUrl": "/games/pubg/maps/paramo.webp" },
-            { "name": "Taego", "imageUrl": "/games/pubg/maps/taego.webp" },
-            { "name": "Deston", "imageUrl": "/games/pubg/maps/deston.webp" },
-            { "name": "Vikendi", "imageUrl": "/games/pubg/maps/vikendi.webp" },
-            { "name": "Rondo", "imageUrl": "/games/pubg/maps/rondo.webp" }
+            {
+              "name": "Erangel",
+              "imageUrl": "/games/pubg/maps/erangel.webp"
+            },
+            {
+              "name": "Miramar",
+              "imageUrl": "/games/pubg/maps/miramar.webp"
+            },
+            {
+              "name": "Sanhok",
+              "imageUrl": "/games/pubg/maps/sanhok.webp"
+            },
+            {
+              "name": "Karakin",
+              "imageUrl": "/games/pubg/maps/karakin.webp"
+            },
+            {
+              "name": "Paramo",
+              "imageUrl": "/games/pubg/maps/paramo.webp"
+            },
+            {
+              "name": "Taego",
+              "imageUrl": "/games/pubg/maps/taego.webp"
+            },
+            {
+              "name": "Deston",
+              "imageUrl": "/games/pubg/maps/deston.webp"
+            },
+            {
+              "name": "Vikendi",
+              "imageUrl": "/games/pubg/maps/vikendi.webp"
+            },
+            {
+              "name": "Rondo",
+              "imageUrl": "/games/pubg/maps/rondo.webp"
+            }
           ]
         }
       },
@@ -794,7 +1043,37 @@
         ],
         "hasSidePick": false,
         "isTeamGame": true,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -888,7 +1167,37 @@
         ],
         "hasSidePick": false,
         "isTeamGame": false,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {
@@ -963,7 +1272,37 @@
         ],
         "hasSidePick": false,
         "isTeamGame": false,
-        "isBattleRoyale": false
+        "isBattleRoyale": false,
+        "discordNotifications": {
+          "enabled": true,
+          "dmTypes": [
+            "match_ready",
+            "result_reported",
+            "result_disputed",
+            "dispute_resolved",
+            "dispute_rejected",
+            "tournament_registered",
+            "tournament_announcement",
+            "tournament_invite",
+            "result_accepted",
+            "match_walkover",
+            "match_schedule_changed",
+            "match_chat_message",
+            "checkin_open",
+            "check_in_reminder",
+            "party_code_submitted",
+            "scheduling_escalation",
+            "time_proposal_received",
+            "time_proposal_accepted",
+            "time_proposal_rejected",
+            "time_proposal_countered",
+            "team_invite",
+            "team_invite_response",
+            "team_captain_changed",
+            "team_member_removed",
+            "dispute_reopened"
+          ]
+        }
       },
       "modes": [
         {

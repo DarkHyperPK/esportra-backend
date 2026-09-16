@@ -283,6 +283,28 @@ public static class SteamAccountEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND LOWER(t.game) IN ('cs2', 'counter-strike 2', 'counter-strike: 2')
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            if (blockedByTournament)
+                return Results.BadRequest(new
+                {
+                    error = "active_registration",
+                    message = "You are registered in a CS2 tournament. Withdraw before unlinking your Steam account.",
+                });
+
             await conn.ExecuteAsync(
                 "DELETE FROM public.player_steam_accounts WHERE user_id = @userId",
                 new { userId = userCtx.UserIdGuid });

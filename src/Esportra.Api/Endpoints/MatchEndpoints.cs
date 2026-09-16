@@ -150,17 +150,10 @@ public static class MatchEndpoints
                     .Where(a => (Guid)a.team_id == (Guid)match.team2_id)
                     .Select(a => (string)a.puuid).ToHashSet();
 
-                // 5. Fetch matchlist from Riot API (cached 5 min per PUUID)
-                var matchlistJson = await cache.GetOrCreateAsync(
-                    $"riot:matchlist:{scannerPuuid}",
-                    async (_) =>
-                    {
-                        var (s, b) = await riotApi.ProxyAsync(
-                            shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
-                        return s == 200 ? b : null;
-                    },
-                    new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
-                    cancellationToken: ct);
+                // 5. Fetch matchlist from Riot API — no cache, always real-time
+                var (mlStatus, mlBody) = await riotApi.ProxyAsync(
+                    shard, $"/val/match/v1/matchlists/by-puuid/{scannerPuuid}", ct);
+                var matchlistJson = mlStatus == 200 ? mlBody : null;
 
                 if (matchlistJson is null)
                 {
@@ -168,11 +161,12 @@ public static class MatchEndpoints
                     return Results.Ok(new { matches = Array.Empty<object>(), reason = "Could not fetch match history from Riot" });
                 }
 
-                // 6. Parse matchlist — take last 10 entries
+                // 6. Parse matchlist — take last 20 entries to cover custom games that may be
+                // further back in history (e.g. player played ranked/deathmatch after the tournament game)
                 using var listDoc = JsonDocument.Parse(matchlistJson);
                 var history = listDoc.RootElement.GetProperty("history");
                 var recentIds = history.EnumerateArray()
-                    .Take(10)
+                    .Take(20)
                     .Select(e => e.GetProperty("matchId").GetString()!)
                     .ToList();
 
@@ -209,6 +203,14 @@ public static class MatchEndpoints
                             string.Equals(mapDisplayName, req.MapName, StringComparison.OrdinalIgnoreCase);
 
                         var queueId = info.GetProperty("queueId").GetString() ?? "";
+
+                        // Only surface custom (tournament/scrim) lobby games — skip ranked, deathmatch, etc.
+                        if (!string.Equals(queueId, "custom", StringComparison.OrdinalIgnoreCase))
+                        {
+                            log.LogDebug("Skipping match {RiotId}: queueId '{Queue}' is not custom", riotMatchId, queueId);
+                            continue;
+                        }
+
                         var gameLengthMillis = info.GetProperty("gameLengthMillis").GetInt64();
                         var gameStartMillis = info.GetProperty("gameStartMillis").GetInt64();
 
@@ -455,6 +457,7 @@ public static class MatchEndpoints
             MatchFinalizationService finalizer,
             TournamentAuthorizationService tournamentAuth,
             IHubContext<MatchHub> matchHub,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -530,6 +533,8 @@ public static class MatchEndpoints
                     new { matchId, status = "completed", winnerId, team1Score, team2Score },
                     ct);
 
+            await cache.RemoveAsync($"standings:{(Guid)match.tournament_id}", ct);
+
             return Results.Ok(new { success = true, matchId, winnerId, team1Score, team2Score });
         }).RequireAuthorization("Authenticated");
 
@@ -542,6 +547,7 @@ public static class MatchEndpoints
             IDbConnectionFactory db,
             StaffTournamentAuditService staffAudit,
             IHubContext<MatchHub> matchHub,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -558,6 +564,15 @@ public static class MatchEndpoints
                 matchId, requestedWinnerId, requestedLoserId, conn);
             if (winnerResolveError is not null) return winnerResolveError;
 
+            var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT v.tournament_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                WHERE m.id = @matchId
+                """,
+                new { matchId });
+
             var success = await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(winnerId, loserId), ct);
 
             if (isOrgTeamActor && success)
@@ -573,6 +588,9 @@ public static class MatchEndpoints
                     new { matchId, status = "completed" },
                     ct);
 
+            if (tournamentId.HasValue)
+                await cache.RemoveAsync($"standings:{tournamentId.Value}", ct);
+
             return Results.Ok(new { success, matchId });
         }).RequireAuthorization("Authenticated");
 
@@ -586,6 +604,7 @@ public static class MatchEndpoints
             StaffTournamentAuditService staffAudit,
             IHubContext<MatchHub> matchHub,
             IHubContext<BracketHub> bracketHub,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -641,9 +660,18 @@ public static class MatchEndpoints
                 "UPDATE brkt_matches SET is_walkover = TRUE WHERE id = @matchId",
                 new { matchId });
 
-            var walkoverVersionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT version_id FROM brkt_matches WHERE id = @matchId",
+            var walkoverInfo = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT m.version_id, ts.tournament_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournament_stages ts ON ts.id = v.stage_id
+                WHERE m.id = @matchId
+                """,
                 new { matchId });
+
+            Guid? walkoverVersionId = walkoverInfo?.version_id;
+            Guid? walkoverTournamentId = walkoverInfo?.tournament_id;
 
             await matchHub.Clients
                 .Group(MatchHub.MatchGroup(matchId.ToString()))
@@ -657,6 +685,9 @@ public static class MatchEndpoints
                     .SendAsync(BracketHubEvents.MatchUpdated,
                         new { versionId = walkoverVersionId, matchId }, ct);
             }
+
+            if (walkoverTournamentId.HasValue)
+                await cache.RemoveAsync($"standings:{walkoverTournamentId.Value}", ct);
 
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
@@ -1131,23 +1162,43 @@ public static class MatchEndpoints
         DiscordNotificationService discord,
         CancellationToken ct)
     {
+        var partyGameRow = await conn.QuerySingleOrDefaultAsync<PartyCodeTournamentInfo>(
+            """
+            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
+            FROM brkt_matches m
+            JOIN brkt_versions v ON v.id = m.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
+            WHERE m.id = @matchId
+            """,
+            new { matchId });
+        var gameSlug = partyGameRow?.Game;
+        Guid? partyTournId = partyGameRow?.TournamentId is Guid ptid && ptid != Guid.Empty ? ptid : null;
+        var partyTournName = partyGameRow?.TournamentName ?? "";
+
         const string title = "Party code submitted";
         const string message = "Your opponent has submitted the lobby party code. Check the match room to join.";
+        var dmTitle = string.IsNullOrWhiteSpace(partyTournName)
+            ? title
+            : $"[{partyTournName}] {title}";
         try
         {
+            var partyData = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                tournament_id = partyTournId?.ToString(),
+            });
             await conn.ExecuteAsync(
                 """
-                INSERT INTO notifications (user_id, type, title, message, is_read)
-                VALUES (@userId, 'party_code_submitted'::notification_type, @title, @message, FALSE)
+                INSERT INTO notifications (user_id, type, title, message, data, is_read)
+                VALUES (@userId, 'party_code_submitted'::notification_type, @title, @message, @data::jsonb, FALSE)
                 """,
-                new { userId = recipientUserId, title, message });
+                new { userId = recipientUserId, title, message, data = partyData });
             await notifHub.Clients
                 .Group(NotificationHub.UserGroup(recipientUserId.ToString()))
                 .SendAsync(NotificationHubEvents.NewNotification,
                     new { type = "party_code_submitted", title, message }, ct);
         }
         catch { /* non-critical */ }
-        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", title, message);
+        await discord.TrySendDmAsync(recipientUserId, "party_code_submitted", dmTitle, message, gameSlug, partyTournId);
     }
 
     private static async Task<IResult?> ValidateGoLivePermissionAsync(
@@ -1493,6 +1544,8 @@ public sealed record FinalizeRequest(
     Guid? LoserId = null);
 
 internal sealed record GoLiveGameRow(string Game, string? GameMode);
+
+internal sealed record PartyCodeTournamentInfo(string? Game, Guid TournamentId, string? TournamentName);
 
 public sealed record GoLiveRequest(string? PartyCode, bool Force = false);
 

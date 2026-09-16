@@ -40,6 +40,12 @@ public interface ISupabaseAdminClient
     /// then immediately unbans them — effectively invalidating all sessions.
     /// </summary>
     Task LogoutUserAsync(string userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Unlink a specific OAuth identity from a user.
+    /// Uses DELETE /auth/v1/admin/users/{userId}/identities/{identityId}.
+    /// </summary>
+    Task UnlinkIdentityAsync(string userId, string identityId, CancellationToken ct = default);
 }
 
 public sealed record GeneratedLink(string TokenHash, string ActionLink, string? UserId);

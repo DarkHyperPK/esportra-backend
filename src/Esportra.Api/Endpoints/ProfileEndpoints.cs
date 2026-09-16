@@ -1,11 +1,13 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Dapper;
 using Npgsql;
 using Esportra.Api.Helpers;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
+using Esportra.Infrastructure.Supabase;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 
@@ -855,6 +857,158 @@ public static class ProfileEndpoints
             return Results.Ok(new { discord_dm_enabled = result.enabled, has_discord = result.hasDiscord });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/profiles/me/timezone ────────────────────────────────────
+        app.MapGet("/api/profiles/me/timezone", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var tzIana = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT settings->>'timezone_iana' FROM profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { timezone_iana = tzIana });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/timezone ─────────────────────────────────────
+        app.MapPut("/api/profiles/me/timezone", async (
+            [FromBody] SetTimezoneRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (string.IsNullOrWhiteSpace(req.TimezoneIana)
+                || !TimeZoneInfo.TryFindSystemTimeZoneById(req.TimezoneIana, out _))
+                return Results.BadRequest(new { error = "Invalid IANA timezone identifier." });
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE profiles
+                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('timezone_iana', @tzIana)
+                WHERE id = @userId
+                """,
+                new { userId = userCtx.UserIdGuid, tzIana = req.TimezoneIana });
+
+            return Results.Ok(new { timezone_iana = req.TimezoneIana });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/country ──────────────────────────────────────
+        app.MapPut("/api/profiles/me/country", async (
+            [FromBody] SetCountryRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!ProfileFieldValidator.TryValidateCountryCode(req.CountryCode, out var normalized, out var error))
+                return Results.BadRequest(new { error });
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE profiles SET country_code = @countryCode WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid, countryCode = normalized });
+
+            return Results.Ok(new { country_code = normalized });
+        }).RequireAuthorization("Authenticated");
+
+        // ── DELETE /api/profiles/me/discord ─────────────────────────────────
+        // Unlink the Discord identity from the authenticated user.
+        // Blocked if the user has active registrations in tournaments that require Discord.
+        app.MapDelete("/api/profiles/me/discord", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            var logger = loggerFactory.CreateLogger("ProfileEndpoints.DiscordUnlink");
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            using var txn = conn.BeginTransaction();
+
+            var blockedByTournament = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND (
+                    COALESCE(NULLIF(t.settings->>'discordLinkCount', '')::int, 0) > 0
+                    OR (t.settings->>'requireDiscordLink')::boolean IS TRUE
+                )
+                )
+                """,
+                new { userId = userCtx.UserIdGuid }, txn);
+
+            if (blockedByTournament)
+            {
+                txn.Rollback();
+                return Results.BadRequest(new
+                {
+                    error = "active_registration",
+                    message = "You are registered in a tournament that requires a linked Discord account. Withdraw from all such tournaments before unlinking.",
+                });
+            }
+
+            var identity = await conn.QuerySingleOrDefaultAsync<(string Id, string ProviderId)>(
+                "SELECT id::text AS Id, provider_id AS ProviderId FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
+                new { userId = userCtx.UserIdGuid }, txn);
+
+            if (identity == default)
+            {
+                txn.Rollback();
+                return Results.NotFound(new { error = "Discord account not linked" });
+            }
+
+            // Delete the Discord identity directly. GoTrue's admin identity-unlink HTTP endpoint
+            // was added in GoTrue v2.114.0 and is absent on older self-hosted instances.
+            // Direct SQL is equivalent: GoTrue performs the same DELETE internally.
+            await conn.ExecuteAsync(
+                "DELETE FROM auth.identities WHERE user_id = @userId AND provider = 'discord'",
+                new { userId = userCtx.UserIdGuid }, txn);
+
+            txn.Commit();
+
+            // Post-unlink audit: detect any concurrent registration that slipped through the guard window.
+            var postUnlinkBlocked = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    WHERE tp.user_id = @userId
+                      AND tp.status NOT IN ('cancelled', 'rejected', 'disqualified')
+                      AND t.status NOT IN ('completed', 'cancelled')
+                      AND (
+                    COALESCE(NULLIF(t.settings->>'discordLinkCount', '')::int, 0) > 0
+                    OR (t.settings->>'requireDiscordLink')::boolean IS TRUE
+                )
+                )
+                """,
+                new { userId = userCtx.UserIdGuid });
+
+            if (postUnlinkBlocked)
+                logger.LogWarning(
+                    "[DiscordUnlink] User {UserId} has active Discord-required registrations after unlink — concurrent registration race detected",
+                    userCtx.UserId);
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/profiles/me/discord-join ──────────────────────────────
         // Auto-join the user to the Esportra Discord server using their OAuth token
         app.MapPost("/api/profiles/me/discord-join", async (
@@ -880,13 +1034,85 @@ public static class ProfileEndpoints
             if (string.IsNullOrEmpty(discordId))
                 return Results.BadRequest(new { error = "Discord account not linked" });
 
-            var joined = await discord.TryAutoJoinGuildAsync(discordId, req.ProviderToken);
+            var outcome = await discord.TryAutoJoinGuildAsync(discordId, req.ProviderToken);
 
-            return Results.Ok(new { success = joined });
+            return Results.Ok(new { success = outcome.Success, reason = outcome.Reason });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/me/tournament-discord-prefs ───────────────────
+        app.MapGet("/api/profiles/me/tournament-discord-prefs", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<TournamentDiscordPrefDto>(
+                """
+                SELECT t.id AS TournamentId, t.name AS TournamentName, t.game AS Game,
+                       t.start_date AS StartDate,
+                       COALESCE(p.discord_dms_enabled, true) AS DiscordDmsEnabled
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                LEFT JOIN user_tournament_discord_prefs p
+                    ON p.user_id = @callerId AND p.tournament_id = t.id
+                WHERE (tp.user_id = @callerId OR tp.team_captain_id = @callerId)
+                  AND tp.status NOT IN ('cancelled', 'rejected')
+                  AND t.status NOT IN ('completed', 'cancelled')
+                ORDER BY t.start_date DESC
+                """,
+                new { callerId = userCtx.UserIdGuid });
+
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
+
+        // ── PUT /api/profiles/me/tournament-discord-prefs/{tournamentId} ────
+        app.MapPut("/api/profiles/me/tournament-discord-prefs/{tournamentId}", async (
+            Guid tournamentId,
+            [FromBody] ToggleTournamentDiscordPrefRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+
+            var isParticipant = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM tournament_participants
+                    WHERE (user_id = @callerId OR team_captain_id = @callerId)
+                      AND tournament_id = @tournamentId
+                      AND status NOT IN ('cancelled', 'rejected')
+                )
+                """,
+                new { callerId = userCtx.UserIdGuid, tournamentId });
+
+            if (!isParticipant)
+                return Results.Forbid();
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_tournament_discord_prefs (user_id, tournament_id, discord_dms_enabled)
+                VALUES (@userId, @tournamentId, @enabled)
+                ON CONFLICT (user_id, tournament_id) DO UPDATE
+                    SET discord_dms_enabled = @enabled
+                """,
+                new { userId = userCtx.UserIdGuid, tournamentId, enabled = req.Enabled });
+
+            return Results.Ok(new { success = true, tournamentId, enabled = req.Enabled });
         }).RequireAuthorization("Authenticated");
     }
 }
 
+public sealed record TournamentDiscordPrefDto(Guid TournamentId, string TournamentName, string Game, DateTimeOffset StartDate, bool DiscordDmsEnabled);
+public sealed record ToggleTournamentDiscordPrefRequest(bool Enabled);
+public sealed record SetTimezoneRequest([property: JsonPropertyName("timezone_iana")] string? TimezoneIana);
+public sealed record SetCountryRequest([property: JsonPropertyName("country_code")] string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
 public sealed record UpdateSkillLevelRequest(string SkillLevel);

@@ -1,7 +1,9 @@
 using System.Text;
+using Scalar.AspNetCore;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
+using Esportra.Core.DeveloperApi;
 using Esportra.Api.Services;
 using Esportra.Api.SponsorAnalytics;
 using Esportra.Api.HealthChecks;
@@ -292,8 +294,11 @@ builder.Services.AddCors(opts =>
               .SetPreflightMaxAge(TimeSpan.FromHours(2)));
 });
 
-// ── Email service (SMTP via MailKit) ─────────────────────────────────────────
-builder.Services.AddScoped<IEmailService, ResendEmailService>();
+// ── Email service ────────────────────────────────────────────────────────────
+// Singleton: no per-request state; IHttpClientFactory (singleton) is injected so
+// the service is safe to use from fire-and-forget tasks that outlive the hub scope.
+builder.Services.AddHttpClient("Resend");
+builder.Services.AddSingleton<IEmailService, ResendEmailService>();
 
 // ── Supabase Admin client ─────────────────────────────────────────────────────
 builder.Services.AddHttpClient<SupabaseAdminClient>();
@@ -366,6 +371,8 @@ builder.Services.AddScoped<MatchFinalizationService>();
 builder.Services.AddScoped<StandingsService>();
 builder.Services.AddScoped<SwissNextRoundService>();
 builder.Services.AddScoped<VetoDbService>();
+builder.Services.AddScoped<IVetoSettingsRepository, VetoSettingsRepository>();
+builder.Services.AddScoped<VetoSettingsService>();
 builder.Services.AddScoped<MatchScheduleNotificationService>();
 builder.Services.AddScoped<BrScheduleNotificationService>();
 builder.Services.AddScoped<StaffTournamentAuditService>();
@@ -384,6 +391,14 @@ builder.Services.AddScoped<Esportra.Api.Services.BattleRoyaleStageBootstrapServi
 builder.Services.AddScoped<Esportra.Core.Tournaments.PrizeDistributionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.PlacementResolutionService>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.LeaderboardStatsService>();
+
+// Tournament Standings (PROJ-014)
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.SeStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.DeStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.RrStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.SwissStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.IStandingsResolver, Esportra.Core.Tournaments.Resolvers.BrStandingsResolver>();
+builder.Services.AddScoped<Esportra.Core.Tournaments.StandingsResolutionService>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>();
 builder.Services.AddScoped<Esportra.Core.Tournaments.ILeaderboardSourceChangeHook>(sp =>
     sp.GetRequiredService<Esportra.Api.ScheduledJobs.LeaderboardRefreshTrigger>());
@@ -391,6 +406,10 @@ builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
+
+// ── Developer API platform ────────────────────────────────────────────────────
+builder.Services.AddScoped<IApiKeyValidationService, ApiKeyValidationService>();
+builder.Services.AddScoped<IDeveloperApiAuditService, DeveloperApiAuditService>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
@@ -415,9 +434,28 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
 // ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
+builder.Services.AddHostedService<Esportra.Api.ScheduledJobs.DeveloperApiAuditLogPurgeJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
-builder.Services.AddOpenApi();
+// Only expose developer-facing endpoints — internal admin and operational routes
+// are stripped from the public spec via tag filtering.
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer((document, context, ct) =>
+    {
+        var paths = document.Paths;
+        var toRemove = paths
+            .Where(p => !p.Value.Operations.Values
+                .Any(op => op.Tags.Any(t => t.Name == "Developer API v1")))
+            .Select(p => p.Key)
+            .ToList();
+        foreach (var path in toRemove)
+            paths.Remove(path);
+        document.Info.Title = "Esportra Developer API";
+        document.Info.Description = "Programmatic tournament management for verified API partners.";
+        return Task.CompletedTask;
+    });
+});
 
 // ═════════════════════════════════════════════════════════════════════════════
 Console.WriteLine("[STARTUP] Building app...");
@@ -503,6 +541,10 @@ using (var scope = app.Services.CreateScope())
         "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         "leaderboard-refresh", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RoundDeadlineEscalationJob>(
+        "round-deadline-escalation", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DeveloperApiKeyGraceCleanupJob>(
+        "developer-api-grace-cleanup", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
 
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         j => j.ExecuteAsync(CancellationToken.None));
@@ -510,8 +552,14 @@ using (var scope = app.Services.CreateScope())
         j => j.ExecuteAsync(CancellationToken.None));
 }
 
-if (app.Environment.IsDevelopment())
-    app.MapOpenApi();
+app.MapOpenApi();
+app.MapScalarApiReference("/api/v1/docs", options =>
+{
+    options.Title = "Esportra Developer API";
+    options.OpenApiRoutePattern = "/openapi/v1.json";
+    options.DefaultHttpClient = new(ScalarTarget.Shell, ScalarClient.Curl);
+    options.HideClientButton = false;
+});
 
 // ── Proxy / forwarded-header support ──────────────────────────────────────────
 // Coolify (and any nginx reverse proxy) terminates TLS and forwards HTTP to
@@ -584,6 +632,7 @@ app.Use(async (ctx, next) =>
     }
 });
 app.UseAuthentication();
+app.UseApiKeyAuth();       // API key auth for /api/v1/* and developer endpoints
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseSessionRevocation(); // Block revoked sessions via server-side blacklist
 app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
@@ -636,6 +685,7 @@ app.MapOrganizationEndpoints();
 app.MapNotificationEndpoints();
 app.MapStageEndpoints();
 app.MapPrizeDistributionEndpoints();
+app.MapStandingsEndpoints();
 app.MapBRGroupEndpoints();
 app.MapReviewEndpoints();
 app.MapOrganizerEndpoints();
@@ -643,6 +693,7 @@ app.MapPartnerEndpoints();
 app.MapLeaderboardEndpoints();
 app.MapMessagingEndpoints();
 app.MapVetoEndpoints();
+app.MapVetoSettingsEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
 app.MapSponsorPlacementAssetEndpoints();
@@ -665,6 +716,12 @@ app.MapPackageEndpoints();
 app.MapVenueAnalyticsEndpoints();
 app.MapStaffPermissionEndpoints();
 app.MapNotificationPreferenceEndpoints();
+
+// ── Developer API Platform (PROJ-024) ─────────────────────────────────────────
+app.MapDeveloperV1Endpoints();
+app.MapDeveloperKeyEndpoints();
+app.MapDeveloperAdminEndpoints();
+app.MapDeveloperAccessRequestEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket").RequireCors("EsportraPolicy");

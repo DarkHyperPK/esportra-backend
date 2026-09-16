@@ -57,6 +57,8 @@ public sealed record SelfPlayMatchRoomContext
     public Guid? WinnerId { get; init; }
     public int? Team1Score { get; init; }
     public int? Team2Score { get; init; }
+    public int PendingProposalCount { get; init; }
+    public bool IsWalkover { get; init; }
 }
 
 public sealed record SelfPlayRoomState
@@ -70,6 +72,9 @@ public sealed record SelfPlayRoomState
     public int CheckinWindowMinutes { get; init; }
     public bool CheckinWindowOpen { get; init; }
     public bool CheckinWindowClosed { get; init; }
+    public DateTime? CheckinWindowOpensAt { get; init; }
+    public DateTime? CheckinWindowClosesAt { get; init; }
+    public DateTimeOffset? RoundDeadline { get; init; }
     public bool BothCheckedIn { get; init; }
     public bool Team1CheckedIn { get; init; }
     public bool Team2CheckedIn { get; init; }
@@ -84,6 +89,8 @@ public sealed record SelfPlayRoomState
     public bool MapVetoCompleted { get; init; }
     public string? MatchOutcome { get; init; }
     public string? ForfeitReason { get; init; }
+    public bool OpponentHasPendingProposal { get; init; }
+    public int PendingProposalCount { get; init; }
 }
 
 public sealed record SelfPlayGuardResult

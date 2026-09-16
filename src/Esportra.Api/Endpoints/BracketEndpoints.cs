@@ -1578,9 +1578,13 @@ public static class BracketEndpoints
     {
         var rows = (await conn.QueryAsync(
             """
-            SELECT sp.team_id AS id, COALESCE(t.name, 'Unknown') AS name
+            SELECT sp.team_id AS id,
+                   COALESCE(t.name, tpart.team_name, solop.username, 'Unknown') AS name
             FROM stage_participants sp
             LEFT JOIN teams t ON t.id = sp.team_id
+            LEFT JOIN tournament_participants tpart ON tpart.id = sp.team_id
+              AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
+            LEFT JOIN profiles solop ON solop.id = tpart.user_id
             WHERE sp.stage_id = @stageId
               AND sp.status IN ('approved', 'checked_in', 'pending')
               AND sp.team_id IS NOT NULL
@@ -1591,9 +1595,10 @@ public static class BracketEndpoints
             rows = (await conn.QueryAsync(
                 """
                 SELECT COALESCE(tp.team_id, tp.id) AS id,
-                       COALESCE(t.name, tp.team_name, 'Unknown') AS name
+                       COALESCE(t.name, tp.team_name, solop.username, 'Unknown') AS name
                 FROM tournament_participants tp
                 LEFT JOIN teams t ON t.id = tp.team_id
+                LEFT JOIN profiles solop ON solop.id = tp.user_id
                 WHERE tp.tournament_id = @tournamentId
                   AND tp.status::text IN ('approved', 'checked_in', 'pending')
                 ORDER BY tp.created_at ASC

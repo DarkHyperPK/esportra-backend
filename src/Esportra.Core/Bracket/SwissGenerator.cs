@@ -116,11 +116,19 @@ public sealed class SwissNextRoundService(
 
         var totalTeams = await conn.ExecuteScalarAsync<int>(
             """
-            SELECT COUNT(DISTINCT t.id)
-            FROM brkt_matches m
-            JOIN brkt_versions v ON v.id = m.version_id
-            LEFT JOIN teams t ON t.id = m.team1_id OR t.id = m.team2_id
-            WHERE v.stage_id = @stageId AND t.id IS NOT NULL
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT slot_id FROM (
+                    SELECT m.team1_id AS slot_id
+                    FROM brkt_matches m
+                    JOIN brkt_versions v ON v.id = m.version_id
+                    WHERE v.stage_id = @stageId AND m.team1_id IS NOT NULL
+                    UNION
+                    SELECT m.team2_id AS slot_id
+                    FROM brkt_matches m
+                    JOIN brkt_versions v ON v.id = m.version_id
+                    WHERE v.stage_id = @stageId AND m.team2_id IS NOT NULL
+                ) slots
+            ) counted
             """,
             new { stageId });
         int teamCount = Math.Max(totalTeams, standingsList.Count);

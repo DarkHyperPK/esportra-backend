@@ -108,20 +108,12 @@ public sealed class MatchScheduleNotificationService(
             var tournamentName = string.IsNullOrWhiteSpace(match.TournamentName)
                 ? "Tournament"
                 : match.TournamentName.Trim();
-            var timeLabel = scheduledUtc.HasValue
-                ? scheduledUtc.Value.ToString("ddd, MMM d · h:mm tt 'UTC'", CultureInfo.InvariantCulture)
-                : "Time TBD";
             var title = scheduledUtc.HasValue
                 ? $"{tournamentName} · {matchLabel} scheduled"
                 : $"{tournamentName} · {matchLabel} schedule cleared";
-            var bodyLines = new List<string>();
-            if (!string.IsNullOrWhiteSpace(match.StageName))
-                bodyLines.Add(match.StageName.Trim());
-            bodyLines.Add(matchup);
-            bodyLines.Add(scheduledUtc.HasValue
-                ? timeLabel
-                : "Organizer removed the scheduled time.");
-            var message = string.Join('\n', bodyLines);
+            var utcTimeLabel = scheduledUtc.HasValue
+                ? scheduledUtc.Value.ToString("ddd, MMM d · h:mm tt 'UTC'", CultureInfo.InvariantCulture)
+                : "Time TBD";
 
             var link = !string.IsNullOrWhiteSpace(match.TournamentSlug)
                 ? $"/tournaments/{match.TournamentSlug}/captain-match/{matchId}"
@@ -139,12 +131,16 @@ public sealed class MatchScheduleNotificationService(
                 match_label = matchLabel,
                 matchup,
                 scheduled_time = scheduledIso,
-                time_label = timeLabel,
+                time_label = utcTimeLabel,
                 schedule_cleared = !scheduledUtc.HasValue,
             });
 
             foreach (var userId in captainUserIds)
             {
+                var tzIana = await FetchUserTimezoneAsync(conn, userId, ct);
+                var timeLabel = FormatTimeForUser(scheduledUtc, tzIana);
+                var message = BuildMatchMessage(match.StageName, matchup, scheduledUtc, timeLabel);
+
                 var notificationId = await conn.QuerySingleAsync<Guid>(
                     """
                     INSERT INTO notifications
@@ -182,6 +178,44 @@ public sealed class MatchScheduleNotificationService(
         {
             logger.LogWarning(ex, "Schedule change broadcast failed for match {MatchId}", matchId);
         }
+    }
+
+    private static async Task<string?> FetchUserTimezoneAsync(
+        System.Data.IDbConnection conn, Guid userId, CancellationToken ct)
+    {
+        return await conn.QuerySingleOrDefaultAsync<string?>(
+            "SELECT settings->>'timezone_iana' FROM profiles WHERE id = @userId",
+            new { userId });
+    }
+
+    internal static string FormatTimeForUser(DateTime? scheduledUtc, string? tzIana)
+    {
+        if (!scheduledUtc.HasValue)
+            return "Time TBD";
+
+        var utc = scheduledUtc.Value.Kind == DateTimeKind.Utc
+            ? scheduledUtc.Value
+            : DateTime.SpecifyKind(scheduledUtc.Value, DateTimeKind.Utc);
+
+        if (!string.IsNullOrWhiteSpace(tzIana)
+            && TimeZoneInfo.TryFindSystemTimeZoneById(tzIana, out var tz))
+        {
+            var local = TimeZoneInfo.ConvertTimeFromUtc(utc, tz);
+            return local.ToString("ddd, MMM d · h:mm tt", CultureInfo.InvariantCulture);
+        }
+
+        return utc.ToString("ddd, MMM d · h:mm tt", CultureInfo.InvariantCulture);
+    }
+
+    internal static string BuildMatchMessage(
+        string? stageName, string matchup, DateTime? scheduledUtc, string timeLabel)
+    {
+        var lines = new List<string>(3);
+        if (!string.IsNullOrWhiteSpace(stageName))
+            lines.Add(stageName.Trim());
+        lines.Add(matchup);
+        lines.Add(scheduledUtc.HasValue ? timeLabel : "Organizer removed the scheduled time.");
+        return string.Join('\n', lines);
     }
 
     private static string FormatMatchLabel(int matchNumber, int roundIndex) =>

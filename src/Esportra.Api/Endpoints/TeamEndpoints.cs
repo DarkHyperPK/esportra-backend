@@ -398,6 +398,8 @@ public static class TeamEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> hub,
+            DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -465,6 +467,14 @@ public static class TeamEndpoints
                 await TeamNotifications.PushAsync(hub, others,
                     TeamNotifications.RosterUpdated, updateTitle, updateMessage);
 
+                var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT game FROM teams WHERE id = @id", new { id });
+                var teamUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+                await discord.TrySendDmAsync(userId, "team_member_removed",
+                    "Removed from Team",
+                    $"You have been removed from the team.\n\n[View →]({teamUrlBase}/player/teams)",
+                    gameSlug);
+
                 return Results.Ok(new { success = true, removed = affected > 0 });
             }
             catch
@@ -482,6 +492,8 @@ public static class TeamEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IHubContext<NotificationHub> hub,
+            DiscordNotificationService discord,
+            IConfiguration config,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -550,6 +562,14 @@ public static class TeamEndpoints
                     TeamNotifications.CaptainChanged, captainTitle, captainMessage);
                 await TeamNotifications.PushAsync(hub, others,
                     TeamNotifications.RosterUpdated, updateTitle, updateMessage);
+
+                var gameSlug = await conn.QuerySingleOrDefaultAsync<string?>(
+                    "SELECT game FROM teams WHERE id = @id", new { id });
+                var captainUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+                await discord.TrySendDmAsync(newCaptainIdGuid, "team_captain_changed",
+                    "You're Now Captain",
+                    $"You are now the captain of the team.\n\n[View →]({captainUrlBase}/player/teams)",
+                    gameSlug);
             }
             catch
             {
@@ -645,6 +665,7 @@ public static class TeamEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             IEmailService emailService,
+            DiscordNotificationService discord,
             IConfiguration config,
             CancellationToken ct) =>
         {
@@ -706,8 +727,10 @@ public static class TeamEndpoints
             }
 
             // Notification to invitee
-            var inviteTeamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @id", new { id });
+            var teamInfo = await conn.QuerySingleOrDefaultAsync<(string? Name, string? Game)>(
+                "SELECT name, game FROM teams WHERE id = @id", new { id });
+            var inviteTeamName = teamInfo.Name;
+            var gameSlug = teamInfo.Game;
             await conn.ExecuteAsync(
                 """
                 INSERT INTO notifications (user_id, type, title, message, link, data, is_read)
@@ -721,6 +744,11 @@ public static class TeamEndpoints
                     msg = $"You've been recruited to join {inviteTeamName ?? "a team"}. Accept the invite and jump into the action!",
                     data = System.Text.Json.JsonSerializer.Serialize(new { team_id = id, invite_id = ((Guid)invite.id).ToString() })
                 });
+
+            var inviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+            await discord.TrySendDmAsync(reqUserIdGuid, "team_invite", "Team Invitation",
+                $"You've been invited to join the team.\n\n[View →]({inviteUrlBase}/player/teams)",
+                gameSlug);
 
             // Send team invite email
             try
@@ -1395,7 +1423,9 @@ public static class TeamEndpoints
             [FromBody] RosterInviteRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
-            IHubContext<NotificationHub> hub) =>
+            IHubContext<NotificationHub> hub,
+            DiscordNotificationService discord,
+            IConfiguration config) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
@@ -1430,8 +1460,10 @@ public static class TeamEndpoints
                 new { teamId = id, rosterId, userId = reqUserIdGuid, email = req.Email, invitedBy = userCtx.UserIdGuid });
 
             // Notification
-            var teamName = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT name FROM teams WHERE id = @id", new { id });
+            var teamInfo = await conn.QuerySingleOrDefaultAsync<(string? Name, string? Game)>(
+                "SELECT name, game FROM teams WHERE id = @id", new { id });
+            var teamName = teamInfo.Name;
+            var gameSlug = teamInfo.Game;
             var rosterName = await conn.QuerySingleOrDefaultAsync<string>(
                 "SELECT name FROM team_rosters WHERE id = @rosterId", new { rosterId });
 
@@ -1451,6 +1483,11 @@ public static class TeamEndpoints
 
             await hub.Clients.Group(NotificationHub.UserGroup(req.UserId))
                 .SendAsync(NotificationHubEvents.NewNotification, new { type = "team_invite" });
+
+            var rosterInviteUrlBase = config["FrontendUrl"] ?? "https://esportra.com";
+            await discord.TrySendDmAsync(reqUserIdGuid, "team_invite", "Team Invitation",
+                $"You've been invited to join the team.\n\n[View →]({rosterInviteUrlBase}/player/teams)",
+                gameSlug);
 
             return Results.Ok(invite);
         }).RequireAuthorization("Authenticated");

@@ -86,6 +86,19 @@ public sealed class JobSchedulingService(IDbConnectionFactory db)
         }
     }
 
+    /// <summary>
+    /// Schedules a fire-and-forget job that notifies both captains when the check-in window opens.
+    /// Idempotent by design: the job checks match status at fire time and exits if no longer pending.
+    /// </summary>
+    public void ScheduleCheckinOpenAsync(
+        Guid matchId, DateTime scheduledTime, int checkinWindowMinutes = 15)
+    {
+        var fireAt = scheduledTime.ToUniversalTime().AddMinutes(-checkinWindowMinutes);
+        BackgroundJob.Schedule<MatchCheckinOpenJob>(
+            j => j.ExecuteAsync(matchId, CancellationToken.None),
+            fireAt);
+    }
+
     public static void EnqueueDiscordDm(Guid notificationId)
     {
         BackgroundJob.Enqueue<DiscordDmJob>(

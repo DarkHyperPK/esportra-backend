@@ -25,23 +25,22 @@ public sealed class DiscordDmPollJob(
 
         using var conn = db.CreateConnection();
 
+        var eligibleTypes = DiscordNotificationTypes.DmEligibleTypes.ToArray();
+
         var pending = (await conn.QueryAsync<Guid>(
             """
             SELECT n.id
             FROM notifications n
             INNER JOIN profiles p ON p.id = n.user_id
             INNER JOIN auth.identities ai ON ai.user_id = p.id AND ai.provider = 'discord'
-            WHERE n.created_at > NOW() - INTERVAL '2 minutes'
+            WHERE n.created_at > NOW() - INTERVAL '30 minutes'
               AND COALESCE((p.settings->>'discord_dm_enabled')::boolean, TRUE) = TRUE
               AND COALESCE((n.data->>'discord_dm_sent')::boolean, FALSE) = FALSE
-              AND n.type IN (
-                  'match_ready', 'result_reported', 'result_disputed',
-                  'dispute_resolved', 'tournament_registered',
-                  'tournament_announcement', 'result_accepted', 'match_completed'
-              )
+              AND n.type::text = ANY(@eligibleTypes)
             ORDER BY n.created_at ASC
-            LIMIT 20
-            """)).AsList();
+            LIMIT 100
+            """,
+            new { eligibleTypes })).AsList();
 
         if (pending.Count == 0) return;
 

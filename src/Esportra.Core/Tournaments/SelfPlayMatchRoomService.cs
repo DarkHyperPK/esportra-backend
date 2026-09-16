@@ -42,6 +42,7 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
               m.team1_score     AS Team1Score,
               m.team2_score     AS Team2Score,
               m.best_of         AS BestOf,
+              m.is_walkover     AS IsWalkover,
               v.stage_id        AS StageId,
               v.tournament_id   AS TournamentId,
               ts.scheduling_config::text AS SchedulingConfigJson,
@@ -81,6 +82,14 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             "SELECT status FROM match_map_vetos WHERE match_id = @matchId",
             new { matchId });
 
+        var pendingProposalCount = await conn.QuerySingleAsync<int>(
+            """
+            SELECT COUNT(*)::int
+            FROM match_time_proposals
+            WHERE match_id = @matchId AND status = 'pending'
+            """,
+            new { matchId });
+
         var schedulingConfig = SchedulingConfigParser.Parse(row.SchedulingConfigJson);
         var settingsMapVetoEnabled = ReadTournamentMapVetoEnabled(row.TournamentSettingsJson);
 
@@ -110,6 +119,8 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             AcceptedProposalTime = acceptedProposalTime,
             VetoStatus = vetoStatus,
             MapVetoEnabled = mapVetoEnabledOverride && settingsMapVetoEnabled,
+            PendingProposalCount = pendingProposalCount,
+            IsWalkover = row.IsWalkover,
         };
     }
 
@@ -159,6 +170,13 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         var windowOpen = effectiveTime.HasValue && IsCheckinWindowOpen(effectiveTime.Value, windowMinutes, nowUtc);
         var windowClosed = effectiveTime.HasValue && IsCheckinWindowClosed(effectiveTime.Value, windowMinutes, nowUtc);
 
+        DateTime? windowOpensAt = effectiveTime.HasValue
+            ? effectiveTime.Value.AddMinutes(-windowMinutes)
+            : null;
+        DateTime? windowClosesAt = effectiveTime;
+
+        var roundDeadline = ResolveRoundDeadline(ctx);
+
         return new SelfPlayRoomState
         {
             SelfPlayEnabled = selfPlayEnabled,
@@ -170,6 +188,9 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             CheckinWindowMinutes = windowMinutes,
             CheckinWindowOpen = windowOpen,
             CheckinWindowClosed = windowClosed,
+            CheckinWindowOpensAt = windowOpensAt,
+            CheckinWindowClosesAt = windowClosesAt,
+            RoundDeadline = roundDeadline,
             BothCheckedIn = bothCheckedIn,
             Team1CheckedIn = ctx.Team1CheckedIn,
             Team2CheckedIn = ctx.Team2CheckedIn,
@@ -186,6 +207,8 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
             MapVetoCompleted = mapVetoCompleted,
             MatchOutcome = matchOutcome,
             ForfeitReason = forfeitReason,
+            OpponentHasPendingProposal = ctx.PendingProposalCount > 0,
+            PendingProposalCount = ctx.PendingProposalCount,
         };
     }
 
@@ -308,7 +331,10 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         return SelfPlayGuardResult.Allow();
     }
 
-    public SelfPlayGuardResult CanProposeTime(SelfPlayMatchRoomContext ctx, DateTime nowUtc)
+    public SelfPlayGuardResult CanProposeTime(
+        SelfPlayMatchRoomContext ctx,
+        DateTime nowUtc,
+        DateTimeOffset? proposedTime = null)
     {
         if (!IsSelfPlayActive(ctx))
             return SelfPlayGuardResult.Allow();
@@ -325,11 +351,43 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         if (ctx.Team1CheckedIn || ctx.Team2CheckedIn)
             return Deny("match_not_pending", "Cannot change the schedule after check-in has started.", room);
 
+        var roundDeadline = ResolveRoundDeadline(ctx);
+        if (roundDeadline.HasValue)
+        {
+            if (nowUtc >= roundDeadline.Value.UtcDateTime)
+                return Deny(
+                    "round_deadline_passed",
+                    $"The scheduling deadline for this round has passed ({roundDeadline.Value:u}). Contact the organizer.",
+                    room);
+
+            if (proposedTime.HasValue && proposedTime.Value > roundDeadline.Value)
+                return Deny(
+                    "proposed_time_exceeds_round_deadline",
+                    $"You cannot schedule this match past the round deadline of {roundDeadline.Value:u}.",
+                    room);
+        }
+
         return SelfPlayGuardResult.Allow();
     }
 
-    public SelfPlayGuardResult CanAcceptProposal(SelfPlayMatchRoomContext ctx, DateTime nowUtc)
-        => CanProposeTime(ctx, nowUtc);
+    public SelfPlayGuardResult CanAcceptProposal(
+        SelfPlayMatchRoomContext ctx,
+        Guid callerCompetitorId,
+        Guid proposerCompetitorId,
+        DateTime nowUtc,
+        DateTimeOffset? proposedTime = null)
+    {
+        var baseGuard = CanProposeTime(ctx, nowUtc, proposedTime);
+        if (!baseGuard.Allowed) return baseGuard;
+
+        if (callerCompetitorId == proposerCompetitorId)
+        {
+            var room = BuildPreviewState(ctx, nowUtc);
+            return Deny("cannot_accept_own_proposal", "You cannot accept your own time proposal.", room);
+        }
+
+        return SelfPlayGuardResult.Allow();
+    }
 
     public SelfPlayGuardResult CanSubmitResult(
         SelfPlayMatchRoomContext ctx,
@@ -416,7 +474,7 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
                 ? SelfPlayPhase.AwaitingVeto
                 : SelfPlayPhase.ReadyForMatch;
 
-        return SelfPlayPhase.AwaitingCheckIn;
+        throw new InvalidOperationException($"Unrecognized match status '{ctx.Status}' for match {ctx.MatchId}.");
     }
 
     public static SelfPlayNextAction ResolveNextAction(
@@ -441,6 +499,9 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
     {
         if (NormalizeStatus(ctx.Status) != "completed")
             return (null, null);
+
+        if (ctx.IsWalkover)
+            return ("walkover", "organizer_decision");
 
         if (!ctx.WinnerId.HasValue
             && ctx.Team1Score == 0
@@ -536,6 +597,20 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
     public static bool IsCheckinWindowClosed(DateTime effectiveScheduledTime, int windowMinutes, DateTime nowUtc)
         => nowUtc >= effectiveScheduledTime;
 
+    public static DateTimeOffset? ResolveRoundDeadline(SelfPlayMatchRoomContext ctx)
+    {
+        var deadlines = ctx.SchedulingConfig.RoundDeadlines;
+        if (deadlines.Count == 0) return null;
+
+        var key = ctx.RoundIndex.ToString();
+        if (!deadlines.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        return DateTimeOffset.TryParse(raw, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+            ? dt
+            : null;
+    }
+
     public static string ToApiPhase(SelfPlayPhase phase) => phase switch
     {
         SelfPlayPhase.NeedsSchedule => "needs_schedule",
@@ -625,6 +700,7 @@ public sealed class SelfPlayMatchRoomService(IDbConnectionFactory db)
         public int? Team1Score { get; init; }
         public int? Team2Score { get; init; }
         public int BestOf { get; init; }
+        public bool IsWalkover { get; init; }
         public Guid? StageId { get; init; }
         public Guid TournamentId { get; init; }
         public string? SchedulingConfigJson { get; init; }

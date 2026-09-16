@@ -110,6 +110,18 @@ CREATE TABLE IF NOT EXISTS auth.users (
     deleted_at timestamp with time zone
 );
 
+-- auth.identities stub (Supabase OAuth provider rows — used by Discord/Riot unlink)
+CREATE TABLE IF NOT EXISTS auth.identities (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    provider text NOT NULL,
+    provider_id text NOT NULL,
+    identity_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    UNIQUE (provider, provider_id)
+);
+
 -- auth helper functions referenced by RLS policies
 CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
     LANGUAGE sql STABLE

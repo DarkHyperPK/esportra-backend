@@ -85,6 +85,7 @@ public static class VetoEndpoints
             IDbConnectionFactory db,
             GameCatalogService gameCatalog,
             IHubContext<VetoHub> hub,
+            VetoSettingsService vetoSettings,
             ILogger<VetoDbService> logger,
             CancellationToken ct) =>
         {
@@ -95,6 +96,9 @@ public static class VetoEndpoints
             {
                 var (existing, shouldReturn) = await CheckOrReturnExistingVetoAsync(matchId, veto, ct);
                 if (shouldReturn) return Results.Ok(existing);
+
+                if (existing is not null && existing.BestOf != req.BestOf)
+                    await vetoSettings.ClearAsync(matchId, ct);
 
                 using var conn = db.CreateConnection();
                 var (tournamentRow, tournamentErr) = await ValidateVetoTournamentGateAsync(req.TournamentId, gameCatalog, conn, ct);
@@ -384,15 +388,21 @@ public static class VetoEndpoints
                        m.status     AS match_status,
                        m.best_of    AS match_best_of,
                        t.game       AS tournament_game,
-                       team1.id     AS t1_id,
-                       team1.name   AS t1_name,
-                       team2.id     AS t2_id,
-                       team2.name   AS t2_name
+                       COALESCE(team1.id, tp1.id) AS t1_id,
+                       COALESCE(team1.name, tp1.team_name, sp1.username) AS t1_name,
+                       COALESCE(team2.id, tp2.id) AS t2_id,
+                       COALESCE(team2.name, tp2.team_name, sp2.username) AS t2_name
                 FROM match_map_vetos mmv
                 JOIN brkt_matches m  ON m.id  = mmv.match_id
                 JOIN tournaments  t  ON t.id  = mmv.tournament_id
                 LEFT JOIN teams team1 ON team1.id = mmv.team1_id
+                LEFT JOIN tournament_participants tp1 ON tp1.id = mmv.team1_id
+                  AND (tp1.is_mock = TRUE OR tp1.participant_type = 'solo')
+                LEFT JOIN profiles sp1 ON sp1.id = tp1.user_id
                 LEFT JOIN teams team2 ON team2.id = mmv.team2_id
+                LEFT JOIN tournament_participants tp2 ON tp2.id = mmv.team2_id
+                  AND (tp2.is_mock = TRUE OR tp2.participant_type = 'solo')
+                LEFT JOIN profiles sp2 ON sp2.id = tp2.user_id
                 WHERE mmv.team1_link_token = @token OR mmv.team2_link_token = @token
                 """,
                 new { token });
