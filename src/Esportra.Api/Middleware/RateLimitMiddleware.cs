@@ -24,7 +24,6 @@ public sealed record RateLimitOptions
         ["auth"] = new() { MaxRequests = 10, WindowSeconds = 60 },
         ["admin"] = new() { MaxRequests = 1000, WindowSeconds = 60 },
         ["sponsorAnalytics"] = new() { MaxRequests = 120, WindowSeconds = 60 },
-        ["developer_api"] = new() { MaxRequests = 60, WindowSeconds = 60 },
     };
 
     public HashSet<string> ExemptPaths { get; init; } = ["/health", "/api/analytics/events"];
@@ -36,7 +35,6 @@ public sealed record RateLimitOptions
     /// </summary>
     public Dictionary<string, string> PathPolicies { get; init; } = new()
     {
-        ["/api/v1/"] = "developer_api",
         ["/api/admin/"] = "admin",
         ["/api/auth/"] = "auth",
     };
@@ -122,14 +120,6 @@ public sealed class RateLimitMiddleware
         var config = _options.Policies.GetValueOrDefault(policy)
                        ?? _options.Policies.GetValueOrDefault("default")
                        ?? new RateLimitPolicyConfig();
-
-        if (policy == "developer_api"
-            && context.Items.TryGetValue("DeveloperApiRateLimit", out var limitObj)
-            && limitObj is int perKeyLimit)
-        {
-            config = config with { MaxRequests = perKeyLimit };
-        }
-
         var clientKey = GetClientKey(context);
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -218,9 +208,6 @@ public sealed class RateLimitMiddleware
 
     private static string GetClientKey(HttpContext context)
     {
-        if (context.Items.TryGetValue("ApiKeyId", out var keyIdObj) && keyIdObj is string keyId)
-            return $"ak:{keyId}";
-
         if (context.User.Identity?.IsAuthenticated == true)
         {
             var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier)

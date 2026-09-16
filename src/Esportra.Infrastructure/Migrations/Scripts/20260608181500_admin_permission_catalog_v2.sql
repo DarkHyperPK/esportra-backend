@@ -169,9 +169,7 @@ WITH permission_seed(name, sort_order) AS (
 
     ('games:view', 4000), ('games:create', 4001), ('games:edit', 4002),
     ('games:delete', 4003), ('games:publish', 4004), ('games:reset_draft', 4005),
-    ('games:upload_assets', 4006), ('games:audit', 4007), ('games:manage', 4008),
-
-    ('developer_keys:manage', 4100)
+    ('games:upload_assets', 4006), ('games:audit', 4007), ('games:manage', 4008)
 ),
 normalized AS (
   SELECT

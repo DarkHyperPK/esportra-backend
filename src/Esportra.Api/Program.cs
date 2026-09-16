@@ -2,7 +2,6 @@ using System.Text;
 using Esportra.Api.Auth;
 using Esportra.Api.BackgroundJobs;
 using Esportra.Api.Endpoints;
-using Esportra.Core.DeveloperApi;
 using Esportra.Api.Services;
 using Esportra.Api.SponsorAnalytics;
 using Esportra.Api.HealthChecks;
@@ -406,10 +405,6 @@ builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
 
-// ── Developer API platform ────────────────────────────────────────────────────
-builder.Services.AddScoped<IApiKeyValidationService, ApiKeyValidationService>();
-builder.Services.AddScoped<IDeveloperApiAuditService, DeveloperApiAuditService>();
-
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
 builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
@@ -523,8 +518,6 @@ using (var scope = app.Services.CreateScope())
         "leaderboard-refresh", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RoundDeadlineEscalationJob>(
         "round-deadline-escalation", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
-    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DeveloperApiKeyGraceCleanupJob>(
-        "developer-api-grace-cleanup", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
 
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         j => j.ExecuteAsync(CancellationToken.None));
@@ -606,7 +599,6 @@ app.Use(async (ctx, next) =>
     }
 });
 app.UseAuthentication();
-app.UseApiKeyAuth();       // API key auth for /api/v1/* and developer endpoints
 app.UseRoleEnrichment();   // Enrich JWT → DB roles + permissions
 app.UseSessionRevocation(); // Block revoked sessions via server-side blacklist
 app.UseSuspensionGate();   // Block suspended users (allowlist /api/profiles/me)
@@ -690,11 +682,6 @@ app.MapPackageEndpoints();
 app.MapVenueAnalyticsEndpoints();
 app.MapStaffPermissionEndpoints();
 app.MapNotificationPreferenceEndpoints();
-
-// ── Developer API Platform (PROJ-024) ─────────────────────────────────────────
-app.MapDeveloperV1Endpoints();
-app.MapDeveloperKeyEndpoints();
-app.MapDeveloperAdminEndpoints();
 
 // ── Phase 3: SignalR hubs──────────────────────────────────────────────────────
 app.MapHub<BracketHub>("/hubs/bracket").RequireCors("EsportraPolicy");
