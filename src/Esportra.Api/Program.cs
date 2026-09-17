@@ -674,6 +674,7 @@ app.MapPublicToolEndpoints();
 // ── Phase 4: Domain API endpoints ─────────────────────────────────────────────
 app.MapProfileEndpoints();
 app.MapProfileResolveEndpoint();
+app.MapAvatarEndpoints();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
