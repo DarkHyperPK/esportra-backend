@@ -64,7 +64,17 @@ public static class AvatarPoolEndpoints
                 "SELECT id, style, seed, claimed_at FROM avatar_pool WHERE claimed_by = @userId",
                 new { userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { owned });
+            var releaseCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT avatar_release_count FROM profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            const int maxReleases = 2;
+            return Results.Ok(new
+            {
+                owned,
+                releases_used = releaseCount,
+                releases_remaining = maxReleases - releaseCount,
+            });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/avatars/claim ───────────────────────────────────────────
@@ -119,7 +129,15 @@ public static class AvatarPoolEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            const int maxReleases = 2;
             using var conn = db.CreateConnection();
+
+            var releaseCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT avatar_release_count FROM profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            if (releaseCount >= maxReleases)
+                return Results.Conflict(new { error = $"You've used all {maxReleases} of your avatar releases." });
 
             var released = await conn.ExecuteAsync(
                 "UPDATE avatar_pool SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = @userId",
@@ -128,12 +146,19 @@ public static class AvatarPoolEndpoints
             if (released == 0)
                 return Results.NotFound(new { error = "You don't own an avatar to release." });
 
-            // Clear denormalised fields on profile
+            // Clear denormalised fields and increment release counter
             await conn.ExecuteAsync(
-                "UPDATE profiles SET avatar_seed = NULL, avatar_style = NULL, updated_at = now() WHERE id = @userId",
+                """
+                UPDATE profiles
+                SET avatar_seed = NULL,
+                    avatar_style = NULL,
+                    avatar_release_count = avatar_release_count + 1,
+                    updated_at = now()
+                WHERE id = @userId
+                """,
                 new { userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { released = true });
+            return Results.Ok(new { released = true, releases_remaining = maxReleases - releaseCount - 1 });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/admin/avatars/pool ──────────────────────────────────────
