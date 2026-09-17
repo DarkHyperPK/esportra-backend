@@ -4,7 +4,8 @@ namespace Esportra.Api.Helpers;
 
 public static class ProfileResponseNormalizer
 {
-    private const string DiceBearBaseUrl = "https://api.dicebear.com/10.x/critters/svg";
+    private const string DiceBearBase = "https://api.dicebear.com/10.x";
+    private const string DefaultStyle = "critters";
 
     public static Dictionary<string, object?>? ToDictionary(object? row)
     {
@@ -40,7 +41,7 @@ public static class ProfileResponseNormalizer
         _ => value,
     };
 
-    // When avatar_url is absent, compute a DiceBear critters URL from avatar_seed (or user id as fallback).
+    // When avatar_url is absent, compute a DiceBear URL from avatar_style + avatar_seed (or user id as fallback).
     private static void InjectDiceBearAvatarUrl(Dictionary<string, object?> dict)
     {
         var avatarUrl = dict.GetValueOrDefault("avatar_url") as string;
@@ -50,7 +51,11 @@ public static class ProfileResponseNormalizer
         if (string.IsNullOrWhiteSpace(seed))
             seed = dict.GetValueOrDefault("id") as string;
 
-        if (!string.IsNullOrWhiteSpace(seed))
-            dict["avatar_url"] = $"{DiceBearBaseUrl}?seed={Uri.EscapeDataString(seed)}";
+        if (string.IsNullOrWhiteSpace(seed)) return;
+
+        var style = dict.GetValueOrDefault("avatar_style") as string;
+        if (string.IsNullOrWhiteSpace(style)) style = DefaultStyle;
+
+        dict["avatar_url"] = $"{DiceBearBase}/{style}/svg?seed={Uri.EscapeDataString(seed)}";
     }
 }

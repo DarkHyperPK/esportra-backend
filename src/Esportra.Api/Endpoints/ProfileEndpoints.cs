@@ -24,7 +24,7 @@ public static class ProfileEndpoints
 {
     private static readonly string[] AllowedUpdateFields =
     [
-        "username", "full_name", "avatar_url", "avatar_seed", "bio",
+        "username", "full_name", "avatar_url", "avatar_seed", "avatar_style", "bio",
         "riot_tag", "steam_tag", "social_links",
         "card_image_url", "country_code", "banner_url",
         "date_of_birth"
@@ -156,7 +156,7 @@ public static class ProfileEndpoints
             try
             {
                 row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, avatar_seed, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
+                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, avatar_seed, avatar_style, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
                     parameters);
             }
             catch (PostgresException ex) when (ex.SqlState == "23505")
@@ -708,7 +708,7 @@ public static class ProfileEndpoints
         var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
             includePrivateFields
                 ? """
-                  SELECT id, username, full_name, avatar_url, avatar_seed, bio, location,
+                  SELECT id, username, full_name, avatar_url, avatar_seed, avatar_style, bio, location,
                          social_links, country_code, card_image_url, banner_url,
                          riot_tag, steam_tag, role, base_role, is_admin, admin_roles,
                          is_suspended, suspension_until, suspension_reason, suspension_type,
@@ -718,7 +718,7 @@ public static class ProfileEndpoints
                   WHERE id = @id
                   """
                 : """
-                  SELECT id, username, full_name, avatar_url, avatar_seed, bio, location,
+                  SELECT id, username, full_name, avatar_url, avatar_seed, avatar_style, bio, location,
                          social_links, country_code, card_image_url, banner_url,
                          riot_tag, steam_tag, created_at, updated_at
                   FROM profiles
