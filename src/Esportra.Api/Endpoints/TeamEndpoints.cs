@@ -1549,6 +1549,7 @@ public static class TeamEndpoints
                 FROM tournament_participants tp
                 JOIN tournaments t ON t.id = tp.tournament_id
                 WHERE tp.team_id = @id
+                  AND tp.status NOT IN ('cancelled', 'rejected')
                 """,
                 new { id });
             return Results.Ok(registrations);
