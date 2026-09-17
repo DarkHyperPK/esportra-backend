@@ -41,16 +41,14 @@ public static class ProfileResponseNormalizer
         _ => value,
     };
 
-    // When avatar_url is absent, compute a DiceBear URL from avatar_style + avatar_seed (or user id as fallback).
+    // Compute a DiceBear URL only when avatar_seed is explicitly set by the user.
+    // No seed → leave avatar_url null so the frontend renders its own placeholder.
     private static void InjectDiceBearAvatarUrl(Dictionary<string, object?> dict)
     {
         var avatarUrl = dict.GetValueOrDefault("avatar_url") as string;
         if (!string.IsNullOrWhiteSpace(avatarUrl)) return;
 
         var seed = dict.GetValueOrDefault("avatar_seed") as string;
-        if (string.IsNullOrWhiteSpace(seed))
-            seed = dict.GetValueOrDefault("id") as string;
-
         if (string.IsNullOrWhiteSpace(seed)) return;
 
         var style = dict.GetValueOrDefault("avatar_style") as string;
