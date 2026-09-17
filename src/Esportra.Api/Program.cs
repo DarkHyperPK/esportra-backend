@@ -641,6 +641,7 @@ app.MapPublicToolEndpoints();
 app.MapProfileEndpoints();
 app.MapProfileResolveEndpoint();
 app.MapAvatarEndpoints();
+app.MapAvatarPoolEndpoints();
 app.MapMatchSystemEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
