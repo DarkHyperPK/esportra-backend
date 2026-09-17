@@ -136,6 +136,80 @@ public static class AvatarPoolEndpoints
             return Results.Ok(new { released = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/admin/avatars/pool ──────────────────────────────────────
+        // Admin: all pool items (claimed + unclaimed) with claimant username.
+        app.MapGet("/api/admin/avatars/pool", async (
+            HttpContext ctx,
+            [FromQuery] string? style,
+            [FromQuery] int page,
+            [FromQuery] int pageSize,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+
+            pageSize = Math.Clamp(pageSize == 0 ? 20 : pageSize, 1, 50);
+
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT ap.id, ap.style, ap.seed, ap.claimed_by, ap.claimed_at, ap.created_at,
+                       p.username AS claimed_by_username
+                FROM avatar_pool ap
+                LEFT JOIN profiles p ON p.id = ap.claimed_by
+                WHERE (@style IS NULL OR ap.style = @style)
+                ORDER BY ap.created_at DESC
+                LIMIT @pageSize OFFSET @offset
+                """,
+                new { style, pageSize, offset = page * pageSize });
+
+            var total = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM avatar_pool WHERE (@style IS NULL OR style = @style)",
+                new { style });
+
+            var totalClaimed = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM avatar_pool WHERE claimed_by IS NOT NULL");
+
+            return Results.Ok(new
+            {
+                items = rows,
+                total,
+                claimed = totalClaimed,
+                available = total - totalClaimed,
+                page,
+                pageSize,
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ── DELETE /api/admin/avatars/pool/{id} ───────────────────────────────
+        // Admin: remove an unclaimed pool item. Refuses if currently claimed.
+        app.MapDelete("/api/admin/avatars/pool/{id:guid}", async (
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var item = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT id, claimed_by FROM avatar_pool WHERE id = @id",
+                new { id });
+
+            if (item is null) return Results.NotFound(new { error = "Item not found." });
+            if (item.claimed_by is not null)
+                return Results.Conflict(new { error = "Cannot delete a claimed avatar. The user must release it first." });
+
+            await conn.ExecuteAsync("DELETE FROM avatar_pool WHERE id = @id", new { id });
+            return Results.Ok(new { deleted = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── POST /api/admin/avatars/pool/batch ────────────────────────────────
         // Admin-only: insert a batch of (style, seed) combos into the pool.
         // Existing (style, seed) pairs are silently skipped (ON CONFLICT DO NOTHING).
