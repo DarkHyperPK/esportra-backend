@@ -3375,12 +3375,13 @@ public static class AdminEndpoints
 
             var tournaments = await conn.QueryAsync<dynamic>(
                 """
-                SELECT tp.tournament_id, tp.status, tp.registration_date AS registered_at,
+                SELECT tp.tournament_id, tp.status, tp.created_at AS registered_at,
                        t.name AS tournament_name, t.game, t.status AS tournament_status,
                        t.start_date, t.prize_pool
                 FROM tournament_participants tp
                 JOIN tournaments t ON t.id = tp.tournament_id
                 WHERE tp.team_id = @id
+                  AND tp.status NOT IN ('cancelled', 'rejected')
                 ORDER BY t.start_date DESC
                 """, new { id });
 
