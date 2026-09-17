@@ -161,6 +161,8 @@ public static class ProfileEndpoints
             }
             catch (PostgresException ex) when (ex.SqlState == "23505")
             {
+                if (ex.ConstraintName == "profiles_avatar_seed_style_unique")
+                    return Results.Conflict(new { error = "This avatar is already claimed by another user." });
                 return Results.Conflict(new { error = "Username already taken." });
             }
             catch (PostgresException ex) when (ex.SqlState is "22007" or "22008")
@@ -1105,6 +1107,45 @@ public static class ProfileEndpoints
                 new { userId = userCtx.UserIdGuid, tournamentId, enabled = req.Enabled });
 
             return Results.Ok(new { success = true, tournamentId, enabled = req.Enabled });
+        }).RequireAuthorization("Authenticated");
+    }
+}
+
+public static class AvatarEndpoints
+{
+    public static void MapAvatarEndpoints(this WebApplication app)
+    {
+        // ── GET /api/avatars/availability ─────────────────────────────────────
+        // Returns which seeds in a given style are already claimed by other users.
+        // Query params: style (string), seeds (repeated, up to 20)
+        app.MapGet("/api/avatars/availability", async (
+            HttpContext ctx,
+            [FromQuery] string style,
+            [FromQuery(Name = "seeds")] string[] seeds,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (string.IsNullOrWhiteSpace(style) || seeds.Length == 0)
+                return Results.Ok(new { claimed = Array.Empty<string>() });
+
+            var capped = seeds.Take(20).ToArray();
+
+            using var conn = db.CreateConnection();
+            var claimed = await conn.QueryAsync<string>(
+                """
+                SELECT avatar_seed
+                FROM profiles
+                WHERE avatar_style = @style
+                  AND avatar_seed = ANY(@seeds)
+                  AND id != @userId
+                  AND avatar_seed IS NOT NULL
+                """,
+                new { style, seeds = capped, userId = userCtx.UserIdGuid });
+
+            return Results.Ok(new { claimed = claimed.ToArray() });
         }).RequireAuthorization("Authenticated");
     }
 }
