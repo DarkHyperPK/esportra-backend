@@ -176,6 +176,19 @@ public static class ProfileEndpoints
 
             if (row is null) return Results.NotFound();
 
+            // If the user switched to a photo upload (avatar_url set, avatar_seed cleared),
+            // release any pool claim so they can claim a different avatar in future.
+            var isPhotoSwitch =
+                valid.TryGetValue("avatar_url", out var newUrl) && !string.IsNullOrWhiteSpace(newUrl as string) &&
+                valid.TryGetValue("avatar_seed", out var newSeed) && string.IsNullOrWhiteSpace(newSeed as string);
+
+            if (isPhotoSwitch)
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE avatar_pool SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = @id",
+                    new { id });
+            }
+
             // Invalidate cache
             try
             {
