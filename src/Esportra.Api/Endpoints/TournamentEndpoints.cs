@@ -4928,7 +4928,11 @@ public static class TournamentEndpoints
         if (ids.ParticipantType != "solo")
         {
             var captainId = ids.CaptainId ?? userCtx.UserIdGuid;
-            return new(ids.TeamId, captainId, req.TeamName, null);
+            var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT name FROM teams WHERE id = @teamId",
+                new { teamId = ids.TeamId }, txn);
+            var teamName = (string?)team?.name ?? req.TeamName;
+            return new(ids.TeamId, captainId, teamName, null);
         }
 
         var profile = await conn.QuerySingleOrDefaultAsync<dynamic>(
