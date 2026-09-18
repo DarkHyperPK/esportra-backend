@@ -109,6 +109,7 @@ public static class TeamEndpoints
                                'full_name',  p.full_name,
                                'avatar_url', p.avatar_url,
                                'card_image_url', p.card_image_url,
+                               'riot_tag',   p.riot_tag,
                                'role',       tm.role,
                                'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
@@ -149,6 +150,7 @@ public static class TeamEndpoints
                                'full_name',  p.full_name,
                                'avatar_url', p.avatar_url,
                                'card_image_url', p.card_image_url,
+                               'riot_tag',   p.riot_tag,
                                'role',       tm.role,
                                'joined_at',  tm.joined_at,
                                'is_active',  tm.is_active
