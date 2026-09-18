@@ -4,11 +4,11 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Middleware;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Email;
-
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -194,7 +194,7 @@ public static class TeamEndpoints
                 JOIN tournaments t ON t.id = tp.tournament_id
                 LEFT JOIN tournament_placements tpl
                     ON tpl.tournament_id = t.id
-                    AND tpl.user_id = tp.user_id
+                    AND tpl.team_id = tp.team_id
                 WHERE tp.team_id = @id
                   AND tp.status != 'disqualified'
                   AND t.status != 'cancelled'

@@ -728,13 +728,13 @@ public static class ProfileEndpoints
                             t.start_date,
                             t.status AS tournament_status,
                             tpl.placement,
-                            CASE WHEN tp.team_id IS NULL THEN tpl.prize_cents ELSE NULL END AS prize_cents,
+                            CASE WHEN tp.team_id IS NULL THEN tpl.prize_amount ELSE NULL END AS prize_amount,
                             (tp.team_id IS NOT NULL) AS is_team_tournament,
                             tm.name AS team_name,
                             tm.logo_url AS team_logo_url
                         FROM tournament_participants tp
                         JOIN tournaments t ON t.id = tp.tournament_id
-                        LEFT JOIN tournament_placements tpl ON tpl.tournament_id = t.id AND tpl.user_id = @userId
+                        LEFT JOIN tournament_placements tpl ON tpl.tournament_id = t.id AND tpl.team_id = tp.team_id
                         LEFT JOIN teams tm ON tm.id = tp.team_id
                         WHERE tp.user_id = @userId
                           AND tp.status != 'disqualified'
