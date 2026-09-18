@@ -376,19 +376,19 @@ public static class ProfileEndpoints
                     if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
                     var accounts = await conn.QueryAsync<dynamic>(
                         """
-                        SELECT ra.user_id, ra.game_name, ra.tag_line, ra.region, ra.created_at
+                        SELECT ra.user_id, ra.game_name, ra.tag_line, ra.region, ra.updated_at
                         FROM riot_accounts ra
                         JOIN profiles p ON p.id = ra.user_id
                         WHERE ra.user_id = ANY(@ids)
                           AND COALESCE((p.privacy_settings->>'show_riot_account')::boolean, true) = true
-                        ORDER BY ra.created_at DESC
+                        ORDER BY ra.updated_at DESC
                         """,
                         new { ids = idList });
                     return Results.Ok(accounts);
                 }
 
                 var myAccounts = await conn.QueryAsync<dynamic>(
-                    "SELECT * FROM riot_accounts WHERE user_id = @userId ORDER BY created_at DESC",
+                    "SELECT * FROM riot_accounts WHERE user_id = @userId ORDER BY updated_at DESC",
                     new { userId = userCtx.UserIdGuid });
                 return Results.Ok(myAccounts);
             }
@@ -891,7 +891,7 @@ public static class ProfileEndpoints
                     if (showRiot)
                     {
                         riotRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                            "SELECT game_name, tag_line, region FROM riot_accounts WHERE user_id = @id ORDER BY created_at DESC LIMIT 1",
+                            "SELECT game_name, tag_line, region FROM riot_accounts WHERE user_id = @id ORDER BY updated_at DESC LIMIT 1",
                             new { id });
                     }
 
@@ -900,7 +900,7 @@ public static class ProfileEndpoints
                     {
                         // steam64_id is intentionally excluded from this query
                         steamRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                            "SELECT steam_name, profile_url FROM player_steam_accounts WHERE user_id = @id ORDER BY created_at DESC LIMIT 1",
+                            "SELECT steam_name, profile_url FROM player_steam_accounts WHERE user_id = @id ORDER BY linked_at DESC LIMIT 1",
                             new { id });
                     }
 
