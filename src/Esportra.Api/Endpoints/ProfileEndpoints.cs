@@ -1,9 +1,11 @@
+using System.Data;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Npgsql;
 using Esportra.Api.Helpers;
+using Esportra.Api.Middleware;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Email;
@@ -77,32 +79,13 @@ public static class ProfileEndpoints
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
 
             // Normalize empty tag fields to null (DB has unique partial index on non-empty values)
-            foreach (var tagField in tagFields)
-            {
-                if (valid.TryGetValue(tagField, out var v))
-                {
-                    if (v is null || (v is JsonElement je && (je.ValueKind == JsonValueKind.Null || je.GetString() is "" or null))
-                        || (v is string s && string.IsNullOrWhiteSpace(s)))
-                        valid[tagField] = null;
-                }
-            }
+            NormalizeTagFields(valid, tagFields);
 
             if (valid.Count == 0)
                 return Results.BadRequest(new { error = "No valid fields to update." });
 
-            if (valid.TryGetValue("date_of_birth", out var dobValue))
-            {
-                if (!ProfileFieldValidator.TryValidateDateOfBirth(dobValue, out var normalizedDob, out var dobError))
-                    return Results.BadRequest(new { error = dobError });
-                valid["date_of_birth"] = normalizedDob;
-            }
-
-            if (valid.TryGetValue("country_code", out var countryValue))
-            {
-                if (!ProfileFieldValidator.TryValidateCountryCode(countryValue, out var normalizedCountry, out var countryError))
-                    return Results.BadRequest(new { error = countryError });
-                valid["country_code"] = normalizedCountry;
-            }
+            var fieldError = ValidateProfileUpdateFields(valid);
+            if (fieldError is not null) return fieldError;
 
             using var conn = db.CreateConnection();
 
@@ -116,63 +99,10 @@ public static class ProfileEndpoints
                     return Results.Conflict(new { error = "Username already taken." });
             }
 
-            // Build SET clause dynamically (safe — only allow-listed column names)
-            var jsonbFields = new HashSet<string> { "social_links" };
-            var dateFields = new HashSet<string> { "date_of_birth" };
-            var setClauses = string.Join(", ", valid.Keys.Select(k =>
-            {
-                if (jsonbFields.Contains(k)) return $"{k} = @{k}::jsonb";
-                if (dateFields.Contains(k)) return $"{k} = @{k}::date";
-                return $"{k} = @{k}";
-            }));
-            var parameters = new DynamicParameters();
-            foreach (var kv in valid)
-            {
-                if (kv.Value is null)
-                {
-                    parameters.Add(kv.Key, null, System.Data.DbType.String);
-                }
-                else if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
-                {
-                    parameters.Add(kv.Key, je.GetRawText());
-                }
-                else if (dateFields.Contains(kv.Key))
-                {
-                    var dateStr = kv.Value as string;
-                    if (string.IsNullOrWhiteSpace(dateStr))
-                        return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
-
-                    parameters.Add(kv.Key, dateStr.Trim());
-                }
-                else
-                {
-                    parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
-                }
-            }
-            parameters.Add("id", id);
-            parameters.Add("updated_at", DateTime.UtcNow);
-
-            dynamic? row;
-            try
-            {
-                row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                    $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, avatar_seed, avatar_style, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
-                    parameters);
-            }
-            catch (PostgresException ex) when (ex.SqlState == "23505")
-            {
-                if (ex.ConstraintName == "profiles_avatar_seed_style_unique")
-                    return Results.Conflict(new { error = "This avatar is already claimed by another user." });
-                return Results.Conflict(new { error = "Username already taken." });
-            }
-            catch (PostgresException ex) when (ex.SqlState is "22007" or "22008")
-            {
-                return Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." });
-            }
-            catch (PostgresException)
-            {
-                return Results.BadRequest(new { error = "Profile update failed." });
-            }
+            var setClauses = BuildProfileUpdateSql(valid.Keys);
+            var parameters = BuildProfileUpdateParameters(valid, id);
+            var (row, updateError) = await ExecuteProfileUpdateAsync(conn, setClauses, parameters);
+            if (updateError is not null) return updateError;
 
             if (row is null) return Results.NotFound();
 
@@ -189,31 +119,41 @@ public static class ProfileEndpoints
                     new { id });
             }
 
-            // Invalidate cache
-            try
-            {
-                await cache.RemoveAsync($"profile:{id}", ct);
-            }
-            catch
-            {
-                // Best-effort cache invalidation should not fail profile updates.
-            }
+            await InvalidateProfileCacheAsync(cache, id, (string?)row?.username, ct);
 
             var normalized = ProfileResponseNormalizer.ToDictionary(row);
-            return normalized is null ? Results.Ok(row) : Results.Ok(normalized);
+            return Results.Ok(normalized ?? (object)row!);
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/profiles/by-username/{username} ─────────────────────────
         app.MapGet("/api/profiles/by-username/{username}", async (
             string username,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
         {
-            using var conn = db.CreateConnection();
-            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, username, full_name, avatar_url FROM profiles WHERE username = @username",
-                new { username });
-            return row is null ? Results.NotFound() : Results.Ok(row);
-        }).RequireAuthorization("Authenticated");
+            var profileJson = await cache.GetOrCreateAsync<string?>(
+                $"profile-by-username:{username}",
+                async token =>
+                {
+                    using var conn = db.CreateConnection();
+                    var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                        """
+                        SELECT id, username, full_name, avatar_url, avatar_seed, avatar_style,
+                               bio, location, social_links, country_code, card_image_url, banner_url,
+                               riot_tag, steam_tag, created_at
+                        FROM profiles WHERE username = @username
+                        """,
+                        new { username });
+                    if (row is null) return null;
+                    var normalized = ProfileResponseNormalizer.ToDictionary(row);
+                    return JsonSerializer.Serialize(normalized ?? (object)row);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct);
+
+            return profileJson is null ? Results.NotFound() : Results.Content(profileJson, "application/json");
+        });
 
         // ── GET /api/profiles/search ─────────────────────────────────────────
         app.MapGet("/api/profiles/search", async (
@@ -303,7 +243,7 @@ public static class ProfileEndpoints
             try
             {
                 var rows = await conn.QueryAsync<dynamic>(
-                    "SELECT * FROM achievements WHERE is_active = TRUE ORDER BY points ASC");
+                    "SELECT id, key, name, description, icon_url, points, created_at FROM achievements ORDER BY points ASC");
                 return Results.Ok(rows);
             }
             catch { return Results.Ok(Array.Empty<object>()); }
@@ -326,7 +266,7 @@ public static class ProfileEndpoints
                 INSERT INTO user_achievements (user_id, achievement_id)
                 VALUES (@userId, @achievementId)
                 ON CONFLICT (user_id, achievement_id) DO NOTHING
-                RETURNING id, user_id, achievement_id, created_at, (SELECT row_to_json(a) FROM achievements a WHERE a.id = achievement_id) AS achievement
+                RETURNING user_id, achievement_id, earned_at
                 """,
                 new { userId = userCtx.UserIdGuid, achievementId });
 
@@ -435,7 +375,14 @@ public static class ProfileEndpoints
                         .ToArray();
                     if (idList.Length == 0) return Results.Ok(Array.Empty<object>());
                     var accounts = await conn.QueryAsync<dynamic>(
-                        "SELECT * FROM riot_accounts WHERE user_id = ANY(@ids) ORDER BY created_at DESC",
+                        """
+                        SELECT ra.user_id, ra.game_name, ra.tag_line, ra.region, ra.created_at
+                        FROM riot_accounts ra
+                        JOIN profiles p ON p.id = ra.user_id
+                        WHERE ra.user_id = ANY(@ids)
+                          AND COALESCE((p.privacy_settings->>'show_riot_account')::boolean, true) = true
+                        ORDER BY ra.created_at DESC
+                        """,
                         new { ids = idList });
                     return Results.Ok(accounts);
                 }
@@ -682,36 +629,453 @@ public static class ProfileEndpoints
         app.MapGet("/api/profiles/{id}/stats", async (
             Guid id,
             IDbConnectionFactory db,
+            HybridCache cache,
             CancellationToken ct) =>
         {
-            using var conn = db.CreateConnection();
+            var statsJson = await cache.GetOrCreateAsync<string?>(
+                $"profile-stats:{id}",
+                async token =>
+                {
+                    using var conn = db.CreateConnection();
 
-            dynamic? stats = null;
-            try
-            {
-                stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM user_statistics WHERE user_id = @id", new { id });
-            }
-            catch { /* table not yet migrated */ }
+                    dynamic? stats = null;
+                    try
+                    {
+                        stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            "SELECT user_id, skill_level, matches_played, matches_won, tournaments_entered, tournaments_won, updated_at FROM user_statistics WHERE user_id = @id",
+                            new { id });
+                    }
+                    catch { /* table not yet migrated */ }
 
-            IEnumerable<dynamic> achievements = Array.Empty<dynamic>();
-            try
-            {
-                achievements = await conn.QueryAsync<dynamic>(
-                """
-                SELECT ua.id, ua.earned_at, ua.progress,
-                       a.id AS achievement_id, a.name, a.description,
-                       a.category, a.icon_url, a.points, a.requirements
-                FROM user_achievements ua
-                JOIN achievements a ON a.id = ua.achievement_id
-                WHERE ua.user_id = @id AND a.is_active = TRUE
-                ORDER BY ua.earned_at DESC
-                """, new { id });
-            }
-            catch { /* tables not yet migrated */ }
+                    IEnumerable<dynamic> achievements = Array.Empty<dynamic>();
+                    try
+                    {
+                        achievements = await conn.QueryAsync<dynamic>(
+                            """
+                            SELECT ua.earned_at,
+                                   a.id AS achievement_id, a.name, a.description,
+                                   a.icon_url, a.points
+                            FROM user_achievements ua
+                            JOIN achievements a ON a.id = ua.achievement_id
+                            WHERE ua.user_id = @id
+                            ORDER BY ua.earned_at DESC
+                            """, new { id });
+                    }
+                    catch { /* tables not yet migrated */ }
 
-            return Results.Ok(new { statistics = stats, achievements });
+                    string? verifiedRole = null;
+                    try
+                    {
+                        verifiedRole = await conn.QuerySingleOrDefaultAsync<string>(
+                            "SELECT role FROM verified_roles WHERE user_id = @id AND is_active = TRUE LIMIT 1",
+                            new { id });
+                    }
+                    catch { /* table not yet migrated */ }
+
+                    long achievementsCount = 0;
+                    try
+                    {
+                        achievementsCount = await conn.ExecuteScalarAsync<long>(
+                            "SELECT COUNT(*) FROM user_achievements WHERE user_id = @id",
+                            new { id });
+                    }
+                    catch { /* table not yet migrated */ }
+
+                    var response = new Dictionary<string, object?>
+                    {
+                        ["statistics"] = stats is null ? null : (object?)(ProfileResponseNormalizer.ToDictionary(stats) ?? new Dictionary<string, object?>()),
+                        ["achievements"] = achievements
+                            .Select(a => ProfileResponseNormalizer.ToDictionary(a) ?? new Dictionary<string, object?>())
+                            .ToList(),
+                        ["verified_role"] = verifiedRole,
+                        ["achievements_count"] = achievementsCount,
+                    };
+                    return JsonSerializer.Serialize(response);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct);
+
+            return statsJson is null
+                ? Results.Ok(new { statistics = (object?)null, achievements = Array.Empty<object>(), verified_role = (string?)null, achievements_count = 0 })
+                : Results.Content(statsJson, "application/json");
         });
+
+        // ── GET /api/profiles/{id}/tournament-history ─────────────────────────
+        app.MapGet("/api/profiles/{id}/tournament-history", async (
+            Guid id,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct,
+            int page = 1,
+            string? game = null) =>
+        {
+            page = Math.Max(1, page);
+            var cacheKey = $"profile-history:{id}:{page}:{game ?? "all"}";
+            var historyJson = await cache.GetOrCreateAsync<string>(
+                cacheKey,
+                async token =>
+                {
+                    using var conn = db.CreateConnection();
+                    var offset = (page - 1) * 20;
+
+                    var rows = await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT
+                            t.id AS tournament_id,
+                            t.name AS tournament_name,
+                            t.game,
+                            t.format,
+                            t.start_date,
+                            t.status AS tournament_status,
+                            tpl.placement,
+                            CASE WHEN tp.team_id IS NULL THEN tpl.prize_cents ELSE NULL END AS prize_cents,
+                            (tp.team_id IS NOT NULL) AS is_team_tournament,
+                            tm.name AS team_name,
+                            tm.logo_url AS team_logo_url
+                        FROM tournament_participants tp
+                        JOIN tournaments t ON t.id = tp.tournament_id
+                        LEFT JOIN tournament_placements tpl ON tpl.tournament_id = t.id AND tpl.user_id = @userId
+                        LEFT JOIN teams tm ON tm.id = tp.team_id
+                        WHERE tp.user_id = @userId
+                          AND tp.status != 'disqualified'
+                          AND t.status != 'cancelled'
+                          AND (@game IS NULL OR t.game = @game)
+                        ORDER BY t.start_date DESC
+                        LIMIT 20 OFFSET @offset
+                        """,
+                        new { userId = id, game, offset });
+
+                    var count = await conn.ExecuteScalarAsync<long>(
+                        """
+                        SELECT COUNT(*)
+                        FROM tournament_participants tp
+                        JOIN tournaments t ON t.id = tp.tournament_id
+                        WHERE tp.user_id = @userId
+                          AND tp.status != 'disqualified'
+                          AND t.status != 'cancelled'
+                          AND (@game IS NULL OR t.game = @game)
+                        """,
+                        new { userId = id, game });
+
+                    var items = rows
+                        .Select(r => ProfileResponseNormalizer.ToDictionary(r) ?? new Dictionary<string, object?>())
+                        .ToList();
+                    var response = new Dictionary<string, object?>
+                    {
+                        ["items"] = items,
+                        ["page"] = page,
+                        ["pageSize"] = 20,
+                        ["hasMore"] = count > (long)page * 20,
+                    };
+                    return JsonSerializer.Serialize(response);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct);
+
+            return Results.Content(historyJson, "application/json");
+        }).WithMetadata(new RateLimitPolicyMetadata("public"));
+
+        // ── GET /api/profiles/{id}/teams ──────────────────────────────────────
+        app.MapGet("/api/profiles/{id}/teams", async (
+            Guid id,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            var teamsJson = await cache.GetOrCreateAsync<string>(
+                $"profile-teams:{id}",
+                async token =>
+                {
+                    using var conn = db.CreateConnection();
+                    var rows = await conn.QueryAsync<dynamic>(
+                        """
+                        SELECT
+                            tm.id AS membership_id,
+                            tm.team_id,
+                            tm.role,
+                            tm.joined_at,
+                            tm.is_active,
+                            t.name AS team_name,
+                            t.logo_url AS team_logo_url,
+                            t.game AS team_game
+                        FROM team_members tm
+                        JOIN teams t ON t.id = tm.team_id
+                        WHERE tm.user_id = @userId
+                        ORDER BY tm.is_active DESC, tm.joined_at DESC
+                        """,
+                        new { userId = id });
+
+                    var items = rows
+                        .Select(r => ProfileResponseNormalizer.ToDictionary(r) ?? new Dictionary<string, object?>())
+                        .ToList();
+                    return JsonSerializer.Serialize(items);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+                cancellationToken: ct);
+
+            return Results.Content(teamsJson, "application/json");
+        }).WithMetadata(new RateLimitPolicyMetadata("public"));
+
+        // ── PUT /api/profiles/me/privacy ─────────────────────────────────────
+        app.MapPut("/api/profiles/me/privacy", async (
+            [FromBody] UpdatePrivacySettingsRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await conn.ExecuteAsync(
+                """
+                UPDATE profiles
+                SET privacy_settings = COALESCE(privacy_settings, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'show_riot_account', @showRiotAccount::boolean,
+                        'show_steam_account', @showSteamAccount::boolean
+                    )
+                WHERE id = @userId
+                """,
+                new
+                {
+                    userId = userCtx.UserIdGuid,
+                    showRiotAccount = req.ShowRiotAccount,
+                    showSteamAccount = req.ShowSteamAccount,
+                });
+
+            await cache.RemoveAsync($"profile-linked:{userCtx.UserIdGuid}", ct);
+            return Results.Ok(new
+            {
+                success = true,
+                show_riot_account = req.ShowRiotAccount,
+                show_steam_account = req.ShowSteamAccount,
+            });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/profiles/{id}/linked-accounts ────────────────────────────
+        app.MapGet("/api/profiles/{id}/linked-accounts", async (
+            Guid id,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            var linkedJson = await cache.GetOrCreateAsync<string>(
+                $"profile-linked:{id}",
+                async token =>
+                {
+                    using var conn = db.CreateConnection();
+
+                    var privacyStr = await conn.QuerySingleOrDefaultAsync<string?>(
+                        "SELECT privacy_settings FROM profiles WHERE id = @id",
+                        new { id });
+
+                    bool showRiot = true;
+                    bool showSteam = true;
+
+                    if (!string.IsNullOrWhiteSpace(privacyStr) && privacyStr != "{}")
+                    {
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(privacyStr);
+                            if (doc.RootElement.TryGetProperty("show_riot_account", out var riotProp))
+                                showRiot = riotProp.GetBoolean();
+                            if (doc.RootElement.TryGetProperty("show_steam_account", out var steamProp))
+                                showSteam = steamProp.GetBoolean();
+                        }
+                        catch { /* malformed JSON — use defaults */ }
+                    }
+
+                    dynamic? riotRow = null;
+                    if (showRiot)
+                    {
+                        riotRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            "SELECT game_name, tag_line, region FROM riot_accounts WHERE user_id = @id ORDER BY created_at DESC LIMIT 1",
+                            new { id });
+                    }
+
+                    dynamic? steamRow = null;
+                    if (showSteam)
+                    {
+                        // steam64_id is intentionally excluded from this query
+                        steamRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                            "SELECT steam_name, profile_url FROM player_steam_accounts WHERE user_id = @id ORDER BY created_at DESC LIMIT 1",
+                            new { id });
+                    }
+
+                    var response = new Dictionary<string, object?>
+                    {
+                        ["riot"] = riotRow is null ? null : (object?)(ProfileResponseNormalizer.ToDictionary(riotRow)),
+                        ["steam"] = steamRow is null ? null : (object?)(ProfileResponseNormalizer.ToDictionary(steamRow)),
+                    };
+                    return JsonSerializer.Serialize(response);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(120) },
+                cancellationToken: ct);
+
+            return Results.Content(linkedJson, "application/json");
+        }).WithMetadata(new RateLimitPolicyMetadata("public"));
+    }
+
+    // ── PUT /api/profiles/{id} helpers ───────────────────────────────────────
+
+    private static readonly string[] DangerousUriSchemes = ["javascript:", "data:", "vbscript:"];
+    private const int MaxSocialLinkValueLength = 200;
+    private static readonly HashSet<string> AllowedSocialLinkKeys =
+        ["twitter", "twitch", "youtube", "instagram", "discord_handle"];
+
+    private static void NormalizeTagFields(Dictionary<string, object?> valid, HashSet<string> tagFields)
+    {
+        foreach (var tagField in tagFields)
+        {
+            if (!valid.TryGetValue(tagField, out var v)) continue;
+            if (v is null
+                || (v is JsonElement je && (je.ValueKind == JsonValueKind.Null || je.GetString() is "" or null))
+                || (v is string s && string.IsNullOrWhiteSpace(s)))
+                valid[tagField] = null;
+        }
+    }
+
+    /// <summary>
+    /// Validates date_of_birth, country_code, and social_links fields in the update dict.
+    /// Normalizes validated values in-place. Returns a 400 IResult on first failure, null on success.
+    /// </summary>
+    private static IResult? ValidateProfileUpdateFields(Dictionary<string, object?> valid)
+    {
+        if (valid.TryGetValue("date_of_birth", out var dobValue))
+        {
+            if (!ProfileFieldValidator.TryValidateDateOfBirth(dobValue, out var normalizedDob, out var dobError))
+                return Results.BadRequest(new { error = dobError });
+            valid["date_of_birth"] = normalizedDob;
+        }
+
+        if (valid.TryGetValue("country_code", out var countryValue))
+        {
+            if (!ProfileFieldValidator.TryValidateCountryCode(countryValue, out var normalizedCountry, out var countryError))
+                return Results.BadRequest(new { error = countryError });
+            valid["country_code"] = normalizedCountry;
+        }
+
+        if (valid.TryGetValue("social_links", out var socialLinksValue))
+        {
+            var socialError = ValidateSocialLinks(socialLinksValue, out _);
+            if (socialError is not null) return socialError;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Validates social link JSONB keys against the allowlist and enforces value constraints:
+    /// non-empty, ≤ 200 chars, no dangerous URI schemes (javascript:, data:, vbscript:).
+    /// Returns a 400 IResult on the first violation, null on success.
+    /// </summary>
+    private static IResult? ValidateSocialLinks(object? socialLinksValue, out Dictionary<string, string> parsed)
+    {
+        parsed = new Dictionary<string, string>();
+        if (socialLinksValue is not JsonElement slJson || slJson.ValueKind != JsonValueKind.Object)
+            return null;
+
+        foreach (var prop in slJson.EnumerateObject())
+        {
+            if (!AllowedSocialLinkKeys.Contains(prop.Name))
+                return Results.BadRequest(new { error = $"Unknown social link key: '{prop.Name}'. Allowed: twitter, twitch, youtube, instagram, discord_handle." });
+
+            var val = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : null;
+            if (string.IsNullOrWhiteSpace(val))
+                return Results.BadRequest(new { error = $"Value for '{prop.Name}' must not be empty." });
+
+            if (val.Length > MaxSocialLinkValueLength)
+                return Results.BadRequest(new { error = $"Value for '{prop.Name}' must be 200 characters or fewer." });
+
+            foreach (var scheme in DangerousUriSchemes)
+                if (val.StartsWith(scheme, StringComparison.OrdinalIgnoreCase))
+                    return Results.BadRequest(new { error = $"Value for '{prop.Name}' contains a disallowed URI scheme." });
+
+            parsed[prop.Name] = val;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the SET clause for an UPDATE statement.
+    /// Field names are allow-listed by the caller; this method only picks the cast syntax.
+    /// </summary>
+    private static string BuildProfileUpdateSql(IEnumerable<string> fieldNames)
+    {
+        var jsonbFields = new HashSet<string> { "social_links" };
+        var dateFields = new HashSet<string> { "date_of_birth" };
+        return string.Join(", ", fieldNames.Select(k =>
+        {
+            if (jsonbFields.Contains(k)) return $"{k} = @{k}::jsonb";
+            if (dateFields.Contains(k)) return $"{k} = @{k}::date";
+            return $"{k} = @{k}";
+        }));
+    }
+
+    private static DynamicParameters BuildProfileUpdateParameters(Dictionary<string, object?> valid, Guid id)
+    {
+        var jsonbFields = new HashSet<string> { "social_links" };
+        var dateFields = new HashSet<string> { "date_of_birth" };
+        var parameters = new DynamicParameters();
+        foreach (var kv in valid)
+        {
+            if (kv.Value is null)
+                parameters.Add(kv.Key, null, DbType.String);
+            else if (jsonbFields.Contains(kv.Key) && kv.Value is JsonElement je)
+                parameters.Add(kv.Key, je.GetRawText());
+            else if (dateFields.Contains(kv.Key))
+                parameters.Add(kv.Key, (kv.Value as string)?.Trim());
+            else
+                parameters.Add(kv.Key, kv.Value is JsonElement v ? v.ToString() : kv.Value);
+        }
+        parameters.Add("id", id);
+        parameters.Add("updated_at", DateTime.UtcNow);
+        return parameters;
+    }
+
+    private static async Task<(dynamic? Row, IResult? Error)> ExecuteProfileUpdateAsync(
+        IDbConnection conn, string setClauses, DynamicParameters parameters)
+    {
+        try
+        {
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                $"UPDATE profiles SET {setClauses}, updated_at = @updated_at WHERE id = @id RETURNING id, username, full_name, avatar_url, avatar_seed, avatar_style, bio, location, social_links, country_code, card_image_url, banner_url, riot_tag, steam_tag, date_of_birth, created_at, updated_at",
+                parameters);
+            return (row, null);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            var msg = ex.ConstraintName == "profiles_avatar_seed_style_unique"
+                ? "This avatar is already claimed by another user."
+                : "Username already taken.";
+            return (null, Results.Conflict(new { error = msg }));
+        }
+        catch (PostgresException ex) when (ex.SqlState is "22007" or "22008")
+        {
+            return (null, Results.BadRequest(new { error = "Enter a valid date (YYYY-MM-DD)." }));
+        }
+        catch (PostgresException)
+        {
+            return (null, Results.BadRequest(new { error = "Profile update failed." }));
+        }
+    }
+
+    private static async Task InvalidateProfileCacheAsync(
+        HybridCache cache, Guid id, string? username, CancellationToken ct)
+    {
+        try
+        {
+            await cache.RemoveAsync($"profile:{id}", ct);
+            if (!string.IsNullOrWhiteSpace(username))
+                await cache.RemoveAsync($"profile-by-username:{username}", ct);
+            await cache.RemoveAsync($"profile-linked:{id}", ct);
+        }
+        catch
+        {
+            // Best-effort cache invalidation should not fail profile updates.
+        }
     }
 
     // ── Shared helper ─────────────────────────────────────────────────────────
@@ -1171,6 +1535,45 @@ public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
 public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
+public sealed record TournamentHistoryItemDto(
+    Guid TournamentId,
+    string TournamentName,
+    string? Game,
+    string? Format,
+    DateTimeOffset? StartDate,
+    string? TournamentStatus,
+    int? Placement,
+    long? PrizeCents,
+    bool IsTeamTournament,
+    string? TeamName,
+    string? TeamLogoUrl
+);
+public sealed record TournamentHistoryResponseDto(
+    IEnumerable<TournamentHistoryItemDto> Items,
+    int Page,
+    int PageSize,
+    bool HasMore
+);
+public sealed record TeamMembershipDto(
+    Guid MembershipId,
+    Guid TeamId,
+    string? Role,
+    DateTimeOffset? JoinedAt,
+    bool IsActive,
+    string? TeamName,
+    string? TeamLogoUrl,
+    string? TeamGame
+);
+public sealed record LinkedAccountsResponseDto(
+    RiotAccountPublicDto? Riot,
+    SteamAccountPublicDto? Steam
+);
+public sealed record RiotAccountPublicDto(string? GameName, string? TagLine, string? Region);
+public sealed record SteamAccountPublicDto(string? SteamName, string? ProfileUrl);
+public sealed record UpdatePrivacySettingsRequest(
+    [property: JsonPropertyName("show_riot_account")] bool ShowRiotAccount,
+    [property: JsonPropertyName("show_steam_account")] bool ShowSteamAccount);
+
 public sealed record VerificationRequestBody(
     string? Role = null,
     string? Requested_Role = null,

@@ -20,6 +20,7 @@ public sealed record RateLimitOptions
     {
         ["default"] = new() { MaxRequests = 200, WindowSeconds = 60 },
         ["relaxed"] = new() { MaxRequests = 500, WindowSeconds = 60 },
+        ["public"] = new() { MaxRequests = 60, WindowSeconds = 60 },
         ["strict"] = new() { MaxRequests = 30, WindowSeconds = 60 },
         ["auth"] = new() { MaxRequests = 10, WindowSeconds = 60 },
         ["admin"] = new() { MaxRequests = 1000, WindowSeconds = 60 },

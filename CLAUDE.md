@@ -144,6 +144,7 @@ Custom agents defined in `.claude/agents/` for specialized tasks:
 | `refactoring-planner` | Plans safe, incremental refactoring steps. Outputs prerequisite checks, ordered steps with verification, commit points, and risks. Never mixes behavior changes with refactoring. | Glob, Grep, Read |
 | `security-reviewer` | Reviews code for security vulnerabilities and policy violations. Covers injection, auth gaps, data exposure, secrets handling, and input validation. Reports as CRITICAL/HIGH/MEDIUM/LOW severity. | Glob, Grep, Read |
 | `devops` | Handles git push/deploy operations. Enforces staging-only workflow. Never pushes to main. | Bash, Read, Grep |
+| `creative-lead` | Leads frontend quality, motion design, and interaction polish in the company pipeline. Directs Senior Frontend Engineer and UX Designer. Equipped with Emil Kowalski's full skill set (animate, apple-design, mobile-native, pick-ui-library, prototype, review-animations, improve-animations, find-animation-opportunities, emit-design-eng). Produces design briefs and reviews all frontend work before HANDOFF. Dispatched by CTO for any frontend feature. | Glob, Grep, Read, Write, Edit, Bash |
 
 ## Skills
 
@@ -170,6 +171,7 @@ Always-active rules defined in `.claude/rules/` that govern all code changes:
 | `security.md` | Blocking security rules. Parameterized queries, RLS on every table, framework auth handlers, no hardcoded secrets, no PII in logs, safe client errors. Violations must be fixed before proceeding. |
 | `git-workflow.md` | Never push to main. All work on staging. Production deploys via CI/CD only. |
 | `cyclomatic-complexity.md` | Blocking CC limits. CC ≤ 10 per method (hard), ≤ 7 preferred. CC 11–15 requires refactor before merge; CC 16+ is a hard block. |
+| `layout-viewport.md` | Frontend layout rule. `CommandPageGrid` and all page-level layout shells must use full viewport width — no `max-w-*` or `mx-auto` on outer grid containers. Violations block CTO audit merge. |
 
 ## Parked (Do Not Implement)
 
