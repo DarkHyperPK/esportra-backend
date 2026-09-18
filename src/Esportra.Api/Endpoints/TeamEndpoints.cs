@@ -169,6 +169,60 @@ public static class TeamEndpoints
             return Results.Ok(team);
         });
 
+        // ── GET /api/teams/{id}/tournament-history ────────────────────────────
+        app.MapGet("/api/teams/{id:guid}/tournament-history", async (
+            Guid id,
+            IDbConnectionFactory db,
+            int page = 1,
+            CancellationToken ct = default) =>
+        {
+            page = Math.Max(1, page);
+            var offset = (page - 1) * 20;
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT
+                    t.id            AS tournament_id,
+                    t.name          AS tournament_name,
+                    t.game,
+                    t.format,
+                    t.start_date,
+                    t.status        AS tournament_status,
+                    tpl.placement
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                LEFT JOIN tournament_placements tpl
+                    ON tpl.tournament_id = t.id
+                    AND tpl.user_id = tp.user_id
+                WHERE tp.team_id = @id
+                  AND tp.status != 'disqualified'
+                  AND t.status != 'cancelled'
+                ORDER BY t.start_date DESC
+                LIMIT 20 OFFSET @offset
+                """,
+                new { id, offset });
+
+            var count = await conn.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(*)
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE tp.team_id = @id
+                  AND tp.status != 'disqualified'
+                  AND t.status != 'cancelled'
+                """,
+                new { id });
+
+            return Results.Ok(new
+            {
+                items = rows,
+                page,
+                pageSize = 20,
+                has_more = count > (long)page * 20,
+            });
+        }).WithMetadata(new RateLimitPolicyMetadata("public"));
+
         // ── POST /api/teams ───────────────────────────────────────────────────
         app.MapPost("/api/teams", async (
             [FromBody] CreateTeamRequest req,
