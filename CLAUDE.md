@@ -205,6 +205,7 @@ This repository runs an autonomous AI company operating system. The CEO (you) is
 
 1. You describe a feature or objective
 2. Executives analyze it in parallel (CTO, CPO full depth; CMO/CFO/COO/CIO lightweight)
+   - **Model:** All C-suite (CTO, CPO, CMO, CFO, COO, CIO) → `opus` | IC agents under them (engineers, QA, designers) → `sonnet`
 3. System synthesizes a proposal with conflicts surfaced for your decision
 4. **HARD STOP** — you approve, modify, or reject
 5. CTO orchestrates implementation (architecture → engineering → QA → audit)
