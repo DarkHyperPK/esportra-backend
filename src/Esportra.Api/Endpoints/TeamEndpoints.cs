@@ -214,6 +214,7 @@ public static class TeamEndpoints
                 """
                 SELECT
                     t.id            AS tournament_id,
+                    t.slug          AS tournament_slug,
                     t.name          AS tournament_name,
                     t.game,
                     t.format,
