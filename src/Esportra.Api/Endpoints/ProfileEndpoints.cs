@@ -279,26 +279,6 @@ public static class ProfileEndpoints
                 : Results.Ok(new { alreadyAwarded = true });
         }).RequireAuthorization("Authenticated");
 
-        // ── PUT /api/profiles/me/skill-level ────────────────────────────────
-        app.MapPut("/api/profiles/me/skill-level", async (
-            [FromBody] UpdateSkillLevelRequest req,
-            HttpContext ctx,
-            IDbConnectionFactory db,
-            HybridCache cache,
-            CancellationToken ct) =>
-        {
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-
-            using var conn = db.CreateConnection();
-            await conn.ExecuteAsync(
-                "UPDATE user_statistics SET skill_level = @skillLevel WHERE user_id = @userId",
-                new { userId = userCtx.UserIdGuid, skillLevel = req.SkillLevel });
-
-            await cache.RemoveAsync($"profile-stats:{userCtx.UserId}", ct);
-            return Results.Ok(new { success = true });
-        }).RequireAuthorization("Authenticated");
-
         // ── GET /api/profiles ─────────────────────────────────────────────────
         // Paginated list of profiles with optional search
         app.MapGet("/api/profiles", async (
@@ -643,7 +623,7 @@ public static class ProfileEndpoints
                     try
                     {
                         stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                            "SELECT user_id, tournaments_entered, tournaments_won, best_placement, total_prize_cents, games_played, updated_at FROM user_statistics WHERE user_id = @id",
+                            "SELECT user_id, tournaments_entered, tournaments_won, best_placement, games_played, updated_at FROM user_statistics WHERE user_id = @id",
                             new { id });
                     }
                     catch { /* table not yet migrated */ }
@@ -655,22 +635,56 @@ public static class ProfileEndpoints
                         {
                             stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
                                 """
+                                WITH user_tps AS (
+                                    SELECT tp.id AS participant_id, tp.tournament_id, tp.team_id, tp.status
+                                    FROM tournament_participants tp WHERE tp.user_id = @id
+                                    UNION
+                                    SELECT tp.id AS participant_id, tp.tournament_id, tp.team_id, tp.status
+                                    FROM tournament_participants tp
+                                    JOIN team_members mem ON mem.team_id = tp.team_id WHERE mem.user_id = @id
+                                ),
+                                prize_by_currency AS (
+                                    SELECT t.currency, COALESCE(SUM(tpl.prize_amount), 0) AS total
+                                    FROM user_tps tp
+                                    JOIN tournaments t ON t.id = tp.tournament_id
+                                    LEFT JOIN tournament_placements tpl
+                                        ON tpl.tournament_id = tp.tournament_id
+                                        AND (
+                                            (tp.team_id IS NOT NULL AND tpl.team_id = tp.team_id)
+                                            OR (tp.team_id IS NULL  AND tpl.team_id = tp.participant_id)
+                                        )
+                                    WHERE tp.status != 'disqualified' AND t.status != 'cancelled'
+                                      AND t.currency IS NOT NULL AND tpl.prize_amount > 0
+                                    GROUP BY t.currency
+                                )
                                 SELECT
-                                    COUNT(DISTINCT tp.tournament_id)::int          AS tournaments_entered,
-                                    COUNT(DISTINCT CASE WHEN tpl.placement = 1
-                                          THEN tp.tournament_id END)::int           AS tournaments_won,
-                                    MIN(tpl.placement)::int                         AS best_placement,
-                                    COALESCE(SUM(tpl.prize_amount), 0)::bigint      AS total_prize_cents,
-                                    0::int                                          AS games_played
-                                FROM tournament_participants tp
-                                JOIN tournaments t ON t.id = tp.tournament_id
-                                LEFT JOIN tournament_placements tpl
-                                    ON tpl.tournament_id = t.id
-                                    AND tpl.team_id = tp.team_id
-                                    AND tp.team_id IS NOT NULL
-                                WHERE tp.user_id = @id
-                                  AND tp.status != 'disqualified'
-                                  AND t.status != 'cancelled'
+                                    (SELECT COUNT(DISTINCT tp.tournament_id)::int
+                                     FROM user_tps tp JOIN tournaments t ON t.id = tp.tournament_id
+                                     WHERE tp.status != 'disqualified' AND t.status != 'cancelled') AS tournaments_entered,
+                                    (SELECT COUNT(DISTINCT CASE WHEN tpl.placement = 1 THEN tp.tournament_id END)::int
+                                     FROM user_tps tp JOIN tournaments t ON t.id = tp.tournament_id
+                                     LEFT JOIN tournament_placements tpl ON tpl.tournament_id = tp.tournament_id
+                                         AND ((tp.team_id IS NOT NULL AND tpl.team_id = tp.team_id) OR (tp.team_id IS NULL AND tpl.team_id = tp.participant_id))
+                                     WHERE tp.status != 'disqualified' AND t.status != 'cancelled') AS tournaments_won,
+                                    (SELECT MIN(tpl.placement)::int
+                                     FROM user_tps tp JOIN tournaments t ON t.id = tp.tournament_id
+                                     LEFT JOIN tournament_placements tpl ON tpl.tournament_id = tp.tournament_id
+                                         AND ((tp.team_id IS NOT NULL AND tpl.team_id = tp.team_id) OR (tp.team_id IS NULL AND tpl.team_id = tp.participant_id))
+                                     WHERE tp.status != 'disqualified' AND t.status != 'cancelled') AS best_placement,
+                                    COALESCE(
+                                        (SELECT jsonb_object_agg(currency, total) FROM prize_by_currency),
+                                        '{}'::jsonb
+                                    ) AS prize_by_currency,
+                                    (SELECT COUNT(DISTINCT bm.id)::int
+                                     FROM brkt_matches bm
+                                     JOIN (
+                                         SELECT DISTINCT team_id AS competitor_id
+                                         FROM team_members WHERE user_id = @id
+                                         UNION
+                                         SELECT id AS competitor_id
+                                         FROM tournament_participants WHERE user_id = @id
+                                     ) mc ON bm.team1_id = mc.competitor_id OR bm.team2_id = mc.competitor_id
+                                     WHERE bm.status = 'completed') AS games_played
                                 """,
                                 new { id });
                         }
@@ -683,7 +697,17 @@ public static class ProfileEndpoints
                     {
                         placementAchievements = await conn.QueryAsync<dynamic>(
                             """
-                            SELECT
+                            WITH user_tps AS (
+                                SELECT tp.id AS participant_id, tp.tournament_id, tp.team_id, tp.status
+                                FROM tournament_participants tp
+                                WHERE tp.user_id = @id
+                                UNION
+                                SELECT tp.id AS participant_id, tp.tournament_id, tp.team_id, tp.status
+                                FROM tournament_participants tp
+                                JOIN team_members mem ON mem.team_id = tp.team_id
+                                WHERE mem.user_id = @id
+                            )
+                            SELECT DISTINCT ON (t.id)
                                 t.id            AS tournament_id,
                                 t.name          AS tournament_name,
                                 t.slug          AS tournament_slug,
@@ -692,19 +716,20 @@ public static class ProfileEndpoints
                                 tpl.placement,
                                 tm.name         AS team_name,
                                 tm.logo_url     AS team_logo_url
-                            FROM tournament_participants tp
+                            FROM user_tps tp
                             JOIN tournaments t ON t.id = tp.tournament_id
                             JOIN tournament_placements tpl
                                 ON tpl.tournament_id = t.id
-                                AND tpl.team_id = tp.team_id
-                                AND tp.team_id IS NOT NULL
+                                AND (
+                                    (tp.team_id IS NOT NULL AND tpl.team_id = tp.team_id)
+                                    OR (tp.team_id IS NULL  AND tpl.team_id = tp.participant_id)
+                                )
                             LEFT JOIN teams tm ON tm.id = tp.team_id
-                            WHERE tp.user_id = @id
-                              AND tp.status != 'disqualified'
+                            WHERE tp.status != 'disqualified'
                               AND t.status != 'cancelled'
                               AND tpl.placement IS NOT NULL
                               AND tpl.placement <= 8
-                            ORDER BY tpl.placement ASC, t.start_date DESC
+                            ORDER BY t.id, tpl.placement ASC, t.start_date DESC
                             """, new { id });
                     }
                     catch { /* aggregate query failed */ }
@@ -785,38 +810,65 @@ public static class ProfileEndpoints
 
                     var rows = await conn.QueryAsync<dynamic>(
                         """
-                        SELECT
-                            t.id AS tournament_id,
-                            t.name AS tournament_name,
-                            t.game,
-                            t.format,
-                            t.start_date,
-                            t.status AS tournament_status,
-                            tpl.placement,
-                            CASE WHEN tp.team_id IS NULL THEN tpl.prize_amount ELSE NULL END AS prize_amount,
-                            (tp.team_id IS NOT NULL) AS is_team_tournament,
-                            tm.name AS team_name,
-                            tm.logo_url AS team_logo_url
-                        FROM tournament_participants tp
-                        JOIN tournaments t ON t.id = tp.tournament_id
-                        LEFT JOIN tournament_placements tpl ON tpl.tournament_id = t.id AND tpl.team_id = tp.team_id
-                        LEFT JOIN teams tm ON tm.id = tp.team_id
-                        WHERE tp.user_id = @userId
-                          AND tp.status != 'disqualified'
-                          AND t.status != 'cancelled'
-                          AND (@game IS NULL OR t.game = @game)
-                        ORDER BY t.start_date DESC
+                        WITH user_tps AS (
+                            SELECT tp.id AS participant_id, tp.tournament_id, tp.team_id, tp.status
+                            FROM tournament_participants tp
+                            WHERE tp.user_id = @userId
+                            UNION
+                            SELECT tp.id AS participant_id, tp.tournament_id, tp.team_id, tp.status
+                            FROM tournament_participants tp
+                            JOIN team_members mem ON mem.team_id = tp.team_id
+                            WHERE mem.user_id = @userId
+                        )
+                        SELECT * FROM (
+                            SELECT DISTINCT ON (t.id)
+                                t.id AS tournament_id,
+                                t.name AS tournament_name,
+                                t.game,
+                                t.format,
+                                t.start_date,
+                                t.status AS tournament_status,
+                                t.currency,
+                                tpl.placement,
+                                tpl.prize_amount AS prize_amount,
+                                (tp.team_id IS NOT NULL) AS is_team_tournament,
+                                tm.name AS team_name,
+                                tm.logo_url AS team_logo_url
+                            FROM user_tps tp
+                            JOIN tournaments t ON t.id = tp.tournament_id
+                            LEFT JOIN tournament_placements tpl
+                                ON tpl.tournament_id = t.id
+                                AND (
+                                    (tp.team_id IS NOT NULL AND tpl.team_id = tp.team_id)
+                                    OR (tp.team_id IS NULL  AND tpl.team_id = tp.participant_id)
+                                )
+                            LEFT JOIN teams tm ON tm.id = tp.team_id
+                            WHERE tp.status != 'disqualified'
+                              AND t.status != 'cancelled'
+                              AND (@game IS NULL OR t.game = @game)
+                            ORDER BY t.id
+                        ) deduped
+                        ORDER BY start_date DESC NULLS LAST
                         LIMIT 20 OFFSET @offset
                         """,
                         new { userId = id, game, offset });
 
                     var count = await conn.ExecuteScalarAsync<long>(
                         """
-                        SELECT COUNT(*)
-                        FROM tournament_participants tp
+                        WITH user_tps AS (
+                            SELECT tp.tournament_id, tp.status
+                            FROM tournament_participants tp
+                            WHERE tp.user_id = @userId
+                            UNION
+                            SELECT tp.tournament_id, tp.status
+                            FROM tournament_participants tp
+                            JOIN team_members mem ON mem.team_id = tp.team_id
+                            WHERE mem.user_id = @userId
+                        )
+                        SELECT COUNT(DISTINCT tp.tournament_id)
+                        FROM user_tps tp
                         JOIN tournaments t ON t.id = tp.tournament_id
-                        WHERE tp.user_id = @userId
-                          AND tp.status != 'disqualified'
+                        WHERE tp.status != 'disqualified'
                           AND t.status != 'cancelled'
                           AND (@game IS NULL OR t.game = @game)
                         """,
@@ -862,56 +914,45 @@ public static class ProfileEndpoints
                     FROM tournament_participants
                     WHERE user_id = @id
                 )
-                SELECT DISTINCT ON (bm.id)
-                    bm.id                                                          AS match_id,
-                    bm.round_index,
-                    bm.bracket_type,
-                    bm.team1_score,
-                    bm.team2_score,
-                    bm.winner_id,
-                    bm.is_walkover,
-                    mc.competitor_id                                               AS my_competitor_id,
-                    CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team1_score
-                         ELSE bm.team2_score END                                   AS our_score,
-                    CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team2_score
-                         ELSE bm.team1_score END                                   AS opp_score,
-                    CASE WHEN bm.winner_id = mc.competitor_id THEN 'win'
-                         WHEN bm.winner_id IS NOT NULL THEN 'loss'
-                         ELSE 'draw' END                                           AS result,
-                    COALESCE(opp_t.name, opp_tp.team_name, 'TBD')                AS opponent_name,
-                    opp_t.logo_url                                                 AS opponent_logo_url,
-                    my_t.name                                                      AS my_team_name,
-                    my_t.logo_url                                                  AS my_team_logo_url,
-                    t.id                                                           AS tournament_id,
-                    t.slug                                                         AS tournament_slug,
-                    t.name                                                         AS tournament_name,
-                    t.game,
-                    COALESCE(bm.updated_at, bm.scheduled_time)                   AS match_date
-                FROM brkt_matches bm
-                JOIN my_competitors mc
-                    ON bm.team1_id = mc.competitor_id OR bm.team2_id = mc.competitor_id
-                JOIN brkt_versions bv ON bv.id = bm.version_id
-                JOIN tournament_stages ts ON ts.id = bv.stage_id
-                JOIN tournaments t ON t.id = ts.tournament_id
-                LEFT JOIN teams my_t ON my_t.id = mc.competitor_id
-                LEFT JOIN teams opp_t
-                    ON opp_t.id = CASE WHEN bm.team1_id = mc.competitor_id
-                                       THEN bm.team2_id ELSE bm.team1_id END
-                LEFT JOIN tournament_participants opp_tp
-                    ON opp_tp.id = CASE WHEN bm.team1_id = mc.competitor_id
-                                        THEN bm.team2_id ELSE bm.team1_id END
-                   AND opp_t.id IS NULL
-                WHERE bm.status = 'completed'
-                ORDER BY bm.id, COALESCE(bm.updated_at, bm.scheduled_time) DESC NULLS LAST
+                SELECT * FROM (
+                    SELECT DISTINCT ON (bm.id)
+                        bm.id AS match_id,
+                        bm.round_index, bm.bracket_type,
+                        bm.team1_score, bm.team2_score, bm.winner_id, bm.is_walkover,
+                        mc.competitor_id AS my_competitor_id,
+                        CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team1_score ELSE bm.team2_score END AS our_score,
+                        CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team2_score ELSE bm.team1_score END AS opp_score,
+                        CASE WHEN bm.winner_id = mc.competitor_id THEN 'win'
+                             WHEN bm.winner_id IS NOT NULL THEN 'loss'
+                             ELSE 'draw' END AS result,
+                        COALESCE(opp_t.name, opp_tp.team_name, 'TBD') AS opponent_name,
+                        opp_t.logo_url AS opponent_logo_url,
+                        COALESCE(my_t.name, my_p.username) AS my_team_name,
+                        my_t.logo_url AS my_team_logo_url,
+                        t.id AS tournament_id,
+                        t.slug AS tournament_slug,
+                        t.name AS tournament_name,
+                        t.game,
+                        COALESCE(bm.updated_at, bm.scheduled_time) AS match_date
+                    FROM brkt_matches bm
+                    JOIN my_competitors mc ON bm.team1_id = mc.competitor_id OR bm.team2_id = mc.competitor_id
+                    JOIN brkt_versions bv ON bv.id = bm.version_id
+                    JOIN tournament_stages ts ON ts.id = bv.stage_id
+                    JOIN tournaments t ON t.id = ts.tournament_id
+                    LEFT JOIN teams my_t ON my_t.id = mc.competitor_id
+                    LEFT JOIN tournament_participants my_tp ON my_tp.id = mc.competitor_id AND my_t.id IS NULL
+                    LEFT JOIN profiles my_p ON my_p.id = my_tp.user_id
+                    LEFT JOIN teams opp_t ON opp_t.id = CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team2_id ELSE bm.team1_id END
+                    LEFT JOIN tournament_participants opp_tp
+                        ON opp_tp.id = CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team2_id ELSE bm.team1_id END
+                        AND opp_t.id IS NULL
+                    WHERE bm.status = 'completed'
+                    ORDER BY bm.id
+                ) deduped
+                ORDER BY match_date DESC NULLS LAST
+                LIMIT 20 OFFSET @offset
                 """,
-                new { id });
-
-            // Sort by date desc and paginate after deduplication (DISTINCT ON can't use outer ORDER BY directly in Dapper)
-            var sorted = rows
-                .OrderByDescending(r => (object?)((IDictionary<string, object?>)r)["match_date"] ?? DBNull.Value)
-                .Skip(offset)
-                .Take(20)
-                .ToList();
+                new { id, offset });
 
             var count = await conn.ExecuteScalarAsync<long>(
                 """
@@ -926,7 +967,7 @@ public static class ProfileEndpoints
                 """,
                 new { id });
 
-            return Results.Ok(new { items = sorted, page, pageSize = 20, total = count });
+            return Results.Ok(new { items = rows.ToList(), page, pageSize = 20, total = count });
         }).WithMetadata(new RateLimitPolicyMetadata("public"));
 
         // ── GET /api/profiles/{id}/teams ──────────────────────────────────────
@@ -1692,7 +1733,6 @@ public sealed record SetTimezoneRequest([property: JsonPropertyName("timezone_ia
 public sealed record SetCountryRequest([property: JsonPropertyName("country_code")] string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
-public sealed record UpdateSkillLevelRequest(string SkillLevel);
 public sealed record ResolvePlayersRequest(List<string> Tokens, bool AreUuids = false);
 public sealed record TournamentHistoryItemDto(
     Guid TournamentId,
