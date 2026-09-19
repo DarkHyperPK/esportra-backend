@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 
 namespace Esportra.Api.Helpers;
 
@@ -6,6 +7,12 @@ public static class ProfileResponseNormalizer
 {
     private const string DiceBearBase = "https://api.dicebear.com/10.x";
     private const string DefaultStyle = "critters";
+
+    // JSONB columns that Dapper returns as raw JSON strings and need to be parsed back to objects.
+    private static readonly HashSet<string> JsonbColumns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "social_links", "privacy_settings", "notification_preferences",
+    };
 
     public static Dictionary<string, object?>? ToDictionary(object? row)
     {
@@ -15,7 +22,7 @@ public static class ProfileResponseNormalizer
         {
             var result = typedDict.ToDictionary(
                 static pair => pair.Key,
-                static pair => NormalizeValue(pair.Value));
+                pair => NormalizeValue(pair.Key, pair.Value));
             InjectDiceBearAvatarUrl(result);
             return result;
         }
@@ -24,12 +31,22 @@ public static class ProfileResponseNormalizer
         {
             var result = legacyDict.ToDictionary(
                 static pair => pair.Key,
-                static pair => NormalizeValue(pair.Value));
+                pair => NormalizeValue(pair.Key, pair.Value));
             InjectDiceBearAvatarUrl(result);
             return result;
         }
 
         return null;
+    }
+
+    public static object? NormalizeValue(string key, object? value)
+    {
+        if (value is string raw && JsonbColumns.Contains(key) && raw.Length > 0)
+        {
+            try { return JsonSerializer.Deserialize<JsonElement>(raw); }
+            catch { /* leave as string if parse fails */ }
+        }
+        return NormalizeValue(value);
     }
 
     public static object? NormalizeValue(object? value) => value switch
