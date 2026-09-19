@@ -643,10 +643,71 @@ public static class ProfileEndpoints
                     try
                     {
                         stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                            "SELECT user_id, skill_level, matches_played, matches_won, tournaments_entered, tournaments_won, updated_at FROM user_statistics WHERE user_id = @id",
+                            "SELECT user_id, tournaments_entered, tournaments_won, best_placement, total_prize_cents, games_played, updated_at FROM user_statistics WHERE user_id = @id",
                             new { id });
                     }
                     catch { /* table not yet migrated */ }
+
+                    // Live fallback: if no precomputed row, aggregate from tournament data
+                    if (stats is null)
+                    {
+                        try
+                        {
+                            stats = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                                """
+                                SELECT
+                                    COUNT(DISTINCT tp.tournament_id)::int          AS tournaments_entered,
+                                    COUNT(DISTINCT CASE WHEN tpl.placement = 1
+                                          THEN tp.tournament_id END)::int           AS tournaments_won,
+                                    MIN(tpl.placement)::int                         AS best_placement,
+                                    COALESCE(SUM(tpl.prize_amount), 0)::bigint      AS total_prize_cents,
+                                    0::int                                          AS games_played
+                                FROM tournament_participants tp
+                                JOIN tournaments t ON t.id = tp.tournament_id
+                                LEFT JOIN tournament_placements tpl
+                                    ON tpl.tournament_id = t.id
+                                    AND tpl.team_id = tp.team_id
+                                    AND tp.team_id IS NOT NULL
+                                WHERE tp.user_id = @id
+                                  AND tp.status != 'disqualified'
+                                  AND t.status != 'cancelled'
+                                """,
+                                new { id });
+                        }
+                        catch { /* aggregate query failed */ }
+                    }
+
+                    // Placement-based achievements — top 8 finishes from tournament history
+                    IEnumerable<dynamic> placementAchievements = Array.Empty<dynamic>();
+                    try
+                    {
+                        placementAchievements = await conn.QueryAsync<dynamic>(
+                            """
+                            SELECT
+                                t.id            AS tournament_id,
+                                t.name          AS tournament_name,
+                                t.slug          AS tournament_slug,
+                                t.game,
+                                t.start_date,
+                                tpl.placement,
+                                tm.name         AS team_name,
+                                tm.logo_url     AS team_logo_url
+                            FROM tournament_participants tp
+                            JOIN tournaments t ON t.id = tp.tournament_id
+                            JOIN tournament_placements tpl
+                                ON tpl.tournament_id = t.id
+                                AND tpl.team_id = tp.team_id
+                                AND tp.team_id IS NOT NULL
+                            LEFT JOIN teams tm ON tm.id = tp.team_id
+                            WHERE tp.user_id = @id
+                              AND tp.status != 'disqualified'
+                              AND t.status != 'cancelled'
+                              AND tpl.placement IS NOT NULL
+                              AND tpl.placement <= 8
+                            ORDER BY tpl.placement ASC, t.start_date DESC
+                            """, new { id });
+                    }
+                    catch { /* aggregate query failed */ }
 
                     IEnumerable<dynamic> achievements = Array.Empty<dynamic>();
                     try
@@ -686,6 +747,9 @@ public static class ProfileEndpoints
                     {
                         ["statistics"] = stats is null ? null : (object?)(ProfileResponseNormalizer.ToDictionary(stats) ?? new Dictionary<string, object?>()),
                         ["achievements"] = achievements
+                            .Select(a => ProfileResponseNormalizer.ToDictionary(a) ?? new Dictionary<string, object?>())
+                            .ToList(),
+                        ["placement_achievements"] = placementAchievements
                             .Select(a => ProfileResponseNormalizer.ToDictionary(a) ?? new Dictionary<string, object?>())
                             .ToList(),
                         ["verified_role"] = verifiedRole,
