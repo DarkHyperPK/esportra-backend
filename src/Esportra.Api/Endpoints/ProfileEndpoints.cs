@@ -775,6 +775,95 @@ public static class ProfileEndpoints
             return Results.Content(historyJson, "application/json");
         }).WithMetadata(new RateLimitPolicyMetadata("public"));
 
+        // ── GET /api/profiles/{id}/match-history ──────────────────────────────────
+        app.MapGet("/api/profiles/{id}/match-history", async (
+            Guid id,
+            IDbConnectionFactory db,
+            int page = 1,
+            CancellationToken ct = default) =>
+        {
+            page = Math.Max(1, page);
+            var offset = (page - 1) * 20;
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                WITH my_competitors AS (
+                    SELECT DISTINCT team_id AS competitor_id
+                    FROM team_members
+                    WHERE user_id = @id
+                    UNION
+                    SELECT id AS competitor_id
+                    FROM tournament_participants
+                    WHERE user_id = @id
+                )
+                SELECT DISTINCT ON (bm.id)
+                    bm.id                                                          AS match_id,
+                    bm.round_index,
+                    bm.bracket_type,
+                    bm.team1_score,
+                    bm.team2_score,
+                    bm.winner_id,
+                    bm.is_walkover,
+                    mc.competitor_id                                               AS my_competitor_id,
+                    CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team1_score
+                         ELSE bm.team2_score END                                   AS our_score,
+                    CASE WHEN bm.team1_id = mc.competitor_id THEN bm.team2_score
+                         ELSE bm.team1_score END                                   AS opp_score,
+                    CASE WHEN bm.winner_id = mc.competitor_id THEN 'win'
+                         WHEN bm.winner_id IS NOT NULL THEN 'loss'
+                         ELSE 'draw' END                                           AS result,
+                    COALESCE(opp_t.name, opp_tp.team_name, 'TBD')                AS opponent_name,
+                    opp_t.logo_url                                                 AS opponent_logo_url,
+                    my_t.name                                                      AS my_team_name,
+                    my_t.logo_url                                                  AS my_team_logo_url,
+                    t.id                                                           AS tournament_id,
+                    t.slug                                                         AS tournament_slug,
+                    t.name                                                         AS tournament_name,
+                    t.game,
+                    COALESCE(bm.updated_at, bm.scheduled_time)                   AS match_date
+                FROM brkt_matches bm
+                JOIN my_competitors mc
+                    ON bm.team1_id = mc.competitor_id OR bm.team2_id = mc.competitor_id
+                JOIN brkt_versions bv ON bv.id = bm.version_id
+                JOIN tournament_stages ts ON ts.id = bv.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                LEFT JOIN teams my_t ON my_t.id = mc.competitor_id
+                LEFT JOIN teams opp_t
+                    ON opp_t.id = CASE WHEN bm.team1_id = mc.competitor_id
+                                       THEN bm.team2_id ELSE bm.team1_id END
+                LEFT JOIN tournament_participants opp_tp
+                    ON opp_tp.id = CASE WHEN bm.team1_id = mc.competitor_id
+                                        THEN bm.team2_id ELSE bm.team1_id END
+                   AND opp_t.id IS NULL
+                WHERE bm.status = 'completed'
+                ORDER BY bm.id, COALESCE(bm.updated_at, bm.scheduled_time) DESC NULLS LAST
+                """,
+                new { id });
+
+            // Sort by date desc and paginate after deduplication (DISTINCT ON can't use outer ORDER BY directly in Dapper)
+            var sorted = rows
+                .OrderByDescending(r => (object?)((IDictionary<string, object?>)r)["match_date"] ?? DBNull.Value)
+                .Skip(offset)
+                .Take(20)
+                .ToList();
+
+            var count = await conn.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(DISTINCT bm.id)
+                FROM brkt_matches bm
+                JOIN (
+                    SELECT team_id AS competitor_id FROM team_members WHERE user_id = @id
+                    UNION
+                    SELECT id FROM tournament_participants WHERE user_id = @id
+                ) mc ON bm.team1_id = mc.competitor_id OR bm.team2_id = mc.competitor_id
+                WHERE bm.status = 'completed'
+                """,
+                new { id });
+
+            return Results.Ok(new { items = sorted, page, pageSize = 20, total = count });
+        }).WithMetadata(new RateLimitPolicyMetadata("public"));
+
         // ── GET /api/profiles/{id}/teams ──────────────────────────────────────
         app.MapGet("/api/profiles/{id}/teams", async (
             Guid id,

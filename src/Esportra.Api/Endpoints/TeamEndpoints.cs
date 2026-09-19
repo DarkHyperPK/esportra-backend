@@ -254,6 +254,69 @@ public static class TeamEndpoints
             });
         }).WithMetadata(new RateLimitPolicyMetadata("public"));
 
+        // ── GET /api/teams/{id}/match-history ──────────────────────────────────────
+        app.MapGet("/api/teams/{id:guid}/match-history", async (
+            Guid id,
+            IDbConnectionFactory db,
+            int page = 1,
+            CancellationToken ct = default) =>
+        {
+            page = Math.Max(1, page);
+            var offset = (page - 1) * 20;
+            using var conn = db.CreateConnection();
+
+            var rows = await conn.QueryAsync<dynamic>(
+                """
+                SELECT
+                    bm.id                                                           AS match_id,
+                    bm.round_index,
+                    bm.bracket_type,
+                    bm.team1_score,
+                    bm.team2_score,
+                    bm.winner_id,
+                    bm.is_walkover,
+                    CASE WHEN bm.winner_id = @id THEN 'win'
+                         WHEN bm.winner_id IS NOT NULL THEN 'loss'
+                         ELSE 'draw' END                                            AS result,
+                    CASE WHEN bm.team1_id = @id THEN bm.team1_score
+                         ELSE bm.team2_score END                                    AS our_score,
+                    CASE WHEN bm.team1_id = @id THEN bm.team2_score
+                         ELSE bm.team1_score END                                    AS opp_score,
+                    COALESCE(opp_t.name, opp_tp.team_name, 'TBD')                 AS opponent_name,
+                    opp_t.logo_url                                                  AS opponent_logo_url,
+                    t.id                                                            AS tournament_id,
+                    t.slug                                                          AS tournament_slug,
+                    t.name                                                          AS tournament_name,
+                    t.game,
+                    COALESCE(bm.updated_at, bm.scheduled_time)                    AS match_date
+                FROM brkt_matches bm
+                JOIN brkt_versions bv ON bv.id = bm.version_id
+                JOIN tournament_stages ts ON ts.id = bv.stage_id
+                JOIN tournaments t ON t.id = ts.tournament_id
+                LEFT JOIN teams opp_t
+                    ON opp_t.id = CASE WHEN bm.team1_id = @id THEN bm.team2_id ELSE bm.team1_id END
+                LEFT JOIN tournament_participants opp_tp
+                    ON opp_tp.id = CASE WHEN bm.team1_id = @id THEN bm.team2_id ELSE bm.team1_id END
+                   AND opp_t.id IS NULL
+                WHERE (bm.team1_id = @id OR bm.team2_id = @id)
+                  AND bm.status = 'completed'
+                ORDER BY COALESCE(bm.updated_at, bm.scheduled_time) DESC NULLS LAST
+                LIMIT 20 OFFSET @offset
+                """,
+                new { id, offset });
+
+            var count = await conn.ExecuteScalarAsync<long>(
+                """
+                SELECT COUNT(*)
+                FROM brkt_matches bm
+                WHERE (bm.team1_id = @id OR bm.team2_id = @id)
+                  AND bm.status = 'completed'
+                """,
+                new { id });
+
+            return Results.Ok(new { items = rows, page, pageSize = 20, total = count });
+        }).WithMetadata(new RateLimitPolicyMetadata("public"));
+
         // ── POST /api/teams ───────────────────────────────────────────────────
         app.MapPost("/api/teams", async (
             [FromBody] CreateTeamRequest req,
