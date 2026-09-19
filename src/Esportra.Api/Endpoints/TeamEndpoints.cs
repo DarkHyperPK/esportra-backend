@@ -1,8 +1,10 @@
 using System.Data;
 using System.Dynamic;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Dapper;
 using Esportra.Api.Helpers;
+using Npgsql;
 using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Api.Services;
@@ -134,37 +136,63 @@ public static class TeamEndpoints
             return Results.Ok(teams);
         }).RequireAuthorization("Authenticated");
 
-        // ── GET /api/teams/{id} ───────────────────────────────────────────────
-        app.MapGet("/api/teams/{id:guid}", async (
-            Guid id,
+        // ── GET /api/teams/{identifier} — accepts UUID or slug ───────────────
+        app.MapGet("/api/teams/{identifier}", async (
+            string identifier,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
-            var team = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT t.*,
-                       COALESCE(jsonb_agg(
-                           jsonb_build_object(
-                               'id',             p.id,
-                               'username',       p.username,
-                               'full_name',      p.full_name,
-                               'avatar_url',     p.avatar_url,
-                               'card_image_url', p.card_image_url,
-                               'riot_tag',       p.riot_tag,
-                               'discord_handle', p.social_links->>'discord_handle',
-                               'role',           tm.role,
-                               'joined_at',      tm.joined_at,
-                               'is_active',      tm.is_active
-                           ) ORDER BY tm.display_order, tm.role, p.username
-                       ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
-                FROM teams t
-                LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE
-                LEFT JOIN profiles p ON p.id = tm.user_id
-                WHERE t.id = @id
-                GROUP BY t.id
-                """,
-                new { id });
+            bool isGuid = Guid.TryParse(identifier, out var teamId);
+            var sql = isGuid
+                ? """
+                  SELECT t.*,
+                         COALESCE(jsonb_agg(
+                             jsonb_build_object(
+                                 'id',             p.id,
+                                 'username',       p.username,
+                                 'full_name',      p.full_name,
+                                 'avatar_url',     p.avatar_url,
+                                 'card_image_url', p.card_image_url,
+                                 'riot_tag',       p.riot_tag,
+                                 'discord_handle', p.social_links->>'discord_handle',
+                                 'role',           tm.role,
+                                 'joined_at',      tm.joined_at,
+                                 'is_active',      tm.is_active
+                             ) ORDER BY tm.display_order, tm.role, p.username
+                         ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
+                  FROM teams t
+                  LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE
+                  LEFT JOIN profiles p ON p.id = tm.user_id
+                  WHERE t.id = @teamId
+                  GROUP BY t.id
+                  """
+                : """
+                  SELECT t.*,
+                         COALESCE(jsonb_agg(
+                             jsonb_build_object(
+                                 'id',             p.id,
+                                 'username',       p.username,
+                                 'full_name',      p.full_name,
+                                 'avatar_url',     p.avatar_url,
+                                 'card_image_url', p.card_image_url,
+                                 'riot_tag',       p.riot_tag,
+                                 'discord_handle', p.social_links->>'discord_handle',
+                                 'role',           tm.role,
+                                 'joined_at',      tm.joined_at,
+                                 'is_active',      tm.is_active
+                             ) ORDER BY tm.display_order, tm.role, p.username
+                         ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
+                  FROM teams t
+                  LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE
+                  LEFT JOIN profiles p ON p.id = tm.user_id
+                  WHERE t.slug = @identifier
+                  GROUP BY t.id
+                  """;
+
+            var team = isGuid
+                ? await conn.QuerySingleOrDefaultAsync<dynamic>(sql, new { teamId })
+                : await conn.QuerySingleOrDefaultAsync<dynamic>(sql, new { identifier });
 
             if (team is null) return Results.NotFound();
             ParseJsonbFields(team, "members");
@@ -240,28 +268,59 @@ public static class TeamEndpoints
 
             try
             {
-                // Insert team
-                var team = await conn.QuerySingleAsync<dynamic>(
-                    """
-                    INSERT INTO teams (name, tag, game, game_format, logo_url, description,
-                                      owner_id, is_active, country_code, team_kind)
-                    VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
-                            @ownerId, TRUE, @countryCode, 'team')
-                    RETURNING id, name, tag, game, game_format, logo_url, description,
-                             owner_id, is_active, country_code, created_at
-                    """,
-                    new
-                    {
-                        name = req.Name,
-                        tag = req.Tag,
-                        game = req.Game ?? "General",
-                        gameFormat = req.GameFormat,
-                        logoUrl = req.LogoUrl,
-                        description = req.Description,
-                        ownerId = userCtx.UserIdGuid,
-                        countryCode = req.CountryCode,
-                    },
-                    tx);
+                var baseSlug = TeamSlug.Generate(req.Name);
+                dynamic? team = null;
+                try
+                {
+                    team = await conn.QuerySingleAsync<dynamic>(
+                        """
+                        INSERT INTO teams (name, tag, game, game_format, logo_url, description,
+                                          owner_id, is_active, country_code, team_kind, slug)
+                        VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
+                                @ownerId, TRUE, @countryCode, 'team', @slug)
+                        RETURNING id, name, tag, game, game_format, logo_url, description,
+                                 owner_id, is_active, country_code, created_at, slug
+                        """,
+                        new
+                        {
+                            name = req.Name,
+                            tag = req.Tag,
+                            game = req.Game ?? "General",
+                            gameFormat = req.GameFormat,
+                            logoUrl = req.LogoUrl,
+                            description = req.Description,
+                            ownerId = userCtx.UserIdGuid,
+                            countryCode = req.CountryCode,
+                            slug = baseSlug,
+                        },
+                        tx);
+                }
+                catch (PostgresException ex) when (ex.SqlState == "23505")
+                {
+                    var fallbackSlug = $"{baseSlug}-{Guid.NewGuid().ToString("N")[..8]}";
+                    team = await conn.QuerySingleAsync<dynamic>(
+                        """
+                        INSERT INTO teams (name, tag, game, game_format, logo_url, description,
+                                          owner_id, is_active, country_code, team_kind, slug)
+                        VALUES (@name, @tag, @game, @gameFormat, @logoUrl, @description,
+                                @ownerId, TRUE, @countryCode, 'team', @slug)
+                        RETURNING id, name, tag, game, game_format, logo_url, description,
+                                 owner_id, is_active, country_code, created_at, slug
+                        """,
+                        new
+                        {
+                            name = req.Name,
+                            tag = req.Tag,
+                            game = req.Game ?? "General",
+                            gameFormat = req.GameFormat,
+                            logoUrl = req.LogoUrl,
+                            description = req.Description,
+                            ownerId = userCtx.UserIdGuid,
+                            countryCode = req.CountryCode,
+                            slug = fallbackSlug,
+                        },
+                        tx);
+                }
 
                 Guid teamId = (Guid)team.id;
 
@@ -1992,3 +2051,14 @@ public sealed record TeamBatchRequest(List<string> Ids);
 public sealed record ReorderMembersRequest(List<MemberOrderItem> Order);
 
 public sealed record MemberOrderItem(string UserId, int DisplayOrder);
+
+internal static class TeamSlug
+{
+    internal static string Generate(string name)
+    {
+        var slug = name.ToLowerInvariant().Trim();
+        slug = Regex.Replace(slug, @"[^a-z0-9\s-]", "");
+        slug = Regex.Replace(slug, @"\s+", "-");
+        return slug.Trim('-');
+    }
+}
