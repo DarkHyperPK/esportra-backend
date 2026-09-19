@@ -40,7 +40,7 @@ public static class StorageEndpoints
     // Buckets that users are allowed to upload to
     private static readonly HashSet<string> AllowedUploadBuckets = new(StringComparer.OrdinalIgnoreCase)
     {
-        "users.avatars", "teams.logos", "tournaments.banners", "tournaments.media",
+        "users.avatars", "users.banners", "teams.logos", "tournaments.banners", "tournaments.media",
         "tournaments.payment.receipts", "tournaments.disputes.evidence", "tournaments.results",
         "match-evidence", "organizer-banners", "organizer-media", "tournament-images",
         "system.assets.website", "system.assets.games", "game-assets",
@@ -51,7 +51,7 @@ public static class StorageEndpoints
     // Buckets that users are allowed to delete from
     private static readonly HashSet<string> AllowedDeleteBuckets = new(StringComparer.OrdinalIgnoreCase)
     {
-        "users.avatars", "teams.logos", "organizer-banners", "organizer-media",
+        "users.avatars", "users.banners", "teams.logos", "organizer-banners", "organizer-media",
         "system.assets.website", "venue-images", "venues.images", "venues.layouts",
         "tournaments.banners", "tournaments.media", "tournament-images"
     };
