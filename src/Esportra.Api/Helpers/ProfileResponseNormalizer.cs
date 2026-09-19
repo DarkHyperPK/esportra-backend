@@ -11,7 +11,7 @@ public static class ProfileResponseNormalizer
     // JSONB columns that Dapper returns as raw JSON strings and need to be parsed back to objects.
     private static readonly HashSet<string> JsonbColumns = new(StringComparer.OrdinalIgnoreCase)
     {
-        "social_links", "privacy_settings", "notification_preferences",
+        "social_links", "privacy_settings", "notification_preferences", "prize_by_currency",
     };
 
     public static Dictionary<string, object?>? ToDictionary(object? row)
