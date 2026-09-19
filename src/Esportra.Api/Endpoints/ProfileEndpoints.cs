@@ -72,10 +72,11 @@ public static class ProfileEndpoints
             if (userCtx.UserIdGuid != id && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
-            // Filter to allowed fields only (allow tag fields even if null/empty for clearing)
+            // Filter to allowed fields only; tag fields and clearable media fields may be explicitly null
             var tagFields = new HashSet<string> { "riot_tag", "steam_tag" };
+            var clearableFields = new HashSet<string> { "riot_tag", "steam_tag", "banner_url", "card_image_url", "avatar_url" };
             var valid = updates
-                .Where(kv => AllowedUpdateFields.Contains(kv.Key) && (kv.Value is not null || tagFields.Contains(kv.Key)))
+                .Where(kv => AllowedUpdateFields.Contains(kv.Key) && (kv.Value is not null || clearableFields.Contains(kv.Key)))
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
 
             // Normalize empty tag fields to null (DB has unique partial index on non-empty values)
