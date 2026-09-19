@@ -142,7 +142,8 @@ public static class ProfileEndpoints
                         """
                         SELECT id, username, full_name, avatar_url, avatar_seed, avatar_style,
                                bio, location, social_links, country_code, card_image_url, banner_url,
-                               riot_tag, steam_tag, created_at
+                               riot_tag, steam_tag, created_at,
+                               (settings->>'banner_focal_y')::float AS banner_focal_y
                         FROM profiles WHERE username = @username
                         """,
                         new { username });
@@ -1500,6 +1501,34 @@ public static class ProfileEndpoints
             return Results.Ok(new { country_code = normalized });
         }).RequireAuthorization("Authenticated");
 
+        // ── PUT /api/profiles/me/banner-position ─────────────────────────────
+        app.MapPut("/api/profiles/me/banner-position", async (
+            [FromBody] SetBannerPositionRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.FocalY is null or < 0 or > 100)
+                return Results.BadRequest(new { error = "focal_y must be between 0 and 100." });
+
+            using var conn = db.CreateConnection();
+            var username = await conn.QuerySingleOrDefaultAsync<string?>(
+                """
+                UPDATE profiles
+                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('banner_focal_y', @focalY::float)
+                WHERE id = @userId
+                RETURNING username
+                """,
+                new { userId = userCtx.UserIdGuid, focalY = req.FocalY.Value });
+
+            await InvalidateProfileCacheAsync(cache, userCtx.UserIdGuid, username, ct);
+            return Results.Ok(new { focal_y = req.FocalY.Value });
+        }).RequireAuthorization("Authenticated");
+
         // ── DELETE /api/profiles/me/discord ─────────────────────────────────
         // Unlink the Discord identity from the authenticated user.
         // Blocked if the user has active registrations in tournaments that require Discord.
@@ -1730,6 +1759,7 @@ public static class AvatarEndpoints
 public sealed record TournamentDiscordPrefDto(Guid TournamentId, string TournamentName, string Game, DateTimeOffset StartDate, bool DiscordDmsEnabled);
 public sealed record ToggleTournamentDiscordPrefRequest(bool Enabled);
 public sealed record SetTimezoneRequest([property: JsonPropertyName("timezone_iana")] string? TimezoneIana);
+public sealed record SetBannerPositionRequest([property: JsonPropertyName("focal_y")] double? FocalY);
 public sealed record SetCountryRequest([property: JsonPropertyName("country_code")] string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
