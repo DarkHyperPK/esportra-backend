@@ -867,9 +867,12 @@ public static class ProfileEndpoints
                 {
                     using var conn = db.CreateConnection();
 
-                    var privacyStr = await conn.QuerySingleOrDefaultAsync<string?>(
-                        "SELECT privacy_settings FROM profiles WHERE id = @id",
+                    var profileMeta = await conn.QuerySingleOrDefaultAsync<(string? PrivacySettings, string? DiscordHandle)>(
+                        "SELECT privacy_settings, social_links->>'discord_handle' AS discord_handle FROM profiles WHERE id = @id",
                         new { id });
+
+                    var privacyStr = profileMeta.PrivacySettings;
+                    var discordHandle = profileMeta.DiscordHandle;
 
                     bool showRiot = true;
                     bool showSteam = true;
@@ -908,6 +911,8 @@ public static class ProfileEndpoints
                     {
                         ["riot"] = riotRow is null ? null : (object?)(ProfileResponseNormalizer.ToDictionary(riotRow)),
                         ["steam"] = steamRow is null ? null : (object?)(ProfileResponseNormalizer.ToDictionary(steamRow)),
+                        ["discord"] = string.IsNullOrWhiteSpace(discordHandle) ? null
+                            : (object?)new Dictionary<string, string?> { ["handle"] = discordHandle },
                     };
                     return JsonSerializer.Serialize(response);
                 },
