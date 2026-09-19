@@ -104,15 +104,16 @@ public static class TeamEndpoints
                 SELECT t.*,
                        COALESCE(jsonb_agg(
                            jsonb_build_object(
-                               'id',         p.id,
-                               'username',   p.username,
-                               'full_name',  p.full_name,
-                               'avatar_url', p.avatar_url,
+                               'id',             p.id,
+                               'username',       p.username,
+                               'full_name',      p.full_name,
+                               'avatar_url',     p.avatar_url,
                                'card_image_url', p.card_image_url,
-                               'riot_tag',   p.riot_tag,
-                               'role',       tm.role,
-                               'joined_at',  tm.joined_at,
-                               'is_active',  tm.is_active
+                               'riot_tag',       p.riot_tag,
+                               'discord_handle', p.social_links->>'discord_handle',
+                               'role',           tm.role,
+                               'joined_at',      tm.joined_at,
+                               'is_active',      tm.is_active
                            ) ORDER BY tm.display_order, tm.role, p.username
                        ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
                 FROM teams t
@@ -145,15 +146,16 @@ public static class TeamEndpoints
                 SELECT t.*,
                        COALESCE(jsonb_agg(
                            jsonb_build_object(
-                               'id',         p.id,
-                               'username',   p.username,
-                               'full_name',  p.full_name,
-                               'avatar_url', p.avatar_url,
+                               'id',             p.id,
+                               'username',       p.username,
+                               'full_name',      p.full_name,
+                               'avatar_url',     p.avatar_url,
                                'card_image_url', p.card_image_url,
-                               'riot_tag',   p.riot_tag,
-                               'role',       tm.role,
-                               'joined_at',  tm.joined_at,
-                               'is_active',  tm.is_active
+                               'riot_tag',       p.riot_tag,
+                               'discord_handle', p.social_links->>'discord_handle',
+                               'role',           tm.role,
+                               'joined_at',      tm.joined_at,
+                               'is_active',      tm.is_active
                            ) ORDER BY tm.display_order, tm.role, p.username
                        ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
                 FROM teams t
