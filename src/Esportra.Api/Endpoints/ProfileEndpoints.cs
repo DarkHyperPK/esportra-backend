@@ -143,7 +143,8 @@ public static class ProfileEndpoints
                         SELECT id, username, full_name, avatar_url, avatar_seed, avatar_style,
                                bio, location, social_links, country_code, card_image_url, banner_url,
                                riot_tag, steam_tag, created_at,
-                               (settings->>'banner_focal_y')::float AS banner_focal_y
+                               (settings->>'banner_focal_y')::float AS banner_focal_y,
+                               (settings->>'banner_zoom')::float AS banner_zoom
                         FROM profiles WHERE username = @username
                         """,
                         new { username });
@@ -1515,18 +1516,23 @@ public static class ProfileEndpoints
             if (req.FocalY is null or < 0 or > 100)
                 return Results.BadRequest(new { error = "focal_y must be between 0 and 100." });
 
+            var zoom = req.Zoom ?? 1.0;
+            if (zoom < 1.0 || zoom > 3.0)
+                return Results.BadRequest(new { error = "zoom must be between 1.0 and 3.0." });
+
             using var conn = db.CreateConnection();
             var username = await conn.QuerySingleOrDefaultAsync<string?>(
                 """
                 UPDATE profiles
-                SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('banner_focal_y', @focalY::float)
+                SET settings = COALESCE(settings, '{}'::jsonb)
+                    || jsonb_build_object('banner_focal_y', @focalY::float, 'banner_zoom', @zoom::float)
                 WHERE id = @userId
                 RETURNING username
                 """,
-                new { userId = userCtx.UserIdGuid, focalY = req.FocalY.Value });
+                new { userId = userCtx.UserIdGuid, focalY = req.FocalY.Value, zoom });
 
             await InvalidateProfileCacheAsync(cache, userCtx.UserIdGuid, username, ct);
-            return Results.Ok(new { focal_y = req.FocalY.Value });
+            return Results.Ok(new { focal_y = req.FocalY.Value, zoom });
         }).RequireAuthorization("Authenticated");
 
         // ── DELETE /api/profiles/me/discord ─────────────────────────────────
@@ -1759,7 +1765,9 @@ public static class AvatarEndpoints
 public sealed record TournamentDiscordPrefDto(Guid TournamentId, string TournamentName, string Game, DateTimeOffset StartDate, bool DiscordDmsEnabled);
 public sealed record ToggleTournamentDiscordPrefRequest(bool Enabled);
 public sealed record SetTimezoneRequest([property: JsonPropertyName("timezone_iana")] string? TimezoneIana);
-public sealed record SetBannerPositionRequest([property: JsonPropertyName("focal_y")] double? FocalY);
+public sealed record SetBannerPositionRequest(
+    [property: JsonPropertyName("focal_y")] double? FocalY,
+    [property: JsonPropertyName("zoom")] double? Zoom);
 public sealed record SetCountryRequest([property: JsonPropertyName("country_code")] string? CountryCode);
 public sealed record ToggleDiscordDmRequest(bool Enabled);
 public sealed record DiscordJoinRequest(string ProviderToken);
