@@ -483,7 +483,8 @@ public sealed partial class GameCatalogService(
         await conn.ExecuteAsync("DELETE FROM public.game_catalog_game_aliases WHERE version_id = @versionId", new { versionId }, tx);
         await conn.ExecuteAsync("DELETE FROM public.game_catalog_tournament_structures WHERE version_id = @versionId", new { versionId }, tx);
         await conn.ExecuteAsync("DELETE FROM public.game_catalog_game_modes WHERE version_id = @versionId", new { versionId }, tx);
-        await conn.ExecuteAsync("DELETE FROM public.game_catalog_games WHERE version_id = @versionId", new { versionId }, tx);
+        // game_catalog_games is NOT deleted — IDs must be preserved for any FK referencing them
+        // (e.g. tournament_templates.game_catalog_id). InsertGameAsync uses ON CONFLICT … DO UPDATE.
     }
 
     private static async Task<int> BackfillTournamentGameModesAsync(IDbConnection conn, IDbTransaction tx, Guid versionId) =>
@@ -556,6 +557,19 @@ public sealed partial class GameCatalogService(
                 (@versionId, @slug, @name, @category, @type, @defaultMode,
                  @featuresJson::jsonb, @brConfigJson::jsonb, @raw::jsonb,
                  @logoUrl, @iconUrl, @coverUrl, @bannerUrl, @sortOrder)
+            ON CONFLICT (version_id, slug) DO UPDATE SET
+                name             = EXCLUDED.name,
+                category         = EXCLUDED.category,
+                game_type        = EXCLUDED.game_type,
+                default_mode_key = EXCLUDED.default_mode_key,
+                features         = EXCLUDED.features,
+                br_config        = EXCLUDED.br_config,
+                raw              = EXCLUDED.raw,
+                logo_url         = EXCLUDED.logo_url,
+                icon_url         = EXCLUDED.icon_url,
+                cover_url        = EXCLUDED.cover_url,
+                banner_url       = EXCLUDED.banner_url,
+                sort_order       = EXCLUDED.sort_order
             """,
             new
             {
