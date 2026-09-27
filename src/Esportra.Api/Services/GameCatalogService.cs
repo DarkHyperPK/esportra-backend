@@ -594,6 +594,10 @@ public sealed partial class GameCatalogService(
             // Inline the integer array literal — avoids Npgsql 10 type-mapping uncertainty
             // for int[] Dapper parameters. Values are hardcoded so no injection risk.
             var countsLiteral = $"ARRAY[{string.Join(",", t.Counts)}]::integer[]";
+            // ON CONFLICT … DO UPDATE is required — not DO NOTHING — because the
+            // trg_deactivate_templates_on_catalog_version trigger sets is_active = false
+            // every time ImportPackagedCatalogAsync temporarily deactivates versions.
+            // DO NOTHING would leave templates permanently invisible.
             var sql = $"""
                 INSERT INTO public.tournament_templates
                     (game_catalog_id, slug, rules_text, rules_source_url, rules_updated_at,
@@ -603,7 +607,15 @@ public sealed partial class GameCatalogService(
                     (@gameId, @slug, @rules, @url, NOW(),
                      @bestOf, @maxTeams, {countsLiteral},
                      false, true, @sort)
-                ON CONFLICT (slug) DO NOTHING
+                ON CONFLICT (slug) DO UPDATE SET
+                    game_catalog_id = EXCLUDED.game_catalog_id,
+                    is_active       = EXCLUDED.is_active,
+                    rules_text      = EXCLUDED.rules_text,
+                    rules_source_url = EXCLUDED.rules_source_url,
+                    default_best_of = EXCLUDED.default_best_of,
+                    default_max_teams = EXCLUDED.default_max_teams,
+                    recommended_team_counts = EXCLUDED.recommended_team_counts,
+                    sort_order      = EXCLUDED.sort_order
                 """;
 
             await conn.ExecuteAsync(sql, new
