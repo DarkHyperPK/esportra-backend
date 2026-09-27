@@ -85,7 +85,7 @@ public sealed partial class GameCatalogService(
                 new { versionId }, tx);
 
             var backfilled = await BackfillTournamentGameModesAsync(conn, tx, versionId.Value);
-            await SeedDefaultTemplatesAsync(conn, tx, versionId.Value);
+            await SeedDefaultTemplatesAsync(conn, (IDbTransaction?)tx, versionId.Value);
 
             tx.Commit();
             await BackfillActiveCatalogBannerUrlsAsync(ct);
@@ -531,7 +531,21 @@ public sealed partial class GameCatalogService(
             """,
             new { versionId }, tx);
 
-    private static async Task SeedDefaultTemplatesAsync(IDbConnection conn, IDbTransaction tx, Guid versionId)
+    public async Task EnsureDefaultTemplatesSeededAsync(CancellationToken ct = default)
+    {
+        using var conn = db.CreateConnection();
+        var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE AND status = 'active' LIMIT 1");
+        if (versionId is null)
+        {
+            logger.LogWarning("EnsureDefaultTemplatesSeededAsync: no active catalog version, skipping.");
+            return;
+        }
+        await SeedDefaultTemplatesAsync(conn, null, versionId.Value);
+        logger.LogInformation("EnsureDefaultTemplatesSeededAsync: default templates seeded for catalog {VersionId}", versionId);
+    }
+
+    private static async Task SeedDefaultTemplatesAsync(IDbConnection conn, IDbTransaction? tx, Guid versionId)
     {
         // Default competitive ruleset templates — one per packaged game.
         // ON CONFLICT (slug) DO NOTHING keeps this idempotent across re-imports.

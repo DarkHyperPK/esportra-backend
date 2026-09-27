@@ -526,6 +526,7 @@ using (var scope = app.Services.CreateScope())
 {
     var catalog = scope.ServiceProvider.GetRequiredService<Esportra.Api.Services.GameCatalogService>();
     await catalog.ImportPackagedCatalogAsync();
+    await catalog.EnsureDefaultTemplatesSeededAsync();
     await catalog.BackfillActiveCatalogBannerUrlsAsync();
 }
 
