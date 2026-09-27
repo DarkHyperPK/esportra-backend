@@ -644,7 +644,7 @@ public static class TournamentEndpoints
                     )
                     RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, prize_distribution, start_date, end_date, registration_deadline,
-                             status, banner_url, logo_url, organization_id, venue_id, is_public,
+                             status::text AS status, banner_url, logo_url, organization_id, venue_id, is_public,
                              check_in_required, check_in_deadline, auto_remove_unchecked,
                              rewards, stream_url, settings, organizer_id, created_at, rules, payment_instructions, region, currency
                     """,

@@ -219,6 +219,8 @@ public sealed class TournamentCreateTemplateFieldsTests : IAsyncLifetime
     private static readonly Guid OrganizerC = Guid.NewGuid();
     private static readonly Guid OrganizerD = Guid.NewGuid();
 
+    private static Guid _seededTemplateId;
+
     public TournamentCreateTemplateFieldsTests(ApiFactory factory)
     {
         _factory = factory;
@@ -233,6 +235,7 @@ public sealed class TournamentCreateTemplateFieldsTests : IAsyncLifetime
         await SeedVerifiedOrganizerAsync(OrganizerB);
         await SeedVerifiedOrganizerAsync(OrganizerC);
         await SeedVerifiedOrganizerAsync(OrganizerD);
+        _seededTemplateId = await SeedTemplateForFkTestAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -242,7 +245,7 @@ public sealed class TournamentCreateTemplateFieldsTests : IAsyncLifetime
     [Fact]
     public async Task CreateTournament_WithTemplateId_StoresTemplateId()
     {
-        var templateId = Guid.NewGuid();
+        var templateId = _seededTemplateId;
         var client = _factory.CreateAuthenticatedClient(OrganizerA);
 
         var response = await client.PostAsJsonAsync("/api/tournaments", BuildRequest(
@@ -337,6 +340,32 @@ public sealed class TournamentCreateTemplateFieldsTests : IAsyncLifetime
             templateId,
             venueAddress,
         };
+
+    private async Task<Guid> SeedTemplateForFkTestAsync()
+    {
+        await using var conn = _seeder.OpenConnection();
+
+        var versionId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT id FROM public.game_catalog_versions WHERE is_active = true AND status = 'active' LIMIT 1")
+            ?? throw new InvalidOperationException("No active game catalog version.");
+
+        var gameSlug = $"fktest-{Guid.NewGuid():N}"[..30];
+        var gameId = await conn.QuerySingleAsync<Guid>("""
+            INSERT INTO public.game_catalog_games (version_id, slug, name, game_type, default_mode_key)
+            VALUES (@versionId, @gameSlug, 'FK Test Game', 'bracket', 'default')
+            ON CONFLICT (version_id, slug) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """, new { versionId, gameSlug });
+
+        var templateSlug = $"fktest-{Guid.NewGuid():N}"[..30];
+        return await conn.QuerySingleAsync<Guid>("""
+            INSERT INTO public.tournament_templates
+                (game_catalog_id, slug, rules_text, rules_updated_at, default_best_of,
+                 default_max_teams, recommended_team_counts, is_active, sort_order)
+            VALUES (@gameId, @templateSlug, 'FK test rules.', now(), 3, 16, ARRAY[8, 16], true, 99)
+            RETURNING id
+            """, new { gameId, templateSlug });
+    }
 
     private async Task SeedVerifiedOrganizerAsync(Guid userId)
     {

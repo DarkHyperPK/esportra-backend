@@ -42,6 +42,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // Enable Dapper snake_case → PascalCase mapping for typed record DTOs
 Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
+// Register custom Dapper type handlers for Npgsql 10+
+Dapper.SqlMapper.AddTypeHandler(new IntArrayTypeHandler());
+
 // Explicitly configure Kestrel to bind on all interfaces, port 8080.
 // Using ConfigureKestrel instead of UseUrls to bypass URL override logic.
 builder.WebHost.ConfigureKestrel(serverOptions =>
