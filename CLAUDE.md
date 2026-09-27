@@ -145,6 +145,8 @@ Custom agents defined in `.claude/agents/` for specialized tasks:
 | `security-reviewer` | Reviews code for security vulnerabilities and policy violations. Covers injection, auth gaps, data exposure, secrets handling, and input validation. Reports as CRITICAL/HIGH/MEDIUM/LOW severity. | Glob, Grep, Read |
 | `devops` | Handles git push/deploy operations. Enforces staging-only workflow. Never pushes to main. | Bash, Read, Grep |
 | `creative-lead` | Leads frontend quality, motion design, and interaction polish in the company pipeline. Directs Senior Frontend Engineer and UX Designer. Equipped with Emil Kowalski's full skill set (animate, apple-design, mobile-native, pick-ui-library, prototype, review-animations, improve-animations, find-animation-opportunities, emit-design-eng). Produces design briefs and reviews all frontend work before HANDOFF. Dispatched by CTO for any frontend feature. | Glob, Grep, Read, Write, Edit, Bash |
+| `think-tank` | C-suite USP ideation engine. Audits the platform, then simulates CTO/CPO/CMO/CFO/COO/CIO perspectives to generate 18 divergent USP ideas, cross-pollinates them, and returns a ranked shortlist of 6 with executive hand-off notes for the research analyst. | Glob, Grep, Read, WebSearch |
+| `research-analyst` | USP feasibility evaluator. Scores each idea across 8 dimensions (competitive whitespace, technical feasibility, willingness to pay, network effects, defensibility, time-to-value, platform leverage, assumption risk), identifies critical assumptions, and returns a PURSUE / VALIDATE / PARK / REJECT verdict per idea plus a portfolio-level CEO recommendation. | Glob, Grep, Read, WebSearch |
 
 ## Skills
 

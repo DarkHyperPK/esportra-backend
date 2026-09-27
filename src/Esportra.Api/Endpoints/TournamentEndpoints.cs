@@ -609,6 +609,13 @@ public static class TournamentEndpoints
                     req.AssistedReportingEnabled, req.RequiredAccountLinks, catalog.TeamSize, catalog.SupportsAssistedReporting);
                 if (accountLinkError is not null) { tx.Rollback(); return Results.BadRequest(new { error = accountLinkError }); }
 
+                // Validate venue address doesn't contain HTML
+                if (req.VenueAddress is not null && System.Text.RegularExpressions.Regex.IsMatch(req.VenueAddress, "<[^>]+>"))
+                {
+                    tx.Rollback();
+                    return Results.BadRequest(new { error = "Venue address must not contain HTML." });
+                }
+
                 var dates = NormalizeTournamentDates(req);
                 var defaults = NormalizeTournamentDefaults(req);
 
@@ -621,7 +628,8 @@ public static class TournamentEndpoints
                         check_in_required, check_in_deadline, auto_remove_unchecked,
                         rewards, stream_url, settings, organizer_id, rules, payment_instructions, region, currency, server_region,
                         reserved_invite_slots, invite_expiry_days,
-                        payout_method, manual_payout_notes
+                        payout_method, manual_payout_notes,
+                        template_id, venue_address
                     ) VALUES (
                         @name, @description, @slug, @game, @format, @gameMode, @maxTeams, 2, @teamSize,
                         @entryFee, @prizePool,
@@ -631,7 +639,8 @@ public static class TournamentEndpoints
                         @checkInRequired, @checkInDeadline, @autoRemoveUnchecked,
                         @rewards, @streamUrl, @settings::jsonb, @organizerId, @rules, @paymentInstructions, @region, @currency, @serverRegion,
                         @reservedInviteSlots, @inviteExpiryDays,
-                        @payoutMethod, @manualPayoutNotes
+                        @payoutMethod, @manualPayoutNotes,
+                        @templateId, @venueAddress
                     )
                     RETURNING id, name, description, slug, game, format, game_mode, max_teams, min_teams, team_size,
                              entry_fee, prize_pool, prize_distribution, start_date, end_date, registration_deadline,
@@ -677,6 +686,8 @@ public static class TournamentEndpoints
                         inviteExpiryDays = dates.InviteExpiryDays,
                         payoutMethod = defaults.PayoutMethod,
                         manualPayoutNotes = req.ManualPayoutNotes,
+                        templateId = req.TemplateId,
+                        venueAddress = req.VenueAddress,
                     },
                     tx);
 
@@ -6202,7 +6213,9 @@ public sealed record CreateTournamentRequest(
     string? ManualPayoutNotes = null,
     bool? AssistedReportingEnabled = null,
     int? RequiredAccountLinks = null,
-    int? DiscordLinkCount = null);
+    int? DiscordLinkCount = null,
+    Guid? TemplateId = null,
+    string? VenueAddress = null);
 
 public sealed record StageRequest(
     string Name,
