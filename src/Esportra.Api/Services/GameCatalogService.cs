@@ -591,29 +591,31 @@ public sealed partial class GameCatalogService(
 
             if (gameId is null) continue;
 
-            await conn.ExecuteAsync(
-                """
+            // Inline the integer array literal — avoids Npgsql 10 type-mapping uncertainty
+            // for int[] Dapper parameters. Values are hardcoded so no injection risk.
+            var countsLiteral = $"ARRAY[{string.Join(",", t.Counts)}]::integer[]";
+            var sql = $"""
                 INSERT INTO public.tournament_templates
                     (game_catalog_id, slug, rules_text, rules_source_url, rules_updated_at,
                      default_best_of, default_max_teams, recommended_team_counts,
                      is_publisher_endorsed, is_active, sort_order)
                 VALUES
                     (@gameId, @slug, @rules, @url, NOW(),
-                     @bestOf, @maxTeams, @counts,
+                     @bestOf, @maxTeams, {countsLiteral},
                      false, true, @sort)
                 ON CONFLICT (slug) DO NOTHING
-                """,
-                new
-                {
-                    gameId,
-                    t.Slug,
-                    rules = t.Rules,
-                    url = t.Url,
-                    bestOf = t.BestOf,
-                    maxTeams = t.MaxTeams,
-                    counts = t.Counts,
-                    sort = t.Sort,
-                }, tx);
+                """;
+
+            await conn.ExecuteAsync(sql, new
+            {
+                gameId,
+                slug = t.Slug,
+                rules = t.Rules,
+                url = t.Url,
+                bestOf = t.BestOf,
+                maxTeams = t.MaxTeams,
+                sort = t.Sort
+            }, tx);
         }
     }
 
