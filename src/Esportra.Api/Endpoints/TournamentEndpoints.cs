@@ -4025,6 +4025,45 @@ public static class TournamentEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── PUT /api/tournaments/{id}/map-pool (bulk replace) ────────────────
+        app.MapPut("/api/tournaments/{id}/map-pool", async (
+            Guid id,
+            [FromBody] BulkSetMapPoolRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
+
+            var mapIds = (req.MapIds ?? [])
+                .Where(m => m != Guid.Empty)
+                .Distinct()
+                .ToArray();
+
+            using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
+
+            await conn.ExecuteAsync(
+                "DELETE FROM tournament_map_pools WHERE tournament_id = @id",
+                new { id }, tx);
+
+            if (mapIds.Length > 0)
+            {
+                await conn.ExecuteAsync(
+                    "INSERT INTO tournament_map_pools (tournament_id, map_id) VALUES (@id, @mapId) ON CONFLICT DO NOTHING",
+                    mapIds.Select(m => new { id, mapId = m }),
+                    tx);
+            }
+
+            tx.Commit();
+            return Results.Ok(new { success = true, count = mapIds.Length });
+        }).RequireAuthorization("Authenticated");
+
         // ── GET /api/tournaments/{id}/match-reports ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-reports", async (
             Guid id,
@@ -6343,6 +6382,7 @@ public sealed class ResolveDisputeRequest2
 }
 public sealed record BanParticipantRequest(string ParticipantId, string? UserId = null, string? BanReason = null);
 public sealed record AddMapToPoolRequest(Guid MapId);
+public sealed record BulkSetMapPoolRequest(Guid[]? MapIds);
 public sealed record CreateAnnouncementRequest(string Title, string Content);
 public sealed record UpdateAnnouncementRequest(string? Title = null, string? Content = null);
 public sealed record CreateDisputeRequest(
