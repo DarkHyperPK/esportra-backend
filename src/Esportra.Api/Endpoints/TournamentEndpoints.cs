@@ -781,11 +781,13 @@ public static class TournamentEndpoints
                     is_public            = COALESCE(@isPublic, is_public),
                     check_in_required    = COALESCE(@checkInRequired, check_in_required),
                     check_in_deadline    = COALESCE(@checkInDeadline, check_in_deadline),
+                    auto_remove_unchecked = COALESCE(@autoRemoveUnchecked, auto_remove_unchecked),
                     rewards              = COALESCE(@rewards, rewards),
                     stream_url           = COALESCE(@streamUrl, stream_url),
                     rules                = COALESCE(@rules, rules),
                     payment_instructions = COALESCE(@paymentInstructions, payment_instructions),
                     region               = COALESCE(@region, region),
+                    server_region        = COALESCE(@serverRegion, server_region),
                     currency             = COALESCE(@currency, currency),
                     settings             = CASE
                                              WHEN @settings IS NOT NULL THEN COALESCE(settings, '{}') || @settings::jsonb
@@ -804,7 +806,7 @@ public static class TournamentEndpoints
                          entry_fee, prize_pool, start_date, end_date, registration_deadline,
                          status::text AS status, banner_url, logo_url, organization_id, venue_id, is_public,
                          check_in_required, check_in_deadline, auto_remove_unchecked,
-                         rewards, stream_url, rules, payment_instructions, region, currency, settings,
+                         rewards, stream_url, rules, payment_instructions, region, server_region, currency, settings,
                          reserved_invite_slots, invite_expiry_days, organizer_id, created_at, updated_at
                 """,
                 new
@@ -828,11 +830,13 @@ public static class TournamentEndpoints
                     isPublic = req.IsPublic,
                     checkInRequired = req.CheckInRequired,
                     checkInDeadline = req.CheckInDeadline,
+                    autoRemoveUnchecked = req.AutoRemoveUnchecked,
                     rewards = req.Rewards,
                     streamUrl = req.StreamUrl,
                     rules = req.Rules,
                     paymentInstructions = req.PaymentInstructions,
                     region = req.Region,
+                    serverRegion = req.ServerRegion,
                     currency = req.Currency,
                     settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.DiscordLinkCount),
                     accountLinkPatch = BuildAccountLinkPatch(req.AssistedReportingEnabled, req.RequiredAccountLinks),
@@ -2498,6 +2502,8 @@ public static class TournamentEndpoints
         // Replaces 5 sequential Supabase calls: owned tournaments + staff tournaments
         // + tournament names + disputes + filer profiles + match context
         app.MapGet("/api/organizer/disputes", async (
+            [FromQuery(Name = "tournament_id")] Guid? tournamentIdFromSnake,
+            [FromQuery(Name = "tournamentId")] Guid? tournamentIdFromCamel,
             HttpContext ctx,
             IDbConnectionFactory db,
             CancellationToken ct) =>
@@ -2505,7 +2511,20 @@ public static class TournamentEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            var tournamentId = tournamentIdFromSnake ?? tournamentIdFromCamel;
+            if (tournamentId is null) return Results.BadRequest(new { error = "tournament_id is required." });
+
             using var conn = db.CreateConnection();
+
+            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
+                new { tournamentId, userId = userCtx.UserIdGuid });
+
+            var canAssist = await StaffAuthHelper.CanActOnTournamentAsync(
+                conn, userCtx.UserIdGuid, tournamentId.Value, StaffAuthHelper.PermDisputesAssist);
+
+            if (!isOrganizer && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
 
             const string disputeListSqlTemplate = """
                 SELECT td.id, td.reference_number, td.title, td.description, td.status, td.dispute_reason,
@@ -2544,7 +2563,7 @@ public static class TournamentEndpoints
                        ) ORDER BY mrr.game_number, mrr.created_at), '[]'::jsonb)
                        FROM match_result_reports mrr
                        WHERE mrr.match_id = td.match_id) AS reports,
-                       -- Riot accounts for all players in both teams
+                       -- Riot accounts for all players in both teams (PUUIDs excluded — persistent cross-game identifiers)
                        CASE WHEN bm.id IS NOT NULL THEN (
                            SELECT COALESCE(jsonb_agg(jsonb_build_object(
                                'team_id', tm.team_id,
@@ -2552,8 +2571,7 @@ public static class TournamentEndpoints
                                'user_id', tm.user_id,
                                'username', COALESCE(pr.full_name, pr.username),
                                'game_name', ra.game_name,
-                               'tag_line', ra.tag_line,
-                               'puuid', ra.puuid
+                               'tag_line', ra.tag_line
                            )), '[]'::jsonb)
                            FROM team_members tm
                            INNER JOIN riot_accounts ra ON ra.user_id = tm.user_id
@@ -2599,7 +2617,8 @@ public static class TournamentEndpoints
                 LEFT JOIN tournament_participants tp2 ON tp2.id = bm.team2_id
                   AND (tp2.is_mock = TRUE OR tp2.participant_type = 'solo')
                 LEFT JOIN profiles sp2 ON sp2.id = tp2.user_id
-                WHERE (t.organizer_id = @userId
+                WHERE td.tournament_id = @tournamentId
+                  AND (t.organizer_id = @userId
                    OR __STAFF_ACCESS__)
                   AND td.dispute_reason NOT IN ('ban_appeal', 'general_support')
                 ORDER BY td.created_at DESC
@@ -2610,7 +2629,7 @@ public static class TournamentEndpoints
 
             var rows = await conn.QueryAsync<dynamic>(
                 disputeListSql,
-                new { userId = userCtx.UserIdGuid });
+                new { userId = userCtx.UserIdGuid, tournamentId });
 
             DapperJsonbHelper.FixJsonb(rows);
             return Results.Ok(rows);
@@ -2737,10 +2756,28 @@ public static class TournamentEndpoints
         // ── GET /api/organizer/disputes/{disputeId} ──────────────────────────
         app.MapGet("/api/organizer/disputes/{disputeId}", async (
             Guid disputeId,
+            HttpContext ctx,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
             using var conn = db.CreateConnection();
+
+            var tournamentId = await conn.ExecuteScalarAsync<Guid?>(
+                "SELECT tournament_id FROM tournament_disputes WHERE id = @disputeId",
+                new { disputeId });
+            if (tournamentId is null) return Results.NotFound();
+
+            var isOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
+                new { tournamentId, userId = userCtx.UserIdGuid });
+            var canAssist = await StaffAuthHelper.CanActOnTournamentAsync(
+                conn, userCtx.UserIdGuid, tournamentId.Value, StaffAuthHelper.PermDisputesAssist);
+            if (!isOrganizer && !canAssist && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+                return Results.Forbid();
+
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id, status, dispute_reason, resolution_notes, updated_at FROM tournament_disputes WHERE id = @disputeId",
                 new { disputeId });
@@ -2855,7 +2892,10 @@ public static class TournamentEndpoints
 
             var canManage = await StaffAuthHelper.CanActOnTournamentAsync(
                 conn, userCtx.UserIdGuid, disputeAccess.TournamentId, StaffAuthHelper.PermDisputesAssist);
-            if (!canManage && !StaffAuthHelper.IsPlatformAdmin(userCtx))
+            var isDisputeOrganizer = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @tournamentId AND organizer_id = @userId)",
+                new { tournamentId = disputeAccess.TournamentId, userId = userCtx.UserIdGuid });
+            if (!isDisputeOrganizer && !canManage && !StaffAuthHelper.IsPlatformAdmin(userCtx))
                 return Results.Forbid();
 
             // Validate comment content
@@ -6250,6 +6290,7 @@ public sealed record UpdateTournamentRequest(
     bool? IsPublic = null,
     bool? CheckInRequired = null,
     DateTime? CheckInDeadline = null,
+    bool? AutoRemoveUnchecked = null,
     string? Rewards = null,
     string? StreamUrl = null,
     string? Rules = null,
@@ -6266,7 +6307,8 @@ public sealed record UpdateTournamentRequest(
     string? ManualPayoutNotes = null,
     bool? AssistedReportingEnabled = null,
     int? RequiredAccountLinks = null,
-    int? DiscordLinkCount = null);
+    int? DiscordLinkCount = null,
+    string? ServerRegion = null);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId = null,
