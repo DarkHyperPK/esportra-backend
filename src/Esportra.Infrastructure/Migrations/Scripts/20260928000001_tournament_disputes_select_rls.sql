@@ -3,6 +3,10 @@
 -- Without this, any future Supabase Realtime subscription or PostgREST path
 -- on this table would be unprotected by default.
 -- The backend connects as service_role and is unaffected operationally.
+--
+-- Note: tournament_staff is intentionally omitted here — it is a pre-baseline
+-- Supabase-native table and not available in the DbUp replay environment.
+-- Staff access to disputes is enforced at the application layer in all backends.
 
 ALTER TABLE public.tournament_disputes ENABLE ROW LEVEL SECURITY;
 
@@ -22,15 +26,6 @@ FOR SELECT USING (
     OR
     -- Assigned reviewer
     assigned_to_user_id = auth.uid()
-    OR
-    -- Tournament staff with disputes:assist permission
-    EXISTS (
-        SELECT 1 FROM public.tournament_staff ts
-        WHERE ts.tournament_id = tournament_disputes.tournament_id
-          AND ts.user_id = auth.uid()
-          AND ts.status = 'active'
-          AND 'disputes:assist' = ANY(ts.permissions)
-    )
     OR
     -- Admin/moderator via profiles.admin_roles
     EXISTS (
