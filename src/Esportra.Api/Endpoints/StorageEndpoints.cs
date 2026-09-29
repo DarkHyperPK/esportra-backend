@@ -318,7 +318,70 @@ public static class StorageEndpoints
         if (bucket.StartsWith("users.", StringComparison.OrdinalIgnoreCase))
             return await ValidateUsersBucketUploadAsync(userCtx, bucket, normalizedFolder, services);
 
+        if (bucket.Equals("system.assets.website", StringComparison.OrdinalIgnoreCase))
+            return await ValidateWebsiteAssetUploadAsync(userCtx, normalizedFolder, services);
+
         return true;
+    }
+
+    private static async Task<bool> ValidateWebsiteAssetUploadAsync(
+        UserContext userCtx,
+        string normalizedFolder,
+        IServiceProvider services)
+    {
+        if (userCtx.IsSuperAdmin
+            || userCtx.Permissions.Contains(Permissions.TournamentsEdit, StringComparer.OrdinalIgnoreCase))
+            return true;
+
+        var db = services.GetRequiredService<IDbConnectionFactory>();
+        using var conn = db.CreateConnection();
+
+        var segments = normalizedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        // UUID-prefixed paths (e.g. future admin tooling): verify tournament ownership
+        if (segments.Length > 0 && Guid.TryParse(segments[0], out var tournamentId))
+            return await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, tournamentId);
+
+        // Tournament branding folders: second segment must match the caller's organizer slug
+        if (segments.Length >= 2
+            && (segments[0].Equals("Tournament-card-banners", StringComparison.OrdinalIgnoreCase)
+                || segments[0].Equals("Tournament-logos", StringComparison.OrdinalIgnoreCase)))
+        {
+            return await IsOrganizerSlugOwnerAsync(conn, userCtx.UserIdGuid, segments[1]);
+        }
+
+        // Unknown path patterns require admin privileges
+        return false;
+    }
+
+    private static async Task<bool> IsOrganizerSlugOwnerAsync(
+        IDbConnection conn, Guid userId, string folderSlug)
+    {
+        var profile = await conn.QuerySingleOrDefaultAsync<OrganizerProfileRow>(
+            "SELECT username, full_name FROM profiles WHERE id = @userId",
+            new { userId });
+
+        if (profile is null)
+            return false;
+
+        var usernameSlug = SanitizeOrganizerSlug(profile.Username);
+        var fullNameSlug = SanitizeOrganizerSlug(profile.FullName);
+
+        // Mirror frontend: username || full_name || 'unknown-organizer'
+        return folderSlug.Equals(usernameSlug, StringComparison.OrdinalIgnoreCase)
+            || folderSlug.Equals(fullNameSlug, StringComparison.OrdinalIgnoreCase)
+            || (string.IsNullOrEmpty(usernameSlug) && string.IsNullOrEmpty(fullNameSlug)
+                && folderSlug.Equals("unknown-organizer", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string SanitizeOrganizerSlug(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return string.Empty;
+        var lower = name.ToLowerInvariant();
+        var hyphenated = Regex.Replace(lower, "[^a-z0-9]", "-");
+        var collapsed = Regex.Replace(hyphenated, "-+", "-");
+        return collapsed.Trim('-');
     }
 
     private static bool IsDisputeEvidenceBucket(string bucket) =>
@@ -439,6 +502,8 @@ public static class StorageEndpoints
 
     private static string SanitizeTeamSlug(string teamName) =>
         Regex.Replace(teamName, @"[^a-z0-9]", "_", RegexOptions.IgnoreCase).ToLowerInvariant();
+
+    private sealed record OrganizerProfileRow(string? Username, string? FullName);
 
     private static async Task<bool> IsActiveMemberOfTeamWithSlugAsync(
         Guid userId,

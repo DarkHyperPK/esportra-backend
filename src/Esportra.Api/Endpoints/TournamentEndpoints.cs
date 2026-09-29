@@ -538,6 +538,31 @@ public static class TournamentEndpoints
                 new { tournamentId });
 
             var access = await ResolveAccessAsync(ctx, staffAuth, tournamentId, ct);
+
+            // Visibility guard: draft and private tournaments are hidden from non-organizers
+            if (!access.IsOrganizer)
+            {
+                string tournamentStatus = (string)tournament.status;
+                if (string.Equals(tournamentStatus, "draft", StringComparison.OrdinalIgnoreCase))
+                    return Results.NotFound();
+
+                bool isPublic = (bool)tournament.is_public;
+                if (!isPublic)
+                {
+                    var userCtx = ctx.Items["UserContext"] as UserContext;
+                    var callerId = userCtx?.UserIdGuid;
+                    var isParticipant = callerId.HasValue && allParticipants.Any(p =>
+                    {
+                        string pStatus = (string)p.status;
+                        Guid? participantUserId = p.user_id as Guid?;
+                        return participantUserId == callerId.Value
+                            && pStatus != "rejected" && pStatus != "cancelled";
+                    });
+                    if (!isParticipant)
+                        return Results.NotFound();
+                }
+            }
+
             var participants = FilterParticipantsForRole(allParticipants, access.IsOrganizer);
             var mockCount = await FetchMockCountAsync(conn, tournamentId, access.IsOrganizer);
             var participantMode = await ResolveParticipantModeAsync(gameCatalog, tournament);
@@ -553,7 +578,7 @@ public static class TournamentEndpoints
                 staffRole = access.StaffRole,
                 mockCount,
             });
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments ──────────────────────────────────────────────
         // Handles slug uniqueness + stages + map pool in one transaction.
@@ -1881,7 +1906,9 @@ public static class TournamentEndpoints
         app.MapGet("/api/tournaments/{id}/participants", async (
             Guid id,
             string? status,
+            HttpContext ctx,
             IDbConnectionFactory db,
+            IStaffAuthorizationService staffAuth,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
@@ -1890,6 +1917,8 @@ public static class TournamentEndpoints
             var statusFilter = !string.IsNullOrEmpty(status)
                 ? "AND tp.status::text = @status"
                 : "AND tp.status NOT IN ('rejected', 'cancelled', 'disqualified')";
+
+            var access = await ResolveAccessAsync(ctx, staffAuth, id, ct);
 
             // Fetch participants with team member roster details
             var flat = await conn.QueryAsync<dynamic>(
@@ -1935,12 +1964,13 @@ public static class TournamentEndpoints
                     return ParticipantResponseHelper.EnrichParticipant(
                         first,
                         isSoloEntry ? null : members,
-                        isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username)));
+                        isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username)),
+                        includePii: access.IsOrganizer);
                 })
                 .ToList();
 
             return Results.Ok(grouped);
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/match-proofs ───────────────────────────
         app.MapGet("/api/tournaments/{id}/match-proofs", async (
@@ -4803,14 +4833,33 @@ public static class TournamentEndpoints
         return new(isOrganizer, staffPermissions, staffRole);
     }
 
-    private static IEnumerable<dynamic> FilterParticipantsForRole(IEnumerable<dynamic> allParticipants, bool isOrganizer)
+    private static IEnumerable<object> FilterParticipantsForRole(IEnumerable<dynamic> allParticipants, bool isOrganizer)
     {
-        if (isOrganizer) return allParticipants;
-        return allParticipants.Where(p =>
-        {
-            string status = (string)p.status;
-            return status != "rejected" && status != "cancelled";
-        });
+        if (isOrganizer) return allParticipants.Cast<object>();
+        return allParticipants
+            .Where(p =>
+            {
+                string status = (string)p.status;
+                return status != "rejected" && status != "cancelled";
+            })
+            .Select(p => (object)new
+            {
+                id = (Guid)p.id,
+                tournament_id = (Guid)p.tournament_id,
+                user_id = p.user_id as Guid?,
+                team_id = p.team_id as Guid?,
+                team_captain_id = p.team_captain_id as Guid?,
+                participant_type = p.participant_type as string,
+                status = (string)p.status,
+                created_at = p.created_at,
+                checked_in_at = p.checked_in_at,
+                is_mock = p.is_mock as bool?,
+                team_name = p.team_name as string,
+                team_logo = p.team_logo as string,
+                gamer_tag = p.gamer_tag as string,
+                payment_status = p.payment_status as string,
+                payment_rejection_reason = p.payment_rejection_reason as string,
+            });
     }
 
     private static async Task<int> FetchMockCountAsync(IDbConnection conn, Guid tournamentId, bool isOrganizer)

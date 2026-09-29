@@ -7,7 +7,8 @@ public static class ParticipantResponseHelper
     public static object EnrichParticipant(
         dynamic first,
         IEnumerable<object>? members = null,
-        string? teamMembersCsv = null)
+        string? teamMembersCsv = null,
+        bool includePii = true)
     {
         var isMock = first.is_mock as bool?;
         var teamKindRaw = first.team_kind as string;
@@ -20,7 +21,7 @@ public static class ParticipantResponseHelper
 
         var teamName = first.team_name as string;
         var soloUsername = first.solo_username as string;
-        var soloFullName = first.solo_full_name as string;
+        var soloFullName = includePii ? first.solo_full_name as string : (string?)null;
         var teamLogoUrl = first.team_logo_url as string;
         var soloAvatarUrl = first.solo_avatar_url as string;
 
@@ -47,7 +48,7 @@ public static class ParticipantResponseHelper
             members = members ?? Array.Empty<object>(),
             solo_username = soloUsername,
             solo_full_name = soloFullName,
-            solo_riot_tag = first.solo_riot_tag as string,
+            solo_riot_tag = includePii ? first.solo_riot_tag as string : (string?)null,
             solo_avatar_url = soloAvatarUrl,
         };
     }
