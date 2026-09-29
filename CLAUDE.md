@@ -122,6 +122,33 @@ Security is blocking, not advisory. Never weaken protections to unblock developm
 - **Conventional commits:** `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `perf:` — first line < 72 chars
 - **Session-scoped commits only (hard rule)** — never stage, commit, or push unrelated changes. Stage explicitly by file path (`git add -- <files>`), never `git add .` / `git add -A`. Only files modified for the current session's task may be committed; pre-existing dirty/untracked files stay untouched.
 
+## Company Agents & Design Authority
+
+The company hierarchy (agents in `.claude/agents/`, skills in `.claude/skills/`) is canonical and versioned in `DarkHyperPK/Esportra`. Canonical files carry `<!-- esportra-canonical: company-v2 -->`.
+
+**Canonical skills (repo paths in frontend):**
+- `.claude/skills/company/`: orchestration and `reference/operating-standard.md`
+- `.claude/skills/discovery-first/`: understand before building; ask BLOCKING and SHAPING questions
+- `.claude/skills/design-recipe/`: choose the design direction per surface (nine directions, signals, Direction Contract, tasting rubric)
+- `.claude/skills/esportra-brand/`: brand invariants, tokens, voice, imagery
+
+**Order of authority** (highest first):
+1. CEO answers (`clarifications.md`)
+2. This `CLAUDE.md`
+3. Brand invariants (`esportra-brand`)
+4. The surface's Direction Contract
+5. `design-recipe`
+6. The role file in `.claude/agents/`
+7. Vendored generic skills (`frontend-design`, `impeccable`, `theme-factory`, …)
+8. Personal taste
+
+**Rules:**
+- **Never** use `brand-guidelines` for Esportra. It is Anthropic's brand.
+- `theme-factory` presets only as a Themed-event direction chosen via `design-recipe`.
+- `frontend-design` and `impeccable` work *inside* the chosen direction. Esportra's pinned signatures (stage black, rose cue, Poppins, square corners) are brand commitments, not defaults to replace.
+- If a loaded skill or agent lacks the canonical marker, a personal (`~/.claude/skills`) or plugin copy is shadowing it. Read the repo file by path and follow that.
+- Changes to company agents and skills go through a PR to `staging`, like code.
+
 ## Testing
 
 - **xUnit** for unit and integration tests
@@ -136,30 +163,70 @@ Security is blocking, not advisory. Never weaken protections to unblock developm
 
 ## Agents
 
-Custom agents defined in `.claude/agents/` for specialized tasks:
+Company agents defined in `.claude/agents/` — canonical and versioned in the frontend repo (`DarkHyperPK/Esportra`), synced here locally.
 
-| Agent | Description | Tools |
-|-------|-------------|-------|
-| `code-quality-reviewer` | Reviews code for clarity, simplicity, and maintainability. Focuses on readability, naming, structure, and duplication. Reports findings as HIGH/MEDIUM/LOW priority. | Glob, Grep, Read |
-| `refactoring-planner` | Plans safe, incremental refactoring steps. Outputs prerequisite checks, ordered steps with verification, commit points, and risks. Never mixes behavior changes with refactoring. | Glob, Grep, Read |
-| `security-reviewer` | Reviews code for security vulnerabilities and policy violations. Covers injection, auth gaps, data exposure, secrets handling, and input validation. Reports as CRITICAL/HIGH/MEDIUM/LOW severity. | Glob, Grep, Read |
-| `devops` | Handles git push/deploy operations. Enforces staging-only workflow. Never pushes to main. | Bash, Read, Grep |
-| `creative-lead` | Leads frontend quality, motion design, and interaction polish in the company pipeline. Directs Senior Frontend Engineer and UX Designer. Equipped with Emil Kowalski's full skill set (animate, apple-design, mobile-native, pick-ui-library, prototype, review-animations, improve-animations, find-animation-opportunities, emit-design-eng). Produces design briefs and reviews all frontend work before HANDOFF. Dispatched by CTO for any frontend feature. | Glob, Grep, Read, Write, Edit, Bash |
-| `think-tank` | C-suite USP ideation engine. Audits the platform, then simulates CTO/CPO/CMO/CFO/COO/CIO perspectives to generate 18 divergent USP ideas, cross-pollinates them, and returns a ranked shortlist of 6 with executive hand-off notes for the research analyst. | Glob, Grep, Read, WebSearch |
-| `research-analyst` | USP feasibility evaluator. Scores each idea across 8 dimensions (competitive whitespace, technical feasibility, willingness to pay, network effects, defensibility, time-to-value, platform leverage, assumption risk), identifies critical assumptions, and returns a PURSUE / VALIDATE / PARK / REJECT verdict per idea plus a portfolio-level CEO recommendation. | Glob, Grep, Read, WebSearch |
+**C-Suite (all use `opus` model):**
+
+| Agent | Role |
+|-------|------|
+| `cto` | Technical strategy, architecture decisions, implementation orchestration |
+| `cpo` | Product requirements, user stories, acceptance criteria |
+| `cmo` | Marketing, positioning, growth analysis |
+| `cfo` | Cost, resource, and budget analysis |
+| `coo` | Operational implications, process, team readiness |
+| `cio` | Security, compliance, privacy, risk |
+
+**Engineering ICs (all use `sonnet` model):**
+
+| Agent | Role |
+|-------|------|
+| `senior-software-architect` | System design, component design, cross-cutting concerns |
+| `senior-backend-engineer` | API endpoints, business logic, .NET/Dapper implementation |
+| `senior-database-engineer` | Schema design, migrations, RLS, query optimization |
+| `senior-frontend-engineer` | React/TypeScript UI, state, component implementation |
+| `senior-devops-engineer` | CI/CD, infra, Docker, deployment |
+| `senior-ui-ux-designer` | Visual design specs, component anatomy, design system |
+| `creative-lead` | Frontend quality authority. Owns motion design, interaction polish, design direction. Leads Frontend Engineer and UX Designer. Nothing ships frontend without sign-off. |
+
+**QA (all use `sonnet` model):**
+
+| Agent | Role |
+|-------|------|
+| `qa-lead` | QA orchestration, staging verification, final QA gate |
+| `backend-qa` | Backend code review, logic, error handling, API contracts |
+| `frontend-qa` | Frontend code review, component correctness, accessibility |
+| `integration-qa` | End-to-end flows, middleware, cross-service contracts |
+| `performance-qa` | Load, latency, query performance review |
+| `senior-security-qa` | Security audit — injection, auth gaps, data exposure, secrets |
+
+**Strategy & Utility:**
+
+| Agent | Role | Tools |
+|-------|------|-------|
+| `think-tank` | C-suite USP ideation engine — generates 18 ideas, returns ranked shortlist of 6 | Glob, Grep, Read, WebSearch |
+| `research-analyst` | USP feasibility evaluator — scores across 8 dimensions, returns PURSUE/VALIDATE/PARK/REJECT verdicts | Glob, Grep, Read, WebSearch |
+| `devops` | Git push/deploy operations. Enforces staging-only workflow. Never pushes to main. | Bash, Read, Grep |
+| `code-quality-reviewer` | Reviews code for clarity, simplicity, and maintainability. Reports HIGH/MEDIUM/LOW findings. | Glob, Grep, Read |
+| `refactoring-planner` | Plans safe, incremental refactoring steps with verification points and risks. | Glob, Grep, Read |
+| `security-reviewer` | Reviews code for security vulnerabilities. Reports CRITICAL/HIGH/MEDIUM/LOW findings. | Glob, Grep, Read |
 
 ## Skills
 
-Custom skills defined in `.claude/skills/` for guided workflows:
+Canonical skills versioned in the frontend repo, synced locally to `.claude/skills/`:
 
 | Skill | Description | When to Use |
 |-------|-------------|-------------|
-| `clean-architecture` | Patterns for maintainable, testable code organization. Covers dependency direction, single responsibility, explicit dependencies, and file organization. | Creating new features, deciding where code lives, designing interfaces, refactoring tangled code |
-| `secure-development` | Security-first development practices for APIs and data handling. Covers input validation, parameterized queries, authorization, error handling, and secrets management. | Building endpoints, handling user input, auth/authz work, sensitive data, external integrations |
-| `root-cause-diagnosis` | Full multi-angle root-cause diagnosis protocol. Traces the complete data path, audits assumptions with evidence, distinguishes defects from intended workflow. | Bug reports, regressions, errors, unexpected behavior, investigating "why does X fail?" |
-| `cyclomatic-complexity` | Audit and enforce cyclomatic complexity limits (CC ≤ 10 hard limit, ≤ 7 preferred). Covers counting rules, violation thresholds, and refactoring patterns. | Writing or modifying any method with branching logic, code reviews, pre-commit checks |
-| `i-have-adhd` | ADHD-optimized output: leads with the next action, numbered steps, state restatement each turn, specific time estimates, no preamble/closers. Session-persistent until "stop adhd mode". **Mandatory for all CEO-facing outputs — always active.** | Invoke with `/i-have-adhd`; affects all subsequent responses including company pipeline CEO-facing outputs |
-| `caveman` | Ultra-compressed output: drops articles/filler, fragments OK, short synonyms. Levels: lite/full/ultra/wenyan variants. Session-persistent until "stop caveman". **Mandatory for all CEO-facing outputs — always active.** | Invoke with `/caveman [level]` for compressed output; affects all CEO-facing responses including company pipeline outputs |
+| `company` | CEO entry point for the full AI company pipeline. Orchestrates executive analysis → proposal → implementation → QA → audit. | Any feature, initiative, or objective to execute autonomously via `/company` |
+| `company-status` | CEO dashboard — active projects, task states, blockers, approvals. Read-only. | `/company-status` |
+| `discovery-first` | Understand before building. Restate the job, sort facts/assumptions/unknowns, ask decisive questions. Every agent runs this first. | Start of any task, thin briefs, before irreversible steps |
+| `design-recipe` | Esportra creative method — choose a design direction (9 directions), compose with archetypes, taste with rubric. Takes precedence over generic design skills. | Any visual, UX, brand, marketing, or frontend work |
+| `esportra-brand` | Esportra brand invariants — palette, type, voice, imagery, signature moves. Replaces `brand-guidelines` for all Esportra work. | Any Esportra-branded output |
+| `clean-architecture` | Patterns for maintainable, testable code. Dependency direction, SRP, explicit dependencies, file organization. | New features, interface design, refactoring |
+| `secure-development` | Security-first API practices. Input validation, parameterized queries, authorization, secrets management. | Endpoints, user input, auth/authz, sensitive data |
+| `root-cause-diagnosis` | Full multi-angle root-cause protocol. Traces data path, audits assumptions, distinguishes defects from intended workflow. | Bug reports, regressions, unexpected behavior |
+| `cyclomatic-complexity` | Audit and enforce CC limits (≤ 10 hard, ≤ 7 preferred). | Any method with branching logic, code reviews |
+| `i-have-adhd` | ADHD-optimized output: next action first, numbered steps, state restatement, specific time estimates. Session-persistent. **Mandatory for all CEO-facing outputs.** | `/i-have-adhd` |
+| `caveman` | Ultra-compressed output, all technical substance kept. Session-persistent. **Mandatory for all CEO-facing outputs.** | `/caveman [lite\|full\|ultra]` |
 
 ## Rules
 
@@ -227,9 +294,9 @@ CEO (You)
 
 ### Agent Definitions
 
-All agent files: `.claude/agents/` (local only — gitignored)
+All agent files: `.claude/agents/` — canonical, versioned in `DarkHyperPK/Esportra` (staging branch), synced here
 All rules: `.claude/rules/` (local only — gitignored)
-Runtime state: `.claude/company/` (local only — gitignored)
+Runtime state: `.claude/company/projects/` (local only — gitignored)
 
 ### Natural Language Detection
 
