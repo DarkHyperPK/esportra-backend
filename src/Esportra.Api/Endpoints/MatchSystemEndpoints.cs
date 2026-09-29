@@ -28,6 +28,7 @@ public static class MatchSystemEndpoints
         MapSchedulingEndpoints(app);
         MapTimeProposalEndpoints(app);
         MapDisputeEndpoints(app);
+        MapActiveMatchesEndpoint(app);
 
         // ── GET /api/matches/{id}/captain-room-link ───────────────────────────
         app.MapGet("/api/matches/{id}/captain-room-link", async (
@@ -2463,6 +2464,38 @@ public static class MatchSystemEndpoints
                     new { type = "scheduling_escalation", title, message }, ct);
         }
         catch { /* non-critical — log is handled by caller's exception middleware */ }
+    }
+
+    // ── GET /api/tournaments/{id}/active-matches ─────────────────────────────
+    private static void MapActiveMatchesEndpoint(WebApplication app)
+    {
+        app.MapGet("/api/tournaments/{id:guid}/active-matches", async (
+            Guid id,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var rows = await conn.QueryAsync<dynamic>(
+                $"""
+                SELECT m.id, m.match_number, m.round_index, m.bracket_type,
+                       m.status, m.best_of, m.scheduled_time, m.started_at,
+                       m.team1_id, m.team2_id,
+                       m.team1_score, m.team2_score, m.team1_seed, m.team2_seed,
+                       {BracketTeamResolutionSql.Team1Columns},
+                       {BracketTeamResolutionSql.Team2Columns},
+                       ts.name AS stage_name, ts.id AS stage_id
+                FROM brkt_matches m
+                JOIN brkt_versions v ON v.id = m.version_id
+                JOIN tournament_stages ts ON ts.id = v.stage_id
+                {BracketTeamResolutionSql.Team1Joins}
+                {BracketTeamResolutionSql.Team2Joins}
+                WHERE ts.tournament_id = @id
+                  AND m.status = 'in_progress'
+                ORDER BY m.started_at DESC NULLS LAST
+                """,
+                new { id });
+            return Results.Ok(rows);
+        }).RequireAuthorization("Authenticated");
     }
 }
 

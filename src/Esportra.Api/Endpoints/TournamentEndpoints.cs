@@ -1667,7 +1667,7 @@ public static class TournamentEndpoints
                 UPDATE tournament_participants
                 SET status = 'checked_in', checked_in_at = NOW()
                 WHERE id = @participantId AND tournament_id = @id
-                  AND status IN ('pending', 'approved')
+                  AND status IN ('pending', 'approved', 'registered')
                 """,
                 new { participantId, id });
 
