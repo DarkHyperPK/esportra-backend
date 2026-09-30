@@ -29,14 +29,25 @@ public static class PrizeDistributionEndpoints
         // Disclaimer surfaces automatically when organizer-managed rewards are present.
         app.MapGet("/api/tournaments/{id}/prize-distribution", async (
             Guid id,
-            IDbConnectionFactory db) =>
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT prize_distribution, prize_pool, currency FROM tournaments WHERE id = @id",
+                "SELECT prize_distribution, prize_pool, currency, status::text AS status FROM tournaments WHERE id = @id",
                 new { id });
 
             if (row is null) return Results.NotFound();
+
+            if (row.status is "draft" or "private")
+            {
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                if (userCtx is null) return Results.Unauthorized();
+                if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                    return Results.Forbid();
+            }
 
             var config = ParseConfig((string?)row.prize_distribution);
             string effectiveDisclaimer = ResolveDisclaimer(config);
@@ -49,7 +60,7 @@ public static class PrizeDistributionEndpoints
                 disclaimer = effectiveDisclaimer,
                 has_organizer_managed_rewards = HasOrganizerManagedRewards(config),
             });
-        });
+        }).RequireAuthorization("Authenticated");
 
         // ── PUT /api/tournaments/{id}/prize-distribution ──────────────────────
         app.MapPut("/api/tournaments/{id}/prize-distribution", async (
@@ -122,10 +133,19 @@ public static class PrizeDistributionEndpoints
         // Returns format-appropriate templates with live prize preview amounts.
         app.MapGet("/api/tournaments/{id}/prize-distribution/templates", async (
             Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
-            PrizeDistributionService prizeService) =>
+            TournamentAuthorizationService tournamentAuth,
+            PrizeDistributionService prizeService,
+            CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
+
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT t.prize_pool, t.currency, t.max_teams,
