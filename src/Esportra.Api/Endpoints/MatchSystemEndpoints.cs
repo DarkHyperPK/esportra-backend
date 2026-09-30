@@ -2471,10 +2471,24 @@ public static class MatchSystemEndpoints
     {
         app.MapGet("/api/tournaments/{id:guid}/active-matches", async (
             Guid id,
+            HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
+
+            var status = await conn.ExecuteScalarAsync<string>(
+                "SELECT status::text FROM tournaments WHERE id = @id", new { id });
+            if (status is null) return Results.NotFound();
+            if (status is "draft" or "private")
+            {
+                var userCtx = ctx.Items["UserContext"] as UserContext;
+                if (userCtx is null) return Results.Unauthorized();
+                if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                    return Results.Forbid();
+            }
+
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
                 SELECT m.id, m.match_number, m.round_index, m.bracket_type,
@@ -2483,13 +2497,13 @@ public static class MatchSystemEndpoints
                        m.team1_score, m.team2_score, m.team1_seed, m.team2_seed,
                        {BracketTeamResolutionSql.Team1Columns},
                        {BracketTeamResolutionSql.Team2Columns},
-                       ts.name AS stage_name, ts.id AS stage_id
+                       COALESCE(ts.name, '') AS stage_name, ts.id AS stage_id
                 FROM brkt_matches m
-                JOIN brkt_versions v ON v.id = m.version_id
-                JOIN tournament_stages ts ON ts.id = v.stage_id
+                JOIN brkt_versions v ON v.id = m.version_id AND v.status = 'active'
+                LEFT JOIN tournament_stages ts ON ts.id = v.stage_id
                 {BracketTeamResolutionSql.Team1Joins}
                 {BracketTeamResolutionSql.Team2Joins}
-                WHERE ts.tournament_id = @id
+                WHERE v.tournament_id = @id
                   AND m.status = 'in_progress'
                 ORDER BY m.started_at DESC NULLS LAST
                 """,

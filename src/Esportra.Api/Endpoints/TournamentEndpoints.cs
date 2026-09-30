@@ -524,7 +524,9 @@ public static class TournamentEndpoints
             var allParticipants = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.*, teams.name AS team_name, teams.logo_url AS team_logo,
-                       p.username AS gamer_tag
+                       p.username AS gamer_tag,
+                       p.avatar_url AS user_avatar_url,
+                       p.full_name AS user_full_name
                 FROM tournament_participants tp
                 LEFT JOIN teams    ON teams.id = tp.team_id
                 LEFT JOIN profiles p ON p.id   = tp.user_id
@@ -1342,6 +1344,11 @@ public static class TournamentEndpoints
             if (!allowed.Contains(file.ContentType))
                 return Results.BadRequest(new { error = "Only JPEG, PNG, WebP, or PDF files are accepted." });
 
+            var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp", ".pdf" };
+            var ext = Path.GetExtension(file.FileName)?.ToLowerInvariant() ?? ".jpg";
+            if (!allowedExtensions.Contains(ext))
+                return Results.BadRequest(new { error = "File extension not allowed." });
+
             using var conn = db.CreateConnection();
 
             // Verify user is registered
@@ -1356,7 +1363,6 @@ public static class TournamentEndpoints
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
-            var ext = Path.GetExtension(file.FileName) ?? ".jpg";
             var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
             var bucket = "tournaments.payment.receipts";
 
@@ -1767,10 +1773,13 @@ public static class TournamentEndpoints
         app.MapGet("/api/tournaments/{id}/participants/{pid}", async (
             Guid id,
             Guid pid,
+            HttpContext ctx,
             IDbConnectionFactory db,
+            IStaffAuthorizationService staffAuth,
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
+            var access = await ResolveAccessAsync(ctx, staffAuth, id, ct);
             var flat = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tp.id, tp.tournament_id, tp.user_id, tp.team_id, tp.team_captain_id,
@@ -1811,7 +1820,8 @@ public static class TournamentEndpoints
             return Results.Ok(ParticipantResponseHelper.EnrichParticipant(
                 first,
                 isSoloEntry ? null : members,
-                isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username))));
+                isSoloEntry ? string.Empty : string.Join(", ", members.Select(m => m.username)),
+                includePii: access.IsOrganizer));
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/stages ─────────────────────────────────
@@ -3902,19 +3912,27 @@ public static class TournamentEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
             using var conn = db.CreateConnection();
             var bans = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tb.id, tb.tournament_id, tb.user_id, tb.team_id,
                        tb.ban_reason, tb.banned_at, tb.is_active, tb.banned_by,
-                       p.username AS banned_username, p.avatar_url AS banned_avatar
+                       COALESCE(pu.username, pu.full_name, 'Unknown User') AS user_name,
+                       t.name AS team_name,
+                       COALESCE(pb.username, pb.full_name, 'Unknown') AS banned_by_name
                 FROM public.tournament_bans tb
-                LEFT JOIN public.profiles p ON p.id = tb.user_id
+                LEFT JOIN public.profiles pu ON pu.id = tb.user_id
+                LEFT JOIN public.teams t ON t.id = tb.team_id
+                LEFT JOIN public.profiles pb ON pb.id = tb.banned_by
                 WHERE tb.tournament_id = @id
                 ORDER BY tb.banned_at DESC
                 """, new { id });
@@ -3927,12 +3945,16 @@ public static class TournamentEndpoints
             Guid banId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
 
             // Lift ban and record who did it
             var ban = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -4150,13 +4172,13 @@ public static class TournamentEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Validate tournament exists + verify organizer in a single query
-            var tourney = await conn.QuerySingleOrDefaultAsync<(string name, string slug, Guid organizer_id)>(
-                "SELECT name, slug, organizer_id FROM tournaments WHERE id = @id", new { id });
+            // Validate tournament exists, then check organizer or announcements:send staff permission
+            var tourney = await conn.QuerySingleOrDefaultAsync<(string name, string slug)>(
+                "SELECT name, slug FROM tournaments WHERE id = @id", new { id });
             if (tourney == default)
                 return Results.NotFound(new { error = "Tournament not found" });
-            if (tourney.organizer_id != userCtx.UserIdGuid)
-                return Results.Json(new { error = "Only the tournament organizer can post announcements" }, statusCode: 403);
+            if (!await StaffAuthHelper.CanActOnTournamentAsync(conn, userCtx.UserIdGuid, id, StaffAuthHelper.PermAnnouncementsSend))
+                return Results.Json(new { error = "Only the tournament organizer or authorized staff can post announcements" }, statusCode: 403);
 
             var announcement = await conn.QuerySingleAsync<(Guid id, Guid tournament_id, string title, string content, DateTime created_at)>(
                 """
