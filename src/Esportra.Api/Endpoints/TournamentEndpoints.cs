@@ -815,6 +815,7 @@ public static class TournamentEndpoints
                     payment_instructions = COALESCE(@paymentInstructions, payment_instructions),
                     region               = COALESCE(@region, region),
                     server_region        = COALESCE(@serverRegion, server_region),
+                    venue_address        = CASE WHEN @clearVenueAddress THEN NULL ELSE COALESCE(@venueAddress, venue_address) END,
                     currency             = COALESCE(@currency, currency),
                     settings             = CASE
                                              WHEN @settings IS NOT NULL THEN COALESCE(settings, '{}') || @settings::jsonb
@@ -864,6 +865,8 @@ public static class TournamentEndpoints
                     paymentInstructions = req.PaymentInstructions,
                     region = req.Region,
                     serverRegion = req.ServerRegion,
+                    venueAddress = req.VenueAddress,
+                    clearVenueAddress = req.ClearVenueAddress,
                     currency = req.Currency,
                     settings = SerializeTournamentSettings(req.Settings, catalog.SupportsMapVeto, req.AssistedReportingEnabled, req.RequiredAccountLinks, req.DiscordLinkCount),
                     accountLinkPatch = BuildAccountLinkPatch(req.AssistedReportingEnabled, req.RequiredAccountLinks),
@@ -6418,7 +6421,9 @@ public sealed record UpdateTournamentRequest(
     bool? AssistedReportingEnabled = null,
     int? RequiredAccountLinks = null,
     int? DiscordLinkCount = null,
-    string? ServerRegion = null);
+    string? ServerRegion = null,
+    string? VenueAddress = null,
+    bool ClearVenueAddress = false);
 
 public sealed record RegisterTournamentRequest(
     string? TeamId = null,
