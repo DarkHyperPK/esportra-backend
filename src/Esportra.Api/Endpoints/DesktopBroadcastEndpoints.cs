@@ -325,6 +325,33 @@ public static class DesktopBroadcastEndpoints
 
             return Results.Ok(new { statId, source = "companion" });
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/player/stats/recent ──────────────────────────────────────
+        // Performance Mode panel. Limit clamped server-side; players see only their own rows.
+        app.MapGet("/api/player/stats/recent", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            [FromQuery] int limit = 10,
+            CancellationToken ct = default) =>
+        {
+            var versionResult = CheckDesktopVersion(ctx);
+            if (versionResult is not null) return versionResult;
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var clampedLimit = Math.Clamp(limit, 1, 50);
+            var cacheKey = $"player-stats-recent:{userCtx.UserId}:{clampedLimit}";
+
+            var stats = await cache.GetOrCreateAsync(
+                cacheKey,
+                async innerCt => await QueryRecentPlayerStatsAsync(db, userCtx.UserIdGuid, clampedLimit, innerCt),
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct);
+
+            return Results.Ok(stats);
+        }).RequireAuthorization("Authenticated").RequireRateLimiting("fixed");
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -454,6 +481,42 @@ public static class DesktopBroadcastEndpoints
             SessionId: (Guid)match.session_id,
             TeamId: match.team_id is null ? null : (Guid?)match.team_id);
     }
+
+    private static async Task<IReadOnlyList<PlayerStatSummary>> QueryRecentPlayerStatsAsync(
+        IDbConnectionFactory db, Guid userId, int limit, CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+
+        var rows = await conn.QueryAsync<PlayerStatSummary>(
+            """
+            SELECT
+                mps.match_id                                      AS MatchId,
+                t.id                                              AS TournamentId,
+                t.name                                            AS TournamentName,
+                COALESCE((mps.extra_data->>'collected_at')::timestamptz,
+                         bm.scheduled_at)                        AS PlayedAt,
+                mps.extra_data->>'agent'                          AS Agent,
+                mps.extra_data->>'map'                            AS Map,
+                mps.extra_data->>'outcome'                        AS Outcome,
+                mps.kills                                         AS Kills,
+                mps.deaths                                        AS Deaths,
+                mps.assists                                       AS Assists,
+                mps.stat_source                                   AS StatSource,
+                mps.verified                                      AS Verified,
+                mps.riot_match_id                                 AS RiotMatchId
+            FROM match_player_stats mps
+            JOIN brkt_matches bm ON bm.id = mps.match_id
+            JOIN brkt_versions bv ON bv.id = bm.version_id
+            JOIN tournament_stages ts ON ts.id = bv.stage_id
+            JOIN tournaments t ON t.id = ts.tournament_id
+            WHERE mps.user_id = @UserId
+            ORDER BY PlayedAt DESC NULLS LAST
+            LIMIT @Limit
+            """,
+            new { UserId = userId, Limit = limit });
+
+        return rows.ToList();
+    }
 }
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
@@ -490,3 +553,18 @@ public sealed record ActiveMatchDto(
     string? MatchCode,
     Guid? SessionId,
     Guid? TeamId);
+
+public sealed record PlayerStatSummary(
+    Guid MatchId,
+    Guid TournamentId,
+    string TournamentName,
+    DateTime? PlayedAt,
+    string? Agent,
+    string? Map,
+    string? Outcome,
+    int Kills,
+    int Deaths,
+    int Assists,
+    string? StatSource,
+    bool Verified,
+    string? RiotMatchId);

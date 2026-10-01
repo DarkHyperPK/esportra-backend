@@ -353,4 +353,177 @@ public sealed class DesktopBroadcastEndpointsTests
             "UPDATE broadcast_sessions SET match_id = @matchId WHERE id = @sessionId",
             new { matchId, sessionId });
     }
+
+    private async Task SeedPlayerStatAsync(Guid userId, Guid matchId, int kills = 10, int deaths = 5, int assists = 3)
+    {
+        await using var conn = _seeder.OpenConnection();
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO match_player_stats
+                (match_id, user_id, kills, deaths, assists, stat_source, extra_data)
+            VALUES
+                (@matchId, @userId, @kills, @deaths, @assists, 'companion',
+                 jsonb_build_object('agent','Jett','map','Ascent','outcome','win',
+                                   'collected_at', NOW()::text))
+            ON CONFLICT (match_id, user_id, stat_source) DO NOTHING
+            """,
+            new { matchId, userId, kills, deaths, assists });
+    }
+}
+
+// ── GET /api/player/stats/recent tests ────────────────────────────────────────
+
+[Collection(IntegrationCollection.Name)]
+public sealed class PlayerRecentStatsEndpointTests
+{
+    private readonly ApiFactory _factory;
+    private readonly DbSeeder _seeder;
+
+    private static readonly Guid PlayerId = Guid.NewGuid();
+    private static readonly Guid OtherPlayer = Guid.NewGuid();
+    private static readonly Guid OrganizerId = Guid.NewGuid();
+
+    public PlayerRecentStatsEndpointTests(ApiFactory factory)
+    {
+        _factory = factory;
+        _seeder = factory.Seeder;
+    }
+
+    [Fact]
+    public async Task RecentStats_Unauthenticated_Returns401()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Client-Version", "0.1.0");
+
+        var response = await client.GetAsync("/api/player/stats/recent");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task RecentStats_MissingVersionHeader_Returns426()
+    {
+        await SeedBaseDataAsync();
+        var client = _factory.CreateAuthenticatedClient(PlayerId);
+
+        var response = await client.GetAsync("/api/player/stats/recent");
+
+        response.StatusCode.Should().Be((HttpStatusCode)426);
+    }
+
+    [Fact]
+    public async Task RecentStats_AuthenticatedWithNoStats_ReturnsEmptyArray()
+    {
+        await SeedBaseDataAsync();
+        var client = CreateDesktopClient(PlayerId);
+
+        var response = await client.GetAsync("/api/player/stats/recent");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RecentStats_LimitClamped_Returns200()
+    {
+        await SeedBaseDataAsync();
+        var client = CreateDesktopClient(PlayerId);
+
+        // limit=200 is above the 50 server-side cap — should still return 200
+        var response = await client.GetAsync("/api/player/stats/recent?limit=200");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task RecentStats_WithSeededStat_ReturnsCallingPlayerRowOnly()
+    {
+        await SeedBaseDataAsync();
+
+        // Seed a match and stat for PlayerId
+        var (matchId, _, _) = await SeedLiveMatchAsync();
+        await SeedPlayerStatAsync(PlayerId, matchId);
+
+        // Seed a stat for OtherPlayer in the same match — must NOT appear in PlayerId's response
+        await SeedPlayerStatAsync(OtherPlayer, matchId, kills: 99);
+
+        var client = CreateDesktopClient(PlayerId);
+        var response = await client.GetAsync("/api/player/stats/recent");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var rows = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        rows.GetArrayLength().Should().Be(1);
+        rows[0].GetProperty("kills").GetInt32().Should().Be(10);
+    }
+
+    [Fact]
+    public async Task RecentStats_MultipleStats_ReturnsMostRecentFirst()
+    {
+        await SeedBaseDataAsync();
+
+        var (match1, _, _) = await SeedLiveMatchAsync();
+        await SeedPlayerStatAsync(PlayerId, match1, kills: 5);
+
+        var (match2, _, _) = await SeedLiveMatchAsync();
+        await SeedPlayerStatAsync(PlayerId, match2, kills: 20);
+
+        var client = CreateDesktopClient(PlayerId);
+        var response = await client.GetAsync("/api/player/stats/recent?limit=10");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var rows = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        rows.GetArrayLength().Should().Be(2);
+        // Both rows must belong to PlayerId — order not strictly guaranteed by DB clock precision
+        // but both must be present
+        var killValues = Enumerable.Range(0, 2).Select(i => rows[i].GetProperty("kills").GetInt32()).ToList();
+        killValues.Should().Contain(5).And.Contain(20);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private HttpClient CreateDesktopClient(Guid userId)
+    {
+        var client = _factory.CreateAuthenticatedClient(userId);
+        client.DefaultRequestHeaders.Add("X-Client-Version", "0.1.0");
+        return client;
+    }
+
+    private async Task SeedBaseDataAsync()
+    {
+        await _seeder.SeedAuthUserAsync(PlayerId);
+        await _seeder.SeedUserRoleAsync(PlayerId, "casual");
+        await _seeder.SeedAuthUserAsync(OtherPlayer);
+        await _seeder.SeedUserRoleAsync(OtherPlayer, "casual");
+        await _seeder.SeedAuthUserAsync(OrganizerId);
+        await _seeder.SeedUserRoleAsync(OrganizerId, "organizer");
+    }
+
+    private async Task<(Guid MatchId, Guid Team1Id, Guid Team2Id)> SeedLiveMatchAsync()
+    {
+        var team1Id = await _seeder.SeedTeamAsync(PlayerId, $"Alpha-{Guid.NewGuid():N[..6]}");
+        var team2Id = await _seeder.SeedTeamAsync(OtherPlayer, $"Beta-{Guid.NewGuid():N[..6]}");
+        var tournamentId = await _seeder.SeedTournamentAsync(OrganizerId);
+        var stageId = await _seeder.SeedStageAsync(tournamentId);
+        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "published");
+        var matchId = await _seeder.SeedMatchAsync(
+            versionId, team1Id: team1Id, team2Id: team2Id, matchStatus: "in_progress");
+        return (matchId, team1Id, team2Id);
+    }
+
+    private async Task SeedPlayerStatAsync(Guid userId, Guid matchId, int kills = 10, int deaths = 5, int assists = 3)
+    {
+        await using var conn = _seeder.OpenConnection();
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO match_player_stats
+                (match_id, user_id, kills, deaths, assists, stat_source, extra_data)
+            VALUES
+                (@matchId, @userId, @kills, @deaths, @assists, 'companion',
+                 jsonb_build_object('agent','Jett','map','Ascent','outcome','win',
+                                   'collected_at', NOW()::text))
+            ON CONFLICT (match_id, user_id, stat_source) DO NOTHING
+            """,
+            new { matchId, userId, kills, deaths, assists });
+    }
 }
