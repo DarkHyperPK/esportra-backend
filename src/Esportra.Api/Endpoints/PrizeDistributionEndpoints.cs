@@ -36,12 +36,14 @@ public static class PrizeDistributionEndpoints
         {
             using var conn = db.CreateConnection();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT prize_distribution, prize_pool, currency, status::text AS status FROM tournaments WHERE id = @id",
+                "SELECT prize_distribution, prize_pool, currency, status::text AS status, is_public FROM tournaments WHERE id = @id",
                 new { id });
 
             if (row is null) return Results.NotFound();
 
-            if (row.status is "draft" or "private")
+            bool isDraft = (string?)row.status == "draft";
+            bool isPublic = (bool?)row.is_public ?? false;
+            if (isDraft || !isPublic)
             {
                 var userCtx = ctx.Items["UserContext"] as UserContext;
                 if (userCtx is null) return Results.Unauthorized();
