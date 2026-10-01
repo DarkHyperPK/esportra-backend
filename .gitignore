@@ -30,7 +30,3 @@ artifacts/
 # AI tooling — local only, not for repo
 .claude/
 docs/
-.playwright-mcp/
-.cursor/
-.opencode/
-.freebuff/

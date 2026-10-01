@@ -29,7 +29,6 @@ internal sealed class FakeDbConnectionFactory : IDbConnectionFactory
     public void EnqueueEmptyResult()
         => _queue.Enqueue([]);
 
-    /// <summary>Enqueues a rows-affected count returned by Dapper's ExecuteAsync.</summary>
     public void EnqueueNonQueryResult(int rowsAffected)
         => _nonQueryQueue.Enqueue(rowsAffected);
 
@@ -84,13 +83,7 @@ internal sealed class FakeDbCommand(Queue<object?[][]> queue, Queue<int> nonQuer
         => Task.FromResult(ExecuteDbDataReader(behavior));
 
     public override void Cancel() { }
-
-    public override int ExecuteNonQuery()
-        => nonQueryQueue.Count > 0 ? nonQueryQueue.Dequeue() : 0;
-
-    public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
-        => Task.FromResult(ExecuteNonQuery());
-
+    public override int ExecuteNonQuery() => nonQueryQueue.Count > 0 ? nonQueryQueue.Dequeue() : 0;
     public override object? ExecuteScalar() => null;
     public override void Prepare() { }
 }

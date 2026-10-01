@@ -21,12 +21,6 @@ public sealed class RoleEnrichmentMiddleware(
 {
     public async Task InvokeAsync(HttpContext context)
     {
-        if (context.Items.ContainsKey("ApiKeyAuthenticated"))
-        {
-            await next(context);
-            return;
-        }
-
         if (context.User.Identity?.IsAuthenticated == true)
         {
             var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier)

@@ -309,9 +309,6 @@ public static class Permissions
     public const string GamesUploadAssets = "games:upload_assets";
     public const string GamesAudit = "games:audit";
     public const string GamesManage = "games:manage";
-
-    // Developer API platform
-    public const string DeveloperKeysManage = "developer_keys:manage";
 }
 
 /// <summary>
