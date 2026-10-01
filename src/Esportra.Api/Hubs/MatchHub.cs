@@ -57,4 +57,7 @@ public static class MatchHubEvents
 
     /// <summary>Organizer updated match scheduled time.</summary>
     public const string ScheduleChanged = "ScheduleChanged";
+
+    /// <summary>Desktop broadcast app wrote a game result for a map.</summary>
+    public const string BroadcastGameResult = "BroadcastGameResult";
 }
