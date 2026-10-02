@@ -352,6 +352,117 @@ public static class DesktopBroadcastEndpoints
 
             return Results.Ok(stats);
         }).RequireAuthorization("Authenticated").RequireRateLimiting("fixed");
+
+        // ── POST /api/player/companion-stats ──────────────────────────────────
+        // Free-form tracker: records every Valorant game regardless of tournament state.
+        // No matchId, no participant check, no Riot account required.
+        app.MapPost("/api/player/companion-stats", async (
+            [FromBody] CompanionGameStatRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var versionResult = CheckDesktopVersion(ctx);
+            if (versionResult is not null) return versionResult;
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (req.Kills < 0 || req.Deaths < 0 || req.Assists < 0)
+                return Results.BadRequest(new { error = "K/D/A values must be non-negative." });
+
+            using var conn = db.CreateConnection();
+
+            var id = await conn.QuerySingleAsync<Guid>(
+                """
+                INSERT INTO companion_game_stats
+                    (user_id, riot_match_id, agent, map, outcome,
+                     kills, deaths, assists, round_stats, collected_at)
+                VALUES
+                    (@userId, @riotMatchId, @agent, @map, @outcome,
+                     @kills, @deaths, @assists, @roundStats::jsonb, @collectedAt)
+                ON CONFLICT (user_id, riot_match_id)
+                WHERE riot_match_id IS NOT NULL
+                DO UPDATE SET
+                    agent        = EXCLUDED.agent,
+                    map          = EXCLUDED.map,
+                    outcome      = EXCLUDED.outcome,
+                    kills        = EXCLUDED.kills,
+                    deaths       = EXCLUDED.deaths,
+                    assists      = EXCLUDED.assists,
+                    round_stats  = EXCLUDED.round_stats,
+                    collected_at = EXCLUDED.collected_at
+                RETURNING id
+                """,
+                new
+                {
+                    userId = userCtx.UserIdGuid,
+                    riotMatchId = req.RiotMatchId,
+                    agent = req.Agent,
+                    map = req.Map,
+                    outcome = req.Outcome,
+                    kills = req.Kills,
+                    deaths = req.Deaths,
+                    assists = req.Assists,
+                    roundStats = req.RoundStats is not null
+                        ? System.Text.Json.JsonSerializer.Serialize(req.RoundStats)
+                        : "null",
+                    collectedAt = req.CollectedAt is not null
+                        ? (object?)DateTime.Parse(req.CollectedAt, null,
+                            System.Globalization.DateTimeStyles.RoundtripKind)
+                        : null,
+                });
+
+            return Results.Ok(new { id });
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/player/companion-stats/recent ────────────────────────────
+        app.MapGet("/api/player/companion-stats/recent", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            [FromQuery] int limit = 10,
+            CancellationToken ct = default) =>
+        {
+            var versionResult = CheckDesktopVersion(ctx);
+            if (versionResult is not null) return versionResult;
+
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var clampedLimit = Math.Clamp(limit, 1, 50);
+            var cacheKey = $"companion-stats-recent:{userCtx.UserId}:{clampedLimit}";
+
+            var stats = await cache.GetOrCreateAsync(
+                cacheKey,
+                async innerCt =>
+                {
+                    using var conn = db.CreateConnection();
+                    var rows = await conn.QueryAsync<CompanionGameStatSummary>(
+                        """
+                        SELECT
+                            id          AS Id,
+                            agent       AS Agent,
+                            map         AS Map,
+                            outcome     AS Outcome,
+                            kills       AS Kills,
+                            deaths      AS Deaths,
+                            assists     AS Assists,
+                            riot_match_id AS RiotMatchId,
+                            COALESCE(collected_at, created_at) AS PlayedAt
+                        FROM companion_game_stats
+                        WHERE user_id = @UserId
+                        ORDER BY COALESCE(collected_at, created_at) DESC NULLS LAST
+                        LIMIT @Limit
+                        """,
+                        new { UserId = userCtx.UserIdGuid, Limit = clampedLimit });
+                    return rows.ToList();
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct);
+
+            return Results.Ok(stats);
+        }).RequireAuthorization("Authenticated");
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -568,3 +679,25 @@ public sealed record PlayerStatSummary(
     string? StatSource,
     bool Verified,
     string? RiotMatchId);
+
+public sealed record CompanionGameStatRequest(
+    string? RiotMatchId,
+    string? Agent,
+    string? Map,
+    string? Outcome,
+    int Kills,
+    int Deaths,
+    int Assists,
+    object? RoundStats = null,
+    string? CollectedAt = null);
+
+public sealed record CompanionGameStatSummary(
+    Guid Id,
+    string? Agent,
+    string? Map,
+    string? Outcome,
+    int Kills,
+    int Deaths,
+    int Assists,
+    string? RiotMatchId,
+    DateTime? PlayedAt);
