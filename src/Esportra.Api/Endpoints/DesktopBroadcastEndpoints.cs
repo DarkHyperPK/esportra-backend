@@ -434,7 +434,7 @@ public static class DesktopBroadcastEndpoints
             await conn.ExecuteAsync(
                 """
                 UPDATE brkt_matches
-                SET status = 'completed', winner_id = @winnerId, loser_id = @loserId, ended_at = NOW()
+                SET status = 'completed', winner_id = @winnerId, loser_id = @loserId, updated_at = NOW()
                 WHERE id = @matchId
                 """,
                 new { matchId, winnerId, loserId });

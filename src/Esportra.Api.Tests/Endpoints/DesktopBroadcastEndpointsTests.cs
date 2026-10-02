@@ -20,6 +20,7 @@ public sealed class DesktopBroadcastEndpointsTests
     private static readonly Guid OrganizerId = Guid.NewGuid();
     private static readonly Guid PlayerId = Guid.NewGuid();
     private static readonly Guid OtherUserId = Guid.NewGuid();
+    private static readonly Guid NonParticipantId = Guid.NewGuid();
 
     public DesktopBroadcastEndpointsTests(ApiFactory factory)
     {
@@ -259,14 +260,14 @@ public sealed class DesktopBroadcastEndpointsTests
     public async Task PlayerStats_NotParticipantInMatch_Returns403()
     {
         await SeedBaseDataAsync();
-        var client = CreateDesktopClient(OtherUserId);
 
-        // Seed a match that OtherUserId is NOT in
+        // Seed a match — team1=PlayerId, team2=OtherUserId; NonParticipantId is in neither team
         var (matchId, _, _) = await SeedLiveMatchAsync();
 
-        // Seed a Riot account for OtherUserId so the only failure reason is participation
-        await SeedRiotAccountAsync(OtherUserId);
+        // Seed a Riot account for NonParticipantId so the only failure reason is participation
+        await SeedRiotAccountAsync(NonParticipantId);
 
+        var client = CreateDesktopClient(NonParticipantId);
         var response = await client.PostAsJsonAsync($"/api/matches/{matchId}/player-stats", new
         {
             riotMatchId = "VALTEST:001",
@@ -318,6 +319,8 @@ public sealed class DesktopBroadcastEndpointsTests
         await _seeder.SeedUserRoleAsync(PlayerId, "casual");
         await _seeder.SeedAuthUserAsync(OtherUserId);
         await _seeder.SeedUserRoleAsync(OtherUserId, "casual");
+        await _seeder.SeedAuthUserAsync(NonParticipantId);
+        await _seeder.SeedUserRoleAsync(NonParticipantId, "casual");
     }
 
     private async Task<(Guid MatchId, Guid Team1Id, Guid Team2Id)> SeedLiveMatchAsync()
@@ -382,9 +385,9 @@ public sealed class PlayerRecentStatsEndpointTests
     private readonly ApiFactory _factory;
     private readonly DbSeeder _seeder;
 
-    private static readonly Guid PlayerId = Guid.NewGuid();
-    private static readonly Guid OtherPlayer = Guid.NewGuid();
-    private static readonly Guid OrganizerId = Guid.NewGuid();
+    private readonly Guid PlayerId = Guid.NewGuid();
+    private readonly Guid OtherPlayer = Guid.NewGuid();
+    private readonly Guid OrganizerId = Guid.NewGuid();
 
     public PlayerRecentStatsEndpointTests(ApiFactory factory)
     {
