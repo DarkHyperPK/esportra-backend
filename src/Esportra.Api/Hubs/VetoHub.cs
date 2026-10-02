@@ -96,4 +96,7 @@ public static class VetoHubEvents
 
     /// <summary>Public tool veto session reset. Payload: { sessionId }.</summary>
     public const string PublicVetoReset = "PublicVetoReset";
+
+    /// <summary>Toss result revealed. Payload: { sessionId, winnerTeamId, winnerTeamName }.</summary>
+    public const string PublicVetoTossResult = "PublicVetoTossResult";
 }
