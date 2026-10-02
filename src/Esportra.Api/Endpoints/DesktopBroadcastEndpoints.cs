@@ -414,7 +414,7 @@ public static class DesktopBroadcastEndpoints
                 });
 
             return Results.Ok(new { id });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Authenticated").RequireRateLimiting("fixed");
 
         // ── GET /api/player/companion-stats/recent ────────────────────────────
         app.MapGet("/api/player/companion-stats/recent", async (
@@ -463,6 +463,87 @@ public static class DesktopBroadcastEndpoints
 
             return Results.Ok(stats);
         }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/player/companion-stats/summary ───────────────────────────
+        // Career aggregate stats + agent/map breakdowns. Single user; no sensitive data.
+        app.MapGet("/api/player/companion-stats/summary", async (
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            HybridCache cache,
+            CancellationToken ct = default) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            var cacheKey = $"companion-stats-summary:{userCtx.UserId}";
+
+            var result = await cache.GetOrCreateAsync(
+                cacheKey,
+                async innerCt =>
+                {
+                    using var conn = db.CreateConnection();
+
+                    var totals = await conn.QueryFirstOrDefaultAsync<CompanionCareerTotals>(
+                        """
+                        SELECT
+                            COUNT(*)                                                   AS TotalGames,
+                            COUNT(*) FILTER (WHERE outcome = 'win')                   AS Wins,
+                            COUNT(*) FILTER (WHERE outcome = 'loss')                  AS Losses,
+                            COUNT(*) FILTER (WHERE outcome = 'draw')                  AS Draws,
+                            ROUND(100.0 * COUNT(*) FILTER (WHERE outcome = 'win')
+                                / NULLIF(COUNT(*), 0), 1)                              AS WinRate,
+                            ROUND(AVG(kills)::numeric, 1)                             AS AvgKills,
+                            ROUND(AVG(deaths)::numeric, 1)                            AS AvgDeaths,
+                            ROUND(AVG(assists)::numeric, 1)                           AS AvgAssists,
+                            ROUND(((AVG(kills) + AVG(assists))
+                                / NULLIF(AVG(deaths), 0))::numeric, 2)                AS Kda
+                        FROM companion_game_stats
+                        WHERE user_id = @UserId
+                        """,
+                        new { UserId = userCtx.UserIdGuid });
+
+                    var agents = await conn.QueryAsync<CompanionBreakdownRow>(
+                        """
+                        SELECT
+                            agent                                                   AS Name,
+                            COUNT(*)                                                AS Games,
+                            COUNT(*) FILTER (WHERE outcome = 'win')                AS Wins,
+                            ROUND(100.0 * COUNT(*) FILTER (WHERE outcome = 'win')
+                                / NULLIF(COUNT(*), 0), 1)                           AS WinRate
+                        FROM companion_game_stats
+                        WHERE user_id = @UserId AND agent IS NOT NULL
+                        GROUP BY agent
+                        ORDER BY Games DESC
+                        LIMIT 10
+                        """,
+                        new { UserId = userCtx.UserIdGuid });
+
+                    var maps = await conn.QueryAsync<CompanionBreakdownRow>(
+                        """
+                        SELECT
+                            map                                                     AS Name,
+                            COUNT(*)                                                AS Games,
+                            COUNT(*) FILTER (WHERE outcome = 'win')                AS Wins,
+                            ROUND(100.0 * COUNT(*) FILTER (WHERE outcome = 'win')
+                                / NULLIF(COUNT(*), 0), 1)                           AS WinRate
+                        FROM companion_game_stats
+                        WHERE user_id = @UserId AND map IS NOT NULL
+                        GROUP BY map
+                        ORDER BY Games DESC
+                        LIMIT 10
+                        """,
+                        new { UserId = userCtx.UserIdGuid });
+
+                    return new CompanionCareerSummary(
+                        totals ?? new CompanionCareerTotals(0, 0, 0, 0, 0, 0, 0, 0, 0),
+                        agents.ToList(),
+                        maps.ToList());
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+                cancellationToken: ct);
+
+            return Results.Ok(result);
+        }).RequireAuthorization("Authenticated").RequireRateLimiting("fixed");
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -701,3 +782,25 @@ public sealed record CompanionGameStatSummary(
     int Assists,
     string? RiotMatchId,
     DateTime? PlayedAt);
+
+public sealed record CompanionCareerTotals(
+    int TotalGames,
+    int Wins,
+    int Losses,
+    int Draws,
+    decimal WinRate,
+    decimal AvgKills,
+    decimal AvgDeaths,
+    decimal AvgAssists,
+    decimal Kda);
+
+public sealed record CompanionBreakdownRow(
+    string Name,
+    int Games,
+    int Wins,
+    decimal WinRate);
+
+public sealed record CompanionCareerSummary(
+    CompanionCareerTotals Totals,
+    IReadOnlyList<CompanionBreakdownRow> AgentBreakdown,
+    IReadOnlyList<CompanionBreakdownRow> MapBreakdown);
