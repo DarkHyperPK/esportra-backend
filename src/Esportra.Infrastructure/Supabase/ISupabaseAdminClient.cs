@@ -69,5 +69,9 @@ public sealed record SupabaseUserListResult(
     IReadOnlyList<SupabaseAuthUser> Users,
     int Total);
 
-public sealed record SupabaseSignInResult(string AccessToken, string RefreshToken, int ExpiresIn);
+public sealed record SupabaseSignInResult(string AccessToken, string RefreshToken, int ExpiresIn)
+{
+    public string? Error { get; init; }
+    public bool IsSuccess => Error is null && AccessToken is not null;
+}
 

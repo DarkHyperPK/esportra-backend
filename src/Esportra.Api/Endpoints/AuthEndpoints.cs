@@ -152,8 +152,10 @@ public static class AuthEndpoints
         var result = await supabase.SignInWithPasswordAsync(
             request.Email.Trim(), request.Password, cancellationToken);
 
-        if (result is null)
-            return Results.Unauthorized();
+        if (result is null || !result.IsSuccess)
+            return Results.Json(
+                new { error = result?.Error ?? "Invalid email or password." },
+                statusCode: StatusCodes.Status401Unauthorized);
 
         return Results.Ok(new
         {

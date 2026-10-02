@@ -80,9 +80,24 @@ public sealed class SupabaseAdminClient(
         req.Content = JsonContent.Create(new { email, password });
 
         var res = await http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode) return null;
-
         var body = await res.Content.ReadAsStringAsync(ct);
+
+        if (!res.IsSuccessStatusCode)
+        {
+            string? reason = null;
+            try
+            {
+                using var err = JsonDocument.Parse(body);
+                reason = err.RootElement.TryGetProperty("error_description", out var d) ? d.GetString()
+                       : err.RootElement.TryGetProperty("msg", out var m) ? m.GetString()
+                       : err.RootElement.TryGetProperty("message", out var msg) ? msg.GetString()
+                       : null;
+            }
+            catch { }
+            logger.LogWarning("[SupabaseAdmin] SignInWithPassword failed ({Status}): {Reason}", (int)res.StatusCode, reason ?? body);
+            return new SupabaseSignInResult(null!, null!, 0) { Error = reason ?? "Invalid email or password." };
+        }
+
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
         var access = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
