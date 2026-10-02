@@ -46,6 +46,12 @@ public interface ISupabaseAdminClient
     /// Uses DELETE /auth/v1/admin/users/{userId}/identities/{identityId}.
     /// </summary>
     Task UnlinkIdentityAsync(string userId, string identityId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sign in a user with email and password via GoTrue password grant.
+    /// Returns null when credentials are invalid.
+    /// </summary>
+    Task<SupabaseSignInResult?> SignInWithPasswordAsync(string email, string password, CancellationToken ct = default);
 }
 
 public sealed record GeneratedLink(string TokenHash, string ActionLink, string? UserId);
@@ -62,4 +68,6 @@ public sealed record SupabaseAuthUser(
 public sealed record SupabaseUserListResult(
     IReadOnlyList<SupabaseAuthUser> Users,
     int Total);
+
+public sealed record SupabaseSignInResult(string AccessToken, string RefreshToken, int ExpiresIn);
 

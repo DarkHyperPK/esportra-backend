@@ -26,6 +26,9 @@ public static class AuthEndpoints
 
         app.MapPost("/api/auth/set-password", SetPasswordAsync)
             .WithMetadata(new RateLimitPolicyMetadata("auth"));
+
+        app.MapPost("/api/auth/desktop-login", DesktopLoginAsync)
+            .WithMetadata(new RateLimitPolicyMetadata("auth"));
     }
 
     internal static async Task<IResult> SetPasswordAsync(
@@ -136,6 +139,28 @@ public static class AuthEndpoints
             new PasswordRecoveryResponse(PasswordRecoveryService.GenericMessage),
             statusCode: StatusCodes.Status202Accepted,
             contentType: "application/json");
+    }
+
+    internal static async Task<IResult> DesktopLoginAsync(
+        DesktopLoginRequest request,
+        ISupabaseAdminClient supabase,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
+            return Results.BadRequest(new { error = "Email and password are required." });
+
+        var result = await supabase.SignInWithPasswordAsync(
+            request.Email.Trim(), request.Password, cancellationToken);
+
+        if (result is null)
+            return Results.Unauthorized();
+
+        return Results.Ok(new
+        {
+            access_token = result.AccessToken,
+            refresh_token = result.RefreshToken,
+            expires_in = result.ExpiresIn,
+        });
     }
 
     private static bool TryParseRequest(

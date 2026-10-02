@@ -72,6 +72,28 @@ public sealed class SupabaseAdminClient(
         return userId is not null ? new SupabaseUser(userId, email ?? "") : null;
     }
 
+    public async Task<SupabaseSignInResult?> SignInWithPasswordAsync(string email, string password, CancellationToken ct = default)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/auth/v1/token?grant_type=password");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _svcKey);
+        req.Headers.Add("apikey", _svcKey);
+        req.Content = JsonContent.Create(new { email, password });
+
+        var res = await http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode) return null;
+
+        var body = await res.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        var access = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
+        var refresh = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
+        var expires = root.TryGetProperty("expires_in", out var ei) ? ei.GetInt32() : 3600;
+
+        return access is not null && refresh is not null
+            ? new SupabaseSignInResult(access, refresh, expires)
+            : null;
+    }
+
     public async Task<GeneratedLink> GenerateInviteLinkAsync(string email, string redirectUrl, CancellationToken ct = default)
     {
         return await GenerateLinkAsync("invite", email, redirectUrl, ct);
