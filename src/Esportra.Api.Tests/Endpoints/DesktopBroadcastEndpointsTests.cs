@@ -326,7 +326,7 @@ public sealed class DesktopBroadcastEndpointsTests
         var team2Id = await _seeder.SeedTeamAsync(OtherUserId, "Team Beta");
         var tournamentId = await _seeder.SeedTournamentAsync(OrganizerId);
         var stageId = await _seeder.SeedStageAsync(tournamentId);
-        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "published");
+        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "active");
         var matchId = await _seeder.SeedMatchAsync(
             versionId, team1Id: team1Id, team2Id: team2Id, matchStatus: "in_progress");
 
@@ -356,18 +356,21 @@ public sealed class DesktopBroadcastEndpointsTests
 
     private async Task SeedPlayerStatAsync(Guid userId, Guid matchId, int kills = 10, int deaths = 5, int assists = 3)
     {
+        var steam64Id = userId.ToString("N")[..17];
         await using var conn = _seeder.OpenConnection();
         await conn.ExecuteAsync(
             """
             INSERT INTO match_player_stats
-                (match_id, user_id, kills, deaths, assists, stat_source, extra_data)
+                (match_id, map_number, user_id, steam64_id, team,
+                 kills, deaths, assists, stat_source, extra_data)
             VALUES
-                (@matchId, @userId, @kills, @deaths, @assists, 'companion',
+                (@matchId, 1, @userId, @steam64Id, 'team1',
+                 @kills, @deaths, @assists, 'companion',
                  jsonb_build_object('agent','Jett','map','Ascent','outcome','win',
                                    'collected_at', NOW()::text))
-            ON CONFLICT (match_id, user_id, stat_source) DO NOTHING
+            ON CONFLICT (match_id, map_number, steam64_id) DO NOTHING
             """,
-            new { matchId, userId, kills, deaths, assists });
+            new { matchId, userId, steam64Id, kills, deaths, assists });
     }
 }
 
@@ -501,11 +504,11 @@ public sealed class PlayerRecentStatsEndpointTests
 
     private async Task<(Guid MatchId, Guid Team1Id, Guid Team2Id)> SeedLiveMatchAsync()
     {
-        var team1Id = await _seeder.SeedTeamAsync(PlayerId, $"Alpha-{Guid.NewGuid():N[..6]}");
-        var team2Id = await _seeder.SeedTeamAsync(OtherPlayer, $"Beta-{Guid.NewGuid():N[..6]}");
+        var team1Id = await _seeder.SeedTeamAsync(PlayerId, $"Alpha-{Guid.NewGuid().ToString("N")[..6]}");
+        var team2Id = await _seeder.SeedTeamAsync(OtherPlayer, $"Beta-{Guid.NewGuid().ToString("N")[..6]}");
         var tournamentId = await _seeder.SeedTournamentAsync(OrganizerId);
         var stageId = await _seeder.SeedStageAsync(tournamentId);
-        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "published");
+        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "active");
         var matchId = await _seeder.SeedMatchAsync(
             versionId, team1Id: team1Id, team2Id: team2Id, matchStatus: "in_progress");
         return (matchId, team1Id, team2Id);
@@ -513,17 +516,20 @@ public sealed class PlayerRecentStatsEndpointTests
 
     private async Task SeedPlayerStatAsync(Guid userId, Guid matchId, int kills = 10, int deaths = 5, int assists = 3)
     {
+        var steam64Id = userId.ToString("N")[..17];
         await using var conn = _seeder.OpenConnection();
         await conn.ExecuteAsync(
             """
             INSERT INTO match_player_stats
-                (match_id, user_id, kills, deaths, assists, stat_source, extra_data)
+                (match_id, map_number, user_id, steam64_id, team,
+                 kills, deaths, assists, stat_source, extra_data)
             VALUES
-                (@matchId, @userId, @kills, @deaths, @assists, 'companion',
+                (@matchId, 1, @userId, @steam64Id, 'team1',
+                 @kills, @deaths, @assists, 'companion',
                  jsonb_build_object('agent','Jett','map','Ascent','outcome','win',
                                    'collected_at', NOW()::text))
-            ON CONFLICT (match_id, user_id, stat_source) DO NOTHING
+            ON CONFLICT (match_id, map_number, steam64_id) DO NOTHING
             """,
-            new { matchId, userId, kills, deaths, assists });
+            new { matchId, userId, steam64Id, kills, deaths, assists });
     }
 }

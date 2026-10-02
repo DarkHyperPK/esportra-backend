@@ -99,7 +99,7 @@ public static class DesktopBroadcastEndpoints
 
             var upcoming = await conn.QueryAsync<dynamic>(
                 """
-                SELECT bm.id AS match_id, bm.status, bm.scheduled_at,
+                SELECT bm.id AS match_id, bm.status, bm.scheduled_time,
                        t.name AS tournament_name,
                        t1.name AS team1_name, t2.name AS team2_name
                 FROM brkt_matches bm
@@ -109,9 +109,9 @@ public static class DesktopBroadcastEndpoints
                 LEFT JOIN teams t1 ON t1.id = bm.team1_id
                 LEFT JOIN teams t2 ON t2.id = bm.team2_id
                 WHERE t.organizer_id = @organizerId
-                  AND bm.scheduled_at BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+                  AND bm.scheduled_time BETWEEN NOW() AND NOW() + INTERVAL '7 days'
                   AND bm.status IN ('scheduled', 'in_progress')
-                ORDER BY bm.scheduled_at
+                ORDER BY bm.scheduled_time
                 """,
                 new { organizerId = userCtx.UserIdGuid });
 
@@ -494,7 +494,7 @@ public static class DesktopBroadcastEndpoints
                 t.id                                              AS TournamentId,
                 t.name                                            AS TournamentName,
                 COALESCE((mps.extra_data->>'collected_at')::timestamptz,
-                         bm.scheduled_at)                        AS PlayedAt,
+                         bm.scheduled_time)                        AS PlayedAt,
                 mps.extra_data->>'agent'                          AS Agent,
                 mps.extra_data->>'map'                            AS Map,
                 mps.extra_data->>'outcome'                        AS Outcome,
