@@ -19,6 +19,9 @@ public enum OcrCallStatus
 /// <summary>Outcome of one OCR call. <see cref="ResultJson"/> is set only on success.</summary>
 public sealed record OcrCallResult(OcrCallStatus Status, string? ResultJson, string? UserMessage);
 
+/// <summary>Result of the service health probe.</summary>
+public sealed record OcrHealth(bool Reachable, int Agents);
+
 /// <summary>Typed HTTP client for the internal scoreboard OCR service.</summary>
 public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrOptions> options, ILogger<ScoreboardOcrClient> logger)
 {
@@ -52,6 +55,27 @@ public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrO
         {
             logger.LogWarning(ex, "Scoreboard OCR service call failed");
             return Unavailable();
+        }
+    }
+
+    /// <summary>Calls the service's /health (no token needed). Never throws.</summary>
+    public async Task<OcrHealth> HealthAsync(CancellationToken ct)
+    {
+        if (!IsConfigured) return new OcrHealth(false, 0);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var response = await http.GetAsync(new Uri(new Uri(options.Value.BaseUrl), "/health"), timeout.Token);
+            if (!response.IsSuccessStatusCode) return new OcrHealth(false, 0);
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+            var agents = doc.RootElement.TryGetProperty("agents", out var a) && a.TryGetInt32(out var n) ? n : 0;
+            return new OcrHealth(true, agents);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Scoreboard OCR health check failed");
+            return new OcrHealth(false, 0);
         }
     }
 

@@ -661,6 +661,7 @@ app.MapAvatarEndpoints();
 app.MapAvatarPoolEndpoints();
 app.MapMatchSystemEndpoints();
 app.MapScoreboardOcrEndpoints();
+app.MapScoreboardOcrDebugEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapTournamentTemplateEndpoints();
