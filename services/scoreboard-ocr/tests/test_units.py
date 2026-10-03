@@ -103,6 +103,7 @@ def test_split_kda_repairs_ocr_slips():
     assert split_kda("10|14 /8") == [(10.0, 1.0), (14.0, 1.0), (8.0, 1.0)]
     assert split_kda("141614") == [(14.0, 0.45), (6.0, 0.45), (4.0, 0.45)]
     assert split_kda("hello") is None
+    assert split_kda("20 / 1 / 713") is None  # separators misread: never accept K/D/A above 99
 
 
 def _band(rgb: tuple[int, int, int]) -> np.ndarray:

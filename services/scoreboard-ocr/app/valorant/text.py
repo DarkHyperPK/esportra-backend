@@ -68,7 +68,10 @@ def split_kda(text: str) -> list[tuple[float | None, float]] | None:
     (the last case comes back with low confidence so the captain checks it)."""
     parts = [p for p in re.split(r"\s*[/|\\]\s*|\s+", text.strip()) if p]
     if len(parts) == 3 and all(parse_number(p)[0] is not None for p in parts):
-        return [parse_number(p) for p in parts]
+        parsed = [parse_number(p) for p in parts]
+        # K, D and A are never above 99 in one map; a bigger number means separators were misread.
+        if all(v is not None and v <= 99 for v, _ in parsed):
+            return parsed
     if not all(p.isdigit() for p in parts):
         return None
     options = _slash_as_one(parts)
