@@ -1,19 +1,25 @@
-"""Read the summary above the table: outcome, round score and map name."""
+"""Read the summary above the table: outcome banner, round score and map name.
+
+Valorant shows the summary as one line, "<your rounds> VICTORY|DEFEAT <their rounds>", with the
+screenshot owner's score on the left. The match length ("34:57") and date sit elsewhere and must
+never be mistaken for the score.
+"""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from itertools import product
 
 import numpy as np
 from rapidfuzz import fuzz
 
 from app.engine import OcrEngine, OcrToken
 from app.models import MapRef, OcrField
-from app.valorant.text import normalize_name, parse_number
+from app.valorant.text import normalize_name
 
-_SCORE_RE = re.compile(r"^\s*(\d{1,2})\s*[-:–—]\s*(\d{1,2})\s*$")
 _OUTCOMES = {"VICTORY": "victory", "DEFEAT": "defeat", "DRAW": "draw"}
+_DIGITS = re.compile(r"\d{1,2}")
 
 
 @dataclass(frozen=True)
@@ -24,46 +30,109 @@ class HeaderRead:
     map: OcrField[MapRef]
 
 
-def read_outcome(tokens: list[OcrToken]) -> OcrField[str]:
-    best: tuple[float, str | None, float] = (0.0, None, 0.0)
+@dataclass(frozen=True)
+class _Banner:
+    token: OcrToken
+    outcome: str
+    confidence: float
+    left_digits: str  # digits glued to the banner token, e.g. "8 DEFEAT"
+    right_digits: str
+
+
+def find_banner(tokens: list[OcrToken]) -> _Banner | None:
+    best: tuple[float, _Banner | None] = (0.0, None)
     for token in tokens:
-        text = token.text.upper().replace(" ", "")
+        upper = token.text.upper()
+        letters = re.sub(r"[^A-Z]", "", upper)
         for word, value in _OUTCOMES.items():
-            score = fuzz.ratio(text, word)
-            if score >= 80 and score * token.h > best[0]:
-                best = (score * token.h, value, token.conf * score / 100)
-    return OcrField[str](value=best[1], confidence=round(best[2], 3))
+            score = fuzz.ratio(letters, word)
+            if score < 80 or score * token.h <= best[0]:
+                continue
+            first = re.search(r"[A-Z]", upper)
+            last = max(i for i, ch in enumerate(upper) if ch.isalpha())
+            start = first.start() if first else 0
+            left, right = token.text[:start], token.text[last + 1 :]
+            banner = _Banner(token, value, token.conf * score / 100, "".join(_DIGITS.findall(left)), "".join(_DIGITS.findall(right)))
+            best = (score * token.h, banner)
+    return best[1]
 
 
-def _score_pair(tokens: list[OcrToken]) -> tuple[int, int, float] | None:
-    combined = [t for t in tokens if _SCORE_RE.match(t.text)]
-    if combined:
-        token = max(combined, key=lambda t: t.h)
-        left, right = _SCORE_RE.match(token.text).groups()  # type: ignore[union-attr]
-        return int(left), int(right), token.conf
-    numbers = [t for t in tokens if parse_number(t.text)[0] is not None and len(t.text.strip()) <= 2]
-    numbers.sort(key=lambda t: t.h, reverse=True)
-    for i, a in enumerate(numbers):
-        for b in numbers[i + 1 :]:
-            similar = abs(a.h - b.h) <= 0.25 * a.h and abs(a.yc - b.yc) <= 0.5 * a.h
-            if similar:
-                left, right = sorted((a, b), key=lambda t: t.x0)
-                lv, rv = parse_number(left.text)[0], parse_number(right.text)[0]
-                return int(lv or 0), int(rv or 0), min(a.conf, b.conf) * 0.85
-    return None
+def read_outcome(tokens: list[OcrToken]) -> OcrField[str]:
+    banner = find_banner(tokens)
+    return OcrField[str](value=banner.outcome, confidence=round(banner.confidence, 3)) if banner else OcrField[str]()
 
 
-def read_score(tokens: list[OcrToken], outcome: str | None) -> tuple[OcrField[int], OcrField[int]]:
-    pair = _score_pair(tokens)
-    if pair is None:
+def is_valid_final(ally: int, enemy: int, outcome: str | None) -> bool:
+    """Valorant: first to 13; from 12-12 overtime is won by two."""
+    if outcome == "victory" and ally <= enemy or outcome == "defeat" and ally >= enemy:
+        return False
+    if outcome == "draw":
+        return ally == enemy
+    high, low = max(ally, enemy), min(ally, enemy)
+    return (high == 13 and low <= 11) or (high >= 14 and high - low == 2)
+
+
+def _candidates(text: str, conf: float, glued_to_banner: bool) -> list[tuple[int, float]]:
+    """Possible numbers in one read. A stray stroke of the banner letter often adds a leading '1'."""
+    digits = "".join(_DIGITS.findall(text))[:2]
+    if not digits:
+        return []
+    out = [(int(digits), conf)]
+    if glued_to_banner and len(digits) == 2:
+        out.append((int(digits[1] if digits[0] == "1" else digits[0]), conf * 0.8))
+    return out
+
+
+def _side_token(tokens: list[OcrToken], banner: OcrToken, left: bool) -> OcrToken | None:
+    line = [t for t in tokens if t is not banner and abs(t.yc - banner.yc) < 0.6 * banner.h and _DIGITS.search(t.text)]
+    # Detector boxes can overlap ("13" and "3 VICTORY 7"): a token that starts outside the banner counts.
+    outside = (lambda t: t.x0 < banner.x0 and t.xc < banner.xc) if left else (lambda t: t.x1 > banner.x1 and t.xc > banner.xc)
+    side = [t for t in line if outside(t) and len(re.sub(r"\D", "", t.text)) <= 2]
+    if not side:
+        return None
+    return min(side, key=lambda t: abs(t.xc - banner.xc))
+
+
+def _crop(image: np.ndarray, x0: float, y0: float, x1: float, y1: float) -> np.ndarray:
+    height, width = image.shape[:2]
+    return image[int(max(0, y0)) : int(min(height, y1)), int(max(0, x0)) : int(min(width, x1))]
+
+
+def _side_reads(image: np.ndarray, engine: OcrEngine, banner: _Banner, token: OcrToken | None, left: bool) -> list[tuple[int, float]]:
+    b = banner.token
+    glued = banner.left_digits if left else banner.right_digits
+    reads: list[tuple[int, float]] = []
+    if glued:
+        reads += _candidates(glued, b.conf * 0.9, glued_to_banner=False)
+    if token is not None:
+        near = (b.x0 - token.x1 if left else token.x0 - b.x1) < 0.15 * b.h
+        reads += _candidates(token.text, token.conf, glued_to_banner=near)
+        pad = 0.3 * token.h
+        text, conf = engine.recognize(_crop(image, token.x0 - pad, token.y0 - pad, token.x1 + pad, token.y1 + pad))
+        reads += _candidates(text, conf, glued_to_banner=True)
+    if not reads:  # detector missed the digit: read the area right next to the banner
+        x0, x1 = (b.x0 - 1.6 * b.h, b.x0) if left else (b.x1, b.x1 + 1.6 * b.h)
+        text, conf = engine.recognize(_crop(image, x0, b.y0, x1, b.y1))
+        reads += [(v, c * 0.85) for v, c in _candidates(text, conf, glued_to_banner=True)]
+    return reads
+
+
+def read_score(tokens: list[OcrToken], image: np.ndarray, engine: OcrEngine) -> tuple[OcrField[int], OcrField[int]]:
+    banner = find_banner(tokens)
+    if banner is None:
         return OcrField[int](), OcrField[int]()
-    left, right, conf = pair
-    ally, enemy = left, right
-    if outcome == "victory" and left < right or outcome == "defeat" and left > right:
-        ally, enemy = right, left  # the outcome banner is authoritative about who won
-    elif outcome is None:
-        conf *= 0.6  # no banner: we assume the left number belongs to the screenshot owner
-    return OcrField[int](value=ally, confidence=round(conf, 3)), OcrField[int](value=enemy, confidence=round(conf, 3))
+    ally_reads = _side_reads(image, engine, banner, _side_token(tokens, banner.token, left=True), left=True)
+    enemy_reads = _side_reads(image, engine, banner, _side_token(tokens, banner.token, left=False), left=False)
+    pairs = sorted(product(ally_reads, enemy_reads), key=lambda p: p[0][1] * p[1][1], reverse=True)
+    if not pairs:
+        return OcrField[int](), OcrField[int]()
+    valid = [p for p in pairs if is_valid_final(p[0][0], p[1][0], banner.outcome)]
+    (ally, a_conf), (enemy, e_conf) = valid[0] if valid else pairs[0]
+    penalty = 1.0 if valid else 0.5
+    return (
+        OcrField[int](value=ally, confidence=round(a_conf * penalty, 3)),
+        OcrField[int](value=enemy, confidence=round(e_conf * penalty, 3)),
+    )
 
 
 def read_map(tokens: list[OcrToken], maps: list[MapRef]) -> OcrField[MapRef]:
@@ -80,64 +149,9 @@ def read_map(tokens: list[OcrToken], maps: list[MapRef]) -> OcrField[MapRef]:
     return OcrField[MapRef](value=best[1], confidence=round(best[2], 3))
 
 
-def _outcome_axis(tokens: list[OcrToken], image_width: int) -> float:
-    banners = [t for t in tokens if any(fuzz.ratio(t.text.upper().replace(" ", ""), w) >= 80 for w in _OUTCOMES)]
-    return max(banners, key=lambda t: t.h).xc if banners else image_width / 2
-
-
-def recover_missing_score(tokens: list[OcrToken], image_bgr: np.ndarray, engine: OcrEngine) -> list[OcrToken]:
-    """The detector can miss a lone thin digit ("1"). The two scores sit symmetrically around the
-    outcome banner, so re-read the mirror position of the biggest number we did find."""
-    numbers = [t for t in tokens if parse_number(t.text)[0] is not None and len(t.text.strip()) <= 2]
-    if not numbers:
-        return []
-    anchor = max(numbers, key=lambda t: t.h)
-    height, width = image_bgr.shape[:2]
-    mirror_xc = 2 * _outcome_axis(tokens, width) - anchor.xc
-    half_w = max(anchor.w, 0.9 * anchor.h) / 2 + 0.15 * anchor.h
-    x0, x1 = int(max(0, mirror_xc - half_w)), int(min(width, mirror_xc + half_w))
-    y0, y1 = int(max(0, anchor.y0 - 0.1 * anchor.h)), int(min(height, anchor.y1 + 0.1 * anchor.h))
-    if x1 - x0 < 4 or abs(mirror_xc - anchor.xc) < anchor.w:
-        return []
-    text, conf = engine.recognize(image_bgr[y0:y1, x0:x1])
-    if parse_number(text)[0] is None or len(text.strip()) > 2:
-        return []
-    return [OcrToken(text, conf * 0.85, x0, anchor.y0, x1, anchor.y1)]
-
-
-def _is_score_like(token: OcrToken) -> bool:
-    return parse_number(token.text)[0] is not None and len(token.text.strip()) <= 2
-
-
-def reverify_scores(tokens: list[OcrToken], image_bgr: np.ndarray, engine: OcrEngine) -> list[OcrToken]:
-    """Score digits decide the match, so read each one a second time from a padded crop.
-    Agreement keeps the better confidence; disagreement keeps the more confident read, flagged lower."""
-    height, width = image_bgr.shape[:2]
-    candidates = set(map(id, sorted((t for t in tokens if _is_score_like(t)), key=lambda t: t.h, reverse=True)[:4]))
-    out: list[OcrToken] = []
-    for token in tokens:
-        if id(token) not in candidates:
-            out.append(token)
-            continue
-        pad = 0.2 * token.h
-        x0, x1 = int(max(0, token.x0 - pad)), int(min(width, token.x1 + pad))
-        y0, y1 = int(max(0, token.y0 - pad)), int(min(height, token.y1 + pad))
-        text, conf = engine.recognize(image_bgr[y0:y1, x0:x1])
-        if text.strip() == token.text.strip():
-            out.append(OcrToken(token.text, max(conf, token.conf), token.x0, token.y0, token.x1, token.y1))
-        elif parse_number(text)[0] is not None and len(text.strip()) <= 2 and conf > token.conf:
-            out.append(OcrToken(text.strip(), conf * 0.7, token.x0, token.y0, token.x1, token.y1))
-        else:
-            out.append(OcrToken(token.text, token.conf * 0.7, token.x0, token.y0, token.x1, token.y1))
-    return out
-
-
 def read_header(
     tokens: list[OcrToken], header_top: float, maps: list[MapRef], image_bgr: np.ndarray, engine: OcrEngine
 ) -> HeaderRead:
-    above = reverify_scores([t for t in tokens if t.y1 <= header_top], image_bgr, engine)
-    outcome = read_outcome(above)
-    ally, enemy = read_score(above, outcome.value)
-    if ally.value is None:
-        ally, enemy = read_score(above + recover_missing_score(above, image_bgr, engine), outcome.value)
-    return HeaderRead(outcome=outcome, ally_score=ally, enemy_score=enemy, map=read_map(above, maps))
+    above = [t for t in tokens if t.y1 <= header_top]
+    ally, enemy = read_score(above, image_bgr, engine)
+    return HeaderRead(outcome=read_outcome(above), ally_score=ally, enemy_score=enemy, map=read_map(above, maps))

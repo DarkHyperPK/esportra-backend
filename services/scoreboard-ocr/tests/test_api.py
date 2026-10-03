@@ -64,4 +64,4 @@ def test_parses_scoreboard_as_camel_case_json(client):
     body = resp.json()
     assert body["allyScore"]["value"] == 13 and body["enemyScore"]["value"] == 1
     assert body["players"][0]["rosterMatch"]["userId"] == "u1"
-    assert "firstBloods" in body["players"][0]["stats"]
+    assert set(body["players"][0]["stats"]) >= {"kills", "deaths", "assists", "firstBloods", "plants", "defuses"}

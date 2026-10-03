@@ -1,9 +1,12 @@
+import numpy as np
+
 from app.engine import OcrToken
 from app.models import OcrField, PlayerRow, RosterMatch, RosterPlayer, Rosters
 from app.valorant.checks import check_kills, check_score
 from app.valorant.columns import find_header, match_alias
-from app.valorant.header import read_score
-from app.valorant.names import match_names, resolve_ally_team
+from app.valorant.header import find_banner, is_valid_final, read_score
+from app.valorant.names import match_names, name_variants, resolve_ally_team
+from app.valorant.sides import classify_band, fill_last_unknown
 from app.valorant.rows import build_rows
 from app.valorant.text import normalize_name, parse_number, split_kda
 
@@ -53,10 +56,74 @@ def test_build_rows_assigns_values_and_name():
     assert rows[0].values["acs"][0] == 432 and rows[1].values["assists"][0] == 7
 
 
-def test_read_score_trusts_outcome_banner_over_order():
-    tokens = [tok("1", 300, 50, h=60), tok("13", 600, 50, h=60)]
-    ally, enemy = read_score(tokens, "victory")
-    assert (ally.value, enemy.value) == (13, 1)
+class FakeEngine:
+    version = "fake"
+
+    def __init__(self, reads: list[str]):
+        self.reads = list(reads)
+
+    def read(self, image):
+        return []
+
+    def recognize(self, crop):
+        return (self.reads.pop(0) if self.reads else "", 0.9)
+
+
+BLANK = np.zeros((200, 600, 3), dtype=np.uint8)
+
+
+def test_read_score_uses_banner_line_and_ignores_duration():
+    tokens = [tok("13", 60, 90, h=58), tok("VICTORY", 190, 90, w=170, h=60), tok("5", 290, 90, h=50), tok("34:57", 560, 40, h=20)]
+    ally, enemy = read_score(tokens, BLANK, FakeEngine(["13", "5"]))
+    assert (ally.value, enemy.value) == (13, 5)
+
+
+def test_read_score_drops_banner_stroke_misread_as_leading_one():
+    """Real case: the red "5" right after VICTORY came back as "15"; 13-15 cannot be a victory."""
+    tokens = [tok("13", 60, 90, h=58), tok("VICTORY", 190, 90, w=170, h=60), tok("15", 290, 90, w=40, h=50)]
+    ally, enemy = read_score(tokens, BLANK, FakeEngine(["13", "Y5"]))
+    assert (ally.value, enemy.value) == (13, 5)
+
+
+def test_read_score_handles_digits_glued_to_banner():
+    banner = find_banner([tok("8 DEFEAT", 130, 90, w=200, h=60)])
+    assert banner is not None and banner.outcome == "defeat" and banner.left_digits == "8"
+    tokens = [tok("8 DEFEAT", 130, 90, w=200, h=60), tok("13", 270, 90, h=45)]
+    ally, enemy = read_score(tokens, BLANK, FakeEngine(["13"]))
+    assert (ally.value, enemy.value) == (8, 13)
+
+
+def test_is_valid_final():
+    assert is_valid_final(13, 5, "victory") and is_valid_final(4, 13, "defeat") and is_valid_final(15, 13, "victory")
+    assert not is_valid_final(13, 15, "victory") and not is_valid_final(13, 12, None) and not is_valid_final(3, 7, "victory")
+
+
+def test_split_kda_repairs_ocr_slips():
+    assert split_kda("19/ 14 / 6") == [(19.0, 1.0), (14.0, 1.0), (6.0, 1.0)]
+    assert split_kda("10|14 /8") == [(10.0, 1.0), (14.0, 1.0), (8.0, 1.0)]
+    assert split_kda("141614") == [(14.0, 0.45), (6.0, 0.45), (4.0, 0.45)]
+    assert split_kda("hello") is None
+
+
+def _band(rgb: tuple[int, int, int]) -> np.ndarray:
+    return np.full((20, 200, 3), rgb[::-1], dtype=np.uint8)
+
+
+def test_classify_band_on_measured_valorant_tints():
+    assert classify_band(_band((22, 67, 68)))[0] == "ally"  # teal
+    assert classify_band(_band((63, 48, 70)))[0] == "enemy"  # muted purple
+    assert classify_band(_band((54, 60, 59)))[0] == "ally"  # grey-olive "you" row
+
+
+def test_fill_last_unknown_only_when_split_is_decisive():
+    sides = ["ally"] * 4 + [None] + ["enemy"] * 5
+    assert fill_last_unknown(sides)[4] == ("ally", 0.5)
+    assert all(conf < 0 for _, conf in fill_last_unknown(["ally"] * 3 + [None, None] + ["enemy"] * 5))
+
+
+def test_name_variants_split_glued_team_tag():
+    assert name_variants("ARClaayan") == ["ARClaayan", "aayan"]
+    assert name_variants("Kenshiro") == ["Kenshiro"]
 
 
 def test_roster_matching_and_ally_team_vote():
@@ -64,10 +131,17 @@ def test_roster_matching_and_ally_team_vote():
         team1=[RosterPlayer(user_id="u1", names=["Kooltkk#EU1"]), RosterPlayer(user_id="u2", names=["Dex"])],
         team2=[RosterPlayer(user_id="u3", names=["MrNobody"])],
     )
-    matches = match_names(["KOOLTKK", "DEX", "MЯNOЪODY", "RANDOM"], rosters)
+    named = match_names(["KOOLTKK", "DEX", "MЯNOЪODY", "RANDOM"], rosters)
+    matches = [m for m, _ in named]
     assert [m.user_id if m else None for m in matches] == ["u1", "u2", "u3", None]
     team, conf = resolve_ally_team(["ally", "ally", "enemy", "enemy"], matches)
     assert team == "team1" and conf == 1.0
+
+
+def test_roster_match_strips_glued_tag_from_shown_name():
+    rosters = Rosters(team1=[RosterPlayer(user_id="u9", names=["aayan"])])
+    [(match, shown)] = match_names(["ARClaayan"], rosters)
+    assert match is not None and match.user_id == "u9" and shown == "aayan"
 
 
 def _player(side, kills, deaths):

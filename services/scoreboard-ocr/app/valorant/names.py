@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from rapidfuzz import fuzz
@@ -40,25 +41,38 @@ def similarity(ocr_norm: str, roster_norm: str) -> float:
     return float(score)
 
 
-def match_names(names: list[str], rosters: Rosters) -> list[RosterMatch | None]:
-    """Greedy one-to-one assignment of rows to roster players, best pairs first."""
+# A Premier tag whose "|" separator was read as l/I: "ARClaayan" -> tag "ARC", name "aayan".
+_GLUED_TAG = re.compile(r"^[A-Z0-9]{2,5}[lI|](?P<name>.{2,})$")
+
+
+def name_variants(name: str) -> list[str]:
+    """The name as read, plus the name without a glued team tag when one looks present."""
+    match = _GLUED_TAG.match(name.strip())
+    return [name, match.group("name")] if match else [name]
+
+
+def match_names(names: list[str], rosters: Rosters) -> list[tuple[RosterMatch | None, str]]:
+    """Greedy one-to-one assignment of rows to roster players, best pairs first.
+    Returns the match and the name to show (tag removed when the untagged variant matched)."""
     candidates = _candidates(rosters)
-    pairs: list[tuple[float, int, _Candidate]] = []
+    pairs: list[tuple[float, int, _Candidate, str]] = []
     for index, name in enumerate(names):
-        norm = normalize_name(name)
-        for cand in candidates:
-            score = similarity(norm, cand.norm)
-            if score >= MIN_SCORE:
-                pairs.append((score, index, cand))
+        for variant in name_variants(name):
+            norm = normalize_name(variant)
+            for cand in candidates:
+                score = similarity(norm, cand.norm)
+                if score >= MIN_SCORE:
+                    pairs.append((score, index, cand, variant))
     pairs.sort(key=lambda p: p[0], reverse=True)
 
-    result: list[RosterMatch | None] = [None] * len(names)
+    result: list[tuple[RosterMatch | None, str]] = [(None, name) for name in names]
     taken_users: set[str] = set()
-    for score, index, cand in pairs:
-        if result[index] is not None or cand.user_id in taken_users:
+    for score, index, cand, variant in pairs:
+        if result[index][0] is not None or cand.user_id in taken_users:
             continue
         taken_users.add(cand.user_id)
-        result[index] = RosterMatch(user_id=cand.user_id, team=cand.team, matched_name=cand.name, score=round(score / 100, 3))
+        match = RosterMatch(user_id=cand.user_id, team=cand.team, matched_name=cand.name, score=round(score / 100, 3))
+        result[index] = (match, variant)
     return result
 
 

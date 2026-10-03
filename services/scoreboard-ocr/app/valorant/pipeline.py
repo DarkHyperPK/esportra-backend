@@ -12,8 +12,8 @@ from app.valorant.checks import check_kills, check_rows, check_score
 from app.valorant.columns import Column, find_header
 from app.valorant.header import read_header
 from app.valorant.names import match_names, resolve_ally_team
-from app.valorant.rows import Row, build_rows, row_pitch
-from app.valorant.sides import classify_row
+from app.valorant.rows import Row, build_rows, row_pitch, stat_boundary
+from app.valorant.sides import classify_row, fill_last_unknown
 
 PARSER_VERSION = "valorant-scoreboard-v1"
 
@@ -35,9 +35,29 @@ def _stats(row: Row, columns: list[Column]) -> dict[str, OcrField[float]]:
     return out
 
 
+_SINGLE_VALUE = {"firstBloods", "plants", "defuses", "acs", "econ", "hsPct", "adr"}
+
+
+def fill_missing_cells(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns: list[Column], pitch: float) -> None:
+    """The detector sometimes skips a lone thin digit ("1"). Re-read empty cells with recognition only."""
+    centers = [c.xc for c in columns]
+    gaps = [b - a for a, b in zip(centers, centers[1:])]
+    half_w = 0.45 * min(gaps) if gaps else 40.0
+    height, width = image.shape[:2]
+    for row in rows:
+        for column in columns:
+            if column.key not in _SINGLE_VALUE or column.key in row.values:
+                continue
+            x0, x1 = int(max(0, column.xc - half_w)), int(min(width, column.xc + half_w))
+            y0, y1 = int(max(0, row.yc - 0.3 * pitch)), int(min(height, row.yc + 0.3 * pitch))
+            text, conf = engine.recognize(image[y0:y1, x0:x1])
+            digits = text.strip()
+            if digits.isdigit() and len(digits) <= 2:
+                row.values[column.key] = (float(digits), conf * 0.8)
+
+
 def _player(image: np.ndarray, row: Row, columns: list[Column], pitch: float, catalog: Catalog) -> PlayerRow:
-    row_x0 = row.name_x0 - pitch
-    side, side_conf = classify_row(image, row_x0, max(c.x1 for c in columns), row.yc, pitch)
+    side, side_conf = classify_row(image, stat_boundary(columns), max(c.x1 for c in columns), row.yc, pitch)
     agent = identify_agent(portrait_region(image, row.name_x0, row.yc, pitch), catalog.agents, pitch)
     return PlayerRow(
         side=side,
@@ -58,9 +78,16 @@ def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog,
         raise ScoreboardNotFound("Found the scoreboard header but no player rows.")
 
     pitch = row_pitch(rows)
+    fill_missing_cells(image_bgr, engine, rows, columns, pitch)
     players = [_player(image_bgr, row, columns, pitch, catalog) for row in rows]
-    matches = match_names([row.name for row in rows], rosters)
-    players = [p.model_copy(update={"roster_match": m}) for p, m in zip(players, matches)]
+    filled = fill_last_unknown([p.side for p in players])
+    players = [p if conf < 0 else p.model_copy(update={"side": side, "side_confidence": conf}) for p, (side, conf) in zip(players, filled)]
+    named = match_names([row.name for row in rows], rosters)
+    matches = [match for match, _ in named]
+    players = [
+        p.model_copy(update={"roster_match": match, "name": p.name.model_copy(update={"value": shown or None})})
+        for p, (match, shown) in zip(players, named)
+    ]
     ally_team, ally_conf = resolve_ally_team([p.side for p in players], matches)
 
     header = read_header(tokens, min(c.y0 for c in columns), catalog.maps, image_bgr, engine)

@@ -1,0 +1,108 @@
+{
+ "outcome": "victory",
+ "ally": 13,
+ "enemy": 5,
+ "map": "Ascent",
+ "rows": [
+  {
+   "side": "ally",
+   "name": "tr1ck",
+   "kills": 20,
+   "deaths": 7,
+   "assists": 3,
+   "firstBloods": 1,
+   "plants": 1,
+   "defuses": 1
+  },
+  {
+   "side": "ally",
+   "name": "Kenshiro",
+   "kills": 19,
+   "deaths": 14,
+   "assists": 6,
+   "firstBloods": 3,
+   "plants": 0,
+   "defuses": 0
+  },
+  {
+   "side": "ally",
+   "name": "Cryogeyser",
+   "kills": 14,
+   "deaths": 6,
+   "assists": 4,
+   "firstBloods": 0,
+   "plants": 3,
+   "defuses": 0
+  },
+  {
+   "side": "ally",
+   "name": "dem0nzx",
+   "kills": 12,
+   "deaths": 10,
+   "assists": 10,
+   "firstBloods": 3,
+   "plants": 6,
+   "defuses": 0
+  },
+  {
+   "side": "ally",
+   "name": "expired pickle",
+   "kills": 10,
+   "deaths": 13,
+   "assists": 13,
+   "firstBloods": 3,
+   "plants": 0,
+   "defuses": 0
+  },
+  {
+   "side": "enemy",
+   "name": "LAGGINGLEGEND777",
+   "kills": 13,
+   "deaths": 14,
+   "assists": 1,
+   "firstBloods": 3,
+   "plants": 0,
+   "defuses": 1
+  },
+  {
+   "side": "enemy",
+   "name": null,
+   "kills": 12,
+   "deaths": 17,
+   "assists": 7,
+   "firstBloods": 4,
+   "plants": 1,
+   "defuses": 0
+  },
+  {
+   "side": "enemy",
+   "name": "AHK",
+   "kills": 10,
+   "deaths": 14,
+   "assists": 0,
+   "firstBloods": 0,
+   "plants": 0,
+   "defuses": 0
+  },
+  {
+   "side": "enemy",
+   "name": "osa1d",
+   "kills": 8,
+   "deaths": 15,
+   "assists": 5,
+   "firstBloods": 0,
+   "plants": 2,
+   "defuses": 0
+  },
+  {
+   "side": "enemy",
+   "name": "ShiniGhanee",
+   "kills": 7,
+   "deaths": 15,
+   "assists": 3,
+   "firstBloods": 1,
+   "plants": 0,
+   "defuses": 0
+  }
+ ]
+}

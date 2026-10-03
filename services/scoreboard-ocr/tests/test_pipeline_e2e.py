@@ -5,7 +5,7 @@ import pytest
 from app.models import MapRef, RosterPlayer, Rosters
 from app.valorant.catalog import Catalog
 from app.valorant.pipeline import ScoreboardNotFound, parse_scoreboard
-from tests.synthetic import SAMPLE, make_agent_templates, render
+from tests.synthetic import SAMPLE, STAT_FIELDS, make_agent_templates, render
 
 pytest.importorskip("rapidocr")
 
@@ -41,18 +41,23 @@ def test_summary(result):
 
 
 def test_rows_values_sides_agents(result):
-    expected = sorted(SAMPLE, key=lambda p: p.acs, reverse=True)
     assert len(result.players) == 10
     total = correct = 0
-    for row, exp in zip(result.players, expected):
+    for row, exp in zip(result.players, SAMPLE):
         assert row.side == ("ally" if exp.ally else "enemy")
         assert row.roster_match is not None and row.roster_match.matched_name == exp.name
         assert row.agent.value is not None and row.agent.value.uuid == f"agent-{exp.agent}"
-        for key, value in (("acs", exp.acs), ("kills", exp.k), ("deaths", exp.d), ("assists", exp.a), ("econ", exp.econ),
-                           ("firstBloods", exp.fb), ("plants", exp.plants), ("defuses", exp.defuses)):
+        for key, attr in STAT_FIELDS:
             total += 1
-            correct += int(row.stats[key].value == value)
+            correct += int(row.stats[key].value == getattr(exp, attr))
     assert correct / total >= 0.98, f"{correct}/{total} numeric cells correct"
+    assert "acs" not in result.columns  # the real scoreboard has no ACS column
+
+
+def test_ignores_menu_duration_and_sidebar(result):
+    names = {p.name.value for p in result.players}
+    assert not names & {"HEAD TO HEAD", "TIMELINE", "SCOREBOARD", "e"}
+    assert (result.ally_score.value, result.enemy_score.value) != (34, 57)
 
 
 def test_no_blocking_warnings(result):
@@ -71,5 +76,5 @@ def test_rejects_images_without_a_scoreboard(engine, templates):
 def test_engine_detection_survives_recognition_only_calls(engine, templates):
     """Regression: RapidOCR used to keep use_det=False after a recognize() call."""
     image = render(SAMPLE, templates, 13, 1, "VICTORY", "ASCENT")
-    engine.recognize(image[140:240, 1040:1160])
+    engine.recognize(image[50:130, 30:140])
     assert len(engine.read(image)) > 50
