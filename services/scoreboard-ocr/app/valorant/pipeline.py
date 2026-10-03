@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from app.engine import OcrEngine
@@ -14,8 +15,9 @@ from app.valorant.header import read_header
 from app.valorant.names import match_names, resolve_ally_team
 from app.valorant.rows import Row, build_rows, row_pitch, stat_boundary
 from app.valorant.sides import classify_row, fill_last_unknown
+from app.valorant.text import split_kda
 
-PARSER_VERSION = "valorant-scoreboard-v1"
+PARSER_VERSION = "valorant-scoreboard-v2"
 
 
 class ScoreboardNotFound(ValueError):
@@ -36,24 +38,76 @@ def _stats(row: Row, columns: list[Column]) -> dict[str, OcrField[float]]:
 
 
 _SINGLE_VALUE = {"firstBloods", "plants", "defuses", "acs", "econ", "hsPct", "adr"}
+_KDA_KEYS = ("kills", "deaths", "assists")
+LOW_CONFIDENCE = 0.6
 
 
-def fill_missing_cells(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns: list[Column], pitch: float) -> None:
-    """The detector sometimes skips a lone thin digit ("1"). Re-read empty cells with recognition only."""
+def _recognize(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float]:
+    """Recognition only; small crops are enlarged first because the recogniser reads ~48px text best."""
+    if crop.size == 0:
+        return "", 0.0
+    if crop.shape[0] < 48:
+        scale = 48 / crop.shape[0]
+        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return engine.recognize(crop)
+
+
+def _merge(current: tuple[float, float] | None, value: float, conf: float) -> tuple[float, float]:
+    """Keep the more confident read; two reads that agree are trusted more."""
+    if current is None:
+        return value, conf
+    if current[0] == value:
+        return value, max(current[1], conf, min(1.0, (current[1] + conf) / 2 + 0.2))
+    return (value, conf) if conf > current[1] else current
+
+
+def _reread_kda(image: np.ndarray, engine: OcrEngine, row: Row, box: tuple[int, int, int, int]) -> None:
+    """K/D/A is replaced as a whole triple, never mixed cell by cell with the first read."""
+    current = [row.values.get(k) for k in _KDA_KEYS]
+    if all(v is not None and v[1] >= LOW_CONFIDENCE for v in current):
+        return
+    x0, y0, x1, y1 = box
+    text, conf = _recognize(engine, image[y0:y1, x0:x1])
+    parts = split_kda(text)
+    if not parts or any(value is None for value, _ in parts):
+        return
+    reread = [(float(value), conf * mult) for value, mult in parts if value is not None]
+    if all(v is not None for v in current) and [v[0] for v in current if v] == [v for v, _ in reread]:
+        for key, cur, (value, c) in zip(_KDA_KEYS, current, reread):
+            row.values[key] = _merge(cur, value, c)
+        return
+    current_conf = min((v[1] for v in current if v is not None), default=0.0) if all(v is not None for v in current) else 0.0
+    if min(c for _, c in reread) > current_conf:
+        for key, (value, c) in zip(_KDA_KEYS, reread):
+            row.values[key] = (value, c)
+
+
+def _reread_single(image: np.ndarray, engine: OcrEngine, row: Row, key: str, box: tuple[int, int, int, int]) -> None:
+    current = row.values.get(key)
+    if current is not None and current[1] >= LOW_CONFIDENCE:
+        return
+    x0, y0, x1, y1 = box
+    text, conf = _recognize(engine, image[y0:y1, x0:x1])
+    digits = text.strip()
+    if digits.isdigit() and len(digits) <= 4:
+        row.values[key] = _merge(current, float(digits), conf * (0.8 if current is None else 1.0))
+
+
+def recover_cells(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns: list[Column], pitch: float) -> None:
+    """Second pass over each row: re-read cells that are empty or below confidence, one cell at a time.
+    The full-screen detector sometimes skips a lone "1" or splits "20 / 7 / 3"; a tight crop fixes most of it."""
     centers = [c.xc for c in columns]
     gaps = [b - a for a, b in zip(centers, centers[1:])]
     half_w = 0.45 * min(gaps) if gaps else 40.0
     height, width = image.shape[:2]
     for row in rows:
+        y0, y1 = int(max(0, row.yc - 0.32 * pitch)), int(min(height, row.yc + 0.32 * pitch))
         for column in columns:
-            if column.key not in _SINGLE_VALUE or column.key in row.values:
-                continue
-            x0, x1 = int(max(0, column.xc - half_w)), int(min(width, column.xc + half_w))
-            y0, y1 = int(max(0, row.yc - 0.3 * pitch)), int(min(height, row.yc + 0.3 * pitch))
-            text, conf = engine.recognize(image[y0:y1, x0:x1])
-            digits = text.strip()
-            if digits.isdigit() and len(digits) <= 2:
-                row.values[column.key] = (float(digits), conf * 0.8)
+            box = (int(max(0, column.xc - half_w)), y0, int(min(width, column.xc + half_w)), y1)
+            if column.key == "kda":
+                _reread_kda(image, engine, row, box)
+            elif column.key in _SINGLE_VALUE:
+                _reread_single(image, engine, row, column.key, box)
 
 
 def _player(image: np.ndarray, row: Row, columns: list[Column], pitch: float, catalog: Catalog) -> PlayerRow:
@@ -78,7 +132,7 @@ def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog,
         raise ScoreboardNotFound("Found the scoreboard header but no player rows.")
 
     pitch = row_pitch(rows)
-    fill_missing_cells(image_bgr, engine, rows, columns, pitch)
+    recover_cells(image_bgr, engine, rows, columns, pitch)
     players = [_player(image_bgr, row, columns, pitch, catalog) for row in rows]
     filled = fill_last_unknown([p.side for p in players])
     players = [p if conf < 0 else p.model_copy(update={"side": side, "side_confidence": conf}) for p, (side, conf) in zip(players, filled)]

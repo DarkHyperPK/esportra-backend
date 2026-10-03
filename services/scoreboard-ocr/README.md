@@ -28,7 +28,7 @@ The client scoreboard has no ACS, ADR or HS%, so those come back as missing, nev
 1. **`columns.py`** finds the header row from column titles. Older and other layouts (ACS, K, D, A, ECON, HS%, ADR) are recognised too. Columns that aren't found come back as missing, never invented.
 2. **`rows.py`** groups the text below the header into player rows and assigns each value to the nearest column. It ignores the left tab menu and the friends sidebar. The name is the text cluster nearest the stats.
 3. **`text.py`** parses the KDA cell. It tolerates dropped spaces, `|` read for `/`, and `/` misread as `1` (`141614` → 14/6/4). That last case comes back at low confidence so the captain checks it.
-4. **`pipeline.fill_missing_cells`** re-reads empty single-value cells with recognition only, because the detector sometimes skips a lone thin `1`.
+4. **`pipeline.recover_cells`** is a second pass. Every empty or low-confidence cell, the K/D/A cell included, is re-read from a tight crop that is enlarged first. Reads that agree raise the confidence. A K/D/A re-read replaces all three numbers together, never one at a time, and anything above 99 is rejected.
 5. **`sides.py`** classifies each row from the median colour of its stats area. A single unknown row is filled in when the split is 5/4.
 6. **`header.py`** reads the outcome banner and the digits beside it.
    - Several reads of each side are combined.
@@ -47,6 +47,8 @@ Measured on the five real client screenshots in `tests/fixtures/real/` (Ascent, 
 | Row team (side) | 50 / 50 correct |
 | K, D, A, first bloods, plants, defuses | 300 / 300 cells correct |
 | Names | 48 / 50; the 2 misses are Hangul names |
+
+Robustness is checked too (`tests/test_real_robustness.py`). The same screenshots are degraded to 1366 px JPEG at quality 70, to 3440×1440 ultrawide, and to WebP at quality 60. All 15 variants read 100% of numeric cells, with exact scores and sides. Images are scaled so they are at least 1920 wide or 1080 tall, so ultrawide captures keep readable text.
 
 ### Known limits
 - **Korean, Chinese and Japanese names are not read.** The bundled recognition model covers Latin script and digits. The captain fills those names in during review.
