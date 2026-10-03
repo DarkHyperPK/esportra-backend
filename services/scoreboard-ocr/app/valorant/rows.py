@@ -7,7 +7,7 @@ from statistics import median
 
 from app.engine import OcrToken
 from app.valorant.columns import Column
-from app.valorant.text import looks_numeric, parse_number, split_kda
+from app.valorant.text import parse_number, split_kda
 
 MAX_ROWS = 12
 
@@ -64,34 +64,43 @@ def _assign_values(row: Row, stat_tokens: list[OcrToken], columns: list[Column])
     centers = [c.xc for c in columns]
     gaps = [b - a for a, b in zip(centers, centers[1:])]
     tolerance = 0.45 * min(gaps) if gaps else 40.0
+    kda_tokens: list[OcrToken] = []
     for token in stat_tokens:
         column = _nearest_column(token, columns, tolerance)
         if column is None:
             continue
         if column.key == "kda":
-            parts = split_kda(token.text)
-            if parts:
-                for key, (value, mult) in zip(("kills", "deaths", "assists"), parts):
-                    if value is not None:
-                        row.values.setdefault(key, (value, token.conf * mult))
+            kda_tokens.append(token)
             continue
         value, mult = parse_number(token.text)
         if value is not None:
             row.values.setdefault(column.key, (value, token.conf * mult))
+    if kda_tokens:
+        # "20 / 7 / 3" may come back as one token or several; read them as one string.
+        text = " ".join(t.text for t in sorted(kda_tokens, key=lambda t: t.x0))
+        parts = split_kda(text)
+        conf = min(t.conf for t in kda_tokens)
+        for key, (value, mult) in zip(("kills", "deaths", "assists"), parts or []):
+            if value is not None:
+                row.values.setdefault(key, (value, conf * mult))
 
 
 def _assign_name(row: Row, name_tokens: list[OcrToken]) -> None:
+    """The name is the text cluster nearest the stats (menus and tabs further left are ignored).
+    A Premier team tag ("GTH | tr1ck") is dropped from the name."""
     if not name_tokens:
         return
     line_h = median(t.h for t in name_tokens)
-    cluster = [name_tokens[0]]
-    for token in name_tokens[1:]:
-        if token.x0 - cluster[-1].x1 > 1.5 * line_h:
+    ordered = sorted(name_tokens, key=lambda t: t.x0)
+    cluster = [ordered[-1]]
+    for token in reversed(ordered[:-1]):
+        if cluster[0].x0 - token.x1 > 1.5 * line_h:
             break
-        cluster.append(token)
-    if all(looks_numeric(t.text) for t in cluster) and len(name_tokens) > len(cluster):
-        cluster = [name_tokens[len(cluster)]]
-    row.name = " ".join(t.text for t in cluster)
+        cluster.insert(0, token)
+    text = " ".join(t.text for t in cluster)
+    if "|" in text:
+        text = text.rsplit("|", 1)[1]
+    row.name = text.strip()
     row.name_conf = min(t.conf for t in cluster)
     row.name_x0 = cluster[0].x0
 
@@ -99,6 +108,10 @@ def _assign_name(row: Row, name_tokens: list[OcrToken]) -> None:
 def build_rows(tokens: list[OcrToken], columns: list[Column]) -> list[Row]:
     header_bottom = max(c.y1 for c in columns)
     boundary = stat_boundary(columns)
+    centers = [c.xc for c in columns]
+    gaps = [b - a for a, b in zip(centers, centers[1:])] or [columns[-1].x1 - columns[-1].x0]
+    right_edge = columns[-1].x1 + 0.6 * min(gaps)  # side panels (friends list, party) live past this
+    tokens = [t for t in tokens if t.x0 < right_edge]
     min_values = max(2, len(columns) // 2)
     rows: list[Row] = []
     for group in group_rows(tokens, header_bottom):

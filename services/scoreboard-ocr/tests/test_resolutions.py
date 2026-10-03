@@ -7,7 +7,7 @@ from app.image_io import decode_image
 from app.models import MapRef, Rosters
 from app.valorant.catalog import Catalog
 from app.valorant.pipeline import parse_scoreboard
-from tests.synthetic import SAMPLE, make_agent_templates, render
+from tests.synthetic import SAMPLE, STAT_FIELDS, make_agent_templates, render
 
 pytest.importorskip("rapidocr")
 
@@ -29,11 +29,8 @@ def test_reads_scaled_and_compressed_screenshots(engine, width, ext, params):
     scaled = cv2.resize(image, (width, round(1080 * width / 1920)), interpolation=cv2.INTER_AREA)
     data = cv2.imencode(ext, scaled, params)[1].tobytes()
     result = parse_scoreboard(decode_image(data), engine, Catalog(agents=templates, maps=[MapRef(name="Ascent")]), Rosters())
-    expected = sorted(SAMPLE, key=lambda p: p.acs, reverse=True)
-    cells = [(row.stats["acs"].value, exp.acs) for row, exp in zip(result.players, expected)]
-    cells += [(row.stats["kills"].value, exp.k) for row, exp in zip(result.players, expected)]
-    cells += [(row.stats["deaths"].value, exp.d) for row, exp in zip(result.players, expected)]
+    cells = [(row.stats[key].value, getattr(exp, attr)) for row, exp in zip(result.players, SAMPLE) for key, attr in STAT_FIELDS]
     accuracy = sum(a == b for a, b in cells) / len(cells)
     assert len(result.players) == 10 and accuracy >= 0.95
-    assert [p.side for p in result.players] == ["ally" if e.ally else "enemy" for e in expected]
+    assert [p.side for p in result.players] == ["ally" if e.ally else "enemy" for e in SAMPLE]
     assert (result.ally_score.value, result.enemy_score.value) == (13, 1)

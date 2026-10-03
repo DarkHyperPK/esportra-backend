@@ -1,0 +1,108 @@
+{
+ "outcome": "victory",
+ "ally": 13,
+ "enemy": 7,
+ "map": "Lotus",
+ "rows": [
+  {
+   "side": "ally",
+   "name": "týr",
+   "kills": 21,
+   "deaths": 13,
+   "assists": 6,
+   "firstBloods": 2,
+   "plants": 1,
+   "defuses": 2
+  },
+  {
+   "side": "ally",
+   "name": "Darks1re",
+   "kills": 20,
+   "deaths": 15,
+   "assists": 6,
+   "firstBloods": 2,
+   "plants": 2,
+   "defuses": 0
+  },
+  {
+   "side": "ally",
+   "name": "aayan",
+   "kills": 16,
+   "deaths": 10,
+   "assists": 2,
+   "firstBloods": 3,
+   "plants": 1,
+   "defuses": 2
+  },
+  {
+   "side": "ally",
+   "name": "fropy",
+   "kills": 15,
+   "deaths": 10,
+   "assists": 9,
+   "firstBloods": 0,
+   "plants": 3,
+   "defuses": 2
+  },
+  {
+   "side": "ally",
+   "name": "Loki",
+   "kills": 14,
+   "deaths": 12,
+   "assists": 1,
+   "firstBloods": 2,
+   "plants": 0,
+   "defuses": 0
+  },
+  {
+   "side": "enemy",
+   "name": "k3npachi",
+   "kills": 13,
+   "deaths": 18,
+   "assists": 15,
+   "firstBloods": 1,
+   "plants": 5,
+   "defuses": 1
+  },
+  {
+   "side": "enemy",
+   "name": "wee",
+   "kills": 13,
+   "deaths": 17,
+   "assists": 4,
+   "firstBloods": 2,
+   "plants": 0,
+   "defuses": 0
+  },
+  {
+   "side": "enemy",
+   "name": "Musafir",
+   "kills": 13,
+   "deaths": 18,
+   "assists": 3,
+   "firstBloods": 5,
+   "plants": 0,
+   "defuses": 1
+  },
+  {
+   "side": "enemy",
+   "name": "wishyouwerehere",
+   "kills": 12,
+   "deaths": 18,
+   "assists": 3,
+   "firstBloods": 3,
+   "plants": 2,
+   "defuses": 1
+  },
+  {
+   "side": "enemy",
+   "name": "HammaD",
+   "kills": 9,
+   "deaths": 15,
+   "assists": 5,
+   "firstBloods": 0,
+   "plants": 2,
+   "defuses": 0
+  }
+ ]
+}

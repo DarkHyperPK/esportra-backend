@@ -9,18 +9,49 @@ The service uses [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime
 - The models ship inside the `rapidocr` wheel, so nothing is downloaded at runtime and the service runs CPU-only with no PaddlePaddle dependency.
 - `app/engine.py` hides the engine behind `OcrEngine`, so a native `paddleocr` engine can be added later if wanted.
 
+## What it reads
+
+The Valorant client's post-match **Scoreboard** tab, either "grouped by team" or "individually sorted":
+
+| Area | On screen | Read as |
+|---|---|---|
+| Summary line | `13 VICTORY 5` (owner's score on the left) | outcome, ally score, enemy score |
+| Top right | `MAP - ASCENT` | map. The match length (`34:57`) is ignored. |
+| Table columns | KDA (`20 / 7 / 3`), FIRST BLOODS, PLANTS, DEFUSES | kills, deaths, assists, firstBloods, plants, defuses |
+| Row tint | teal = ally, muted purple = enemy, grey-olive = you | side |
+| Name | `GTH \| tr1ck` | `tr1ck` (Premier tag dropped) |
+
+The client scoreboard has no ACS, ADR or HS%, so those come back as missing, never invented.
+
 ## Pipeline (`app/valorant/`)
 
-1. **`columns.py`** finds the header row from column titles (ACS / AVG COMBAT SCORE, K, D, A, K/D/A, ECON, FIRST BLOODS, PLANTS, DEFUSES, HS%, ADR). Missing columns come back as missing, not invented.
-2. **`rows.py`** groups the text below the header into player rows and assigns each number to the nearest column. The name is the text left of the stats.
-3. **`sides.py`** works out each row's team from its tint:
-   - teal or green rows are allies;
-   - the gold row is "you", also an ally;
-   - red rows are enemies.
-4. **`agents.py`** matches the portrait left of the name against agent icons from valorant-api.com. It uses a multi-scale template match and also requires the colours to agree.
-5. **`header.py`** reads the outcome banner, the round score (each score digit is read twice), and the map name.
-6. **`names.py`** fuzzy-matches names against the two rosters the API sends, handling stylised names like `MЯNOЪODY`. It then votes on which bracket team is the screenshot owner's side.
-7. **`checks.py`** adds warnings: row counts, unknown sides, unmatched names, uncertain agents, kills that don't match the other team's deaths, unusual scores, and low-confidence cells.
+1. **`columns.py`** finds the header row from column titles. Older and other layouts (ACS, K, D, A, ECON, HS%, ADR) are recognised too. Columns that aren't found come back as missing, never invented.
+2. **`rows.py`** groups the text below the header into player rows and assigns each value to the nearest column. It ignores the left tab menu and the friends sidebar. The name is the text cluster nearest the stats.
+3. **`text.py`** parses the KDA cell. It tolerates dropped spaces, `|` read for `/`, and `/` misread as `1` (`141614` → 14/6/4). That last case comes back at low confidence so the captain checks it.
+4. **`pipeline.fill_missing_cells`** re-reads empty single-value cells with recognition only, because the detector sometimes skips a lone thin `1`.
+5. **`sides.py`** classifies each row from the median colour of its stats area. A single unknown row is filled in when the split is 5/4.
+6. **`header.py`** reads the outcome banner and the digits beside it.
+   - Several reads of each side are combined.
+   - Valorant's rules (first to 13, overtime won by two, victory means the left score is higher) pick between readings, e.g. `15` vs `Y5` next to "VICTORY".
+7. **`agents.py`** matches the portrait left of the name against agent icons from valorant-api.com. It uses a multi-scale template match and also requires the colours to agree.
+8. **`names.py`** fuzzy-matches names against the two rosters the API sends. It handles stylised names (`MЯNOЪODY`) and a tag separator misread as `l` (`ARClaayan` → `aayan`), then votes on which bracket team is the screenshot owner's side.
+9. **`checks.py`** adds warnings: row counts, unknown sides, unmatched names, uncertain agents, kills that don't match the other team's deaths, unusual scores, and low-confidence cells.
+
+## Measured accuracy
+
+Measured on the five real client screenshots in `tests/fixtures/real/` (Ascent, Lotus ×2, Haven ×2; three victories and two defeats; 1280–1920 px; PNG and WebP):
+
+| Field | Result |
+|---|---|
+| Score, outcome, map | 5 / 5 correct |
+| Row team (side) | 50 / 50 correct |
+| K, D, A, first bloods, plants, defuses | 300 / 300 cells correct |
+| Names | 48 / 50; the 2 misses are Hangul names |
+
+### Known limits
+- **Korean, Chinese and Japanese names are not read.** The bundled recognition model covers Latin script and digits. The captain fills those names in during review.
+- **Agent recognition is untested on real icons.** It is only exercised with synthetic icons, because valorant-api.com is unreachable from the build sandbox. In production the icons download at start-up.
+- **Phone photos of a monitor are best effort.** Angle, glare and moiré reduce accuracy.
 
 ## API
 
@@ -72,10 +103,6 @@ python -m pytest -q
 
 ### Tests
 
-The tests render synthetic scoreboards with known values (`tests/synthetic.py`). They run them through the real OCR engine at several resolutions, including JPEG and WebP. This checks the pipeline and the parsing logic.
-
-Accuracy on real client screenshots still has to be measured:
-
-- Add real screenshots to `tests/fixtures/real/` as `<name>.png` with a matching `<name>.json` of expected values.
-- Extend the tests to cover them.
-- Target: at least 98% of numeric cells correct on clean, full-screen screenshots.
+- `tests/test_real_screenshots.py` runs every image in `tests/fixtures/real/` against its hand-written `<name>.json`. It requires exact score, outcome, map and sides, and at least 98% of numeric cells correct; it prints accuracy per file. Add new client layouts and resolutions here as they appear.
+- `tests/synthetic.py` renders scoreboards in the same layout with known values, including the menu, duration and sidebar decoys. The end-to-end and resolution tests (1280 JPEG, 2560 PNG, 1600 WebP) use it.
+- `tests/test_units.py` covers parsing rules without the OCR engine.
