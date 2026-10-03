@@ -349,6 +349,12 @@ builder.Services.AddHttpClient<RawgApiClient>();
 builder.Services.AddHttpClient<IgdbApiClient>();
 builder.Services.AddHttpClient<IDatHostService, DatHostService>();
 
+// ── Scoreboard screenshot OCR (internal service) ─────────────────────────────
+builder.Services.AddOptions<Esportra.Api.ScoreboardOcr.ScoreboardOcrOptions>()
+    .Bind(builder.Configuration.GetSection(Esportra.Api.ScoreboardOcr.ScoreboardOcrOptions.SectionName));
+builder.Services.AddHttpClient<Esportra.Api.ScoreboardOcr.ScoreboardOcrClient>();
+builder.Services.AddScoped<Esportra.Api.ScoreboardOcr.ScoreboardScreenshotStore>();
+
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()
     .SetApplicationName("Esportra");
@@ -654,6 +660,7 @@ app.MapProfileResolveEndpoint();
 app.MapAvatarEndpoints();
 app.MapAvatarPoolEndpoints();
 app.MapMatchSystemEndpoints();
+app.MapScoreboardOcrEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapTournamentTemplateEndpoints();

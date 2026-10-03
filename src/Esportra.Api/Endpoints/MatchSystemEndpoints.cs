@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.ScoreboardOcr;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -89,6 +90,7 @@ public static class MatchSystemEndpoints
             GameCatalogService gameCatalog,
             IHubContext<MatchHub> matchHub,
             DiscordNotificationService discord,
+            ScoreboardScreenshotStore screenshotStore,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -127,6 +129,15 @@ public static class MatchSystemEndpoints
                 if (existingDisputed)
                     return Results.Conflict(new { error = "This game is currently disputed. Results cannot be submitted until the dispute is resolved." });
 
+                var (reportSource, sourceError) = await ReportSourceResolver.ResolveAsync(
+                    conn, id, req.GameNumber, userCtx.UserIdGuid, reportingCompetitorId,
+                    req.Source, req.OcrParseId, req.RiotMatchId);
+                if (reportSource is null)
+                    return Results.BadRequest(new { error = sourceError });
+                var screenshotUrls = ReportSourceResolver.WithOcrScreenshot(
+                    req.ScreenshotUrls,
+                    reportSource.OcrScreenshotPath is null ? null : screenshotStore.PublicUrl(reportSource.OcrScreenshotPath));
+
                 var derivedWinner = await DeriveReportWinnerAsync(id, req, conn, logger);
 
                 var report = await conn.QuerySingleAsync<dynamic>(
@@ -135,12 +146,12 @@ public static class MatchSystemEndpoints
                   (match_id, game_number, reported_by, reported_by_team_id,
                    riot_match_id, map_id, map_name,
                    team1_score, team2_score, winner_team_id, match_data,
-                   screenshot_urls, comment, status)
+                   screenshot_urls, comment, status, source, ocr_parse_id)
                 VALUES
                   (@matchId, @gameNumber, @reportedBy, @reportedByTeamId,
                    @riotMatchId, @mapId, @mapName,
                    @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb,
-                   @screenshotUrls::jsonb, @comment, 'pending')
+                   @screenshotUrls::jsonb, @comment, 'pending', @source, @ocrParseId)
                 ON CONFLICT (match_id, game_number, reported_by_team_id)
                 DO UPDATE SET
                    team1_score    = EXCLUDED.team1_score,
@@ -152,11 +163,13 @@ public static class MatchSystemEndpoints
                    match_data     = EXCLUDED.match_data,
                    screenshot_urls = EXCLUDED.screenshot_urls,
                    comment        = EXCLUDED.comment,
+                   source         = EXCLUDED.source,
+                   ocr_parse_id   = EXCLUDED.ocr_parse_id,
                    status         = 'pending',
                    updated_at     = now()
                 RETURNING id, match_id, game_number, reported_by_team_id, team1_score, team2_score,
                          winner_team_id, riot_match_id, map_id, map_name, match_data,
-                         screenshot_urls, comment, status, created_at, updated_at
+                         screenshot_urls, comment, status, source, ocr_parse_id, created_at, updated_at
                 """,
                     new
                     {
@@ -173,10 +186,10 @@ public static class MatchSystemEndpoints
                         matchData = req.MatchData is not null
                             ? System.Text.Json.JsonSerializer.Serialize(req.MatchData)
                             : "{}",
-                        screenshotUrls = req.ScreenshotUrls is not null
-                            ? System.Text.Json.JsonSerializer.Serialize(req.ScreenshotUrls)
-                            : "[]",
+                        screenshotUrls = System.Text.Json.JsonSerializer.Serialize(screenshotUrls),
                         comment = (string?)req.Comment,
+                        source = reportSource.Source,
+                        ocrParseId = reportSource.OcrParseId,
                     });
 
                 await NotifyReportSubmittedAsync(
@@ -2541,7 +2554,9 @@ public sealed record SubmitReportRequest(
     string? MapName = null,
     object? MatchData = null,
     string[]? ScreenshotUrls = null,
-    string? Comment = null);
+    string? Comment = null,
+    string? Source = null,
+    string? OcrParseId = null);
 
 public sealed record AcceptReportRequest(
     int GameNumber,
