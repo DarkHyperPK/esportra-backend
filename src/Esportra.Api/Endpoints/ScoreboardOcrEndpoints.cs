@@ -132,7 +132,7 @@ public static class ScoreboardOcrEndpoints
                 Engine = ReadString(row.Result, "engineVersion"),
             });
 
-    private static async Task<byte[]> ReadAllAsync(IFormFile file, CancellationToken ct)
+    internal static async Task<byte[]> ReadAllAsync(IFormFile file, CancellationToken ct)
     {
         using var buffer = new MemoryStream((int)file.Length);
         await file.CopyToAsync(buffer, ct);
