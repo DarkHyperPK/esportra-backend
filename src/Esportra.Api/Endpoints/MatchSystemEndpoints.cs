@@ -5,6 +5,7 @@ using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.ScoreboardOcr;
 using Esportra.Api.Services;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Bracket;
@@ -719,6 +720,7 @@ public static class MatchSystemEndpoints
             CheckinWalkoverNotifier walkoverNotifier,
             GameCatalogService gameCatalog,
             IHubContext<MatchHub> matchHub,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -779,6 +781,7 @@ public static class MatchSystemEndpoints
                 .SendAsync(MatchHubEvents.CheckInUpdated,
                     new { matchId = id, teamId = competitorIdGuid }, ct);
 
+            riotIdRefresh.Competitors(competitorIdGuid);
             return Results.Ok(new { success = true, matchId = id, teamId = competitorIdGuid });
         }).RequireAuthorization("Authenticated");
     }

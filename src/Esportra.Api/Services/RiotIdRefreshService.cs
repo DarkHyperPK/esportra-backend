@@ -73,31 +73,89 @@ public sealed class RiotIdRefreshService(IDbConnectionFactory db, IRiotAccountLo
     }
 
     /// <summary>
-    /// Scheduled pass: accounts not checked for a day, players in tournaments that are still running
-    /// first, oldest check first.
+    /// Members of these competitors (team ids, or solo participant ids as brackets store them), refreshed
+    /// when last checked before <paramref name="olderThan"/>.
+    /// </summary>
+    public async Task<RiotIdRefreshSummary> RefreshCompetitorsAsync(IReadOnlyCollection<Guid> competitorIds, TimeSpan olderThan, CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+        var userIds = await conn.QueryAsync<Guid>(
+            """
+            SELECT tm.user_id FROM team_members tm WHERE tm.team_id = ANY(@ids) AND tm.is_active = TRUE
+            UNION
+            SELECT tp.user_id FROM tournament_participants tp WHERE tp.id = ANY(@ids) AND tp.user_id IS NOT NULL
+            UNION
+            SELECT tm.user_id FROM tournament_participants tp
+            JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = TRUE
+            WHERE tp.id = ANY(@ids)
+            """,
+            new { ids = competitorIds.ToArray() });
+        return await RefreshUsersAsync(userIds.ToList(), olderThan, ct);
+    }
+
+    /// <summary>Everyone on the user's entries in a tournament (their team, or just them when solo).</summary>
+    public async Task<RiotIdRefreshSummary> RefreshTournamentEntryAsync(Guid tournamentId, Guid userId, TimeSpan olderThan, CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+        var entries = await conn.QueryAsync<Guid>(
+            """
+            SELECT id FROM tournament_participants
+            WHERE tournament_id = @tournamentId AND (user_id = @userId OR team_captain_id = @userId)
+              AND status NOT IN ('cancelled', 'rejected')
+            """,
+            new { tournamentId, userId });
+        return await RefreshCompetitorsAsync(entries.Append(userId).ToList(), olderThan, ct);
+    }
+
+    /// <summary>
+    /// Scheduled safety net. Event refreshes (registration, check-in, team join, screenshot upload)
+    /// keep active players current; this sweep picks up players in tournaments that are still running
+    /// whose name wasn't checked for a day, and everyone else once a week. Oldest check first.
     /// </summary>
     public async Task<RiotIdRefreshSummary> RefreshStaleAsync(int batchSize, CancellationToken ct)
     {
         using var conn = db.CreateConnection();
         var accounts = await conn.QueryAsync<AccountRow>(
             """
-            SELECT ra.user_id AS UserId, ra.puuid AS Puuid, ra.game_name AS GameName, ra.tag_line AS TagLine
-            FROM riot_accounts ra
-            WHERE ra.name_checked_at IS NULL OR ra.name_checked_at < now() - interval '24 hours'
-            ORDER BY
-              EXISTS (
-                SELECT 1 FROM tournament_participants tp
-                JOIN tournaments t ON t.id = tp.tournament_id
-                LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = TRUE
-                WHERE (tp.user_id = ra.user_id OR tm.user_id = ra.user_id)
-                  AND t.status NOT IN ('completed', 'cancelled')
-              ) DESC,
-              ra.name_checked_at NULLS FIRST
+            WITH active AS (
+              SELECT ra.user_id, ra.puuid, ra.game_name, ra.tag_line, ra.name_checked_at,
+                     EXISTS (
+                       SELECT 1 FROM tournament_participants tp
+                       JOIN tournaments t ON t.id = tp.tournament_id
+                       LEFT JOIN team_members tm ON tm.team_id = tp.team_id AND tm.is_active = TRUE
+                       WHERE (tp.user_id = ra.user_id OR tm.user_id = ra.user_id)
+                         AND t.status NOT IN ('completed', 'cancelled')
+                         AND tp.status NOT IN ('cancelled', 'rejected')
+                     ) AS playing
+              FROM riot_accounts ra
+            )
+            SELECT user_id AS UserId, puuid AS Puuid, game_name AS GameName, tag_line AS TagLine
+            FROM active
+            WHERE name_checked_at IS NULL
+               OR (playing AND name_checked_at < now() - interval '24 hours')
+               OR name_checked_at < now() - interval '7 days'
+            ORDER BY playing DESC, name_checked_at NULLS FIRST
             LIMIT @batchSize
             """,
             new { batchSize });
         return await RefreshAsync(conn, accounts.ToList(), ct);
     }
+
+    /// <summary>
+    /// Riot sign-in returned the account's current name: keep the previous one in history when it
+    /// changed and update the desktop-agent link, as a scheduled refresh would. Call before the
+    /// sign-in overwrites <c>riot_accounts</c>.
+    /// </summary>
+    public static Task RecordSignInNameAsync(IDbConnection conn, Guid userId, string puuid, string gameName, string tagLine) =>
+        conn.ExecuteAsync(
+            """
+            INSERT INTO riot_account_name_history (puuid, game_name, tag_line)
+            SELECT puuid, game_name, tag_line FROM riot_accounts
+            WHERE user_id = @userId AND puuid = @puuid AND (game_name <> @gameName OR tag_line <> @tagLine);
+            UPDATE player_riot_accounts SET game_name = @gameName, tag_line = @tagLine
+            WHERE riot_puuid = @puuid AND (game_name IS DISTINCT FROM @gameName OR tag_line IS DISTINCT FROM @tagLine);
+            """,
+            new { userId, puuid, gameName, tagLine });
 
     private async Task<RiotIdRefreshSummary> RefreshAsync(IDbConnection conn, List<AccountRow> accounts, CancellationToken ct)
     {
