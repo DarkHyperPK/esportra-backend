@@ -68,8 +68,8 @@ The set is 33 real client screenshots in `tests/fixtures/real/`:
 |---|---|
 | Score, outcome, map, sides | 33 / 33 screenshots exact |
 | Numeric cells (K, D, A, ACS, trades, FB, plants, defuses, econ) | 2519 / 2519 (one more cell is hidden under a name in the game itself and comes back empty) |
-| Names in Latin and Japanese/Chinese script | 315 / 315 matched to the right player |
-| Arabic/Hangul names without the script models | 11 / 13 matched by elimination, 0 wrong |
+| Names, with the Arabic/Korean recognisers installed | 328 / 328 matched to the right player, including all 13 Arabic names |
+| Arabic/Hangul names without those recognisers | 11 / 13 matched by elimination, 0 wrong |
 | Agents, leave-one-screenshot-out | 98.2% (the misses are agents with a single example in the set) |
 
 **Robustness (`tests/test_real_robustness.py`):** every screenshot is also degraded six ways, 198 variants in total, and all pass:

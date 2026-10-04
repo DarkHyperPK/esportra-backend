@@ -58,13 +58,16 @@ SCRIPT_MODELS: dict[str, str] = {
 
 
 def script_params(script: str) -> dict[str, object]:
+    """RapidOCR wants its own enum types for model selection (plain strings are rejected)."""
+    from rapidocr.utils.typings import LangRec, ModelType, OCRVersion
+
     return {
         "Global.use_cls": False,
         "Global.text_score": 0.3,
         "Global.log_level": "error",
-        "Rec.lang_type": script,
-        "Rec.ocr_version": "PP-OCRv5",
-        "Rec.model_type": "mobile",
+        "Rec.lang_type": LangRec(script),
+        "Rec.ocr_version": OCRVersion.PPOCRV5,
+        "Rec.model_type": ModelType.MOBILE,
     }
 
 

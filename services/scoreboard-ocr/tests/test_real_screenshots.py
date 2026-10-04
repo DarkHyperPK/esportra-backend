@@ -68,6 +68,7 @@ def test_real_screenshot(engine, image_path: Path):
     assert (result.ally_score.value, result.enemy_score.value) == (expected["ally"], expected["enemy"])
     assert result.map.value is not None and result.map.value.name == expected["map"]
     assert result.ally_team.value == "team1"
+    assert "STRETCHED_CAPTURE" not in [w.code for w in result.warnings]  # native captures are read as they are
     assert len(result.players) == len(rows)
     assert [p.side for p in result.players] == [r["side"] for r in rows]
 
