@@ -4,13 +4,20 @@ using Npgsql;
 
 namespace Esportra.Infrastructure.Database;
 
-public sealed class NpgsqlConnectionFactory(string connectionString) : IDbConnectionFactory
+public sealed class NpgsqlConnectionFactory : IDbConnectionFactory
 {
-    private readonly string _connectionString = connectionString;
+    private readonly NpgsqlDataSource _dataSource;
+
+    public NpgsqlConnectionFactory(string connectionString)
+    {
+        var builder = new NpgsqlDataSourceBuilder(connectionString);
+        builder.EnableUnmappedTypes();
+        _dataSource = builder.Build();
+    }
 
     public IDbConnection CreateConnection()
     {
-        var conn = new NpgsqlConnection(_connectionString);
+        var conn = _dataSource.CreateConnection();
         conn.Open();
         return conn;
     }
