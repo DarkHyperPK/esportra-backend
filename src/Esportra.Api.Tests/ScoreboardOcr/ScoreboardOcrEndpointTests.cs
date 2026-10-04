@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.ScoreboardOcr;
+using Esportra.Api.Services;
 using Esportra.Api.Tests.Infrastructure;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -46,7 +47,13 @@ public sealed class ScoreboardOcrEndpointTests
         }
     }
 
-    private sealed record Seeded(Guid MatchId, Guid Team1Id, Guid Team2Id, Guid Captain1, Guid Captain2);
+    private sealed class NoRiot : IRiotAccountLookup
+    {
+        public Task<RiotAccountLookupResult> GetByPuuidAsync(string puuid, CancellationToken ct) =>
+            Task.FromResult(new RiotAccountLookupResult(404, null, null));
+    }
+
+    private sealed record Seeded(Guid MatchId, Guid Team1Id, Guid Team2Id, Guid Captain1, Guid Captain2, Guid Organizer);
 
     private async Task<Seeded> SeedMatchAsync(string game = "Valorant")
     {
@@ -66,7 +73,7 @@ public sealed class ScoreboardOcrEndpointTests
         var stageId = await _seeder.SeedStageAsync(tournamentId);
         var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "active");
         var matchId = await _seeder.SeedMatchAsync(versionId, team1Id: team1, team2Id: team2, matchStatus: "in_progress");
-        return new Seeded(matchId, team1, team2, captain1, captain2);
+        return new Seeded(matchId, team1, team2, captain1, captain2, organizer);
     }
 
     private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage) =>
@@ -78,6 +85,7 @@ public sealed class ScoreboardOcrEndpointTests
             {
                 services.AddHttpClient<ScoreboardOcrClient>().ConfigurePrimaryHttpMessageHandler(() => ocr);
                 services.AddHttpClient(Options.DefaultName).ConfigurePrimaryHttpMessageHandler(() => storage);
+                services.AddScoped<IRiotAccountLookup>(_ => new NoRiot());
             });
         });
 
@@ -233,6 +241,117 @@ public sealed class ScoreboardOcrEndpointTests
         });
 
         submit.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task OcrReport_WithAPlayerOffTheRosters_IsVerifiedAndOrganizerAlertedOnce()
+    {
+        var seeded = await SeedMatchAsync();
+        await using (var conn = new NpgsqlConnection(_factory.ConnectionString))
+            await conn.ExecuteAsync(
+                "INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@id, @puuid, 'AlphaCap', 'EU1')",
+                new { id = seeded.Captain1, puuid = $"p-{seeded.Captain1:N}" });
+        var ocrResult = JsonSerializer.Serialize(new
+        {
+            game = "valorant",
+            engineVersion = "rapidocr-test",
+            allyScore = new { value = 13, confidence = 0.9 },
+            enemyScore = new { value = 1, confidence = 0.9 },
+            allyTeam = new { value = "team1", confidence = 1 },
+            players = new object[]
+            {
+                new
+                {
+                    side = "ally", nameRead = "AlphaCap", name = new { value = "AlphaCap" },
+                    rosterMatch = new { userId = seeded.Captain1.ToString(), team = "team1", source = "riot_verified", method = "read" },
+                },
+                new { side = "ally", nameRead = "Ringer", name = new { value = "Ringer" } },
+            },
+        });
+        var client = Authenticated(Configured(new StubHandler(HttpStatusCode.OK, ocrResult), new StubHandler(HttpStatusCode.OK, "{}")), seeded.Captain1);
+
+        var parse = await (await client.PostAsync($"/api/matches/{seeded.MatchId}/reports/parse-screenshot", Form(seeded.Team1Id)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        parse.GetProperty("verification").GetProperty("players").EnumerateArray().Select(p => p.GetProperty("status").GetString())
+            .Should().Equal("verified", "unknown");
+
+        var body = new
+        {
+            gameNumber = 1,
+            reportedByTeamId = seeded.Team1Id.ToString(),
+            team1Score = 13,
+            team2Score = 1,
+            source = "ocr",
+            ocrParseId = parse.GetProperty("parseId").GetString(),
+            matchData = new { players = new[] { new { gameName = "AlphaCap", isTeam1 = true }, new { gameName = "Ringer", isTeam1 = true } } },
+        };
+        var first = await client.PostAsJsonAsync($"/api/matches/{seeded.MatchId}/reports", body);
+        await client.PostAsJsonAsync($"/api/matches/{seeded.MatchId}/reports", body);
+
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        var report = await first.Content.ReadFromJsonAsync<JsonElement>();
+        report.GetProperty("ocr_verification").GetProperty("players")[1].GetProperty("status").GetString().Should().Be("unknown");
+        await using var check = new NpgsqlConnection(_factory.ConnectionString);
+        var alerts = await check.QueryAsync<string>(
+            "SELECT message FROM notifications WHERE user_id = @organizer AND type = 'match_report_flag'", new { organizer = seeded.Organizer });
+        alerts.Should().ContainSingle().Which.Should().Contain("Ringer isn't on either team's roster");
+    }
+
+    [Fact]
+    public async Task SameScreenshotForAnotherMatch_IsFlaggedAsReused()
+    {
+        var first = await SeedMatchAsync();
+        var second = await SeedMatchAsync();
+        byte[] image = [.. Png, .. Guid.NewGuid().ToByteArray()];
+        var factory = Configured(new StubHandler(HttpStatusCode.OK, OcrResult), new StubHandler(HttpStatusCode.OK, "{}"));
+        await Authenticated(factory, first.Captain1).PostAsync($"/api/matches/{first.MatchId}/reports/parse-screenshot", Form(first.Team1Id, image));
+
+        var parse = await (await Authenticated(factory, second.Captain1)
+                .PostAsync($"/api/matches/{second.MatchId}/reports/parse-screenshot", Form(second.Team1Id, image)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+
+        parse.GetProperty("verification").GetProperty("flags").EnumerateArray().Select(f => f.GetString())
+            .Should().Contain(ScoreboardReportVerifier.FlagReused);
+    }
+
+    [Fact]
+    public async Task OcrReport_WithEveryoneVerified_DoesNotAlertOrganizers()
+    {
+        var seeded = await SeedMatchAsync();
+        var ocrResult = JsonSerializer.Serialize(new
+        {
+            allyTeam = new { value = "team1" },
+            players = new object[]
+            {
+                new
+                {
+                    side = "ally", nameRead = "Cap", name = new { value = "Cap" },
+                    rosterMatch = new { userId = seeded.Captain1.ToString(), team = "team1", source = "riot_verified", method = "read" },
+                },
+            },
+        });
+        var client = Authenticated(Configured(new StubHandler(HttpStatusCode.OK, ocrResult), new StubHandler(HttpStatusCode.OK, "{}")), seeded.Captain1);
+        // A screenshot nobody uploaded before (the shared test PNG would rightly be flagged as reused).
+        byte[] unique = [.. Png, .. Guid.NewGuid().ToByteArray()];
+        var parse = await (await client.PostAsync($"/api/matches/{seeded.MatchId}/reports/parse-screenshot", Form(seeded.Team1Id, unique)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+
+        var submit = await client.PostAsJsonAsync($"/api/matches/{seeded.MatchId}/reports", new
+        {
+            gameNumber = 1,
+            reportedByTeamId = seeded.Team1Id.ToString(),
+            team1Score = 13,
+            team2Score = 1,
+            source = "ocr",
+            ocrParseId = parse.GetProperty("parseId").GetString(),
+            matchData = new { players = new[] { new { gameName = "Cap", isTeam1 = true } } },
+        });
+
+        submit.StatusCode.Should().Be(HttpStatusCode.OK);
+        await using var check = new NpgsqlConnection(_factory.ConnectionString);
+        (await check.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM notifications WHERE user_id = @organizer AND type = 'match_report_flag'", new { organizer = seeded.Organizer }))
+            .Should().Be(0);
     }
 
     private async Task<int> CountParsesAsync(Guid matchId)

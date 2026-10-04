@@ -39,7 +39,16 @@ public static class ScoreboardOcrDebugEndpoints
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         if (!IsStaff(user)) return StaffOnly();
         var health = await ocr.HealthAsync(ct);
-        return Results.Ok(new { configured = ocr.IsConfigured, reachable = health.Reachable, agents = health.Agents });
+        return Results.Ok(new
+        {
+            configured = ocr.IsConfigured,
+            reachable = health.Reachable,
+            agents = health.Agents,
+            bankAgents = health.BankAgents,
+            scripts = health.Scripts ?? [],
+            catalogVersion = health.CatalogVersion,
+            refreshedAt = health.RefreshedAt,
+        });
     }
 
     private static async Task<IResult> ParseAsync(HttpContext ctx, ScoreboardOcrClient ocr, CancellationToken ct)
@@ -68,7 +77,14 @@ public static class ScoreboardOcrDebugEndpoints
         if (call.Status != OcrCallStatus.Success) return Results.Json(new { error = call.UserMessage }, statusCode: 502);
 
         using var result = JsonDocument.Parse(call.ResultJson!);
-        return Results.Ok(new { elapsedMs = timer.ElapsedMilliseconds, result = result.RootElement.Clone() });
+        // Debug rosters count as verified Riot IDs, so the bench shows what verification would say.
+        var verification = ScoreboardVerification.FromParse(result.RootElement, rosters);
+        return Results.Ok(new
+        {
+            elapsedMs = timer.ElapsedMilliseconds,
+            result = result.RootElement.Clone(),
+            verification = JsonSerializer.SerializeToElement(verification, OcrVerificationJson.Options),
+        });
     }
 
     /// <summary>Newline-separated names → roster players with synthetic ids (team1-0, team1-1, …).</summary>
@@ -78,6 +94,6 @@ public static class ScoreboardOcrDebugEndpoints
             .Where(n => n.Length <= MaxNameLength)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(MaxNamesPerTeam)
-            .Select((name, i) => new OcrRosterPlayer($"{prefix}-{i}", [name]))
+            .Select((name, i) => new OcrRosterPlayer($"{prefix}-{i}", [new OcrRosterName(name, OcrNameSource.RiotVerified)]))
             .ToList();
 }

@@ -141,7 +141,8 @@ public sealed class ScoreboardOcrDebugEndpointTests
     public void ParseNames_TrimsDedupesAndCaps()
     {
         var names = ScoreboardOcrDebugEndpoints.ParseNames(" a \nA\nb\n\n" + new string('x', 41), "team1");
-        names.Select(n => n.Names[0]).Should().Equal("a", "b");
+        names.Select(n => n.Candidates[0].Name).Should().Equal("a", "b");
+        names.Should().OnlyContain(n => n.Candidates[0].Source == OcrNameSource.RiotVerified);
         names.Select(n => n.UserId).Should().Equal("team1-0", "team1-1");
     }
 

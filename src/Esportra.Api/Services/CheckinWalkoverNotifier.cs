@@ -177,32 +177,7 @@ public sealed class CheckinWalkoverNotifier(
         bodyLines.Add("Review or reset the forfeited match from the bracket.");
         var message = string.Join('\n', bodyLines);
 
-        var organizerIds = (await conn.QueryAsync<Guid>(
-            """
-            SELECT DISTINCT r.user_id
-            FROM (
-                SELECT t.organizer_id AS user_id
-                FROM public.tournaments t
-                WHERE t.id = @tournamentId
-                  AND t.organizer_id IS NOT NULL
-
-                UNION
-
-                SELECT os.user_id
-                FROM public.tournaments t
-                JOIN public.organizations o ON o.id = t.organization_id
-                JOIN public.organization_staff os
-                  ON os.organization_id = o.id
-                 AND os.status = 'active'
-                LEFT JOIN public.staff_tournament_assignments sta
-                  ON sta.organization_staff_id = os.id
-                 AND sta.tournament_id = t.id
-                WHERE t.id = @tournamentId
-                  AND (os.role = 'admin' OR sta.id IS NOT NULL)
-            ) r
-            WHERE r.user_id IS NOT NULL
-            """,
-            new { tournamentId = context.TournamentId })).AsList();
+        var organizerIds = await TournamentOrganizerRecipients.LoadAsync(conn, context.TournamentId);
 
         var dataPayload = new
         {
