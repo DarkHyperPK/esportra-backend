@@ -19,6 +19,25 @@ public static class ScoreboardRosterLoader
     public static async Task<IReadOnlyList<Guid>> LoadUserIdsAsync(IDbConnection conn, Guid team1Id, Guid team2Id) =>
         (await LoadMembersAsync(conn, team1Id, team2Id)).Select(m => m.UserId).Distinct().ToList();
 
+    /// <summary>Riot accounts (PUUIDs) linked through Riot sign-in or the verified desktop agent, per roster member.</summary>
+    public static async Task<IReadOnlyList<LinkedAccount>> LoadLinkedAccountsAsync(IDbConnection conn, Guid team1Id, Guid team2Id)
+    {
+        var members = await LoadMembersAsync(conn, team1Id, team2Id);
+        var puuids = (await conn.QueryAsync<(Guid UserId, string Puuid)>(
+            """
+            SELECT user_id, puuid FROM riot_accounts WHERE user_id = ANY(@userIds) AND puuid IS NOT NULL
+            UNION
+            SELECT user_id, riot_puuid FROM player_riot_accounts
+            WHERE user_id = ANY(@userIds) AND riot_puuid IS NOT NULL AND verified_at IS NOT NULL
+            """,
+            new { userIds = members.Select(m => m.UserId).Distinct().ToArray() })).ToList();
+        return members
+            .SelectMany(m => puuids.Where(p => p.UserId == m.UserId)
+                .Select(p => new LinkedAccount(m.UserId.ToString(), m.CompetitorId == team1Id ? "team1" : "team2", p.Puuid)))
+            .DistinctBy(a => (a.UserId, a.Puuid))
+            .ToList();
+    }
+
     public static async Task<OcrRosters> LoadAsync(IDbConnection conn, Guid team1Id, Guid team2Id)
     {
         var members = await LoadMembersAsync(conn, team1Id, team2Id);

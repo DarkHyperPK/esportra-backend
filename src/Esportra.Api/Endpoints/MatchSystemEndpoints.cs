@@ -93,6 +93,7 @@ public static class MatchSystemEndpoints
             DiscordNotificationService discord,
             ScoreboardScreenshotStore screenshotStore,
             ScoreboardReportVerifier ocrVerifier,
+            IScoreboardRiotCheckTrigger riotCheck,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -144,9 +145,12 @@ public static class MatchSystemEndpoints
 
                 // Screenshot reports: who is on it, recomputed here from the stored parse and fresh
                 // rosters (never taken from the client).
+                // The screenshot has no #tags: Riot's record of the match confirms the accounts afterwards.
                 var ocrVerification = reportSource.OcrParseId is { } verifiedParseId
                     ? await ScoreboardReportVerifier.ForSubmissionAsync(conn, id, verifiedParseId, req.MatchData)
                     : null;
+                if (ocrVerification is not null)
+                    ocrVerification = ocrVerification with { Riot = new RiotCheck(RiotCheckStatus.Pending) };
 
                 var report = await conn.QuerySingleAsync<dynamic>(
                     """
@@ -203,7 +207,10 @@ public static class MatchSystemEndpoints
                     });
 
                 if (ocrVerification is not null)
+                {
                     await ocrVerifier.NotifyOrganizersAsync(conn, id, (Guid)report.id, reportingCompetitorId, ocrVerification, ct);
+                    riotCheck.Queue((Guid)report.id);
+                }
 
                 await NotifyReportSubmittedAsync(
                     id, report.id?.ToString(), req.ReportedByTeamId, reportingCompetitorId,

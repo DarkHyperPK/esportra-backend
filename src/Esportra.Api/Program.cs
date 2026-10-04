@@ -359,6 +359,9 @@ builder.Services.AddScoped<Esportra.Api.Services.RiotIdRefreshService>();
 builder.Services.AddScoped<Esportra.Api.ScoreboardOcr.ScoreboardReportVerifier>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.RiotIdRefreshJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IRiotIdRefreshTrigger, Esportra.Api.ScheduledJobs.RiotIdRefreshTrigger>();
+builder.Services.AddScoped<Esportra.Api.Services.IRiotMatchLookup, Esportra.Api.Services.RiotMatchLookup>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScoreboardRiotCheckJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IScoreboardRiotCheckTrigger, Esportra.Api.ScheduledJobs.ScoreboardRiotCheckTrigger>();
 
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()

@@ -69,8 +69,12 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
         if (!root.TryGetProperty("players", out var players) || players.ValueKind != JsonValueKind.Array) return [];
         return players.EnumerateArray().Select(p => new SubmittedPlayer(
             p.TryGetProperty("gameName", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "",
-            Bool(p, "isTeam1") ? "team1" : Bool(p, "isTeam2") ? "team2" : null)).ToList();
+            Bool(p, "isTeam1") ? "team1" : Bool(p, "isTeam2") ? "team2" : null,
+            Int(p, "kills"), Int(p, "deaths"), Int(p, "assists"))).ToList();
     }
+
+    private static int? Int(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : null;
 
     private static bool Bool(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.True;
@@ -101,7 +105,7 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
             new { matchId, competitorId = reportingCompetitorId });
         if (context is null) return;
 
-        var signature = string.Join(",", review.Select(p => $"{p.Index}:{p.Status}").Concat(verification.Flags));
+        var signature = string.Join(",", review.Select(p => $"{p.Index}:{p.Status}:{p.RiotStatus}").Concat(verification.Flags));
         var title = $"{context.TournamentName ?? "Tournament"} · Match {context.MatchNumber}: check the screenshot report";
         var message = string.Join('\n', Lines(context.ReporterName, review, verification.Flags));
         var link = string.IsNullOrWhiteSpace(context.TournamentSlug) ? "/organizer/tournaments" : $"/organizer/tournament/{context.TournamentSlug}/brackets";
@@ -113,7 +117,7 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
             audience = "organizer",
             reason = "screenshot_report_review",
             signature,
-            players = review.Select(p => new { p.Name, p.Status, p.ReadName }),
+            players = review.Select(p => new { p.Name, p.Status, p.ReadName, p.RiotStatus, p.RiotId }),
             flags = verification.Flags,
         });
 
@@ -146,15 +150,23 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
         yield return $"{reporter ?? "A team"} reported a result from a screenshot.";
         foreach (var player in review)
         {
-            yield return player.Status switch
+            yield return player.RiotStatus switch
             {
-                VerificationStatus.Unknown => $"• {player.Name} isn't on either team's roster.",
-                VerificationStatus.OtherTeam => $"• {player.Name} is on the other team's roster.",
-                VerificationStatus.Duplicate => $"• {player.Name} is listed twice.",
-                _ => $"• {player.Name} was typed by the captain (screenshot showed \"{player.ReadName}\").",
+                RiotStatus.OtherAccount => $"• {player.Name}: a different Riot account ({player.RiotId}) played under this name.",
+                RiotStatus.NotInMatch => $"• {player.Name}'s linked Riot account isn't in Riot's record of the match.",
+                RiotStatus.Unregistered => $"• {player.RiotId ?? player.Name} played but isn't linked to anyone on either roster.",
+                _ => player.Status switch
+                {
+                    VerificationStatus.Unknown => $"• {player.Name} isn't on either team's roster.",
+                    VerificationStatus.OtherTeam => $"• {player.Name} is on the other team's roster.",
+                    VerificationStatus.Duplicate => $"• {player.Name} is listed twice.",
+                    _ => $"• {player.Name} was typed by the captain (screenshot showed \"{player.ReadName}\").",
+                },
             };
         }
         if (flags.Contains(FlagReused)) yield return "• The same screenshot was used for another match.";
         if (flags.Contains(FlagDate)) yield return "• The date on the screenshot is far from the match date.";
+        if (flags.Contains(ScoreboardVerification.FlagStatsMismatch)) yield return "• Submitted K/D/A differs from Riot's record of the match.";
+        if (flags.Contains(ScoreboardVerification.FlagScoreMismatch)) yield return "• The submitted score differs from Riot's record of the match.";
     }
 }
