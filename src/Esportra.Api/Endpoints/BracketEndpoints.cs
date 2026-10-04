@@ -65,8 +65,6 @@ public static class BracketEndpoints
             if (boErr is not null) return boErr;
 
             var config = new BracketConfig(
-                DailyStartTime: req.DailyStartTime,
-                TournamentStartDate: req.TournamentStartDate,
                 SwissGroups: swissGroups,
                 SwissRounds: swissRounds);
             var roundConfig = new StageRoundConfiguration(req.Format, req.BestOf, effectiveBoMode, req.RoundBoOverrides);
@@ -228,6 +226,10 @@ public static class BracketEndpoints
                 WHERE version_id = @versionId
                   AND status != 'completed'
                 """,
+                new { versionId = version.Value });
+
+            await conn.ExecuteAsync(
+                "UPDATE brkt_versions SET cached_ui_state = NULL WHERE id = @versionId",
                 new { versionId = version.Value });
 
             await bracketHub.Clients
