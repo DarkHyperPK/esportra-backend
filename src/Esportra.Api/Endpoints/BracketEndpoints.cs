@@ -228,6 +228,10 @@ public static class BracketEndpoints
                 """,
                 new { versionId = version.Value });
 
+            await conn.ExecuteAsync(
+                "UPDATE brkt_versions SET cached_ui_state = NULL WHERE id = @versionId",
+                new { versionId = version.Value });
+
             await bracketHub.Clients
                 .Group(BracketHub.BracketGroup(version.Value.ToString()))
                 .SendAsync(BracketHubEvents.MatchUpdated,
