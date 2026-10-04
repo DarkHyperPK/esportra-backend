@@ -31,9 +31,19 @@ def normalize_name(text: str) -> str:
     return re.sub(r"[^0-9a-z]", "", mapped)
 
 
+# Slash and bar look-alikes the recognisers sometimes return inside "K / D / A" (full-width, fraction,
+# division slashes). NFKC already folds full-width digits and "／"; these have no compatibility mapping.
+_SEPARATOR_LOOKALIKES = str.maketrans({"⁄": "/", "∕": "/", "⧸": "/", "／": "/", "｜": "|", "¦": "|"})
+
+
+def normalize_numeric(text: str) -> str:
+    """Numeric cell text in plain ASCII digits and separators."""
+    return unicodedata.normalize("NFKC", text).translate(_SEPARATOR_LOOKALIKES)
+
+
 def parse_number(text: str) -> tuple[float | None, float]:
     """Return (value, confidence multiplier). Multiplier < 1 when look-alikes were replaced."""
-    raw = text.strip().rstrip("%").replace(" ", "")
+    raw = normalize_numeric(text).strip().rstrip("%").replace(" ", "")
     if not raw:
         return None, 0.0
     if _NUMBER_RE.match(raw):
@@ -66,6 +76,7 @@ def _slash_as_one(parts: list[str]) -> list[list[str]]:
 def split_kda(text: str) -> list[tuple[float | None, float]] | None:
     """Parse "K / D / A". Tolerates dropped spaces, '|' for '/', and slashes misread as '1'
     (the last case comes back with low confidence so the captain checks it)."""
+    text = normalize_numeric(text)
     parts = [p for p in re.split(r"\s*[/|\\]\s*|\s+", text.strip()) if p]
     if len(parts) == 3 and all(parse_number(p)[0] is not None for p in parts):
         parsed = [parse_number(p) for p in parts]

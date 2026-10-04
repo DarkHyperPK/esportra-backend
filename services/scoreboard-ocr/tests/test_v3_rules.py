@@ -246,3 +246,21 @@ def test_installer_retries_until_the_download_works():
     asyncio.run(asyncio.wait_for(install_missing_scripts(engine, download, delays=(0, 0), every=0), timeout=5))
     assert engine.missing == {} and sorted(engine.added) == ["arabic", "korean"]
     assert seen.count("arabic") == 2 and seen.count("korean") == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("23／26/6", [23, 26, 6]), ("２３ / ２６ / ６", [23, 26, 6]), ("19 ∕ 18 ⁄ 7", [19, 18, 7]), ("4｜5｜6", [4, 5, 6])],
+)
+def test_kda_accepts_slash_and_digit_lookalikes(text, expected):
+    from app.valorant.text import split_kda
+
+    parts = split_kda(text)
+    assert parts is not None and [v for v, _ in parts] == expected
+    assert all(c == 1.0 for _, c in parts)
+
+
+def test_full_width_digits_parse_as_numbers():
+    from app.valorant.text import parse_number
+
+    assert parse_number("２５３") == (253.0, 1.0)

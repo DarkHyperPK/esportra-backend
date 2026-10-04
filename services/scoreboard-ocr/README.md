@@ -60,21 +60,21 @@ Columns the screenshot doesn't show come back missing, never invented.
 
 ## Measured accuracy
 
-The set is 33 real client screenshots in `tests/fixtures/real/`:
-- 28 from players' uploads plus 5 earlier ones;
+The set is 34 real client screenshots in `tests/fixtures/real/`:
+- 29 from players' uploads plus 5 earlier ones;
 - 16:9, 16:10, 4:3 and 5:4 at 1280–1920 px;
 - competitive, custom and the older client layout;
 - 12 maps including Summit.
 
 | Field | Result |
 |---|---|
-| Score, outcome, map, sides | 33 / 33 screenshots exact |
-| Numeric cells (K, D, A, ACS, trades, FB, plants, defuses, econ) | 2519 / 2519 (one more cell is hidden under a name in the game itself and comes back empty) |
-| Names, with the Arabic/Korean recognisers installed | 328 / 328 matched to the right player, including all 13 Arabic names |
+| Score, outcome, map, sides | 34 / 34 screenshots exact |
+| Numeric cells (K, D, A, ACS, trades, FB, plants, defuses, econ) | 2599 / 2599 (one more cell is hidden under a name in the game itself and comes back empty) |
+| Names, with the Arabic/Korean recognisers installed | 338 / 338 matched to the right player, including all 13 Arabic names |
 | Arabic/Hangul names without those recognisers | 11 / 13 matched by elimination, 0 wrong |
-| Agents, leave-one-screenshot-out | 98.2% (the misses are agents with a single example in the set) |
+| Agents, leave-one-screenshot-out | 98.3% (the misses are agents with a single example in the set) |
 
-**Robustness (`tests/test_real_robustness.py`):** every screenshot is also degraded six ways, 198 variants in total, and all pass:
+**Robustness (`tests/test_real_robustness.py`):** every screenshot is also degraded six ways, 204 variants in total, and all pass:
 - 1366 px JPEG at quality 70;
 - 3440×1440 ultrawide;
 - WebP at quality 60;
@@ -99,6 +99,8 @@ The set is 33 real client screenshots in `tests/fixtures/real/`:
 | Fewer than 10 rows (4v5) | Read; `ROW_COUNT` warning |
 | Non-Latin, spaced, letter-spaced, numeric, tagged or truncated names | Script models, look-alike folding, tag stripping, partial matching |
 | Name hiding the score's first digit | Score left empty, never guessed |
+| Full-width or Unicode slashes and digits in a re-read ("23／26/6") | Numeric text is NFKC-normalised before parsing |
+| Riot IDs: the scoreboard shows game names without the #tag | Names are only "name matches"; the API confirms each account from Riot's match record (by PUUID) after submit |
 | Streamer mode (names hidden) | `NAMES_HIDDEN` warning |
 | Player named after an agent ("Jett") | Read as a name; only most rows matching triggers the warning |
 | New agent before valorant-api lists it | Bundled portrait; returned with `uuid: null` and its name |

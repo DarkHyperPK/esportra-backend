@@ -20,7 +20,7 @@ from app.valorant.names import match_by_elimination, match_names, resolve_ally_t
 from app.valorant.name_reread import recover_names
 from app.valorant.rows import Row, build_rows, row_pitch, stat_boundary
 from app.valorant.sides import classify_row, fill_last_unknown, relative_sides, row_tint
-from app.valorant.text import split_kda
+from app.valorant.text import normalize_numeric, split_kda
 
 PARSER_VERSION = "valorant-scoreboard-v3"
 
@@ -95,7 +95,7 @@ def _reread_single(
         return
     x0, y0, x1, y1 = box
     text, conf = _recognize(engine, image[y0:y1, x0:x1])
-    digits = text.strip()
+    digits = normalize_numeric(text).strip()
     if after_name:
         # The first column can sit under the tail of a long name ("Rawzu from temu394"): keep the
         # trailing number. When a letter runs straight into one or two digits ("One60" for 260), the
