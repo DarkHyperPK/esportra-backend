@@ -20,9 +20,6 @@ public sealed class RoundRobinGenerator : IBracketGenerator
         var nodes = new List<BracketNode>();
         var edges = new List<BracketEdge>();
 
-        string? dailyStart = config?.DailyStartTime ?? "20:00";
-        DateTime? startDate = config?.TournamentStartDate is { } s ? DateTime.Parse(s) : null;
-
         int numGroups = bracketSize ?? 1;
         var groups = new List<List<(Guid Id, string Name, int Seed)>>(numGroups);
         for (int i = 0; i < numGroups; i++) groups.Add([]);
@@ -45,17 +42,6 @@ public sealed class RoundRobinGenerator : IBracketGenerator
 
             for (int ri = 0; ri < roundMatches.Count; ri++)
             {
-                string? scheduledTime = null;
-                if (startDate.HasValue)
-                {
-                    var roundDate = startDate.Value.AddDays(ri);
-                    var parts = dailyStart!.Split(':');
-                    roundDate = roundDate.Date
-                        .AddHours(int.Parse(parts[0]))
-                        .AddMinutes(int.Parse(parts[1]));
-                    scheduledTime = roundDate.ToString("o");
-                }
-
                 var round = roundMatches[ri];
                 for (int mi = 0; mi < round.Count; mi++)
                 {
@@ -72,7 +58,7 @@ public sealed class RoundRobinGenerator : IBracketGenerator
                         Team1Id: t1.Id,
                         Team2Id: t2.Id,
                         BestOf: bestOf,
-                        ScheduledTime: scheduledTime,
+                        ScheduledTime: null,
                         X: gi * 400,
                         Y: ri * 150 + mi * 80,
                         Team1Seed: t1.Seed,

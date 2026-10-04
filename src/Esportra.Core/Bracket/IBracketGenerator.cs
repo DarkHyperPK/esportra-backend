@@ -13,7 +13,5 @@ public interface IBracketGenerator
 }
 
 public sealed record BracketConfig(
-    string? DailyStartTime = "20:00",
-    string? TournamentStartDate = null,
     int? SwissGroups = null,
     int? SwissRounds = null);

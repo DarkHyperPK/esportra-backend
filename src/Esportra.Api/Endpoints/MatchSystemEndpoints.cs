@@ -809,8 +809,8 @@ public static class MatchSystemEndpoints
                 conn, userCtx.UserIdGuid, stageId, StaffAuthHelper.PermBracketEdit);
             if (!allowed && !StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
 
-            // Store raw JSON body as-is to preserve frontend key casing (snake_case)
-            var json = await new StreamReader(ctx.Request.Body).ReadToEndAsync(ct);
+            var rawJson = await new StreamReader(ctx.Request.Body).ReadToEndAsync(ct);
+            var json = NormalizeSchedulingConfigJson(rawJson);
             var tournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT tournament_id FROM tournament_stages WHERE id = @stageId",
                 new { stageId });
@@ -858,7 +858,7 @@ public static class MatchSystemEndpoints
             var rows = await conn.QueryAsync<dynamic>(
                 $"""
                 SELECT m.id, m.match_number, m.scheduled_time, m.team1_id, m.team2_id,
-                       m.status, m.round_index, m.bracket_type,
+                       m.status, m.round_index, m.bracket_type, m.scheduling_escalated_at,
                        {BracketTeamResolutionSql.Team1Columns},
                        {BracketTeamResolutionSql.Team2Columns}
                 FROM brkt_matches m
@@ -2523,6 +2523,64 @@ public static class MatchSystemEndpoints
                 new { id });
             return Results.Ok(rows);
         }).RequireAuthorization("Authenticated");
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Rewrites top-level camelCase keys to their canonical snake_case equivalents.
+    /// Unknown keys pass through unchanged. If both forms appear for the same field,
+    /// the snake_case entry wins and the camelCase entry is dropped.
+    /// </summary>
+    internal static string NormalizeSchedulingConfigJson(string json)
+    {
+        var aliases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["selfPlayEnabled"] = "self_play_enabled",
+            ["checkinEnabled"] = "checkin_enabled",
+            ["checkinWindowMinutes"] = "checkin_window_minutes",
+            ["roundDeadline"] = "round_deadline",
+            ["roundDeadlines"] = "round_deadlines",
+            ["scheduleStartTime"] = "schedule_start_time",
+            ["matchIntervalMinutes"] = "match_interval_minutes",
+            ["dailyStartTime"] = "daily_start_time",
+            ["schedulingMode"] = "scheduling_mode",
+        };
+
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            return json;
+
+        // First pass: record which canonical keys are already present as snake_case
+        // so we can drop the camelCase alias when the snake_case form also exists.
+        var snakeCasePresent = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var prop in doc.RootElement.EnumerateObject())
+            if (!aliases.ContainsKey(prop.Name))
+                snakeCasePresent.Add(prop.Name);
+
+        using var ms = new MemoryStream();
+        using var writer = new Utf8JsonWriter(ms);
+        writer.WriteStartObject();
+        foreach (var prop in doc.RootElement.EnumerateObject())
+        {
+            if (aliases.TryGetValue(prop.Name, out var canonical))
+            {
+                if (!snakeCasePresent.Contains(canonical))
+                {
+                    writer.WritePropertyName(canonical);
+                    prop.Value.WriteTo(writer);
+                }
+                // snake_case version already present — skip the camelCase alias
+            }
+            else
+            {
+                writer.WritePropertyName(prop.Name);
+                prop.Value.WriteTo(writer);
+            }
+        }
+        writer.WriteEndObject();
+        writer.Flush();
+        return System.Text.Encoding.UTF8.GetString(ms.ToArray());
     }
 }
 

@@ -65,8 +65,6 @@ public static class BracketEndpoints
             if (boErr is not null) return boErr;
 
             var config = new BracketConfig(
-                DailyStartTime: req.DailyStartTime,
-                TournamentStartDate: req.TournamentStartDate,
                 SwissGroups: swissGroups,
                 SwissRounds: swissRounds);
             var roundConfig = new StageRoundConfiguration(req.Format, req.BestOf, effectiveBoMode, req.RoundBoOverrides);
