@@ -8,6 +8,7 @@ the layout (the name column) rather than from detected text.
 
 from __future__ import annotations
 
+import logging
 from statistics import median
 
 import cv2
@@ -16,6 +17,8 @@ import numpy as np
 from app.engine import OcrEngine
 from app.valorant.columns import Column
 from app.valorant.rows import Row, stat_boundary
+
+log = logging.getLogger(__name__)
 
 REREAD_BELOW = 0.8
 ACCEPT_FROM = 0.5
@@ -51,7 +54,11 @@ def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | No
     """Most confident read across the default and the installed script recognisers."""
     best = ("", 0.0, None)
     for script in (None, *getattr(engine, "scripts", ())):
-        text, conf = _read(engine, crop, script)
+        try:
+            text, conf = _read(engine, crop, script)
+        except Exception as exc:  # noqa: BLE001 - an optional recogniser failing must not fail the parse
+            log.warning("OCR %s recogniser failed on a name: %s", script or "default", exc)
+            continue
         if any(ch.isalnum() for ch in text) and conf > best[1]:
             best = (text, conf, script)
     return best

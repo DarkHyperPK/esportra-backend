@@ -15,7 +15,7 @@ from app.valorant.checks import check_hidden_names, check_kills, check_rows, che
 from app.valorant.columns import Column, find_header
 from app.valorant.header import read_header
 from app.image_io import normalize_scale
-from app.valorant.layout import STRETCH_TOLERANCE, estimate_stretch, portrait_box, table_left, unstretch
+from app.valorant.layout import STRETCH_TOLERANCE, estimate_stretch, portrait_box, portrait_stretch, table_left, unstretch
 from app.valorant.names import match_by_elimination, match_names, resolve_ally_team
 from app.valorant.name_reread import recover_names
 from app.valorant.rows import Row, build_rows, row_pitch, stat_boundary
@@ -165,6 +165,19 @@ def _apply_names(players: list[PlayerRow], rows: list[Row], rosters: Rosters) ->
     return out, ally_team, ally_conf
 
 
+def _measure_stretch(image_bgr: np.ndarray, tokens: list, columns: list[Column]) -> float:
+    """Average of two independent cues: single-digit cell shapes and the (square) agent portraits."""
+    digits = estimate_stretch(tokens, max(c.y1 for c in columns))
+    rows = build_rows(tokens, columns)
+    starts = [r.name_x0 for r in rows if r.name]
+    if len(rows) < 3 or not starts:
+        return digits
+    pitch = row_pitch(rows)
+    bands = [(r.yc - 0.45 * pitch, r.yc + 0.45 * pitch) for r in rows]
+    portraits = portrait_stretch(image_bgr, bands, float(np.median(starts)), pitch)
+    return digits if portraits is None else (digits + portraits) / 2
+
+
 def _read_layout(image_bgr: np.ndarray, engine: OcrEngine) -> tuple[np.ndarray, list, list[Column], float]:
     """OCR the frame; when the capture is stretched or squeezed (stretched-resolution players), undo
     it and read again so digits, names and portraits have their native shapes."""
@@ -172,7 +185,7 @@ def _read_layout(image_bgr: np.ndarray, engine: OcrEngine) -> tuple[np.ndarray, 
     columns = find_header(tokens)
     if not columns:
         raise ScoreboardNotFound("Could not find the scoreboard columns. Upload the in-game Scoreboard tab.")
-    stretch = estimate_stretch(tokens, max(c.y1 for c in columns))
+    stretch = _measure_stretch(image_bgr, tokens, columns)
     if abs(stretch - 1) > STRETCH_TOLERANCE:
         image_bgr = normalize_scale(unstretch(image_bgr, stretch))
         tokens = engine.read(image_bgr)

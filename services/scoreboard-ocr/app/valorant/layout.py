@@ -78,7 +78,8 @@ def portrait_box(image_bgr: np.ndarray, left: float | None, name_x0: float, yc: 
 # client layout and resolution in the fixtures), and how much it moves per unit of horizontal stretch.
 _DIGIT_ASPECT = 0.81
 _DIGIT_ASPECT_PER_STRETCH = 0.336
-STRETCH_TOLERANCE = 0.12
+# Combined digit + portrait estimate: native captures 0.90-1.04, stretched 1.24-1.38, squeezed 0.64-0.78.
+STRETCH_TOLERANCE = 0.15
 
 
 def estimate_stretch(tokens: list, header_bottom: float) -> float:
@@ -95,3 +96,23 @@ def unstretch(image_bgr: np.ndarray, stretch: float) -> np.ndarray:
 
     height, width = image_bgr.shape[:2]
     return cv2.resize(image_bgr, (max(1, round(width / stretch)), height), interpolation=cv2.INTER_AREA if stretch > 1 else cv2.INTER_CUBIC)
+
+
+# Portrait width / row pitch on native captures (measured 0.78-0.90 across layouts).
+_PORTRAIT_RATIO = 0.85
+
+
+def portrait_stretch(image_bgr: np.ndarray, bands: list[tuple[float, float]], name_x0: float, pitch: float) -> float | None:
+    """Horizontal stretch from the agent portraits, which are square on native captures: the strongest
+    shared edge right of the table edge is the portrait's right border."""
+    left = table_left(image_bgr, bands, name_x0, pitch)
+    if left is None or pitch <= 0:
+        return None
+    shared = _shared_edges(image_bgr, bands, int(min(image_bgr.shape[1] - 1, name_x0 - 0.2 * pitch)))
+    if shared is None:
+        return None
+    lo, hi = int(left + 0.5 * pitch), int(min(len(shared), left + 1.6 * pitch))
+    if hi - lo < 3:
+        return None
+    right = lo + int(np.argmax(shared[lo:hi]))
+    return float(np.clip((right - left) / pitch / _PORTRAIT_RATIO, 0.5, 2.0))
