@@ -71,6 +71,9 @@ def split_kda(text: str) -> list[tuple[float | None, float]] | None:
         parsed = [parse_number(p) for p in parts]
         # K, D and A are never above 99 in one map; a bigger number means separators were misread.
         if all(v is not None and v <= 99 for v, _ in parsed):
+            if len(re.findall(r"[/|\\]", text)) < 2:
+                # A separator vanished: "14/ 14 19" is really 14 / 14 / 9 with the slash read as "1".
+                return [(v, mult * 0.5) for v, mult in parsed]
             return parsed
     if not all(p.isdigit() for p in parts):
         return None
@@ -79,3 +82,18 @@ def split_kda(text: str) -> list[tuple[float | None, float]] | None:
         return None
     confidence = 0.45 if len(options) == 1 else 0.25
     return [(float(p), confidence) for p in options[0]]
+
+
+# Folded together only when comparing names: OCR confuses these, players rarely differ by them alone.
+_LOOKALIKES = str.maketrans({"o": "0", "l": "1", "i": "1", "|": "1", "s": "5", "z": "2"})
+
+
+def match_key(text: str) -> str:
+    """Comparison key for a player name in any script.
+
+    Case, spacing (letter-spaced "L 1 t e"), punctuation, Arabic diacritics/tatweel and Cyrillic
+    look-alikes are ignored, and OCR look-alikes (O/0, l/1/I) are folded. Never shown to users.
+    """
+    base = unicodedata.normalize("NFKC", text).casefold().split("#", 1)[0].translate(_NAME_CONFUSABLES)
+    kept = "".join(ch for ch in unicodedata.normalize("NFKD", base) if ch.isalnum() and unicodedata.category(ch) != "Mn")
+    return kept.translate(_LOOKALIKES)

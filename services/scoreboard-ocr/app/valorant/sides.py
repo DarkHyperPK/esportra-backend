@@ -3,7 +3,9 @@
 Measured on Valorant client screenshots (stat area, text excluded):
   ally rows    teal,          hue ~180 deg, saturation high (~170/255)
   enemy rows   muted maroon,  hue ~270-320 deg, saturation ~70-90
-  your row     grey-olive,    saturation ~25-35 (the screenshot owner, so ally)
+  your row     grey-olive,    saturation ~25-35, or blue-grey (hue ~216, saturation ~52) on the 2026 client
+               (the screenshot owner, so ally)
+  party rows   gold (an ally in the owner's party)
 """
 
 from __future__ import annotations
@@ -28,8 +30,8 @@ def classify_band(band_bgr: np.ndarray) -> tuple[Side | None, float]:
         return "ally", round(min(1.0, sat / 150), 3)
     if sat >= 90 and 30 <= hue <= 75:
         return "ally", 0.8  # bright gold "you" row (older client / other themes)
-    if sat < 50:
-        return "ally", 0.7  # desaturated "you" row
+    if sat < 50 or (sat < 70 and 190 <= hue <= 240):
+        return "ally", 0.7  # desaturated "you" row (grey-olive, or blue-grey on the 2026 client)
     if hue >= 240 or hue <= 20:
         return "enemy", round(min(1.0, 0.5 + sat / 200), 3)
     return None, 0.0
@@ -49,3 +51,37 @@ def fill_last_unknown(sides: list[Side | None]) -> list[tuple[Side | None, float
         return [(s, -1.0) for s in sides]
     missing: Side = "ally" if allies == 4 else "enemy"
     return [((missing, 0.5) if s is None else (s, -1.0)) for s in sides]
+
+
+def row_tint(image_bgr: np.ndarray, x0: float, x1: float, yc: float, pitch: float) -> np.ndarray | None:
+    """Median colour of a row's stat area as a point (hue on the circle x saturation, value)."""
+    height, width = image_bgr.shape[:2]
+    band = image_bgr[int(max(0, yc - 0.3 * pitch)) : int(min(height, yc + 0.3 * pitch)), int(max(0, x0)) : int(min(width, x1))]
+    if band.size == 0:
+        return None
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(np.float32)
+    hsv = hsv[(hsv[:, 2] < 190) & (hsv[:, 2] > 25)]
+    if len(hsv) < 20:
+        return None
+    hue = np.radians(np.median(hsv[:, 0]) * 2.0)
+    sat, val = float(np.median(hsv[:, 1])) / 255, float(np.median(hsv[:, 2])) / 255
+    return np.array([sat * np.cos(hue), sat * np.sin(hue), val], dtype=np.float32)
+
+
+def relative_sides(tints: list[np.ndarray | None], sides: list[tuple[Side | None, float]]) -> list[tuple[Side | None, float]]:
+    """Rows the absolute colour rules couldn't place (colour-blind palettes, hover highlights, unusual
+    gamma) go to whichever team's rows they look closest to. Needs at least two placed rows per team."""
+    known = {side: [t for t, (s, _) in zip(tints, sides) if s == side and t is not None] for side in ("ally", "enemy")}
+    if len(known["ally"]) < 2 or len(known["enemy"]) < 2:
+        return sides
+    centres = {side: np.mean(points, axis=0) for side, points in known.items()}
+    out = []
+    for tint, (side, conf) in zip(tints, sides):
+        if side is None and tint is not None:
+            d_ally, d_enemy = (float(np.linalg.norm(tint - centres[s])) for s in ("ally", "enemy"))
+            closer: Side = "ally" if d_ally < d_enemy else "enemy"
+            margin = abs(d_ally - d_enemy) / max(d_ally + d_enemy, 1e-6)
+            out.append((closer, 0.5) if margin > 0.2 else (None, 0.0))
+        else:
+            out.append((side, conf))
+    return out

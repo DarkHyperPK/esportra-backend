@@ -65,3 +65,23 @@ def test_parses_scoreboard_as_camel_case_json(client):
     assert body["allyScore"]["value"] == 13 and body["enemyScore"]["value"] == 1
     assert body["players"][0]["rosterMatch"]["userId"] == "u1"
     assert set(body["players"][0]["stats"]) >= {"kills", "deaths", "assists", "firstBloods", "plants", "defuses"}
+
+
+def test_health_reports_catalog_bank_and_scripts(client):
+    body = client.get("/health").json()
+    assert body["status"] == "ok" and body["bankAgents"] >= 20
+    assert body["scripts"][0] == "default" and body["parserVersion"].startswith("valorant-scoreboard-")
+    assert {"agents", "maps", "catalogVersion", "refreshedAt"} <= body.keys()
+
+
+def test_accepts_rosters_with_name_sources(client):
+    rosters = Rosters(team1=[RosterPlayer(user_id="u1", candidates=[{"name": "KOOLTKK", "source": "riot_verified"}])])
+    resp = client.post(
+        "/v1/valorant/scoreboard",
+        headers={"X-Service-Token": TOKEN},
+        files={"image": ("s.png", client.png, "image/png")},
+        data={"rosters": rosters.model_dump_json(by_alias=True)},
+    )
+    assert resp.status_code == 200
+    matched = [p["rosterMatch"] for p in resp.json()["players"] if p["rosterMatch"]]
+    assert matched and matched[0]["source"] == "riot_verified" and matched[0]["method"] == "read"

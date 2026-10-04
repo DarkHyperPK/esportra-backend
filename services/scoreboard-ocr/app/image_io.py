@@ -40,7 +40,21 @@ def decode_image(data: bytes) -> np.ndarray:
     with Image.open(io.BytesIO(data)) as img:
         rgb = np.asarray(img.convert("RGB"))
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    return normalize_scale(bgr)
+    return normalize_scale(trim_black_bars(bgr))
+
+
+def trim_black_bars(image_bgr: np.ndarray, threshold: int = 12) -> np.ndarray:
+    """Remove pillarbox/letterbox bars (a 4:3 or 5:4 game captured on a 16:9 screen), so the game area
+    scales like a native capture. Only uniform near-black edges are cut; the game itself is never black."""
+    bright = image_bgr.max(axis=2) > threshold
+    cols, rows = np.flatnonzero(bright.mean(axis=0) > 0.01), np.flatnonzero(bright.mean(axis=1) > 0.01)
+    if cols.size == 0 or rows.size == 0:
+        return image_bgr
+    x0, x1, y0, y1 = cols[0], cols[-1] + 1, rows[0], rows[-1] + 1
+    height, width = image_bgr.shape[:2]
+    if (x1 - x0) * (y1 - y0) > 0.97 * width * height or x1 - x0 < 640 or y1 - y0 < 360:
+        return image_bgr  # no real bars, or what's left is too small to be a game frame
+    return image_bgr[y0:y1, x0:x1]
 
 
 def normalize_scale(image_bgr: np.ndarray) -> np.ndarray:

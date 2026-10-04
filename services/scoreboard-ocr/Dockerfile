@@ -12,6 +12,9 @@ RUN pip install -r requirements.txt \
     && pip install --no-deps -r requirements-ocr.txt
 
 COPY app ./app
+# Arabic and Korean name recognisers (PaddleOCR PP-OCRv5, checksum-verified). Never fails the build;
+# /health lists which scripts were installed.
+RUN python -m app.download_models
 
 RUN useradd --system --uid 10001 --home /srv ocr \
     && mkdir -p /data/valorant-assets \

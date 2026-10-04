@@ -4,56 +4,105 @@ An internal service that reads a Valorant post-match **Scoreboard** screenshot a
 
 ## Engine
 
-The service uses [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime to run PaddleOCR's PP-OCR detection and recognition models.
+The service uses [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime to run PaddleOCR's PP-OCR detection and recognition models, CPU only, with no PaddlePaddle dependency.
 
-- The models ship inside the `rapidocr` wheel, so nothing is downloaded at runtime and the service runs CPU-only with no PaddlePaddle dependency.
-- `app/engine.py` hides the engine behind `OcrEngine`, so a native `paddleocr` engine can be added later if wanted.
+- **Default recogniser:** PP-OCRv6, shipped inside the `rapidocr` wheel. It reads Latin script, digits, Chinese and Japanese.
+- **Arabic and Korean names:** read by the PP-OCRv5 recognisers for those scripts. They are downloaded during the Docker build (`app/download_models.py`, SHA-256 pinned by RapidOCR) and loaded only if present. `/health` lists the installed scripts.
+- **Swappable engine:** `app/engine.py` hides the engine behind `OcrEngine`.
 
 ## What it reads
 
-The Valorant client's post-match **Scoreboard** tab, either "grouped by team" or "individually sorted":
+The client's post-match **Scoreboard** tab in every layout seen so far:
 
-| Area | On screen | Read as |
-|---|---|---|
-| Summary line | `13 VICTORY 5` (owner's score on the left) | outcome, ally score, enemy score |
-| Top right | `MAP - ASCENT` | map. The match length (`34:57`) is ignored. |
-| Table columns | KDA (`20 / 7 / 3`), FIRST BLOODS, PLANTS, DEFUSES | kills, deaths, assists, firstBloods, plants, defuses |
-| Row tint | teal = ally, muted purple = enemy, grey-olive = you | side |
-| Name | `GTH \| tr1ck` | `tr1ck` (Premier tag dropped) |
+| Layout | Columns |
+|---|---|
+| Competitive, 2026 client | PERFORMANCE SCORE (stored as ACS), KDA, TRADES, FIRST BLOODS, PLANTS, DEFUSES; rank badge between portrait and name |
+| Custom game | KDA, FIRST BLOODS, PLANTS, DEFUSES; no rank badge |
+| Older client (Apr 2026) | AVG COMBAT SCORE, KDA, ECON, FIRST BLOODS, PLANTS, DEFUSES; agent name printed under each player |
 
-The client scoreboard has no ACS, ADR or HS%, so those come back as missing, never invented.
+Both "grouped by team" and "individually sorted" work.
+
+**Row tints:**
+- teal = ally;
+- maroon = enemy;
+- gold = an ally party member;
+- grey = the screenshot owner.
+
+Columns the screenshot doesn't show come back missing, never invented.
 
 ## Pipeline (`app/valorant/`)
 
-1. **`columns.py`** finds the header row from column titles. Older and other layouts (ACS, K, D, A, ECON, HS%, ADR) are recognised too. Columns that aren't found come back as missing, never invented.
-2. **`rows.py`** groups the text below the header into player rows and assigns each value to the nearest column. It ignores the left tab menu and the friends sidebar. The name is the text cluster nearest the stats.
-3. **`text.py`** parses the KDA cell. It tolerates dropped spaces, `|` read for `/`, and `/` misread as `1` (`141614` → 14/6/4). That last case comes back at low confidence so the captain checks it.
-4. **`pipeline.recover_cells`** is a second pass. Every empty or low-confidence cell, the K/D/A cell included, is re-read from a tight crop that is enlarged first. Reads that agree raise the confidence. A K/D/A re-read replaces all three numbers together, never one at a time, and anything above 99 is rejected.
-5. **`sides.py`** classifies each row from the median colour of its stats area. A single unknown row is filled in when the split is 5/4.
-6. **`header.py`** reads the outcome banner and the digits beside it.
-   - Several reads of each side are combined.
-   - Valorant's rules (first to 13, overtime won by two, victory means the left score is higher) pick between readings, e.g. `15` vs `Y5` next to "VICTORY".
-7. **`agents.py`** matches the portrait left of the name against agent icons from valorant-api.com. It uses a multi-scale template match and also requires the colours to agree.
-8. **`names.py`** fuzzy-matches names against the two rosters the API sends. It handles stylised names (`MЯNOЪODY`) and a tag separator misread as `l` (`ARClaayan` → `aayan`), then votes on which bracket team is the screenshot owner's side.
-9. **`checks.py`** adds warnings: row counts, unknown sides, unmatched names, uncertain agents, kills that don't match the other team's deaths, unusual scores, and low-confidence cells.
+1. **`pipeline._read_layout`:** reads the frame and measures horizontal stretch from the shape of the single-digit stat cells (`layout.estimate_stretch`). A stretched or squeezed capture is straightened and read again.
+2. **`columns.py`** finds the header from column titles.
+3. **`rows.py`** groups text into player rows.
+   - Ignored: the side menu, the friends sidebar (also between rows) and rank-badge glyphs left of names.
+   - Digits a long name runs into ("Rawzu from temu394") are split off the name.
+4. **`pipeline.recover_cells`** re-reads empty or uncertain cells from enlarged crops.
+   - A K/D/A cell that lost a separator ("14/ 14 19") is always re-read.
+   - When the name is drawn over the score's first digit ("One260" seen as "One60"), the cell is left empty for the captain rather than guessed.
+5. **`name_reread.py`** re-reads unread or uncertain names from the name cell. It uses the default recogniser and every installed script recogniser, and keeps the most confident read.
+6. **`sides.py`** classifies each row by tint.
+   - Rows the colour rules can't place (colour-blind palettes, hover highlights) join the team whose rows they look most like.
+   - A single unknown row is filled in when the split is 5/4.
+7. **`layout.py` and `agent_bank.py`** find each row's portrait at the table's left edge and recognise the agent:
+   - first from the agent name printed under the player (older layout);
+   - then from a bank of 280 labelled in-game portraits (nearest-neighbour vote, crops augmented against small box errors);
+   - then from icon art (valorant-api icons plus `assets/portraits/` for new agents), always at low confidence.
+8. **`names.py`** matches names to the two rosters.
+   - It ignores case, spacing, punctuation and OCR look-alikes, works in any script, and handles truncated names and Premier tags.
+   - Each roster name carries its source: `riot_verified`, `riot_previous`, `riot_claimed` or `username`.
+   - A matched Riot name is shown in its real spelling.
+   - A row whose name can't be read gets its team's last unmatched player by **elimination**. This is flagged `method: "elimination"` and is never proof of identity.
+9. **`header.py`** reads the banner score. Valorant's rules pick between readings; surrenders (e.g. 9–4) are accepted at lower confidence. It also reads the map and the match date (`playedOn`).
+10. **`checks.py`** adds warnings: row counts, unknown sides, unmatched names, uncertain agents, kills vs deaths, unusual scores, low confidence, hidden names (streamer mode) and stretched captures.
 
 ## Measured accuracy
 
-Measured on the five real client screenshots in `tests/fixtures/real/` (Ascent, Lotus ×2, Haven ×2; three victories and two defeats; 1280–1920 px; PNG and WebP):
+The set is 33 real client screenshots in `tests/fixtures/real/`:
+- 28 from players' uploads plus 5 earlier ones;
+- 16:9, 16:10, 4:3 and 5:4 at 1280–1920 px;
+- competitive, custom and the older client layout;
+- 12 maps including Summit.
 
 | Field | Result |
 |---|---|
-| Score, outcome, map | 5 / 5 correct |
-| Row team (side) | 50 / 50 correct |
-| K, D, A, first bloods, plants, defuses | 300 / 300 cells correct |
-| Names | 48 / 50; the 2 misses are Hangul names |
+| Score, outcome, map, sides | 33 / 33 screenshots exact |
+| Numeric cells (K, D, A, ACS, trades, FB, plants, defuses, econ) | 2519 / 2519 (one more cell is hidden under a name in the game itself and comes back empty) |
+| Names in Latin and Japanese/Chinese script | 315 / 315 matched to the right player |
+| Arabic/Hangul names without the script models | 11 / 13 matched by elimination, 0 wrong |
+| Agents, leave-one-screenshot-out | 98.2% (the misses are agents with a single example in the set) |
 
-Robustness is checked too (`tests/test_real_robustness.py`). The same screenshots are degraded to 1366 px JPEG at quality 70, to 3440×1440 ultrawide, and to WebP at quality 60. All 15 variants read 100% of numeric cells, with exact scores and sides. Images are scaled so they are at least 1920 wide or 1080 tall, so ultrawide captures keep readable text.
+**Robustness (`tests/test_real_robustness.py`):** every screenshot is also degraded six ways, 198 variants in total, and all pass:
+- 1366 px JPEG at quality 70;
+- 3440×1440 ultrawide;
+- WebP at quality 60;
+- **stretched** to 16:9;
+- **squeezed**;
+- **pillarboxed** with black bars.
 
-### Known limits
-- **Korean, Chinese and Japanese names are not read.** The bundled recognition model covers Latin script and digits. The captain fills those names in during review.
-- **Agent recognition is untested on real icons.** It is only exercised with synthetic icons, because valorant-api.com is unreachable from the build sandbox. In production the icons download at start-up.
-- **Phone photos of a monitor are best effort.** Angle, glare and moiré reduce accuracy.
+## Edge cases and how they're handled
+
+| Edge case | Handling |
+|---|---|
+| Any native resolution 1280×720 → 4K, 16:9 / 16:10 / 4:3 / 5:4 | Header-driven layout; images scaled to ≥1920 wide or ≥1080 tall |
+| Stretched resolution (4:3/5:4 stretched to 16:9, or squeezed) | Stretch measured from digit shapes, image straightened, read again |
+| Black bars (pillarbox / letterbox) | Trimmed before reading |
+| Ultrawide, two monitors in one capture | Header search over the whole frame |
+| JPEG/WebP compression, Discord re-encoding, low resolution | Enlarged re-reads of cells and names |
+| Colour-blind modes, unusual gamma, hover highlight | Relative side fallback; unknown rows flagged |
+| Friends sidebar, side menu, party bar, chat lines | Ignored by position |
+| Wrong tab or not a scoreboard | 422 "Upload the in-game Scoreboard tab" |
+| Cropped screenshot without the banner | Score comes back missing; the captain enters it |
+| Surrender / overtime | Accepted; unusual scores flagged |
+| Fewer than 10 rows (4v5) | Read; `ROW_COUNT` warning |
+| Non-Latin, spaced, letter-spaced, numeric, tagged or truncated names | Script models, look-alike folding, tag stripping, partial matching |
+| Name hiding the score's first digit | Score left empty, never guessed |
+| Streamer mode (names hidden) | `NAMES_HIDDEN` warning |
+| Player named after an agent ("Jett") | Read as a name; only most rows matching triggers the warning |
+| New agent before valorant-api lists it | Bundled portrait; returned with `uuid: null` and its name |
+| New map | Fallback list plus a valorant-api refresh every 6 h |
+| Draw (competitive only) | Read as `draw`; tournaments never draw |
+| Phone photo of a monitor | Best effort; low-confidence fields are highlighted |
 
 ## API
 
@@ -62,7 +111,7 @@ Robustness is checked too (`tests/test_real_robustness.py`). The same screenshot
 | Field | Meaning |
 |---|---|
 | `image` | PNG, JPEG or WebP, at most 10 MB, between 640×360 and 4K |
-| `rosters` | JSON `{ "team1": [{ "userId", "names": [...] }], "team2": [...] }` |
+| `rosters` | JSON `{ "team1": [{ "userId", "candidates": [{ "name", "source" }], "names": [...] }], "team2": [...] }`. `names` (no source) is still accepted. |
 
 Responses:
 
@@ -75,24 +124,25 @@ Responses:
 | 422 | No scoreboard found, or bad rosters |
 | 504 | Timed out |
 
-`GET /health` returns `{ status, agents }`.
+`GET /health` returns `{ status, agents, maps, bankAgents, catalogVersion, refreshedAt, scripts, parserVersion }`.
 
 ## Configuration
 
 | Env | Default | Purpose |
 |---|---|---|
 | `SCOREBOARD_OCR_TOKEN` | (required) | Shared secret, the same value as the API's `ScoreboardOcr__ServiceToken` |
-| `SCOREBOARD_OCR_ASSET_DIR` | `/data/valorant-assets` | Cache for the agent icons and map list (mount a volume) |
-| `SCOREBOARD_OCR_REFRESH_ASSETS` | `true` | Re-download the catalog on start. If the download fails, the cache is used. With no cache, map names still resolve but agents stay unknown. |
+| `SCOREBOARD_OCR_ASSET_DIR` | `/data/valorant-assets` | Cache for agent icons and the map list (mount a volume) |
+| `SCOREBOARD_OCR_REFRESH_ASSETS` | `true` | Download the catalog at start, then check valorant-api's version every `SCOREBOARD_OCR_REFRESH_HOURS` and refresh on a new patch |
+| `SCOREBOARD_OCR_REFRESH_HOURS` | `6` | How often to check for a new game patch (0 = only at start) |
 | `SCOREBOARD_OCR_TIMEOUT_SECONDS` | `25` | Time limit for one parse |
 | `SCOREBOARD_OCR_MAX_CONCURRENT` | `2` | Parses queued per process |
 
 ## Deploy (Coolify)
 
-- Build from `services/scoreboard-ocr/Dockerfile`. The service listens on port 8095.
+- Build from `services/scoreboard-ocr/Dockerfile`. The build downloads the Arabic and Korean recognisers; check `/health` → `scripts`. The service listens on port 8095.
 - Attach it only to the internal network shared with the API, with no public domain.
 - Set `ScoreboardOcr__BaseUrl=http://<service-name>:8095` and `ScoreboardOcr__ServiceToken` on the API.
-- The image is about 800 MB. Each parse takes 1–3 s of CPU.
+- A parse takes 1–3 s of CPU; a stretched capture is read twice.
 
 ## Development
 
@@ -100,11 +150,24 @@ Responses:
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 pip install --no-deps -r requirements-ocr.txt   # same as the Dockerfile; keeps headless OpenCV
+python -m app.download_models                   # optional: Arabic/Korean recognisers
 python -m pytest -q
 ```
 
 ### Tests
 
-- `tests/test_real_screenshots.py` runs every image in `tests/fixtures/real/` against its hand-written `<name>.json`. It requires exact score, outcome, map and sides, and at least 98% of numeric cells correct; it prints accuracy per file. Add new client layouts and resolutions here as they appear.
-- `tests/synthetic.py` renders scoreboards in the same layout with known values, including the menu, duration and sidebar decoys. The end-to-end and resolution tests (1280 JPEG, 2560 PNG, 1600 WebP) use it.
-- `tests/test_units.py` covers parsing rules without the OCR engine.
+- **`tests/test_real_screenshots.py`** runs every image in `tests/fixtures/real/` against its hand-written `<name>.json`.
+  - Exact: score, outcome, map and sides.
+  - At least 99% of numeric cells.
+  - Every readable name matched to the right player.
+  - Agents at least 95% leave-one-screenshot-out.
+  - Run it with `-s` for the accuracy summary.
+- **`tests/test_real_robustness.py`** reruns them degraded (see above).
+- **`tests/test_v3_rules.py`** and **`tests/test_units.py`** cover the parsing rules without the OCR engine.
+- **`tests/synthetic.py`** renders scoreboards with known values for the end-to-end, resolution and API tests.
+
+### Adding screenshots or agents
+
+1. Put the image (lossless WebP or PNG) and its `<name>.json` in `tests/fixtures/real/`.
+2. To teach a new agent, add its in-game portrait crops to `app/valorant/assets/agent_bank/<Agent>/`, named `<fixture>__<row>.png` so leave-one-out still works.
+3. Before valorant-api lists an agent, its icon goes in `app/valorant/assets/portraits/<Agent>.png`.

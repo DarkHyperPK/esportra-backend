@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from app.engine import OcrEngine, RapidOcrEngine
 from app.image_io import ImageRejected, decode_image
 from app.models import Rosters, ScoreboardResult
-from app.valorant.catalog import Catalog, load_catalog
-from app.valorant.pipeline import ScoreboardNotFound, parse_scoreboard
+from app.valorant.catalog import Catalog, load_catalog, refresh_if_changed
+from app.valorant.pipeline import PARSER_VERSION, ScoreboardNotFound, parse_scoreboard
 
 log = logging.getLogger("scoreboard-ocr")
 
@@ -25,6 +25,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_ROSTERS_CHARS = 16_000
 PARSE_TIMEOUT_SECONDS = float(os.getenv("SCOREBOARD_OCR_TIMEOUT_SECONDS", "25"))
 MAX_CONCURRENT = int(os.getenv("SCOREBOARD_OCR_MAX_CONCURRENT", "2"))
+REFRESH_HOURS = float(os.getenv("SCOREBOARD_OCR_REFRESH_HOURS", "6"))
 
 
 class State:
@@ -44,15 +45,32 @@ def configure(engine: OcrEngine, catalog: Catalog, token: str) -> None:
     state.gate = asyncio.Semaphore(MAX_CONCURRENT)
 
 
+async def keep_catalog_fresh(cache: Path) -> None:
+    """Poll valorant-api for a new game patch and swap in new agents/maps without a restart."""
+    while True:
+        await asyncio.sleep(REFRESH_HOURS * 3600)
+        if state.catalog is None:
+            continue
+        fresh = await run_in_threadpool(refresh_if_changed, cache, state.catalog)
+        if fresh is not None:
+            state.catalog = fresh
+            log.info("valorant catalog refreshed to %s: %d agents, %d maps", fresh.version, len(fresh.agents), len(fresh.maps))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    refresher = None
     if state.engine is None:
         cache = Path(os.getenv("SCOREBOARD_OCR_ASSET_DIR", "/data/valorant-assets"))
         refresh = os.getenv("SCOREBOARD_OCR_REFRESH_ASSETS", "true").lower() == "true"
         catalog = await run_in_threadpool(load_catalog, cache, refresh)
         configure(RapidOcrEngine(), catalog, os.getenv("SCOREBOARD_OCR_TOKEN", ""))
-        log.info("scoreboard-ocr ready: %d agents, %d maps", len(catalog.agents), len(catalog.maps))
+        log.info("scoreboard-ocr ready: %d agents, %d maps, scripts %s", len(catalog.agents), len(catalog.maps), state.engine.scripts)
+        if refresh and REFRESH_HOURS > 0:
+            refresher = asyncio.create_task(keep_catalog_fresh(cache))
     yield
+    if refresher:
+        refresher.cancel()
 
 
 app = FastAPI(title="Esportra scoreboard OCR", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -65,8 +83,17 @@ def require_token(x_service_token: str = Header(default="")) -> None:
 
 @app.get("/health")
 async def health() -> dict[str, object]:
-    catalog = state.catalog
-    return {"status": "ok", "agents": len(catalog.agents) if catalog else 0}
+    catalog, engine = state.catalog, state.engine
+    return {
+        "status": "ok",
+        "agents": len(catalog.agents) if catalog else 0,
+        "maps": len(catalog.maps) if catalog else 0,
+        "bankAgents": len(catalog.bank.agents) if catalog else 0,
+        "catalogVersion": catalog.version if catalog else None,
+        "refreshedAt": catalog.refreshed_at if catalog else None,
+        "scripts": ["default", *(engine.scripts if engine else ())],
+        "parserVersion": PARSER_VERSION,
+    }
 
 
 @app.post("/v1/valorant/scoreboard", response_model=ScoreboardResult, response_model_by_alias=True, dependencies=[Depends(require_token)])

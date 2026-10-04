@@ -58,3 +58,17 @@ def check_score(ally: int | None, enemy: int | None) -> list[ScoreboardWarning]:
     if regulation or overtime:
         return []
     return [ScoreboardWarning(code="SCORE_UNUSUAL", message=f"{ally}-{enemy} is not a normal Valorant final score.")]
+
+
+def _key(text: str | None) -> str:
+    return "".join(ch for ch in (text or "").casefold() if ch.isalnum())
+
+
+def check_hidden_names(players: list[PlayerRow]) -> list[ScoreboardWarning]:
+    """Streamer mode ("Hide names") shows agent names instead of player names. One player called "Jett"
+    is a real name; most rows reading as their own agent is the setting."""
+    shown = [(p.name_read, p.agent.value.name if p.agent.value else None) for p in players]
+    hidden = sum(1 for read, agent in shown if read and agent and _key(read) == _key(agent))
+    if hidden >= max(4, len(players) // 2):
+        return [ScoreboardWarning(code="NAMES_HIDDEN", message="Player names are hidden on this screenshot (streamer mode). Pick each player in review.")]
+    return []

@@ -5,7 +5,7 @@ import pytest
 from app.models import MapRef, RosterPlayer, Rosters
 from app.valorant.catalog import Catalog
 from app.valorant.pipeline import ScoreboardNotFound, parse_scoreboard
-from tests.synthetic import SAMPLE, STAT_FIELDS, make_agent_templates, render
+from tests.synthetic import SAMPLE, STAT_FIELDS, make_agent_templates, render, training_bank
 
 pytest.importorskip("rapidocr")
 
@@ -25,7 +25,13 @@ def templates():
 @pytest.fixture(scope="module")
 def result(engine, templates):
     image = render(SAMPLE, templates, 13, 1, "VICTORY", "ASCENT")
-    catalog = Catalog(agents=templates, maps=[MapRef(name="Ascent", uuid="m1", map_url="/Game/Maps/Ascent/Ascent")])
+    # As in production, the agent bank holds in-game portrait crops, here cut from another rendered
+    # scoreboard where every synthetic agent appears.
+    catalog = Catalog(
+        agents=templates,
+        maps=[MapRef(name="Ascent", uuid="m1", map_url="/Game/Maps/Ascent/Ascent")],
+        bank=training_bank(engine, templates),
+    )
     rosters = Rosters(
         team1=[RosterPlayer(user_id=f"t1-{i}", names=[p.name]) for i, p in enumerate(SAMPLE) if p.ally],
         team2=[RosterPlayer(user_id=f"t2-{i}", names=[p.name]) for i, p in enumerate(SAMPLE) if not p.ally],
