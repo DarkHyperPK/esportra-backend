@@ -8,7 +8,8 @@ never be mistaken for the score.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from itertools import product
 
 import numpy as np
@@ -28,6 +29,7 @@ class HeaderRead:
     ally_score: OcrField[int]
     enemy_score: OcrField[int]
     map: OcrField[MapRef]
+    played_on: OcrField[str] = field(default_factory=OcrField[str])
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,33 @@ def is_valid_final(ally: int, enemy: int, outcome: str | None) -> bool:
         return ally == enemy
     high, low = max(ally, enemy), min(ally, enemy)
     return (high == 13 and low <= 11) or (high >= 14 and high - low == 2)
+
+
+def is_early_end(ally: int, enemy: int, outcome: str | None) -> bool:
+    """A map ended by surrender: the winner leads, nobody reached 13."""
+    if outcome == "victory":
+        return enemy < ally < 13
+    if outcome == "defeat":
+        return ally < enemy < 13
+    return False
+
+
+_DATE = re.compile(r"\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\.?\s*(\d{1,2})[,.]?\s*(20\d{2})\b")
+_MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def read_played_on(tokens: list[OcrToken]) -> OcrField[str]:
+    """The match date the client prints above the map name ("OCT 3, 2026"), as an ISO date."""
+    for token in tokens:
+        found = _DATE.search(token.text.upper())
+        if not found:
+            continue
+        month, day, year = _MONTHS.index(found.group(1)) + 1, int(found.group(2)), int(found.group(3))
+        try:
+            return OcrField[str](value=date(year, month, day).isoformat(), confidence=round(token.conf, 3))
+        except ValueError:
+            continue
+    return OcrField[str]()
 
 
 def _candidates(text: str, conf: float, glued_to_banner: bool) -> list[tuple[int, float]]:
@@ -127,8 +156,11 @@ def read_score(tokens: list[OcrToken], image: np.ndarray, engine: OcrEngine) -> 
     if not pairs:
         return OcrField[int](), OcrField[int]()
     valid = [p for p in pairs if is_valid_final(p[0][0], p[1][0], banner.outcome)]
-    (ally, a_conf), (enemy, e_conf) = valid[0] if valid else pairs[0]
-    penalty = 1.0 if valid else 0.5
+    # A surrender ends the map early (e.g. 9-4): the winner just has more rounds. Accepted after full
+    # finals, at lower confidence; check_score flags the unusual score for the captain.
+    early = [p for p in pairs if is_early_end(p[0][0], p[1][0], banner.outcome)]
+    chosen, penalty = (valid[0], 1.0) if valid else (early[0], 0.8) if early else (pairs[0], 0.5)
+    (ally, a_conf), (enemy, e_conf) = chosen
     return (
         OcrField[int](value=ally, confidence=round(a_conf * penalty, 3)),
         OcrField[int](value=enemy, confidence=round(e_conf * penalty, 3)),
@@ -154,4 +186,6 @@ def read_header(
 ) -> HeaderRead:
     above = [t for t in tokens if t.y1 <= header_top]
     ally, enemy = read_score(above, image_bgr, engine)
-    return HeaderRead(outcome=read_outcome(above), ally_score=ally, enemy_score=enemy, map=read_map(above, maps))
+    return HeaderRead(
+        outcome=read_outcome(above), ally_score=ally, enemy_score=enemy, map=read_map(above, maps), played_on=read_played_on(tokens)
+    )

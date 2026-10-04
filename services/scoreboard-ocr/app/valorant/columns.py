@@ -11,13 +11,15 @@ from app.engine import OcrToken
 from app.valorant.text import normalize_header
 
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "acs": ("ACS", "AVG COMBAT SCORE", "AVERAGE COMBAT SCORE", "COMBAT SCORE"),
+    # The 2026 client renamed ACS to "Performance Score"; same scale, same role.
+    "acs": ("ACS", "AVG COMBAT SCORE", "AVERAGE COMBAT SCORE", "COMBAT SCORE", "PERFORMANCE SCORE"),
     "kda": ("K / D / A", "K/D/A", "KDA"),
     "kills": ("K", "KILLS"),
     "deaths": ("D", "DEATHS"),
     "assists": ("A", "ASSISTS"),
     "econ": ("ECON RATING", "ECON"),
     "firstBloods": ("FIRST BLOODS", "FIRST BLOOD", "FIRST KILLS", "FB", "FK"),
+    "trades": ("TRADES", "TRADE"),
     "plants": ("PLANTS",),
     "defuses": ("DEFUSES",),
     "hsPct": ("HS%", "HS %", "HEADSHOT %", "HEADSHOT%"),

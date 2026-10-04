@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from statistics import median
 
 from app.engine import OcrToken
 from app.valorant.columns import Column
-from app.valorant.text import parse_number, split_kda
+from app.valorant.text import normalize_header, parse_number, split_kda
 
 MAX_ROWS = 12
 
@@ -19,6 +20,11 @@ class Row:
     name: str = ""
     name_conf: float = 0.0
     name_x0: float = 0.0
+    name_x1: float = 0.0
+    # Old client layout prints the agent under the name ("JETT"); kept as a hint for agent matching.
+    agent_hint: str = ""
+    # Recogniser that produced the name when the default one couldn't (e.g. "arabic").
+    name_script: str | None = None
 
     @property
     def yc(self) -> float:
@@ -31,6 +37,10 @@ class Row:
     @property
     def y1(self) -> float:
         return max(t.y1 for t in self.tokens)
+
+
+def group_yc(tokens: list[OcrToken]) -> float:
+    return median(t.yc for t in tokens)
 
 
 def group_rows(tokens: list[OcrToken], header_bottom: float) -> list[list[OcrToken]]:
@@ -85,6 +95,15 @@ def _assign_values(row: Row, stat_tokens: list[OcrToken], columns: list[Column])
                 row.values.setdefault(key, (value, conf * mult))
 
 
+def _split_lines(tokens: list[OcrToken]) -> tuple[list[OcrToken], list[OcrToken]]:
+    """Name tokens on the top line, and a smaller second line under it (the old layout's agent name)."""
+    line_h = median(t.h for t in tokens)
+    top = min(t.yc for t in tokens)
+    upper = [t for t in tokens if t.yc - top <= 0.5 * line_h]
+    lower = [t for t in tokens if t.yc - top > 0.5 * line_h]
+    return (upper, lower) if upper and lower else (tokens, [])
+
+
 def _assign_name(row: Row, name_tokens: list[OcrToken]) -> None:
     """The name is the text cluster nearest the stats (menus and tabs further left are ignored).
     A Premier team tag ("GTH | tr1ck") is dropped from the name."""
@@ -97,12 +116,42 @@ def _assign_name(row: Row, name_tokens: list[OcrToken]) -> None:
         if cluster[0].x0 - token.x1 > 1.5 * line_h:
             break
         cluster.insert(0, token)
-    text = " ".join(t.text for t in cluster)
+    upper, lower = _split_lines(cluster)
+    upper = sorted(upper, key=lambda t: t.x0)
+    # A rank badge left of the name can come back as one stray glyph ("口", "4"); a wide gap gives it away.
+    while len(upper) > 1 and len(upper[0].text.strip()) <= 1 and upper[1].x0 - upper[0].x1 > 0.6 * line_h:
+        upper = upper[1:]
+    text = " ".join(t.text for t in upper)
     if "|" in text:
         text = text.rsplit("|", 1)[1]
-    row.name = text.strip()
-    row.name_conf = min(t.conf for t in cluster)
-    row.name_x0 = cluster[0].x0
+    row.name = text.strip().lstrip(":;.,'`-_ ")
+    row.name_conf = min(t.conf for t in upper)
+    row.name_x0 = upper[0].x0
+    row.name_x1 = max(t.x1 for t in upper)
+    row.agent_hint = " ".join(t.text for t in sorted(lower, key=lambda t: t.x0)).strip()
+
+
+_MENU_WORDS = {"SCOREBOARD", "PERFORMANCE", "HEAD TO HEAD", "TIMELINE", "SUMMARY", "PROGRESSION", "MATCH DETAILS", "RESULTS"}
+
+
+def _strip_glued_digits(row: Row, first_column: Column) -> None:
+    """A long name can run into the first stat column ("The Honoured One260"): the digits belong to
+    that column, not the name. The column value is re-read from a tight crop later."""
+    if row.name and row.name_x1 > first_column.xc - 0.3 * (first_column.x1 - first_column.x0):
+        row.name = re.sub(r"\s*\d+$", "", row.name).strip() or row.name
+
+
+def _align_names(rows: list[Row], pitch: float) -> None:
+    """Names are left-aligned in one column. A name that starts far left of it is menu text from the
+    side menu (rows whose real name the model can't read pick it up); drop it."""
+    starts = [r.name_x0 for r in rows if r.name]
+    if len(starts) < 3:
+        return
+    column_x0 = median(starts)
+    for row in rows:
+        far_left = row.name and row.name_x0 < column_x0 - 0.5 * pitch
+        if far_left or normalize_header(row.name) in _MENU_WORDS:
+            row.name, row.name_conf = "", 0.0
 
 
 def build_rows(tokens: list[OcrToken], columns: list[Column]) -> list[Row]:
@@ -110,21 +159,28 @@ def build_rows(tokens: list[OcrToken], columns: list[Column]) -> list[Row]:
     boundary = stat_boundary(columns)
     centers = [c.xc for c in columns]
     gaps = [b - a for a, b in zip(centers, centers[1:])] or [columns[-1].x1 - columns[-1].x0]
-    right_edge = columns[-1].x1 + 0.6 * min(gaps)  # side panels (friends list, party) live past this
+    right_edge = columns[-1].x1 + 0.35 * min(gaps)  # side panels (friends list, party) live past this
     tokens = [t for t in tokens if t.x0 < right_edge]
     min_values = max(2, len(columns) // 2)
     rows: list[Row] = []
     for group in group_rows(tokens, header_bottom):
+        stat_tokens = [t for t in group if t.xc >= boundary]
+        if not stat_tokens:
+            continue  # sidebar icons or menu text between rows, nothing in the table's columns
+        if len(rows) >= 2 and group_yc(group) - rows[-1].yc > 1.8 * row_pitch(rows):
+            break  # well below the last row: the table has ended
         row = Row(tokens=group)
-        _assign_values(row, [t for t in group if t.xc >= boundary], columns)
+        _assign_values(row, stat_tokens, columns)
         if len(row.values) < min_values:
             if rows:
-                break  # first non-row after the table ends the scoreboard
+                break  # text in the stat columns that isn't a player row ends the scoreboard
             continue
         _assign_name(row, [t for t in group if t.xc < boundary and any(ch.isalnum() for ch in t.text)])
+        _strip_glued_digits(row, columns[0])
         rows.append(row)
         if len(rows) >= MAX_ROWS:
             break
+    _align_names(rows, row_pitch(rows))
     return rows
 
 

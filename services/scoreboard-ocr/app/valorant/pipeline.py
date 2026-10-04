@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+import re
+
 import cv2
 import numpy as np
 
 from app.engine import OcrEngine
-from app.models import STAT_KEYS, OcrField, PlayerRow, Rosters, ScoreboardResult, ScoreboardWarning
-from app.valorant.agents import identify_agent, portrait_region
+from app.models import STAT_KEYS, OcrField, PlayerRow, Rosters, ScoreboardResult, ScoreboardWarning, TeamSlot
+from app.valorant.agents import identify_agent
 from app.valorant.catalog import Catalog
-from app.valorant.checks import check_kills, check_rows, check_score
+from app.valorant.checks import check_hidden_names, check_kills, check_rows, check_score
 from app.valorant.columns import Column, find_header
 from app.valorant.header import read_header
-from app.valorant.names import match_names, resolve_ally_team
+from app.image_io import normalize_scale
+from app.valorant.layout import STRETCH_TOLERANCE, estimate_stretch, portrait_box, table_left, unstretch
+from app.valorant.names import match_by_elimination, match_names, resolve_ally_team
+from app.valorant.name_reread import recover_names
 from app.valorant.rows import Row, build_rows, row_pitch, stat_boundary
-from app.valorant.sides import classify_row, fill_last_unknown
+from app.valorant.sides import classify_row, fill_last_unknown, relative_sides, row_tint
 from app.valorant.text import split_kda
 
-PARSER_VERSION = "valorant-scoreboard-v2"
+PARSER_VERSION = "valorant-scoreboard-v3"
 
 
 class ScoreboardNotFound(ValueError):
@@ -37,7 +42,7 @@ def _stats(row: Row, columns: list[Column]) -> dict[str, OcrField[float]]:
     return out
 
 
-_SINGLE_VALUE = {"firstBloods", "plants", "defuses", "acs", "econ", "hsPct", "adr"}
+_SINGLE_VALUE = {"firstBloods", "plants", "defuses", "acs", "econ", "hsPct", "adr", "trades"}
 _KDA_KEYS = ("kills", "deaths", "assists")
 LOW_CONFIDENCE = 0.6
 
@@ -82,13 +87,23 @@ def _reread_kda(image: np.ndarray, engine: OcrEngine, row: Row, box: tuple[int, 
             row.values[key] = (value, c)
 
 
-def _reread_single(image: np.ndarray, engine: OcrEngine, row: Row, key: str, box: tuple[int, int, int, int]) -> None:
+def _reread_single(
+    image: np.ndarray, engine: OcrEngine, row: Row, key: str, box: tuple[int, int, int, int], after_name: bool = False
+) -> None:
     current = row.values.get(key)
     if current is not None and current[1] >= LOW_CONFIDENCE:
         return
     x0, y0, x1, y1 = box
     text, conf = _recognize(engine, image[y0:y1, x0:x1])
     digits = text.strip()
+    if after_name:
+        # The first column can sit under the tail of a long name ("Rawzu from temu394"): keep the
+        # trailing number. When a letter runs straight into one or two digits ("One60" for 260), the
+        # name is covering the number's first digit: leave the cell for the captain instead of guessing.
+        if re.search(r"[^\W\d_]\d{1,2}$", digits):
+            return
+        tail = re.search(r"(\d{2,4})$", digits)
+        digits = tail.group(1) if tail else digits
     if digits.isdigit() and len(digits) <= 4:
         row.values[key] = _merge(current, float(digits), conf * (0.8 if current is None else 1.0))
 
@@ -107,47 +122,90 @@ def recover_cells(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns
             if column.key == "kda":
                 _reread_kda(image, engine, row, box)
             elif column.key in _SINGLE_VALUE:
-                _reread_single(image, engine, row, column.key, box)
+                _reread_single(image, engine, row, column.key, box, after_name=column is columns[0])
 
 
-def _player(image: np.ndarray, row: Row, columns: list[Column], pitch: float, catalog: Catalog) -> PlayerRow:
+def _portraits(image: np.ndarray, rows: list[Row], pitch: float) -> list[np.ndarray]:
+    """Each row's agent portrait, located from the table's left edge (empty when it can't be found)."""
+    starts = [r.name_x0 for r in rows if r.name]
+    if not starts:
+        return [np.zeros((0, 0, 3), dtype=np.uint8) for _ in rows]
+    name_x0 = float(np.median(starts))
+    left = table_left(image, [(r.yc - 0.45 * pitch, r.yc + 0.45 * pitch) for r in rows], name_x0, pitch)
+    crops = []
+    for row in rows:
+        box = portrait_box(image, left, name_x0, row.yc, pitch)
+        crops.append(image[box.y0 : box.y1, box.x0 : box.x1] if box else np.zeros((0, 0, 3), dtype=np.uint8))
+    return crops
+
+
+def _player(image: np.ndarray, row: Row, columns: list[Column], pitch: float, portrait: np.ndarray, catalog: Catalog) -> PlayerRow:
     side, side_conf = classify_row(image, stat_boundary(columns), max(c.x1 for c in columns), row.yc, pitch)
-    agent = identify_agent(portrait_region(image, row.name_x0, row.yc, pitch), catalog.agents, pitch)
     return PlayerRow(
         side=side,
         side_confidence=side_conf,
         name=OcrField[str](value=row.name or None, confidence=round(row.name_conf, 3)),
-        agent=agent,
+        name_read=row.name or None,
+        agent=identify_agent(portrait, catalog, row.agent_hint),
         stats=_stats(row, columns),
     )
 
 
-def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog, rosters: Rosters) -> ScoreboardResult:
+def _apply_names(players: list[PlayerRow], rows: list[Row], rosters: Rosters) -> tuple[list[PlayerRow], TeamSlot | None, float]:
+    names = [row.name for row in rows]
+    sides = [p.side for p in players]
+    named = match_names(names, rosters)
+    ally_team, ally_conf = resolve_ally_team(sides, [m for m, _ in named])
+    named = match_by_elimination(names, sides, named, rosters, ally_team)
+    out = []
+    for player, (match, shown) in zip(players, named):
+        confidence = player.name.confidence if match is None or match.method == "read" else 0.0
+        name = OcrField[str](value=shown or None, confidence=round(max(confidence, match.score if match and match.method == "read" else 0.0), 3))
+        out.append(player.model_copy(update={"roster_match": match, "name": name}))
+    return out, ally_team, ally_conf
+
+
+def _read_layout(image_bgr: np.ndarray, engine: OcrEngine) -> tuple[np.ndarray, list, list[Column], float]:
+    """OCR the frame; when the capture is stretched or squeezed (stretched-resolution players), undo
+    it and read again so digits, names and portraits have their native shapes."""
     tokens = engine.read(image_bgr)
     columns = find_header(tokens)
     if not columns:
         raise ScoreboardNotFound("Could not find the scoreboard columns. Upload the in-game Scoreboard tab.")
+    stretch = estimate_stretch(tokens, max(c.y1 for c in columns))
+    if abs(stretch - 1) > STRETCH_TOLERANCE:
+        image_bgr = normalize_scale(unstretch(image_bgr, stretch))
+        tokens = engine.read(image_bgr)
+        columns = find_header(tokens) or columns
+    return image_bgr, tokens, columns, stretch
+
+
+def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog, rosters: Rosters) -> ScoreboardResult:
+    image_bgr, tokens, columns, stretch = _read_layout(image_bgr, engine)
     rows = build_rows(tokens, columns)
     if not rows:
         raise ScoreboardNotFound("Found the scoreboard header but no player rows.")
 
     pitch = row_pitch(rows)
     recover_cells(image_bgr, engine, rows, columns, pitch)
-    players = [_player(image_bgr, row, columns, pitch, catalog) for row in rows]
+    recover_names(image_bgr, engine, rows, columns, pitch)
+    portraits = _portraits(image_bgr, rows, pitch)
+    players = [_player(image_bgr, row, columns, pitch, crop, catalog) for row, crop in zip(rows, portraits)]
     filled = fill_last_unknown([p.side for p in players])
     players = [p if conf < 0 else p.model_copy(update={"side": side, "side_confidence": conf}) for p, (side, conf) in zip(players, filled)]
-    named = match_names([row.name for row in rows], rosters)
-    matches = [match for match, _ in named]
-    players = [
-        p.model_copy(update={"roster_match": match, "name": p.name.model_copy(update={"value": shown or None})})
-        for p, (match, shown) in zip(players, named)
-    ]
-    ally_team, ally_conf = resolve_ally_team([p.side for p in players], matches)
+    # Rows still unplaced (colour-blind palettes, hover highlights) join the team they look most like.
+    tints = [row_tint(image_bgr, stat_boundary(columns), max(c.x1 for c in columns), row.yc, pitch) for row in rows]
+    placed = relative_sides(tints, [(p.side, p.side_confidence) for p in players])
+    players = [p.model_copy(update={"side": side, "side_confidence": conf}) for p, (side, conf) in zip(players, placed)]
+    players, ally_team, ally_conf = _apply_names(players, rows, rosters)
 
     header = read_header(tokens, min(c.y0 for c in columns), catalog.maps, image_bgr, engine)
     warnings = [*check_score(header.ally_score.value, header.enemy_score.value), *check_rows(players), *check_kills(players)]
     if ally_team is None:
         warnings.append(ScoreboardWarning(code="TEAM_UNKNOWN", message="Could not tell which bracket team is the screenshot owner's side."))
+    warnings += check_hidden_names(players)
+    if abs(stretch - 1) > STRETCH_TOLERANCE:
+        warnings.append(ScoreboardWarning(code="STRETCHED_CAPTURE", message=f"The screenshot was stretched ({stretch:.2f}x); it was straightened before reading."))
 
     height, width = image_bgr.shape[:2]
     return ScoreboardResult(
@@ -155,10 +213,12 @@ def parse_scoreboard(image_bgr: np.ndarray, engine: OcrEngine, catalog: Catalog,
         engine_version=engine.version,
         image_width=width,
         image_height=height,
+        capture_stretch=round(stretch, 3),
         outcome=header.outcome,
         ally_score=header.ally_score,
         enemy_score=header.enemy_score,
         map=header.map,
+        played_on=header.played_on,
         ally_team=OcrField(value=ally_team, confidence=ally_conf),
         columns=sorted({k for p in players for k in p.stats}),
         players=players,

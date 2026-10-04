@@ -113,3 +113,24 @@ SAMPLE = [
 ]
 
 STAT_FIELDS = (("kills", "k"), ("deaths", "d"), ("assists", "a"), ("firstBloods", "fb"), ("plants", "plants"), ("defuses", "defuses"))
+
+
+def training_bank(engine, templates: list[AgentTemplate]):  # noqa: ANN001, ANN201 - test helper
+    """An agent bank cut from a rendered scoreboard in which every template appears, the same way the
+    real bank is cut from labelled player screenshots."""
+    from dataclasses import replace
+
+    from app.valorant.agent_bank import AgentBank
+    from app.valorant.columns import find_header
+    from app.valorant.pipeline import _portraits
+    from app.valorant.rows import build_rows, row_pitch
+
+    crops = []
+    for flip in (False, True):  # every agent on both row tints
+        players = [replace(p, agent=i % len(templates), ally=p.ally != flip, is_self=False) for i, p in enumerate(SAMPLE)]
+        image = render(players, templates, 13, 5, "VICTORY", "Ascent")
+        tokens = engine.read(image)
+        rows = build_rows(tokens, find_header(tokens))
+        cut = _portraits(image, rows, row_pitch(rows))
+        crops += [(templates[p.agent].ref.name, f"train{int(flip)}__{i}", c) for i, (p, c) in enumerate(zip(players, cut))]
+    return AgentBank.from_crops(crops)
