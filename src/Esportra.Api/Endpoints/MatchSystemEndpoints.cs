@@ -91,6 +91,7 @@ public static class MatchSystemEndpoints
             IHubContext<MatchHub> matchHub,
             DiscordNotificationService discord,
             ScoreboardScreenshotStore screenshotStore,
+            ScoreboardReportVerifier ocrVerifier,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -140,18 +141,24 @@ public static class MatchSystemEndpoints
 
                 var derivedWinner = await DeriveReportWinnerAsync(id, req, conn, logger);
 
+                // Screenshot reports: who is on it, recomputed here from the stored parse and fresh
+                // rosters (never taken from the client).
+                var ocrVerification = reportSource.OcrParseId is { } verifiedParseId
+                    ? await ScoreboardReportVerifier.ForSubmissionAsync(conn, id, verifiedParseId, req.MatchData)
+                    : null;
+
                 var report = await conn.QuerySingleAsync<dynamic>(
                     """
                 INSERT INTO match_result_reports
                   (match_id, game_number, reported_by, reported_by_team_id,
                    riot_match_id, map_id, map_name,
                    team1_score, team2_score, winner_team_id, match_data,
-                   screenshot_urls, comment, status, source, ocr_parse_id)
+                   screenshot_urls, comment, status, source, ocr_parse_id, ocr_verification)
                 VALUES
                   (@matchId, @gameNumber, @reportedBy, @reportedByTeamId,
                    @riotMatchId, @mapId, @mapName,
                    @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb,
-                   @screenshotUrls::jsonb, @comment, 'pending', @source, @ocrParseId)
+                   @screenshotUrls::jsonb, @comment, 'pending', @source, @ocrParseId, @ocrVerification::jsonb)
                 ON CONFLICT (match_id, game_number, reported_by_team_id)
                 DO UPDATE SET
                    team1_score    = EXCLUDED.team1_score,
@@ -165,11 +172,12 @@ public static class MatchSystemEndpoints
                    comment        = EXCLUDED.comment,
                    source         = EXCLUDED.source,
                    ocr_parse_id   = EXCLUDED.ocr_parse_id,
+                   ocr_verification = EXCLUDED.ocr_verification,
                    status         = 'pending',
                    updated_at     = now()
                 RETURNING id, match_id, game_number, reported_by_team_id, team1_score, team2_score,
                          winner_team_id, riot_match_id, map_id, map_name, match_data,
-                         screenshot_urls, comment, status, source, ocr_parse_id, created_at, updated_at
+                         screenshot_urls, comment, status, source, ocr_parse_id, ocr_verification, created_at, updated_at
                 """,
                     new
                     {
@@ -190,7 +198,11 @@ public static class MatchSystemEndpoints
                         comment = (string?)req.Comment,
                         source = reportSource.Source,
                         ocrParseId = reportSource.OcrParseId,
+                        ocrVerification = ocrVerification is null ? null : JsonSerializer.Serialize(ocrVerification, OcrVerificationJson.Options),
                     });
+
+                if (ocrVerification is not null)
+                    await ocrVerifier.NotifyOrganizersAsync(conn, id, (Guid)report.id, reportingCompetitorId, ocrVerification, ct);
 
                 await NotifyReportSubmittedAsync(
                     id, report.id?.ToString(), req.ReportedByTeamId, reportingCompetitorId,

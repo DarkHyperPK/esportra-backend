@@ -5,7 +5,21 @@ using Microsoft.Extensions.Options;
 
 namespace Esportra.Api.ScoreboardOcr;
 
-public sealed record OcrRosterPlayer(string UserId, IReadOnlyList<string> Names);
+/// <summary>Where a roster name came from; the OCR service echoes it on matches.</summary>
+public static class OcrNameSource
+{
+    /// <summary>Riot ID linked through Riot sign-in (ownership proven), or a verified desktop link.</summary>
+    public const string RiotVerified = "riot_verified";
+    /// <summary>A verified Riot ID's name before a recent rename.</summary>
+    public const string RiotPrevious = "riot_previous";
+    /// <summary>Riot tag typed on the profile, or a desktop link Riot hasn't verified.</summary>
+    public const string RiotClaimed = "riot_claimed";
+    public const string Username = "username";
+}
+
+public sealed record OcrRosterName(string Name, string Source);
+
+public sealed record OcrRosterPlayer(string UserId, IReadOnlyList<OcrRosterName> Candidates);
 
 public sealed record OcrRosters(IReadOnlyList<OcrRosterPlayer> Team1, IReadOnlyList<OcrRosterPlayer> Team2);
 
@@ -20,7 +34,13 @@ public enum OcrCallStatus
 public sealed record OcrCallResult(OcrCallStatus Status, string? ResultJson, string? UserMessage);
 
 /// <summary>Result of the service health probe.</summary>
-public sealed record OcrHealth(bool Reachable, int Agents);
+public sealed record OcrHealth(
+    bool Reachable,
+    int Agents,
+    int BankAgents = 0,
+    IReadOnlyList<string>? Scripts = null,
+    string? CatalogVersion = null,
+    string? RefreshedAt = null);
 
 /// <summary>Typed HTTP client for the internal scoreboard OCR service.</summary>
 public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrOptions> options, ILogger<ScoreboardOcrClient> logger)
@@ -69,8 +89,13 @@ public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrO
             using var response = await http.GetAsync(new Uri(new Uri(options.Value.BaseUrl), "/health"), timeout.Token);
             if (!response.IsSuccessStatusCode) return new OcrHealth(false, 0);
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
-            var agents = doc.RootElement.TryGetProperty("agents", out var a) && a.TryGetInt32(out var n) ? n : 0;
-            return new OcrHealth(true, agents);
+            var root = doc.RootElement;
+            int Int(string name) => root.TryGetProperty(name, out var v) && v.TryGetInt32(out var n) ? n : 0;
+            string? Str(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            var scripts = root.TryGetProperty("scripts", out var s) && s.ValueKind == JsonValueKind.Array
+                ? s.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+                : [];
+            return new OcrHealth(true, Int("agents"), Int("bankAgents"), scripts, Str("catalogVersion"), Str("refreshedAt"));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested)
         {

@@ -46,7 +46,7 @@ public sealed class ScoreboardOcrClientTests
     public async Task ParseValorantAsync_ReturnsResult_AndSendsTokenImageAndRosters()
     {
         var (client, handler) = Create(HttpStatusCode.OK, """{"players":[],"engineVersion":"x"}""");
-        var rosters = new OcrRosters([new OcrRosterPlayer("u1", ["Kooltkk"])], []);
+        var rosters = new OcrRosters([new OcrRosterPlayer("u1", [new OcrRosterName("Kooltkk", OcrNameSource.RiotVerified)])], []);
 
         var result = await client.ParseValorantAsync([1, 2, 3], "screenshot.png", "image/png", rosters, CancellationToken.None);
 

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Middleware;
 using Esportra.Api.ScoreboardOcr;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
@@ -21,7 +22,10 @@ public static class ScoreboardOcrEndpoints
     private sealed record ParseRequest(Guid CompetitorId, int GameNumber, IFormFile File);
 
     private sealed record ParseRow(
-        Guid ParseId, Guid MatchId, ParseRequest Request, Guid UserId, string Path, byte[] Bytes, string ResultJson, JsonElement Result);
+        Guid ParseId, Guid MatchId, ParseRequest Request, Guid UserId, string Path, string Sha, string ResultJson, JsonElement Result);
+
+    private static readonly TimeSpan RiotIdMaxAge = TimeSpan.FromHours(6);
+    private static readonly TimeSpan RiotIdRefreshBudget = TimeSpan.FromSeconds(4);
 
     public static void MapScoreboardOcrEndpoints(this WebApplication app)
     {
@@ -37,6 +41,7 @@ public static class ScoreboardOcrEndpoints
         IDbConnectionFactory db,
         ScoreboardOcrClient ocr,
         ScoreboardScreenshotStore store,
+        RiotIdRefreshService riotIds,
         CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
@@ -54,6 +59,7 @@ public static class ScoreboardOcrEndpoints
         var check = ScreenshotValidator.Validate(request.File.FileName, bytes);
         if (!check.Ok) return Results.BadRequest(new { error = check.Error });
 
+        await RefreshRiotIdsAsync(conn, riotIds, match, ct);
         var rosters = await ScoreboardRosterLoader.LoadAsync(conn, match.Team1Id, match.Team2Id);
         var call = await ocr.ParseValorantAsync(bytes, $"screenshot{check.Extension}", check.ContentType, rosters, ct);
         if (call.Status == OcrCallStatus.Unreadable) return Results.UnprocessableEntity(new { error = call.UserMessage });
@@ -65,7 +71,9 @@ public static class ScoreboardOcrEndpoints
             return Results.Json(new { error = "Could not store the screenshot. Please try again." }, statusCode: 502);
 
         using var result = JsonDocument.Parse(call.ResultJson!);
-        await InsertParseAsync(conn, new ParseRow(parseId, id, request, userCtx.UserIdGuid, path, bytes, call.ResultJson!, result.RootElement));
+        var sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var verification = await ScoreboardReportVerifier.ForParseAsync(conn, id, sha, result.RootElement, rosters);
+        await InsertParseAsync(conn, new ParseRow(parseId, id, request, userCtx.UserIdGuid, path, sha, call.ResultJson!, result.RootElement));
         return Results.Ok(new
         {
             parseId,
@@ -74,7 +82,25 @@ public static class ScoreboardOcrEndpoints
             team1Id = match.Team1Id,
             team2Id = match.Team2Id,
             result = result.RootElement.Clone(),
+            verification = JsonSerializer.SerializeToElement(verification, OcrVerificationJson.Options),
         });
+    }
+
+    /// <summary>Re-read this match's linked Riot IDs that weren't checked recently, so a renamed player
+    /// still verifies. Bounded in time; failures leave the stored names in place.</summary>
+    private static async Task RefreshRiotIdsAsync(IDbConnection conn, RiotIdRefreshService riotIds, MatchRow match, CancellationToken ct)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(RiotIdRefreshBudget);
+        try
+        {
+            var userIds = await ScoreboardRosterLoader.LoadUserIdsAsync(conn, match.Team1Id, match.Team2Id);
+            await riotIds.RefreshUsersAsync(userIds, RiotIdMaxAge, budget.Token);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException && !ct.IsCancellationRequested)
+        {
+            // Out of time or Riot unreachable: match against the names we have.
+        }
     }
 
     private static async Task<(ParseRequest? Request, string? Error)> ReadRequestAsync(HttpContext ctx, CancellationToken ct)
@@ -127,7 +153,7 @@ public static class ScoreboardOcrEndpoints
                 row.UserId,
                 row.Request.CompetitorId,
                 row.Path,
-                Sha = Convert.ToHexStringLower(SHA256.HashData(row.Bytes)),
+                row.Sha,
                 row.ResultJson,
                 Engine = ReadString(row.Result, "engineVersion"),
             });
