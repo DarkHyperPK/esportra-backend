@@ -107,9 +107,14 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
         var link = string.IsNullOrWhiteSpace(context.TournamentSlug) ? "/organizer/tournaments" : $"/organizer/tournament/{context.TournamentSlug}/brackets";
         var data = JsonSerializer.Serialize(new
         {
-            match_id = matchId, report_id = reportId, tournament_id = context.TournamentId, audience = "organizer",
-            reason = "screenshot_report_review", signature,
-            players = review.Select(p => new { p.Name, p.Status, p.ReadName }), flags = verification.Flags,
+            match_id = matchId,
+            report_id = reportId,
+            tournament_id = context.TournamentId,
+            audience = "organizer",
+            reason = "screenshot_report_review",
+            signature,
+            players = review.Select(p => new { p.Name, p.Status, p.ReadName }),
+            flags = verification.Flags,
         });
 
         foreach (var userId in await TournamentOrganizerRecipients.LoadAsync(conn, context.TournamentId))
