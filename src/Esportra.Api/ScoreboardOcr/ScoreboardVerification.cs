@@ -1,13 +1,17 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Esportra.Api.Services;
 
 namespace Esportra.Api.ScoreboardOcr;
 
 /// <summary>Per-player outcome of checking a screenshot report against the two rosters.</summary>
 public static class VerificationStatus
 {
-    /// <summary>Read from the screenshot and matched to a Riot ID linked through Riot sign-in.</summary>
+    /// <summary>
+    /// The name read from the screenshot matches a game name linked through Riot sign-in. Screenshots
+    /// don't show the #tag, so this alone isn't proof of the account: <see cref="RiotStatus.Confirmed"/> is.
+    /// </summary>
     public const string Verified = "verified";
     /// <summary>Matched a Riot tag the player typed themselves (not proven).</summary>
     public const string Claimed = "claimed";
@@ -28,14 +32,46 @@ public static class VerificationStatus
     public static readonly IReadOnlySet<string> NeedsReview = new HashSet<string> { Unknown, OtherTeam, Duplicate, Edited };
 }
 
-public sealed record VerifiedPlayer(
-    int Index, string Name, string? Team, string? UserId, string Status, string? Source, string? ReadName);
+/// <summary>Per-player outcome of checking the report against Riot's own record of the match (by PUUID).</summary>
+public static class RiotStatus
+{
+    /// <summary>The player's linked Riot account played this match.</summary>
+    public const string Confirmed = "confirmed";
+    /// <summary>The player has a linked account, but a different account with the same game name played.</summary>
+    public const string OtherAccount = "other_account";
+    /// <summary>The player has a linked account that isn't in the match, and no one with this name is.</summary>
+    public const string NotInMatch = "not_in_match";
+    /// <summary>The account that played under this name isn't linked to anyone on either roster.</summary>
+    public const string Unregistered = "unregistered";
 
-public sealed record OcrVerification(IReadOnlyList<VerifiedPlayer> Players, IReadOnlyList<string> Flags)
+    public static readonly IReadOnlySet<string> NeedsReview = new HashSet<string> { OtherAccount, NotInMatch, Unregistered };
+}
+
+/// <summary>Where the Riot cross-check of a report stands.</summary>
+public static class RiotCheckStatus
+{
+    public const string Pending = "pending";
+    public const string Confirmed = "confirmed";
+    /// <summary>No matching custom game in the players' Riot history: names were checked from the screenshot only.</summary>
+    public const string NotFound = "not_found";
+    /// <summary>The API key can't read Valorant matches.</summary>
+    public const string Unavailable = "unavailable";
+}
+
+public sealed record RiotCheck(string Status, string? MatchId = null, DateTimeOffset? CheckedAt = null);
+
+public sealed record VerifiedPlayer(
+    int Index, string Name, string? Team, string? UserId, string Status, string? Source, string? ReadName,
+    string? RiotStatus = null, string? RiotId = null, string? RiotKda = null);
+
+public sealed record OcrVerification(IReadOnlyList<VerifiedPlayer> Players, IReadOnlyList<string> Flags, RiotCheck? Riot = null)
 {
     public IReadOnlyList<VerifiedPlayer> NeedsReview =>
-        Players.Where(p => VerificationStatus.NeedsReview.Contains(p.Status)).ToList();
+        Players.Where(p => VerificationStatus.NeedsReview.Contains(p.Status) || (p.RiotStatus is { } r && RiotStatus.NeedsReview.Contains(r))).ToList();
 }
+
+/// <summary>A linked Riot account of a roster member.</summary>
+public sealed record LinkedAccount(string UserId, string Team, string Puuid);
 
 /// <summary>camelCase JSON for the stored and returned verification.</summary>
 public static class OcrVerificationJson
@@ -43,8 +79,8 @@ public static class OcrVerificationJson
     public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
 }
 
-/// <summary>A submitted row: the name and team the captain confirmed.</summary>
-public sealed record SubmittedPlayer(string Name, string? Team);
+/// <summary>A submitted row: the name, team and K/D/A the captain confirmed.</summary>
+public sealed record SubmittedPlayer(string Name, string? Team, int? Kills = null, int? Deaths = null, int? Assists = null);
 
 /// <summary>
 /// Decides, per player, whether a screenshot report names the people on the competitors' rosters.
@@ -72,6 +108,85 @@ public static class ScoreboardVerification
         players = players.Select(p => duplicates.Contains(p) ? p with { Status = VerificationStatus.Duplicate } : p).ToList();
         return new OcrVerification(players, []);
     }
+
+    public const string FlagStatsMismatch = "stats_mismatch";
+    public const string FlagScoreMismatch = "score_mismatch";
+
+    /// <summary>
+    /// Checks a report against Riot's record of the match, which lists every player's PUUID and full
+    /// Riot ID (the screenshot shows only the game name). Each row is confirmed by its player's linked
+    /// account, or flagged: a different account under the same name, a linked player who didn't play,
+    /// or an account no one on either roster has linked. K/D/A and the score are compared too.
+    /// </summary>
+    public static OcrVerification ApplyRiotMatch(
+        OcrVerification verification, IReadOnlyList<LinkedAccount> linked, RiotMatch match,
+        IReadOnlyList<SubmittedPlayer> submitted, int team1Score, int team2Score, DateTimeOffset now)
+    {
+        var owners = linked.GroupBy(a => a.Puuid).ToDictionary(g => g.Key, g => g.First());
+        var flags = verification.Flags.ToList();
+        var players = verification.Players.Select(p =>
+        {
+            var (checkedPlayer, riotPlayer) = MatchToRiot(p, linked, owners, match);
+            var stats = p.Index < submitted.Count ? submitted[p.Index] : null;
+            if (riotPlayer is null || stats is null || SameKda(stats, riotPlayer)) return checkedPlayer;
+            if (!flags.Contains(FlagStatsMismatch)) flags.Add(FlagStatsMismatch);
+            return checkedPlayer with { RiotKda = $"{riotPlayer.Kills}/{riotPlayer.Deaths}/{riotPlayer.Assists}" };
+        }).ToList();
+
+        var blueTeam = MajorityTeam(match, "Blue", owners);
+        var redTeam = MajorityTeam(match, "Red", owners);
+        if (blueTeam is not null && redTeam is not null && blueTeam != redTeam)
+        {
+            var (riot1, riot2) = blueTeam == "team1" ? (match.BlueRounds, match.RedRounds) : (match.RedRounds, match.BlueRounds);
+            if ((riot1, riot2) != (team1Score, team2Score)) flags.Add(FlagScoreMismatch);
+        }
+        return verification with
+        {
+            Players = players,
+            Flags = flags,
+            Riot = new RiotCheck(RiotCheckStatus.Confirmed, match.MatchId, now),
+        };
+    }
+
+    private static (VerifiedPlayer Player, RiotMatchPlayer? Riot) MatchToRiot(
+        VerifiedPlayer player, IReadOnlyList<LinkedAccount> linked, Dictionary<string, LinkedAccount> owners, RiotMatch match)
+    {
+        var key = NameKey.Of(player.Name);
+        var byName = key.Length == 0 ? null : match.Players.FirstOrDefault(r => NameKey.Of(r.GameName) == key);
+        if (player.UserId is { } userId)
+        {
+            var mine = linked.Where(a => a.UserId == userId).Select(a => a.Puuid).ToHashSet();
+            if (match.Players.FirstOrDefault(r => mine.Contains(r.Puuid)) is { } played)
+                return (player with { RiotStatus = RiotStatus.Confirmed, RiotId = played.RiotId }, played);
+            if (mine.Count > 0)
+            {
+                return byName is null
+                    ? (player with { RiotStatus = RiotStatus.NotInMatch }, null)
+                    : (player with { RiotStatus = RiotStatus.OtherAccount, RiotId = byName.RiotId }, byName);
+            }
+        }
+        if (byName is null) return (player, null);
+        if (owners.TryGetValue(byName.Puuid, out var owner))
+        {
+            // Riot knows whose account this is even when the screenshot name didn't match the roster.
+            var status = player.Team is not null && player.Team != owner.Team ? VerificationStatus.OtherTeam : VerificationStatus.Verified;
+            return (player with { UserId = owner.UserId, Status = status, RiotStatus = RiotStatus.Confirmed, RiotId = byName.RiotId }, byName);
+        }
+        return (player with { RiotStatus = RiotStatus.Unregistered, RiotId = byName.RiotId }, byName);
+    }
+
+    private static bool SameKda(SubmittedPlayer submitted, RiotMatchPlayer riot) =>
+        (submitted.Kills is null || submitted.Kills == riot.Kills)
+        && (submitted.Deaths is null || submitted.Deaths == riot.Deaths)
+        && (submitted.Assists is null || submitted.Assists == riot.Assists);
+
+    /// <summary>The bracket team most of a Riot side's linked players belong to.</summary>
+    private static string? MajorityTeam(RiotMatch match, string side, Dictionary<string, LinkedAccount> owners) =>
+        match.Players.Where(p => p.TeamId == side && owners.ContainsKey(p.Puuid))
+            .GroupBy(p => owners[p.Puuid].Team)
+            .OrderByDescending(g => g.Count())
+            .Select(g => g.Key)
+            .FirstOrDefault();
 
     private static VerifiedPlayer Classify(int index, SubmittedPlayer player, ParsedRow? read, OcrRosters rosters)
     {

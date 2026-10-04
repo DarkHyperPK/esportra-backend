@@ -82,31 +82,7 @@ public static class MatchEndpoints
                 var scannerPuuid = (string)scanner.puuid;
 
                 // Detect shard (cached 30 min — shard rarely changes)
-                var shard = await cache.GetOrCreateAsync(
-                    $"riot:shard:{scannerPuuid}",
-                    async (_) =>
-                    {
-                        var (s, b) = await riotApi.ProxyAsync(
-                            "americas", $"/riot/account/v1/active-shards/by-game/val/by-puuid/{scannerPuuid}", ct);
-                        if (s == 200)
-                        {
-                            using var doc = JsonDocument.Parse(b);
-                            var val = doc.RootElement.GetProperty("activeShard").GetString()?.ToLowerInvariant();
-                            if (!string.IsNullOrEmpty(val)) return val;
-                        }
-                        // Fallback to DB region
-                        var r = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
-                        return r switch
-                        {
-                            "na" or "br" or "latam" or "kr" or "ap" or "eu" => r,
-                            "americas" => "na",
-                            "europe" => "eu",
-                            "asia" => "ap",
-                            _ => "eu"
-                        };
-                    },
-                    new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(30) },
-                    cancellationToken: ct) ?? "eu";
+                var shard = await RiotShards.ResolveAsync(riotApi, cache, scannerPuuid, (string?)scanner.region, ct);
 
                 log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
                     scannerPuuid, shard, req.MapName);
@@ -187,7 +163,7 @@ public static class MatchEndpoints
                         using var doc = JsonDocument.Parse(detBody);
                         var info = doc.RootElement.GetProperty("matchInfo");
                         var riotMapId = info.GetProperty("mapId").GetString() ?? "";
-                        var mapDisplayName = ResolveValorantMapName(riotMapId);
+                        var mapDisplayName = ValorantMapIds.Resolve(riotMapId);
                         log.LogInformation("Match {RiotId}: mapId={MapId}, resolved={MapName}",
                             riotMatchId, riotMapId, mapDisplayName);
 
@@ -1498,37 +1474,6 @@ public static class MatchEndpoints
                     new { versionId = broadcastVersionId, matchId }, ct);
         }
     }
-
-    /// <summary>Resolve Riot Valorant map path to display name.</summary>
-    private static string ResolveValorantMapName(string riotMapId)
-    {
-        // Riot uses internal paths like /Game/Maps/Triad/Triad
-        var map = ValorantMaps.GetValueOrDefault(riotMapId);
-        if (map is not null) return map;
-
-        // Fallback: extract last path segment
-        var lastSlash = riotMapId.LastIndexOf('/');
-        return lastSlash >= 0 ? riotMapId[(lastSlash + 1)..] : riotMapId;
-    }
-
-    private static readonly Dictionary<string, string> ValorantMaps = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["/Game/Maps/Ascent/Ascent"] = "Ascent",
-        ["/Game/Maps/Duality/Duality"] = "Bind",
-        ["/Game/Maps/Triad/Triad"] = "Haven",
-        ["/Game/Maps/Bonsai/Bonsai"] = "Split",
-        ["/Game/Maps/Port/Port"] = "Icebox",
-        ["/Game/Maps/Foxtrot/Foxtrot"] = "Breeze",
-        ["/Game/Maps/Canyon/Canyon"] = "Fracture",
-        ["/Game/Maps/Pitt/Pitt"] = "Pearl",
-        ["/Game/Maps/Jam/Jam"] = "Lotus",
-        ["/Game/Maps/Juliett/Juliett"] = "Sunset",
-        ["/Game/Maps/Infinity/Infinity"] = "Abyss",
-        ["/Game/Maps/Rook/Rook"] = "Corrode",
-        ["/Game/Maps/HURM/HURM_Alley/HURM_Alley"] = "District",
-        ["/Game/Maps/HURM/HURM_Bowl/HURM_Bowl"] = "Kasbah",
-        ["/Game/Maps/HURM/HURM_Yard/HURM_Yard"] = "Piazza",
-    };
 }
 
 // ── Match request records ────────────────────────────────────────────────────
