@@ -193,10 +193,56 @@ def test_catalog_refresh_only_when_the_patch_changes(monkeypatch, tmp_path):
     assert refresh_if_changed(tmp_path, current) is None
 
 
+def _bare_engine():
+    import threading
+
+    from app import engine as engine_module
+
+    engine = engine_module.RapidOcrEngine.__new__(engine_module.RapidOcrEngine)
+    engine._lock, engine._script_engines, engine.missing = threading.Lock(), {}, {}
+    return engine
+
+
 @pytest.mark.parametrize("script", ["arabic", "korean"])
-def test_missing_script_models_are_skipped(monkeypatch, tmp_path, script):
+def test_missing_script_model_is_reported_then_hot_added(monkeypatch, tmp_path, script):
+    rapidocr = pytest.importorskip("rapidocr")
     from app import engine as engine_module
 
     monkeypatch.setattr(engine_module, "models_dir", lambda: tmp_path)
-    loaded = engine_module.RapidOcrEngine._load_scripts(lambda **_: object(), (script,))
-    assert loaded == {}
+    monkeypatch.setattr(rapidocr, "RapidOCR", lambda **_: object())
+    engine = _bare_engine()
+
+    assert not engine.add_script(script)
+    assert engine.scripts == () and engine.missing == {script: "model not installed"}
+
+    (tmp_path / engine_module.SCRIPT_MODELS[script]).write_bytes(b"onnx")
+    assert engine.add_script(script)
+    assert engine.scripts == (script,) and engine.missing == {}
+
+
+def test_installer_retries_until_the_download_works():
+    import asyncio
+
+    from app.script_installer import install_missing_scripts
+
+    class Engine:
+        def __init__(self):
+            self.missing = {"arabic": "model not installed", "korean": "model not installed"}
+            self.added: list[str] = []
+
+        def add_script(self, script):
+            self.added.append(script)
+            self.missing.pop(script, None)
+            return True
+
+    answers = {"arabic": ["download failed: timeout", None], "korean": [None]}
+    seen: list[str] = []
+
+    def download(script):
+        seen.append(script)
+        return answers[script].pop(0)
+
+    engine = Engine()
+    asyncio.run(asyncio.wait_for(install_missing_scripts(engine, download, delays=(0, 0), every=0), timeout=5))
+    assert engine.missing == {} and sorted(engine.added) == ["arabic", "korean"]
+    assert seen.count("arabic") == 2 and seen.count("korean") == 1

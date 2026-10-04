@@ -72,6 +72,8 @@ def test_health_reports_catalog_bank_and_scripts(client):
     assert body["status"] == "ok" and body["bankAgents"] >= 20
     assert body["scripts"][0] == "default" and body["parserVersion"].startswith("valorant-scoreboard-")
     assert {"agents", "maps", "catalogVersion", "refreshedAt"} <= body.keys()
+    assert isinstance(body["missingScripts"], dict)
+    assert set(body["missingScripts"]).isdisjoint(body["scripts"])
 
 
 def test_accepts_rosters_with_name_sources(client):

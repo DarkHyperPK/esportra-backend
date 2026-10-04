@@ -46,6 +46,7 @@ public static class ScoreboardOcrDebugEndpoints
             agents = health.Agents,
             bankAgents = health.BankAgents,
             scripts = health.Scripts ?? [],
+            missingScripts = health.MissingScripts ?? new Dictionary<string, string>(),
             catalogVersion = health.CatalogVersion,
             refreshedAt = health.RefreshedAt,
         });

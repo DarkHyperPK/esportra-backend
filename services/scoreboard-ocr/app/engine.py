@@ -99,22 +99,37 @@ class RapidOcrEngine:
         from importlib.metadata import version
 
         self.version = f"rapidocr-{version('rapidocr')}/pp-ocr"
-        self._script_engines = self._load_scripts(RapidOCR, scripts)
-        self.scripts = tuple(self._script_engines)
-
-    @staticmethod
-    def _load_scripts(factory: type, scripts: tuple[str, ...]) -> dict[str, object]:
-        loaded: dict[str, object] = {}
+        self._script_engines: dict[str, object] = {}
+        # Script -> why its recogniser isn't available (shown on /health until it is).
+        self.missing: dict[str, str] = {}
         for script in scripts:
-            model = SCRIPT_MODELS.get(script)
-            if model is None or not (models_dir() / model).exists():
-                log.warning("OCR %s recogniser not installed; %s names will not be read", script, script)
-                continue
-            try:
-                loaded[script] = factory(params=script_params(script))
-            except Exception as exc:  # noqa: BLE001 - a broken optional model must not stop the service
-                log.warning("OCR %s recogniser failed to load: %s", script, exc)
-        return loaded
+            self.add_script(script)
+
+    @property
+    def scripts(self) -> tuple[str, ...]:
+        return tuple(self._script_engines)
+
+    def add_script(self, script: str) -> bool:
+        """Load a script recogniser whose model file is present. Safe to call while serving."""
+        from rapidocr import RapidOCR
+
+        model = SCRIPT_MODELS.get(script)
+        if model is None:
+            return False
+        if not (models_dir() / model).exists():
+            self.missing[script] = "model not installed"
+            log.warning("OCR %s recogniser not installed; %s names will not be read", script, script)
+            return False
+        try:
+            recogniser = RapidOCR(params=script_params(script))
+        except Exception as exc:  # noqa: BLE001 - a broken optional model must not stop the service
+            self.missing[script] = f"failed to load: {exc}"
+            log.warning("OCR %s recogniser failed to load: %s", script, exc)
+            return False
+        with self._lock:
+            self._script_engines = {**self._script_engines, script: recogniser}
+        self.missing.pop(script, None)
+        return True
 
     def read(self, image_bgr: np.ndarray) -> list[OcrToken]:
         with self._lock:
