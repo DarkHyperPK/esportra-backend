@@ -40,7 +40,8 @@ public sealed record OcrHealth(
     int BankAgents = 0,
     IReadOnlyList<string>? Scripts = null,
     string? CatalogVersion = null,
-    string? RefreshedAt = null);
+    string? RefreshedAt = null,
+    IReadOnlyDictionary<string, string>? MissingScripts = null);
 
 /// <summary>Typed HTTP client for the internal scoreboard OCR service.</summary>
 public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrOptions> options, ILogger<ScoreboardOcrClient> logger)
@@ -95,7 +96,10 @@ public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrO
             var scripts = root.TryGetProperty("scripts", out var s) && s.ValueKind == JsonValueKind.Array
                 ? s.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
                 : [];
-            return new OcrHealth(true, Int("agents"), Int("bankAgents"), scripts, Str("catalogVersion"), Str("refreshedAt"));
+            var missing = root.TryGetProperty("missingScripts", out var m) && m.ValueKind == JsonValueKind.Object
+                ? m.EnumerateObject().Where(p => p.Value.ValueKind == JsonValueKind.String).ToDictionary(p => p.Name, p => p.Value.GetString()!)
+                : [];
+            return new OcrHealth(true, Int("agents"), Int("bankAgents"), scripts, Str("catalogVersion"), Str("refreshedAt"), missing);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested)
         {

@@ -13,10 +13,12 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadF
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
+from app.download_models import download
 from app.engine import OcrEngine, RapidOcrEngine
 from app.image_io import ImageRejected, decode_image
 from app.models import Rosters, ScoreboardResult
 from app.valorant.catalog import Catalog, load_catalog, refresh_if_changed
+from app.script_installer import install_missing_scripts
 from app.valorant.pipeline import PARSER_VERSION, ScoreboardNotFound, parse_scoreboard
 
 log = logging.getLogger("scoreboard-ocr")
@@ -59,18 +61,21 @@ async def keep_catalog_fresh(cache: Path) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    refresher = None
+    tasks: list[asyncio.Task] = []
     if state.engine is None:
         cache = Path(os.getenv("SCOREBOARD_OCR_ASSET_DIR", "/data/valorant-assets"))
         refresh = os.getenv("SCOREBOARD_OCR_REFRESH_ASSETS", "true").lower() == "true"
         catalog = await run_in_threadpool(load_catalog, cache, refresh)
-        configure(RapidOcrEngine(), catalog, os.getenv("SCOREBOARD_OCR_TOKEN", ""))
-        log.info("scoreboard-ocr ready: %d agents, %d maps, scripts %s", len(catalog.agents), len(catalog.maps), state.engine.scripts)
+        engine = RapidOcrEngine()
+        configure(engine, catalog, os.getenv("SCOREBOARD_OCR_TOKEN", ""))
+        log.info("scoreboard-ocr ready: %d agents, %d maps, scripts %s", len(catalog.agents), len(catalog.maps), engine.scripts)
         if refresh and REFRESH_HOURS > 0:
-            refresher = asyncio.create_task(keep_catalog_fresh(cache))
+            tasks.append(asyncio.create_task(keep_catalog_fresh(cache)))
+        if engine.missing:
+            tasks.append(asyncio.create_task(install_missing_scripts(engine, download, every=max(REFRESH_HOURS, 1) * 3600)))
     yield
-    if refresher:
-        refresher.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="Esportra scoreboard OCR", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -92,6 +97,8 @@ async def health() -> dict[str, object]:
         "catalogVersion": catalog.version if catalog else None,
         "refreshedAt": catalog.refreshed_at if catalog else None,
         "scripts": ["default", *(engine.scripts if engine else ())],
+        # Script -> why its recogniser isn't loaded yet (the service keeps retrying the download).
+        "missingScripts": dict(getattr(engine, "missing", {})),
         "parserVersion": PARSER_VERSION,
     }
 

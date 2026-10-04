@@ -1,7 +1,8 @@
-"""Fetch the optional script recognisers into the image at build time (`python -m app.download_models`).
+"""Fetch the optional script recognisers (`python -m app.download_models` at image build).
 
 RapidOCR downloads each model next to its bundled ones and checks the pinned SHA-256. A failed download
-never fails the build: the service then runs without that script and /health says so.
+never fails the build: the service retries it at start-up (`app/script_installer.py`) and /health says
+why a script is missing.
 """
 
 from __future__ import annotations
@@ -11,17 +12,24 @@ import sys
 from app.engine import SCRIPT_MODELS, models_dir, script_params
 
 
-def main() -> int:
+def download(script: str) -> str | None:
+    """Download one script's recogniser. None when it is installed, else the reason it isn't."""
     from rapidocr import RapidOCR
 
-    for script, filename in SCRIPT_MODELS.items():
-        try:
-            RapidOCR(params=script_params(script))
-            ok = (models_dir() / filename).exists()
-        except Exception as exc:  # noqa: BLE001 - reported, never fatal
-            print(f"[models] {script}: download failed ({exc})", file=sys.stderr)
-            ok = False
-        print(f"[models] {script}: {'installed' if ok else 'missing'}")
+    filename = SCRIPT_MODELS.get(script)
+    if filename is None:
+        return "unknown script"
+    try:
+        RapidOCR(params=script_params(script))
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal
+        return f"download failed: {exc}"
+    return None if (models_dir() / filename).exists() else "download finished but the model file is missing"
+
+
+def main() -> int:
+    for script in SCRIPT_MODELS:
+        reason = download(script)
+        print(f"[models] {script}: {'installed' if reason is None else 'missing (' + reason + ')'}", file=sys.stderr if reason else sys.stdout)
     return 0
 
 

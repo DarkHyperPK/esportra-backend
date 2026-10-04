@@ -7,7 +7,9 @@ An internal service that reads a Valorant post-match **Scoreboard** screenshot a
 The service uses [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime to run PaddleOCR's PP-OCR detection and recognition models, CPU only, with no PaddlePaddle dependency.
 
 - **Default recogniser:** PP-OCRv6, shipped inside the `rapidocr` wheel. It reads Latin script, digits, Chinese and Japanese.
-- **Arabic and Korean names:** read by the PP-OCRv5 recognisers for those scripts. They are downloaded during the Docker build (`app/download_models.py`, SHA-256 pinned by RapidOCR) and loaded only if present. `/health` lists the installed scripts.
+- **Arabic and Korean names:** read by the PP-OCRv5 recognisers for those scripts. They are downloaded during the Docker build (`app/download_models.py`, SHA-256 pinned by RapidOCR).
+  - If that download fails, the build still succeeds. The service then retries in the background (after 5 s, 1 min, 5 min, then every refresh interval) and loads each recogniser as soon as it arrives, with no restart (`app/script_installer.py`).
+  - `/health` lists installed `scripts` and, in `missingScripts`, why any is missing.
 - **Swappable engine:** `app/engine.py` hides the engine behind `OcrEngine`.
 
 ## What it reads
@@ -124,7 +126,7 @@ Responses:
 | 422 | No scoreboard found, or bad rosters |
 | 504 | Timed out |
 
-`GET /health` returns `{ status, agents, maps, bankAgents, catalogVersion, refreshedAt, scripts, parserVersion }`.
+`GET /health` returns `{ status, agents, maps, bankAgents, catalogVersion, refreshedAt, scripts, missingScripts, parserVersion }`.
 
 ## Configuration
 
@@ -139,7 +141,8 @@ Responses:
 
 ## Deploy (Coolify)
 
-- Build from `services/scoreboard-ocr/Dockerfile`. The build downloads the Arabic and Korean recognisers; check `/health` → `scripts`. The service listens on port 8095.
+- Build from `services/scoreboard-ocr/Dockerfile`. The build downloads the Arabic and Korean recognisers from modelscope.cn. The build log shows `[models] arabic: installed`; `/health` → `scripts` should list both. The service listens on port 8095.
+- If they're missing, `/health` → `missingScripts` gives the reason. The service keeps retrying, so allowing outbound HTTPS to modelscope.cn is enough; no rebuild is needed.
 - Attach it only to the internal network shared with the API, with no public domain.
 - Set `ScoreboardOcr__BaseUrl=http://<service-name>:8095` and `ScoreboardOcr__ServiceToken` on the API.
 - A parse takes 1–3 s of CPU; a stretched capture is read twice.

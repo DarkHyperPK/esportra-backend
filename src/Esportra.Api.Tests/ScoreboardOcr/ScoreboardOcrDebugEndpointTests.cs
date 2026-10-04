@@ -138,6 +138,20 @@ public sealed class ScoreboardOcrDebugEndpointTests
     }
 
     [Fact]
+    public async Task Health_PassesThroughWhyAScriptIsMissing()
+    {
+        var ocr = new StubHandler(HttpStatusCode.OK,
+            """{"status":"ok","agents":28,"scripts":["default","korean"],"missingScripts":{"arabic":"download failed: timeout"}}""");
+
+        var response = await As(Configured(ocr, new StubHandler(HttpStatusCode.OK, "{}")), await SeedUserAsync(admin: true))
+            .GetAsync("/api/debug/scoreboard-ocr/health");
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("scripts").EnumerateArray().Select(s => s.GetString()).Should().Equal("default", "korean");
+        body.GetProperty("missingScripts").GetProperty("arabic").GetString().Should().Be("download failed: timeout");
+    }
+
+    [Fact]
     public void ParseNames_TrimsDedupesAndCaps()
     {
         var names = ScoreboardOcrDebugEndpoints.ParseNames(" a \nA\nb\n\n" + new string('x', 41), "team1");

@@ -12,13 +12,15 @@ RUN pip install -r requirements.txt \
     && pip install --no-deps -r requirements-ocr.txt
 
 COPY app ./app
-# Arabic and Korean name recognisers (PaddleOCR PP-OCRv5, checksum-verified). Never fails the build;
-# /health lists which scripts were installed.
+# Arabic and Korean name recognisers (PaddleOCR PP-OCRv5, checksum-verified). Never fails the build:
+# the service retries a failed download at start-up, and /health lists installed and missing scripts.
 RUN python -m app.download_models
 
+# The models directory stays writable so the service can retry a failed download at start-up.
 RUN useradd --system --uid 10001 --home /srv ocr \
     && mkdir -p /data/valorant-assets \
-    && chown -R ocr /data
+    && chown -R ocr /data \
+    && chown -R ocr "$(python -c 'import pathlib, rapidocr; print(pathlib.Path(rapidocr.__file__).parent / "models")')"
 USER ocr
 
 EXPOSE 8095
