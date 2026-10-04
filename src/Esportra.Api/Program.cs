@@ -358,6 +358,7 @@ builder.Services.AddScoped<Esportra.Api.Services.IRiotAccountLookup, Esportra.Ap
 builder.Services.AddScoped<Esportra.Api.Services.RiotIdRefreshService>();
 builder.Services.AddScoped<Esportra.Api.ScoreboardOcr.ScoreboardReportVerifier>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.RiotIdRefreshJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IRiotIdRefreshTrigger, Esportra.Api.ScheduledJobs.RiotIdRefreshTrigger>();
 
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()
@@ -529,7 +530,7 @@ using (var scope = app.Services.CreateScope())
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.TournamentStatusReconciliationJob>(
         "tournament-status-reconciliation", j => j.ExecuteAsync(CancellationToken.None), "*/5 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RiotIdRefreshJob>(
-        "riot-id-refresh", j => j.ExecuteAsync(CancellationToken.None), "*/30 * * * *");
+        "riot-id-refresh", j => j.ExecuteAsync(CancellationToken.None), "20 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
         "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(

@@ -149,18 +149,22 @@ public static class IntegrationEndpoints
             if (existingUserId is not null)
                 return Results.Redirect($"{frontendUrl}/account/settings?riot_linked=error&reason=already_linked_to_another_user");
 
+            // Signing in again after a Riot rename: keep the old name for recent screenshots.
+            await RiotIdRefreshService.RecordSignInNameAsync(conn, userGuid, puuid, gameName, tagLine);
+
             // Upsert riot_accounts
             await conn.ExecuteAsync("""
                 INSERT INTO public.riot_accounts
-                    (user_id, puuid, game_name, tag_line, access_token, refresh_token, token_expires_at)
-                VALUES (@userId, @puuid, @gameName, @tagLine, @accessToken, @refreshToken, @expiresAt)
+                    (user_id, puuid, game_name, tag_line, access_token, refresh_token, token_expires_at, name_checked_at)
+                VALUES (@userId, @puuid, @gameName, @tagLine, @accessToken, @refreshToken, @expiresAt, now())
                 ON CONFLICT (user_id) DO UPDATE SET
                     puuid = EXCLUDED.puuid,
                     game_name = EXCLUDED.game_name,
                     tag_line = EXCLUDED.tag_line,
                     access_token = EXCLUDED.access_token,
                     refresh_token = EXCLUDED.refresh_token,
-                    token_expires_at = EXCLUDED.token_expires_at
+                    token_expires_at = EXCLUDED.token_expires_at,
+                    name_checked_at = now()
                 """, new { userId = userGuid, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
 
             // Sync profiles.riot_tag (reject if already linked to another account)

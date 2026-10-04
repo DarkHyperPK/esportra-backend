@@ -6,6 +6,7 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Bracket;
 using Esportra.Core.Tournaments;
@@ -1052,6 +1053,7 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             GameCatalogService gameCatalog,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1190,6 +1192,7 @@ public static class TournamentEndpoints
                 }, txn);
 
             txn.Commit();
+            riotIdRefresh.TournamentEntry(id, userCtx.UserIdGuid);
             return Results.Ok(row);
         }).RequireAuthorization("Authenticated");
 
@@ -1457,6 +1460,7 @@ public static class TournamentEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1480,9 +1484,10 @@ public static class TournamentEndpoints
                 """,
                 new { id, userId = userCtx.UserIdGuid });
 
-            return updated > 0
-                ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "No eligible registration found for check-in." });
+            if (updated == 0)
+                return Results.NotFound(new { error = "No eligible registration found for check-in." });
+            riotIdRefresh.TournamentEntry(id, userCtx.UserIdGuid);
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/participants/{pid}/approve-check-in ─────
@@ -1691,6 +1696,7 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1710,9 +1716,10 @@ public static class TournamentEndpoints
                 """,
                 new { participantId, id });
 
-            return updated > 0
-                ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "Participant not found or already checked in." });
+            if (updated == 0)
+                return Results.NotFound(new { error = "Participant not found or already checked in." });
+            riotIdRefresh.Competitors(participantId);
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
