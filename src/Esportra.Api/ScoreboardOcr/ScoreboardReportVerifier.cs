@@ -16,6 +16,8 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
 {
     public const string FlagReused = "screenshot_reused";
     public const string FlagDate = "date_mismatch";
+    /// <summary>Added when the system accepted the report because the opponent didn't answer in time.</summary>
+    public const string FlagAutoAccepted = "auto_accepted";
     private static readonly TimeSpan DateTolerance = TimeSpan.FromDays(2);
 
     private sealed record ParseRecord(string Result, string Sha, Guid Team1Id, Guid Team2Id, DateTime? ScheduledTime);
@@ -166,6 +168,7 @@ public sealed class ScoreboardReportVerifier(IHubContext<NotificationHub> notifH
         }
         if (flags.Contains(FlagReused)) yield return "• The same screenshot was used for another match.";
         if (flags.Contains(FlagDate)) yield return "• The date on the screenshot is far from the match date.";
+        if (flags.Contains(FlagAutoAccepted)) yield return "• The opponent didn't respond in time, so the result was accepted automatically. Overturn it if these warnings hold up.";
         if (flags.Contains(ScoreboardVerification.FlagStatsMismatch)) yield return "• Submitted K/D/A differs from Riot's record of the match.";
         if (flags.Contains(ScoreboardVerification.FlagScoreMismatch)) yield return "• The submitted score differs from Riot's record of the match.";
     }

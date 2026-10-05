@@ -94,6 +94,8 @@ public static class MatchSystemEndpoints
             ScoreboardScreenshotStore screenshotStore,
             ScoreboardReportVerifier ocrVerifier,
             IScoreboardRiotCheckTrigger riotCheck,
+            IReportAutoAcceptScheduler autoAccept,
+            IConfiguration config,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -152,18 +154,19 @@ public static class MatchSystemEndpoints
                 if (ocrVerification is not null)
                     ocrVerification = ocrVerification with { Riot = new RiotCheck(RiotCheckStatus.Pending) };
 
+                var acceptBy = DateTimeOffset.UtcNow.Add(ReportAcceptWindow.Of(config));
                 var report = await conn.QuerySingleAsync<dynamic>(
                     """
                 INSERT INTO match_result_reports
                   (match_id, game_number, reported_by, reported_by_team_id,
                    riot_match_id, map_id, map_name,
                    team1_score, team2_score, winner_team_id, match_data,
-                   screenshot_urls, comment, status, source, ocr_parse_id, ocr_verification)
+                   screenshot_urls, comment, status, source, ocr_parse_id, ocr_verification, accept_by)
                 VALUES
                   (@matchId, @gameNumber, @reportedBy, @reportedByTeamId,
                    @riotMatchId, @mapId, @mapName,
                    @team1Score, @team2Score, @winnerTeamId, @matchData::jsonb,
-                   @screenshotUrls::jsonb, @comment, 'pending', @source, @ocrParseId, @ocrVerification::jsonb)
+                   @screenshotUrls::jsonb, @comment, 'pending', @source, @ocrParseId, @ocrVerification::jsonb, @acceptBy)
                 ON CONFLICT (match_id, game_number, reported_by_team_id)
                 DO UPDATE SET
                    team1_score    = EXCLUDED.team1_score,
@@ -178,11 +181,14 @@ public static class MatchSystemEndpoints
                    source         = EXCLUDED.source,
                    ocr_parse_id   = EXCLUDED.ocr_parse_id,
                    ocr_verification = EXCLUDED.ocr_verification,
+                   accept_by      = EXCLUDED.accept_by,
+                   auto_accepted  = NULL,
                    status         = 'pending',
                    updated_at     = now()
                 RETURNING id, match_id, game_number, reported_by_team_id, team1_score, team2_score,
                          winner_team_id, riot_match_id, map_id, map_name, match_data,
-                         screenshot_urls, comment, status, source, ocr_parse_id, ocr_verification, created_at, updated_at
+                         screenshot_urls, comment, status, source, ocr_parse_id, ocr_verification,
+                         accept_by, auto_accepted, created_at, updated_at
                 """,
                     new
                     {
@@ -204,7 +210,11 @@ public static class MatchSystemEndpoints
                         source = reportSource.Source,
                         ocrParseId = reportSource.OcrParseId,
                         ocrVerification = ocrVerification is null ? null : JsonSerializer.Serialize(ocrVerification, OcrVerificationJson.Options),
+                        acceptBy,
                     });
+
+                // The opponent has the response window to accept or dispute; after that it's accepted.
+                autoAccept.Schedule((Guid)report.id, acceptBy);
 
                 if (ocrVerification is not null)
                 {
@@ -214,7 +224,7 @@ public static class MatchSystemEndpoints
 
                 await NotifyReportSubmittedAsync(
                     id, report.id?.ToString(), req.ReportedByTeamId, reportingCompetitorId,
-                    matchHub, conn, logger, discord, ct);
+                    matchHub, conn, logger, discord, (int)ReportAcceptWindow.Of(config).TotalMinutes, ct);
 
                 DapperJsonbHelper.FixJsonb(report);
                 return Results.Ok(report);
@@ -271,33 +281,11 @@ public static class MatchSystemEndpoints
                 if (reportingCompetitorId is not null && captainCompetitorId == reportingCompetitorId)
                     return Results.BadRequest(new { error = "Cannot accept your own team's report." });
 
-                using var tx = conn.BeginTransaction();
-
-                // Row-lock the match before any game writes — serializes concurrent game accepts for BO3+
-                await conn.ExecuteScalarAsync<Guid?>(
-                    "SELECT id FROM brkt_matches WHERE id = @matchId FOR UPDATE",
-                    new { matchId = id }, tx);
-
-                // Mark report accepted
-                await conn.ExecuteAsync(
-                    """
-                UPDATE match_result_reports
-                SET status = 'accepted', responded_by = @userId, responded_at = NOW()
-                WHERE id = @rid AND match_id = @matchId AND status = 'pending'
-                """,
-                    new { rid, matchId = id, userId = userCtx.UserIdGuid }, tx);
-
-                var (processedWinnerId, seriesComplete, stageComplete, stageId, conflictResult) = await AutoProcessAcceptedReportAsync(
-                    id, rid, conn, tx, vetoService, finalizer, bracketHub, matchHub, db, logger, ctx, ct);
-                if (conflictResult is not null) return conflictResult;
-
-                tx.Commit();
-
-                if (seriesComplete)
-                {
-                    var hooks = ctx.RequestServices.GetService<IEnumerable<ILeaderboardSourceChangeHook>>();
-                    await LeaderboardSourceChangeHooks.FireAsync(hooks, logger, "accept-report", ct);
-                }
+                var outcome = await AcceptReportCoreAsync(
+                    conn, id, rid, userCtx.UserIdGuid, autoAccepted: null, requirePending: false, ctx.RequestServices, logger, ct);
+                if (outcome.Conflict is not null) return outcome.Conflict;
+                var (processedWinnerId, seriesComplete, stageComplete, stageId) =
+                    (outcome.WinnerId, outcome.SeriesComplete, outcome.StageComplete, outcome.StageId);
 
                 // Notify via SignalR
                 await matchHub.Clients
@@ -1917,7 +1905,7 @@ public static class MatchSystemEndpoints
     private static async Task NotifyReportSubmittedAsync(
         Guid matchId, string? reportId, string? reportedByTeamId, Guid reportingCompetitorId,
         IHubContext<MatchHub> matchHub, System.Data.IDbConnection conn,
-        ILogger logger, DiscordNotificationService discord, CancellationToken ct)
+        ILogger logger, DiscordNotificationService discord, int acceptWindowMinutes, CancellationToken ct)
     {
         var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
             "SELECT team1_id, team2_id, version_id FROM brkt_matches WHERE id = @matchId", new { matchId });
@@ -1969,7 +1957,7 @@ public static class MatchSystemEndpoints
             var reporterTeamName = await BracketCompetitorResolver.GetCompetitorDisplayNameAsync(
                 conn, reportingCompetitorId);
             var reportTitle = "⚔️ Match Result Submitted";
-            var reportMsg = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Review and confirm, or dispute if something's off.";
+            var reportMsg = $"{reporterTeamName ?? "Your opponent"} has reported the match score. Confirm it, or dispute it if something's off, within {acceptWindowMinutes} minutes. After that it's accepted automatically.";
             var reportDmTitle = string.IsNullOrWhiteSpace(reportTournName)
                 ? reportTitle
                 : $"[{reportTournName}] {reportTitle}";
@@ -2013,13 +2001,63 @@ public static class MatchSystemEndpoints
         _ => "We couldn't submit your report. Please verify scores and try again.",
     };
 
+    internal sealed record ReportAcceptOutcome(bool Accepted, Guid? WinnerId, bool SeriesComplete, bool StageComplete, Guid? StageId, IResult? Conflict);
+
+    /// <summary>
+    /// Accepts a pending report and records the game (and the series, when it is decided). Used by the
+    /// opponent's accept and by the system: after the response window runs out, or when Riot's record of
+    /// the match confirms a screenshot report. <paramref name="requirePending"/> makes a report that was
+    /// already accepted or disputed a no-op, so a captain acting at the deadline always wins.
+    /// </summary>
+    internal static async Task<ReportAcceptOutcome> AcceptReportCoreAsync(
+        System.Data.IDbConnection conn, Guid matchId, Guid rid, Guid? respondedBy, string? autoAccepted, bool requirePending,
+        IServiceProvider services, ILogger logger, CancellationToken ct)
+    {
+        var vetoService = services.GetRequiredService<VetoDbService>();
+        var finalizer = services.GetRequiredService<MatchFinalizationService>();
+        var bracketHub = services.GetRequiredService<IHubContext<BracketHub>>();
+        var matchHub = services.GetRequiredService<IHubContext<MatchHub>>();
+        var db = services.GetRequiredService<IDbConnectionFactory>();
+        if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+
+        using var tx = conn.BeginTransaction();
+
+        // Row-lock the match before any game writes — serializes concurrent game accepts for BO3+
+        await conn.ExecuteScalarAsync<Guid?>(
+            "SELECT id FROM brkt_matches WHERE id = @matchId FOR UPDATE",
+            new { matchId }, tx);
+
+        // Mark report accepted
+        var updated = await conn.ExecuteAsync(
+            """
+            UPDATE match_result_reports
+            SET status = 'accepted', responded_by = @respondedBy, responded_at = NOW(), auto_accepted = @autoAccepted
+            WHERE id = @rid AND match_id = @matchId AND status = 'pending'
+            """,
+            new { rid, matchId, respondedBy, autoAccepted }, tx);
+        if (requirePending && updated == 0) return new ReportAcceptOutcome(false, null, false, false, null, null);
+
+        var (winnerId, seriesComplete, stageComplete, stageId, conflict) = await AutoProcessAcceptedReportAsync(
+            matchId, rid, conn, tx, vetoService, finalizer, bracketHub, matchHub, db, logger, services, ct);
+        if (conflict is not null) return new ReportAcceptOutcome(false, null, false, false, null, conflict);
+
+        tx.Commit();
+
+        if (seriesComplete)
+        {
+            var hooks = services.GetService<IEnumerable<ILeaderboardSourceChangeHook>>();
+            await LeaderboardSourceChangeHooks.FireAsync(hooks, logger, autoAccepted is null ? "accept-report" : $"auto-accept-{autoAccepted}", ct);
+        }
+        return new ReportAcceptOutcome(true, winnerId, seriesComplete, stageComplete, stageId, null);
+    }
+
     private static async Task<(Guid? WinnerId, bool SeriesComplete, bool StageComplete, Guid? StageId, IResult? ConflictResult)>
         AutoProcessAcceptedReportAsync(
             Guid matchId, Guid rid,
             System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
             VetoDbService vetoService, MatchFinalizationService finalizer,
             IHubContext<BracketHub> bracketHub, IHubContext<MatchHub> matchHub,
-            IDbConnectionFactory db, ILogger logger, HttpContext ctx, CancellationToken ct)
+            IDbConnectionFactory db, ILogger logger, IServiceProvider services, CancellationToken ct)
     {
         // Phase 1: game recording — non-fatal if it fails (scores already committed by caller).
         // Phase 2: finalization — fatal; errors must propagate so the caller's tx is rolled back.
@@ -2107,7 +2145,7 @@ public static class MatchSystemEndpoints
         var (seriesWinnerId, seriesComplete, stageComplete, stageId, conflict) = await FinalizeSeriesAsync(
             matchId, rid, matchTeam1Id, matchTeam2Id, matchVersion, matchVersionId,
             team1Wins, team2Wins, winsNeeded, bestOf,
-            finalizer, conn, tx, bracketHub, matchHub, db, logger, ctx, ct);
+            finalizer, conn, tx, bracketHub, matchHub, db, logger, services, ct);
         if (conflict is not null) return (null, false, false, null, conflict);
 
         if (matchVersionId is not null)
@@ -2205,7 +2243,7 @@ public static class MatchSystemEndpoints
         int team1Wins, int team2Wins, int winsNeeded, int bestOf,
         MatchFinalizationService finalizer, System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
         IHubContext<BracketHub> bracketHub, IHubContext<MatchHub> matchHub,
-        IDbConnectionFactory db, ILogger logger, HttpContext ctx, CancellationToken ct)
+        IDbConnectionFactory db, ILogger logger, IServiceProvider services, CancellationToken ct)
     {
         if (team1Wins < winsNeeded && team2Wins < winsNeeded)
         {
@@ -2233,7 +2271,7 @@ public static class MatchSystemEndpoints
                 logger.LogInformation(
                     "Match {MatchId} series complete: winner={Winner}, series={T1}-{T2} (BO{BestOf})",
                     matchId, winnerId, team1Wins, team2Wins, bestOf);
-                var dathostSvc = ctx.RequestServices.GetRequiredService<IDatHostService>();
+                var dathostSvc = services.GetRequiredService<IDatHostService>();
                 _ = Task.Run(() => GameServerEndpoints.AutoDeleteServerAsync(
                     matchId, db, dathostSvc, matchHub, logger, CancellationToken.None));
             }
