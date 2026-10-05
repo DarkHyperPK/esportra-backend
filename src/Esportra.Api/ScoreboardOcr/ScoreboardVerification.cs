@@ -58,7 +58,7 @@ public static class RiotCheckStatus
     public const string Unavailable = "unavailable";
 }
 
-public sealed record RiotCheck(string Status, string? MatchId = null, DateTimeOffset? CheckedAt = null);
+public sealed record RiotCheck(string Status, string? MatchId = null, DateTimeOffset? CheckedAt = null, bool AutoAccepted = false);
 
 public sealed record VerifiedPlayer(
     int Index, string Name, string? Team, string? UserId, string Status, string? Source, string? ReadName,
@@ -120,7 +120,7 @@ public static class ScoreboardVerification
     /// </summary>
     public static OcrVerification ApplyRiotMatch(
         OcrVerification verification, IReadOnlyList<LinkedAccount> linked, RiotMatch match,
-        IReadOnlyList<SubmittedPlayer> submitted, int team1Score, int team2Score, DateTimeOffset now)
+        IReadOnlyList<SubmittedPlayer> submitted, (int Team1, int Team2)? score, DateTimeOffset now)
     {
         var owners = linked.GroupBy(a => a.Puuid).ToDictionary(g => g.Key, g => g.First());
         var flags = verification.Flags.ToList();
@@ -135,10 +135,10 @@ public static class ScoreboardVerification
 
         var blueTeam = MajorityTeam(match, "Blue", owners);
         var redTeam = MajorityTeam(match, "Red", owners);
-        if (blueTeam is not null && redTeam is not null && blueTeam != redTeam)
+        if (score is { } submittedScore && blueTeam is not null && redTeam is not null && blueTeam != redTeam)
         {
-            var (riot1, riot2) = blueTeam == "team1" ? (match.BlueRounds, match.RedRounds) : (match.RedRounds, match.BlueRounds);
-            if ((riot1, riot2) != (team1Score, team2Score)) flags.Add(FlagScoreMismatch);
+            var riotScore = blueTeam == "team1" ? (match.BlueRounds, match.RedRounds) : (match.RedRounds, match.BlueRounds);
+            if (riotScore != submittedScore) flags.Add(FlagScoreMismatch);
         }
         return verification with
         {
@@ -147,6 +147,20 @@ public static class ScoreboardVerification
             Riot = new RiotCheck(RiotCheckStatus.Confirmed, match.MatchId, now),
         };
     }
+
+    /// <summary>
+    /// Riot's record backs the whole report: every row is a linked account that played, nothing needs a
+    /// look, nothing differs from Riot (score, K/D/A), and both Riot sides map to the two bracket teams.
+    /// Such a report doesn't need the opponent to confirm it.
+    /// </summary>
+    public static bool IsFullyConfirmed(OcrVerification verification, RiotMatch match, IReadOnlyList<LinkedAccount> linked) =>
+        verification.Riot?.Status == RiotCheckStatus.Confirmed
+        && verification.Players.Count > 0
+        && verification.Players.Count == match.Players.Count
+        && verification.Players.All(p => p.RiotStatus == RiotStatus.Confirmed)
+        && verification.NeedsReview.Count == 0
+        && verification.Flags.Count == 0
+        && ScoreboardRiotMatcher.SideTeams(match, linked) is ({ } blue, { } red) && blue != red;
 
     private static (VerifiedPlayer Player, RiotMatchPlayer? Riot) MatchToRiot(
         VerifiedPlayer player, IReadOnlyList<LinkedAccount> linked, Dictionary<string, LinkedAccount> owners, RiotMatch match)

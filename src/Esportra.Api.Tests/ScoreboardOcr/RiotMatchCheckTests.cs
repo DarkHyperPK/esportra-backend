@@ -33,7 +33,7 @@ public sealed class RiotMatchCheckTests
         var verification = new OcrVerification([Row(0, "DarkHyper", "team1", "cap1"), Row(1, "Saintt", "team2", "cap2")], []);
         var match = Match(Riot("p-darkhyper", "DarkHyper", "007", "Blue"), Riot("p-saintt", "Saintt", "wpp", "Red"));
 
-        var result = ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], 15, 13, Now);
+        var result = ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], (15, 13), Now);
 
         result.Players.Select(p => (p.RiotStatus, p.RiotId)).Should().Equal(
             (RiotStatus.Confirmed, "DarkHyper#007"), (RiotStatus.Confirmed, "Saintt#wpp"));
@@ -48,7 +48,7 @@ public sealed class RiotMatchCheckTests
         var verification = new OcrVerification([Row(0, "DarkHyper", "team1", "cap1")], []);
         var match = Match(Riot("p-impostor", "DarkHyper", "999", "Blue"), Riot("p-saintt", "Saintt", "wpp", "Red"));
 
-        var result = ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], 15, 13, Now);
+        var result = ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], (15, 13), Now);
 
         var player = result.Players.Single();
         (player.RiotStatus, player.RiotId).Should().Be((RiotStatus.OtherAccount, "DarkHyper#999"));
@@ -61,7 +61,7 @@ public sealed class RiotMatchCheckTests
         var verification = new OcrVerification([Row(0, "Sayaplayer", "team1", "mate1")], []);
 
         var result = ScoreboardVerification.ApplyRiotMatch(
-            verification, Linked, Match(Riot("p-darkhyper", "DarkHyper", "007", "Blue")), [], 15, 13, Now);
+            verification, Linked, Match(Riot("p-darkhyper", "DarkHyper", "007", "Blue")), [], (15, 13), Now);
 
         result.Players.Single().RiotStatus.Should().Be(RiotStatus.NotInMatch);
     }
@@ -72,7 +72,7 @@ public sealed class RiotMatchCheckTests
         var verification = new OcrVerification([Row(0, "ghastii", "team2", null, VerificationStatus.Unknown)], []);
 
         var result = ScoreboardVerification.ApplyRiotMatch(
-            verification, Linked, Match(Riot("p-ghastii", "ghastii", "EUW", "Red")), [], 15, 13, Now);
+            verification, Linked, Match(Riot("p-ghastii", "ghastii", "EUW", "Red")), [], (15, 13), Now);
 
         var player = result.Players.Single();
         (player.RiotStatus, player.RiotId).Should().Be((RiotStatus.Unregistered, "ghastii#EUW"));
@@ -85,7 +85,7 @@ public sealed class RiotMatchCheckTests
         var verification = new OcrVerification([Row(0, "Saintt", "team2", null, VerificationStatus.Unknown)], []);
 
         var result = ScoreboardVerification.ApplyRiotMatch(
-            verification, Linked, Match(Riot("p-saintt", "Saintt", "wpp", "Red")), [], 15, 13, Now);
+            verification, Linked, Match(Riot("p-saintt", "Saintt", "wpp", "Red")), [], (15, 13), Now);
 
         var player = result.Players.Single();
         (player.UserId, player.Status, player.RiotStatus).Should().Be(("cap2", VerificationStatus.Verified, RiotStatus.Confirmed));
@@ -98,7 +98,7 @@ public sealed class RiotMatchCheckTests
         var match = Match(Riot("p-darkhyper", "DarkHyper", "007", "Blue", 19, 18, 7), Riot("p-saintt", "Saintt", "wpp", "Red", 26, 19, 17));
         SubmittedPlayer[] submitted = [new("DarkHyper", "team1", 25, 18, 7), new("Saintt", "team2", 26, 19, 17)];
 
-        var result = ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, submitted, 13, 15, Now);
+        var result = ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, submitted, (13, 15), Now);
 
         result.Flags.Should().BeEquivalentTo([ScoreboardVerification.FlagStatsMismatch, ScoreboardVerification.FlagScoreMismatch]);
         result.Players[0].RiotKda.Should().Be("19/18/7");
@@ -112,8 +112,8 @@ public sealed class RiotMatchCheckTests
         var verification = new OcrVerification([Row(0, "DarkHyper", "team1", "cap1")], []);
         var match = Match(Riot("p-darkhyper", "DarkHyper", "007", "Red"), Riot("p-saintt", "Saintt", "wpp", "Blue"));
 
-        ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], 13, 15, Now).Flags.Should().BeEmpty();
-        ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], 15, 13, Now).Flags
+        ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], (13, 15), Now).Flags.Should().BeEmpty();
+        ScoreboardVerification.ApplyRiotMatch(verification, Linked, match, [], (15, 13), Now).Flags
             .Should().Contain(ScoreboardVerification.FlagScoreMismatch);
     }
 
@@ -171,5 +171,35 @@ public sealed class RiotMatchCheckTests
         RiotMatchLookup.Fits(match, new RiotMatchQuery("Sunset", 15, 13, Now, TimeSpan.FromDays(2))).Should().BeTrue();
         RiotMatchLookup.Fits(match, new RiotMatchQuery("Lotus", 15, 13, Now, TimeSpan.FromDays(2))).Should().BeFalse();
         RiotMatchLookup.Fits(match, new RiotMatchQuery("Sunset", 13, 11, Now, TimeSpan.FromDays(2))).Should().BeFalse();
+    }
+
+    [Fact]
+    public void FullyConfirmed_OnlyWhenRiotBacksEveryRowAndNumber()
+    {
+        var match = Match(Riot("p-darkhyper", "DarkHyper", "007", "Blue"), Riot("p-saintt", "Saintt", "wpp", "Red"));
+        var rows = new OcrVerification([Row(0, "DarkHyper", "team1", "cap1"), Row(1, "Saintt", "team2", "cap2")], []);
+        var confirmed = ScoreboardVerification.ApplyRiotMatch(rows, Linked, match, [], (15, 13), Now);
+
+        ScoreboardVerification.IsFullyConfirmed(confirmed, match, Linked).Should().BeTrue();
+        ScoreboardVerification.IsFullyConfirmed(confirmed with { Flags = [ScoreboardVerification.FlagStatsMismatch] }, match, Linked).Should().BeFalse();
+        ScoreboardVerification.IsFullyConfirmed(confirmed with { Players = confirmed.Players.Take(1).ToList() }, match, Linked).Should().BeFalse();
+        ScoreboardVerification.IsFullyConfirmed(rows, match, Linked).Should().BeFalse("Riot hasn't been checked");
+        var withImpostor = Match(Riot("p-darkhyper", "DarkHyper", "007", "Blue"), Riot("p-impostor", "Saintt", "999", "Red"));
+        ScoreboardVerification.IsFullyConfirmed(
+            ScoreboardVerification.ApplyRiotMatch(rows, Linked, withImpostor, [], (15, 13), Now), withImpostor, Linked).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ReviewPayload_GivesRoundsPerBracketTeam_AndTeamsUnlinkedTeammates()
+    {
+        var match = RiotMatchSamples.Match("riot-2", "Juliett", 13, 15, Now,
+            new RiotMatchSamples.Player("p-saintt", "Saintt", "wpp", "Blue"), new RiotMatchSamples.Player("p-mate", "Mate", "BBB", "Blue"), new RiotMatchSamples.Player("p-darkhyper", "DarkHyper", "007", "Red"));
+
+        var payload = JsonSerializer.SerializeToElement(ScoreboardRiotMatcher.Payload(match, Linked));
+
+        (payload.GetProperty("team1Rounds").GetInt32(), payload.GetProperty("team2Rounds").GetInt32()).Should().Be((15, 13));
+        payload.GetProperty("map").GetString().Should().Be("Sunset");
+        var mate = payload.GetProperty("players").EnumerateArray().Single(p => p.GetProperty("gameName").GetString() == "Mate");
+        (mate.GetProperty("isTeam2").GetBoolean(), mate.GetProperty("acs").GetInt32()).Should().Be((true, 4200 / 28));
     }
 }

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Esportra.Api.Helpers;
 using Esportra.Api.Middleware;
 using Esportra.Api.ScoreboardOcr;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 
 namespace Esportra.Api.Endpoints;
@@ -52,7 +53,9 @@ public static class ScoreboardOcrDebugEndpoints
         });
     }
 
-    private static async Task<IResult> ParseAsync(HttpContext ctx, ScoreboardOcrClient ocr, CancellationToken ct)
+    private static readonly TimeSpan DebugWindow = TimeSpan.FromDays(30);
+
+    private static async Task<IResult> ParseAsync(HttpContext ctx, ScoreboardOcrClient ocr, IRiotMatchLookup riotMatches, CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         if (!IsStaff(user)) return StaffOnly();
@@ -80,12 +83,28 @@ public static class ScoreboardOcrDebugEndpoints
         using var result = JsonDocument.Parse(call.ResultJson!);
         // Debug rosters count as verified Riot IDs, so the bench shows what verification would say.
         var verification = ScoreboardVerification.FromParse(result.RootElement, rosters);
+        var riot = await FindRiotMatchAsync(riotMatches, form["riotId"], result.RootElement, ct);
         return Results.Ok(new
         {
             elapsedMs = timer.ElapsedMilliseconds,
             result = result.RootElement.Clone(),
             verification = JsonSerializer.SerializeToElement(verification, OcrVerificationJson.Options),
+            riot = riot is null ? null : new { status = riot.Status, match = riot.Match is null ? null : ScoreboardRiotMatcher.Payload(riot.Match, []) },
         });
+    }
+
+    /// <summary>
+    /// The screenshot's game in the match history of the Riot ID typed on the bench, to compare the read
+    /// with Riot's numbers. Test screenshots can be older than a live report, hence the wider window.
+    /// </summary>
+    private static async Task<RiotLookupOutcome?> FindRiotMatchAsync(IRiotMatchLookup riotMatches, string? riotId, JsonElement result, CancellationToken ct)
+    {
+        var parts = (riotId ?? "").Trim().Split('#', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || parts[0].Length is 0 or > MaxNameLength || parts[1].Length is 0 or > 10) return null;
+        var puuid = await riotMatches.PuuidOfAsync(parts[0], parts[1], ct);
+        if (puuid is null) return new RiotLookupOutcome(RiotLookupState.NotFound, null);
+        var query = ScoreboardRiotMatcher.QueryFrom(result, DateTimeOffset.UtcNow, DebugWindow);
+        return await ScoreboardRiotMatcher.FindAsync(riotMatches, [puuid], query, TimeSpan.FromSeconds(15), ct);
     }
 
     /// <summary>Newline-separated names → roster players with synthetic ids (team1-0, team1-1, …).</summary>
