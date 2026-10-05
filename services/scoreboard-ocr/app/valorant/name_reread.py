@@ -51,17 +51,40 @@ def _read(engine: OcrEngine, crop: np.ndarray, script: str | None) -> tuple[str,
 
 
 def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | None]:
-    """Most confident read across the default and the installed script recognisers."""
-    best = ("", 0.0, None)
+    """Most confident read across the default and the installed script recognisers.
+
+    When two reads cover complementary scripts (e.g. Arabic chars + Latin digits),
+    both are combined rather than one being discarded.
+    """
+    reads: list[tuple[str, float, str | None]] = []
     for script in (None, *getattr(engine, "scripts", ())):
         try:
             text, conf = _read(engine, crop, script)
         except Exception as exc:  # noqa: BLE001 - an optional recogniser failing must not fail the parse
             log.warning("OCR %s recogniser failed on a name: %s", script or "default", exc)
             continue
-        if any(ch.isalnum() for ch in text) and conf > best[1]:
-            best = (text, conf, script)
-    return best
+        if any(ch.isalnum() for ch in text):
+            reads.append((text, conf, script))
+
+    if not reads:
+        return ("", 0.0, None)
+
+    # Combine complementary reads when one recogniser returns only script chars and
+    # another returns only ASCII chars (e.g. Arabic "عبس" + default "404" → "عبس404").
+    non_ascii = [(t, c, s) for t, c, s in reads if any(ord(ch) > 127 for ch in t) and c >= ACCEPT_FROM]
+    ascii_only = [(t, c, s) for t, c, s in reads if all(ord(ch) <= 127 for ch in t) and c >= ACCEPT_FROM]
+    if non_ascii and ascii_only:
+        best_na = max(non_ascii, key=lambda r: r[1])
+        best_a = max(ascii_only, key=lambda r: r[1])
+        na_text = best_na[0]
+        # Script read already captured both scripts (e.g. Arabic recogniser returned عبس404) — prefer it.
+        if any(ch.isalnum() and ord(ch) <= 127 for ch in na_text):
+            return best_na
+        # Script read is purely non-ASCII alphanumeric — combine with the ASCII-only portion.
+        if all(ord(ch) > 127 or not ch.isalnum() for ch in na_text):
+            return (na_text + best_a[0], min(best_na[1], best_a[1]), best_na[2])
+
+    return max(reads, key=lambda r: r[1])
 
 
 def recover_names(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns: list[Column], pitch: float) -> None:
