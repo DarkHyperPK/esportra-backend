@@ -87,14 +87,24 @@ def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | No
     return max(reads, key=lambda r: r[1])
 
 
+def _plausible_name(name: str) -> bool:
+    """True when the name looks like an actual player name rather than a badge glyph or single character."""
+    return sum(1 for ch in name if ch.isalnum()) > 1
+
+
 def recover_names(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns: list[Column], pitch: float) -> None:
-    starts = [r.name_x0 for r in rows if r.name]
-    if not starts or pitch <= 0:
+    if pitch <= 0:
         return
-    column_x0 = median(starts)
+    starts = [r.name_x0 for r in rows if r.name]
+    # When no names were detected by the initial pass (e.g. all non-Latin script scoreboard), crop
+    # from the left image edge. Rank-badge glyphs (x ~ 50 px) found by the initial pass also give a
+    # reasonable anchor — the full name area starts just right of them.
+    column_x0 = median(starts) if starts else 0.0
     right = min(stat_boundary(columns), columns[0].x0)
     for row in rows:
-        if row.name and row.name_conf >= REREAD_BELOW:
+        # Skip only rows with a confident, plausible name. Single-char badge glyphs ("口", "4") must
+        # be retried so the Arabic/Korean recogniser can overwrite them.
+        if _plausible_name(row.name) and row.name_conf >= REREAD_BELOW:
             continue
         x0, y0, x1, y1 = _name_box(row, column_x0, right, pitch, image.shape[:2])
         if x1 - x0 < 8 or y1 - y0 < 6:
