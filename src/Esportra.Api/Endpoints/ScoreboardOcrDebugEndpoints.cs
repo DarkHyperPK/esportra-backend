@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Middleware;
 using Esportra.Api.ScoreboardOcr;
 using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Database;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -55,7 +58,7 @@ public static class ScoreboardOcrDebugEndpoints
 
     private static readonly TimeSpan DebugWindow = TimeSpan.FromDays(30);
 
-    private static async Task<IResult> ParseAsync(HttpContext ctx, ScoreboardOcrClient ocr, IRiotMatchLookup riotMatches, CancellationToken ct)
+    private static async Task<IResult> ParseAsync(HttpContext ctx, ScoreboardOcrClient ocr, IRiotMatchLookup riotMatches, IDbConnectionFactory db, HybridCache cache, CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         if (!IsStaff(user)) return StaffOnly();
@@ -73,8 +76,16 @@ public static class ScoreboardOcrDebugEndpoints
         if (!check.Ok) return Results.BadRequest(new { error = check.Error });
 
         var rosters = new OcrRosters(ParseNames(form["team1Names"], "team1"), ParseNames(form["team2Names"], "team2"));
+        using var conn = db.CreateConnection();
+        var azureEnabled = await cache.GetOrCreateAsync(
+            "ocr:engine-setting",
+            async _ => await conn.ExecuteScalarAsync<string>(
+                "SELECT value FROM system_settings WHERE key = 'azure_ocr_enabled'") ?? "false",
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+            cancellationToken: ct);
+        var engine = azureEnabled == "true" ? "azure" : "paddle";
         var timer = Stopwatch.StartNew();
-        var call = await ocr.ParseValorantAsync(bytes, $"screenshot{check.Extension}", check.ContentType, rosters, ct);
+        var call = await ocr.ParseValorantAsync(bytes, $"screenshot{check.Extension}", check.ContentType, rosters, engine, ct);
         timer.Stop();
 
         if (call.Status == OcrCallStatus.Unreadable) return Results.UnprocessableEntity(new { error = call.UserMessage, elapsedMs = timer.ElapsedMilliseconds });

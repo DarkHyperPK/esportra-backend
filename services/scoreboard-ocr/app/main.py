@@ -9,10 +9,13 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from typing import Annotated
+
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
+from app.azure_engine import AzureOcrEngine
 from app.download_models import download
 from app.engine import OcrEngine, RapidOcrEngine
 from app.image_io import ImageRejected, decode_image
@@ -32,6 +35,7 @@ REFRESH_HOURS = float(os.getenv("SCOREBOARD_OCR_REFRESH_HOURS", "6"))
 
 class State:
     engine: OcrEngine | None = None
+    azure_engine: AzureOcrEngine | None = None
     catalog: Catalog | None = None
     token: str = ""
     gate: asyncio.Semaphore | None = None
@@ -68,6 +72,11 @@ async def lifespan(_: FastAPI):
         catalog = await run_in_threadpool(load_catalog, cache, refresh)
         engine = RapidOcrEngine()
         configure(engine, catalog, os.getenv("SCOREBOARD_OCR_TOKEN", ""))
+        azure_endpoint = os.getenv("AZURE_VISION_ENDPOINT", "").rstrip("/")
+        azure_key = os.getenv("AZURE_VISION_KEY", "")
+        if azure_endpoint and azure_key:
+            state.azure_engine = AzureOcrEngine(azure_endpoint, azure_key, engine)
+            log.info("scoreboard-ocr: Azure Vision engine configured")
         log.info("scoreboard-ocr ready: %d agents, %d maps, scripts %s", len(catalog.agents), len(catalog.maps), engine.scripts)
         if refresh and REFRESH_HOURS > 0:
             tasks.append(asyncio.create_task(keep_catalog_fresh(cache)))
@@ -100,11 +109,16 @@ async def health() -> dict[str, object]:
         # Script -> why its recogniser isn't loaded yet (the service keeps retrying the download).
         "missingScripts": dict(getattr(engine, "missing", {})),
         "parserVersion": PARSER_VERSION,
+        "azureConfigured": state.azure_engine is not None,
     }
 
 
 @app.post("/v1/valorant/scoreboard", response_model=ScoreboardResult, response_model_by_alias=True, dependencies=[Depends(require_token)])
-async def valorant_scoreboard(image: UploadFile = File(...), rosters: str = Form(default="{}")) -> ScoreboardResult:
+async def valorant_scoreboard(
+    image: UploadFile = File(...),
+    rosters: str = Form(default="{}"),
+    engine: Annotated[str, Form()] = "paddle",
+) -> ScoreboardResult:
     data = await image.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Screenshot is larger than 10 MB.")
@@ -121,10 +135,17 @@ async def valorant_scoreboard(image: UploadFile = File(...), rosters: str = Form
 
     if state.gate is None or state.engine is None or state.catalog is None:
         raise HTTPException(status_code=503, detail="Service is starting.")
+
+    active_engine: OcrEngine = (
+        state.azure_engine
+        if engine == "azure" and state.azure_engine is not None
+        else state.engine
+    )
+
     async with state.gate:
         try:
             return await asyncio.wait_for(
-                run_in_threadpool(parse_scoreboard, image_bgr, state.engine, state.catalog, parsed_rosters),
+                run_in_threadpool(parse_scoreboard, image_bgr, active_engine, state.catalog, parsed_rosters),
                 timeout=PARSE_TIMEOUT_SECONDS,
             )
         except ScoreboardNotFound as exc:

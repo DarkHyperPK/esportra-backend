@@ -8,6 +8,7 @@ using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -45,6 +46,7 @@ public static class ScoreboardOcrEndpoints
         ScoreboardScreenshotStore store,
         RiotIdRefreshService riotIds,
         IRiotMatchLookup riotMatches,
+        HybridCache cache,
         CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
@@ -64,7 +66,14 @@ public static class ScoreboardOcrEndpoints
 
         await RefreshRiotIdsAsync(conn, riotIds, match, ct);
         var rosters = await ScoreboardRosterLoader.LoadAsync(conn, match.Team1Id, match.Team2Id);
-        var call = await ocr.ParseValorantAsync(bytes, $"screenshot{check.Extension}", check.ContentType, rosters, ct);
+        var azureEnabled = await cache.GetOrCreateAsync(
+            "ocr:engine-setting",
+            async _ => await conn.ExecuteScalarAsync<string>(
+                "SELECT value FROM system_settings WHERE key = 'azure_ocr_enabled'") ?? "false",
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+            cancellationToken: ct);
+        var engine = azureEnabled == "true" ? "azure" : "paddle";
+        var call = await ocr.ParseValorantAsync(bytes, $"screenshot{check.Extension}", check.ContentType, rosters, engine, ct);
         if (call.Status == OcrCallStatus.Unreadable) return Results.UnprocessableEntity(new { error = call.UserMessage });
         if (call.Status != OcrCallStatus.Success) return Results.Json(new { error = call.UserMessage }, statusCode: 502);
 
