@@ -372,7 +372,6 @@ builder.Services.AddSingleton<OAuthStateProtector>();
 
 // Generic HttpClient for use in endpoints (Riot OAuth flows)
 builder.Services.AddHttpClient();
-builder.Services.AddScoped<Esportra.Infrastructure.Integrations.RiotAccountRefreshService>();
 
 
 // Named VenueHub client for venue-hub inter-service calls

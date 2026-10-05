@@ -185,7 +185,7 @@ public static class IntegrationEndpoints
         // ── GET /api/integrations/riot ────────────────────────────────────────
         app.MapGet("/api/integrations/riot", async (
             IDbConnectionFactory db,
-            RiotAccountRefreshService refreshService,
+            RiotIdRefreshService riotRefresh,
             HttpContext ctx,
             CancellationToken ct) =>
         {
@@ -194,8 +194,8 @@ public static class IntegrationEndpoints
             if (userId is null) return Results.Unauthorized();
             if (!Guid.TryParse(userId, out var userGuid)) return Results.Unauthorized();
 
-            // Refresh the Riot name if stale (24h window). Best-effort — never blocks the response.
-            await refreshService.RefreshIfStaleAsync(userGuid, ct);
+            // Refresh the Riot name if stale (24h window) so settings page always shows a current ID.
+            await riotRefresh.RefreshUsersAsync([userGuid], TimeSpan.FromHours(24), ct);
 
             using var conn = db.CreateConnection();
             var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
