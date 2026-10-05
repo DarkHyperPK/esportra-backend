@@ -153,6 +153,9 @@ public static class MatchSystemEndpoints
                     : null;
                 if (ocrVerification is not null)
                     ocrVerification = ocrVerification with { Riot = new RiotCheck(RiotCheckStatus.Pending) };
+                // A result taken from Riot is checked the same way: every account against the rosters.
+                else if (reportSource.Source == "riot" && !string.IsNullOrWhiteSpace(req.RiotMatchId))
+                    ocrVerification = new OcrVerification([], [], new RiotCheck(RiotCheckStatus.Pending));
 
                 var acceptBy = DateTimeOffset.UtcNow.Add(ReportAcceptWindow.Of(config));
                 var report = await conn.QuerySingleAsync<dynamic>(

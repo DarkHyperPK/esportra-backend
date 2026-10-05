@@ -95,6 +95,9 @@ public sealed class ScoreboardRiotCheckJob(
             return;
         }
 
+        // A report taken straight from Riot has no screenshot rows: its rows are Riot's players.
+        if (verification.Players.Count == 0)
+            verification = ScoreboardVerification.FromRiotMatch(match, linked, verification.Riot);
         var submitted = ScoreboardReportVerifier.SubmittedPlayers(report.MatchData is null ? null : JsonDocument.Parse(report.MatchData).RootElement.Clone());
         var checkedVerification = ScoreboardVerification.ApplyRiotMatch(
             verification, linked, match, submitted, (report.Team1Score.Value, report.Team2Score.Value), DateTimeOffset.UtcNow);
