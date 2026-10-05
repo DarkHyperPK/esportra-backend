@@ -11,6 +11,7 @@ using Esportra.Contracts.Auth;
 using Esportra.Core.Bracket;
 using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Email;
+using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Distributed;

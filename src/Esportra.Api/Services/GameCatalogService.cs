@@ -6,13 +6,15 @@ using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Database;
 using Esportra.Core.Tournaments;
+using Esportra.Infrastructure.Integrations;
 
 namespace Esportra.Api.Services;
 
 public sealed partial class GameCatalogService(
     IDbConnectionFactory db,
     IWebHostEnvironment env,
-    ILogger<GameCatalogService> logger)
+    ILogger<GameCatalogService> logger,
+    RiotAccountRefreshService riotRefresh)
 {
     private const string CatalogRelativePath = "GameCatalog/esportsGames.json";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -325,7 +327,10 @@ public sealed partial class GameCatalogService(
                 throw new GameCatalogValidationException("This tournament mode uses solo registration. Do not submit a team registration.");
 
             if (tournament.AssistedReportingEnabled)
+            {
+                await riotRefresh.RefreshIfStaleAsync(userId);
                 await ValidateRiotAccountLinkedAsync(conn, tx, new[] { userId }, tournament.RequiredAccountLinks);
+            }
 
             return;
         }
@@ -395,6 +400,11 @@ public sealed partial class GameCatalogService(
                 .Where(IsRosterPlayer)
                 .Select(m => m.UserId)
                 .ToArray();
+
+            // Best-effort: refresh all roster members' Riot names before validating links.
+            // Failures are swallowed inside RefreshIfStaleAsync — registration is never blocked by Riot API downtime.
+            await Task.WhenAll(playerUserIds.Select(id => riotRefresh.RefreshIfStaleAsync(id)));
+
             await ValidateRiotAccountLinkedAsync(conn, tx, playerUserIds, tournament.RequiredAccountLinks);
         }
 

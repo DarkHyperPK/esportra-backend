@@ -184,12 +184,18 @@ public static class IntegrationEndpoints
 
         // ── GET /api/integrations/riot ────────────────────────────────────────
         app.MapGet("/api/integrations/riot", async (
-            IDbConnectionFactory db, HttpContext ctx, CancellationToken ct) =>
+            IDbConnectionFactory db,
+            RiotAccountRefreshService refreshService,
+            HttpContext ctx,
+            CancellationToken ct) =>
         {
             var userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
                       ?? ctx.User.FindFirstValue("sub");
             if (userId is null) return Results.Unauthorized();
             if (!Guid.TryParse(userId, out var userGuid)) return Results.Unauthorized();
+
+            // Refresh the Riot name if stale (24h window). Best-effort — never blocks the response.
+            await refreshService.RefreshIfStaleAsync(userGuid, ct);
 
             using var conn = db.CreateConnection();
             var account = await conn.QuerySingleOrDefaultAsync<dynamic>(
