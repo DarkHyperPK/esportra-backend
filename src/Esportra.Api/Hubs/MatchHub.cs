@@ -34,6 +34,9 @@ public static class MatchHubEvents
     /// <summary>A team captain submitted their result report.</summary>
     public const string ReportSubmitted = "ReportSubmitted";
 
+    /// <summary>A screenshot report was checked against Riot's record of the match.</summary>
+    public const string ReportVerified = "ReportVerified";
+
     /// <summary>The opposing captain accepted the submitted report.</summary>
     public const string ReportAccepted = "ReportAccepted";
 
@@ -57,4 +60,7 @@ public static class MatchHubEvents
 
     /// <summary>Organizer updated match scheduled time.</summary>
     public const string ScheduleChanged = "ScheduleChanged";
+
+    /// <summary>Desktop broadcast app wrote a game result for a map.</summary>
+    public const string BroadcastGameResult = "BroadcastGameResult";
 }

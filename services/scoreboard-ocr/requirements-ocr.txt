@@ -1,0 +1,2 @@
+# Installed with --no-deps. Bundles PaddleOCR PP-OCR det/rec models (ONNX) inside the wheel.
+rapidocr==3.9.2

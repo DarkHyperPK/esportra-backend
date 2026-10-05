@@ -82,31 +82,7 @@ public static class MatchEndpoints
                 var scannerPuuid = (string)scanner.puuid;
 
                 // Detect shard (cached 30 min — shard rarely changes)
-                var shard = await cache.GetOrCreateAsync(
-                    $"riot:shard:{scannerPuuid}",
-                    async (_) =>
-                    {
-                        var (s, b) = await riotApi.ProxyAsync(
-                            "americas", $"/riot/account/v1/active-shards/by-game/val/by-puuid/{scannerPuuid}", ct);
-                        if (s == 200)
-                        {
-                            using var doc = JsonDocument.Parse(b);
-                            var val = doc.RootElement.GetProperty("activeShard").GetString()?.ToLowerInvariant();
-                            if (!string.IsNullOrEmpty(val)) return val;
-                        }
-                        // Fallback to DB region
-                        var r = ((string?)scanner.region)?.ToLowerInvariant() ?? "eu";
-                        return r switch
-                        {
-                            "na" or "br" or "latam" or "kr" or "ap" or "eu" => r,
-                            "americas" => "na",
-                            "europe" => "eu",
-                            "asia" => "ap",
-                            _ => "eu"
-                        };
-                    },
-                    new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(30) },
-                    cancellationToken: ct) ?? "eu";
+                var shard = await RiotShards.ResolveAsync(riotApi, cache, scannerPuuid, (string?)scanner.region, ct);
 
                 log.LogInformation("Scanning PUUID {Puuid} on shard {Shard}, map filter: {Map}",
                     scannerPuuid, shard, req.MapName);
@@ -187,7 +163,7 @@ public static class MatchEndpoints
                         using var doc = JsonDocument.Parse(detBody);
                         var info = doc.RootElement.GetProperty("matchInfo");
                         var riotMapId = info.GetProperty("mapId").GetString() ?? "";
-                        var mapDisplayName = ResolveValorantMapName(riotMapId);
+                        var mapDisplayName = ValorantMapIds.Resolve(riotMapId);
                         log.LogInformation("Match {RiotId}: mapId={MapId}, resolved={MapName}",
                             riotMatchId, riotMapId, mapDisplayName);
 
@@ -211,81 +187,10 @@ public static class MatchEndpoints
                             continue;
                         }
 
-                        var gameLengthMillis = info.GetProperty("gameLengthMillis").GetInt64();
-                        var gameStartMillis = info.GetProperty("gameStartMillis").GetInt64();
-
-                        // Parse teams
-                        int blueRounds = 0, redRounds = 0;
-                        bool blueWon = false, redWon = false;
-                        foreach (var team in doc.RootElement.GetProperty("teams").EnumerateArray())
-                        {
-                            var tid = team.GetProperty("teamId").GetString();
-                            var won = team.GetProperty("won").GetBoolean();
-                            var rw = team.GetProperty("roundsWon").GetInt32();
-                            if (tid == "Blue") { blueRounds = rw; blueWon = won; }
-                            else if (tid == "Red") { redRounds = rw; redWon = won; }
-                        }
-
-                        // Parse players, find scanner
-                        string? scannerSide = null, scannerAgent = null;
-                        int kills = 0, deaths = 0, assists = 0;
-                        var playerList = new List<object>();
-                        var roundAggregates = ValorantMatchStatsHelper.BuildRoundAggregates(doc.RootElement);
-
-                        foreach (var p in doc.RootElement.GetProperty("players").EnumerateArray())
-                        {
-                            var pPuuid = p.GetProperty("puuid").GetString() ?? "";
-                            playerList.Add(ValorantMatchStatsHelper.BuildPlayerPayload(
-                                p,
-                                roundAggregates,
-                                team1Puuids,
-                                team2Puuids));
-
-                            if (pPuuid == scannerPuuid)
-                            {
-                                scannerSide = p.GetProperty("teamId").GetString() ?? "";
-                                scannerAgent = p.GetProperty("characterId").GetString() ?? "";
-                                var stats = p.GetProperty("stats");
-                                kills = stats.GetProperty("kills").GetInt32();
-                                deaths = stats.GetProperty("deaths").GetInt32();
-                                assists = stats.GetProperty("assists").GetInt32();
-                            }
-                        }
-
-                        if (scannerSide is null) continue; // scanner not in this match
-
-                        var isBlue = scannerSide == "Blue";
-                        var myRounds = isBlue ? blueRounds : redRounds;
-                        var enemyRounds = isBlue ? redRounds : blueRounds;
-                        var didWin = isBlue ? blueWon : redWon;
-
-                        var derivedDetails = ValorantMatchStatsHelper.BuildDerivedMatchDetails(doc.RootElement);
-                        var serializedDerived = ValorantMatchStatsHelper.SerializeDerivedDetails(derivedDetails);
-
-                        candidates.Add(new
-                        {
-                            id = riotMatchId,
-                            map = mapDisplayName,
-                            mapId = riotMapId,
-                            queueId,
-                            startTime = gameStartMillis,
-                            gameLengthMillis,
-                            myTeamScore = myRounds,
-                            enemyTeamScore = enemyRounds,
-                            reporterSide = scannerSide,
-                            score = $"{myRounds}-{enemyRounds}",
-                            result = didWin ? "Victory" : "Defeat",
-                            kda = $"{kills}/{deaths}/{assists}",
-                            agent = scannerAgent,
-                            isExpectedMap,
-                            blueTeam = new { roundsWon = blueRounds, won = blueWon },
-                            redTeam = new { roundsWon = redRounds, won = redWon },
-                            players = playerList,
-                            matchInfo = ValorantMatchStatsHelper.BuildMatchInfoPayload(doc.RootElement),
-                            roundTimeline = serializedDerived.RoundTimeline,
-                            economyTimeline = serializedDerived.EconomyTimeline,
-                            weaponSummaries = serializedDerived.WeaponSummaries,
-                        });
+                        var candidate = RiotMatchCandidates.Build(
+                            doc.RootElement, riotMatchId, scannerPuuid, team1Puuids, team2Puuids, isExpectedMap);
+                        if (candidate is null) continue; // scanner not in this match
+                        candidates.Add(candidate);
                     }
                     catch (Exception ex)
                     {
@@ -1498,37 +1403,6 @@ public static class MatchEndpoints
                     new { versionId = broadcastVersionId, matchId }, ct);
         }
     }
-
-    /// <summary>Resolve Riot Valorant map path to display name.</summary>
-    private static string ResolveValorantMapName(string riotMapId)
-    {
-        // Riot uses internal paths like /Game/Maps/Triad/Triad
-        var map = ValorantMaps.GetValueOrDefault(riotMapId);
-        if (map is not null) return map;
-
-        // Fallback: extract last path segment
-        var lastSlash = riotMapId.LastIndexOf('/');
-        return lastSlash >= 0 ? riotMapId[(lastSlash + 1)..] : riotMapId;
-    }
-
-    private static readonly Dictionary<string, string> ValorantMaps = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["/Game/Maps/Ascent/Ascent"] = "Ascent",
-        ["/Game/Maps/Duality/Duality"] = "Bind",
-        ["/Game/Maps/Triad/Triad"] = "Haven",
-        ["/Game/Maps/Bonsai/Bonsai"] = "Split",
-        ["/Game/Maps/Port/Port"] = "Icebox",
-        ["/Game/Maps/Foxtrot/Foxtrot"] = "Breeze",
-        ["/Game/Maps/Canyon/Canyon"] = "Fracture",
-        ["/Game/Maps/Pitt/Pitt"] = "Pearl",
-        ["/Game/Maps/Jam/Jam"] = "Lotus",
-        ["/Game/Maps/Juliett/Juliett"] = "Sunset",
-        ["/Game/Maps/Infinity/Infinity"] = "Abyss",
-        ["/Game/Maps/Rook/Rook"] = "Corrode",
-        ["/Game/Maps/HURM/HURM_Alley/HURM_Alley"] = "District",
-        ["/Game/Maps/HURM/HURM_Bowl/HURM_Bowl"] = "Kasbah",
-        ["/Game/Maps/HURM/HURM_Yard/HURM_Yard"] = "Piazza",
-    };
 }
 
 // ── Match request records ────────────────────────────────────────────────────

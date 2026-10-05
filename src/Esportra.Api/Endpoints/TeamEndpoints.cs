@@ -8,6 +8,7 @@ using Npgsql;
 using Esportra.Api.Hubs;
 using Esportra.Api.Middleware;
 using Esportra.Api.Services;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Email;
@@ -998,6 +999,7 @@ public static class TeamEndpoints
             Guid inviteId,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IRiotIdRefreshTrigger riotIdRefresh,
             GameCatalogService catalog,
             CancellationToken ct) =>
         {
@@ -1081,6 +1083,7 @@ public static class TeamEndpoints
                 throw;
             }
 
+            riotIdRefresh.Users(userCtx.UserIdGuid);
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 

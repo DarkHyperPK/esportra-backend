@@ -48,4 +48,16 @@ public sealed class RiotApiClient(HttpClient http, IConfiguration config)
         var body = await res.Content.ReadAsStringAsync(ct);
         return ((int)res.StatusCode, body);
     }
+
+    /// <summary>
+    /// Fetch a Valorant match by Riot match ID for post-game cross-validation.
+    /// Returns (StatusCode, Body). Callers handle 200, 404, 429 separately.
+    /// Region defaults to "na" when null or empty.
+    /// </summary>
+    public async Task<(int StatusCode, string Body)> GetMatchAsync(
+        string riotMatchId, string? region, CancellationToken ct = default)
+    {
+        var resolvedRegion = string.IsNullOrWhiteSpace(region) ? "na" : region.ToLowerInvariant();
+        return await ProxyAsync(resolvedRegion, $"/val/match/v1/matches/{riotMatchId}", ct);
+    }
 }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -243,6 +244,7 @@ public static class NotificationEndpoints
             IHubContext<NotificationHub> notifHub,
             DiscordNotificationService discord,
             IConfiguration config,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -286,6 +288,7 @@ public static class NotificationEndpoints
             await conn.ExecuteAsync(
                 "UPDATE team_invitations SET status = 'accepted', responded_at = NOW() WHERE id = @id",
                 new { id = invite.id });
+            riotIdRefresh.Users(userCtx.UserIdGuid);
 
             // Mark notification as read if provided
             if (req.NotificationId is not null && !req.NotificationId.StartsWith("invite-"))

@@ -220,17 +220,22 @@ public sealed class DbSeeder(string connectionString)
         Guid? team1Id = null,
         Guid? team2Id = null,
         string matchStatus = "pending",
-        Guid? id = null)
+        Guid? id = null,
+        int? roundNumber = null,
+        DateTime? scheduledTime = null,
+        DateTime? schedulingEscalatedAt = null)
     {
         id ??= Guid.NewGuid();
         await using var conn = OpenConnection();
         await conn.ExecuteAsync("""
             INSERT INTO public.brkt_matches
                 (id, version_id, bracket_type, round_index, match_number,
-                 team1_id, team2_id, status, best_of, created_at, updated_at)
+                 team1_id, team2_id, status, best_of, created_at, updated_at,
+                 round_number, scheduled_time, scheduling_escalated_at)
             VALUES
                 (@id, @versionId, @bracketType, @roundIndex, @matchNumber,
-                 @team1Id, @team2Id, @matchStatus, 1, NOW(), NOW())
+                 @team1Id, @team2Id, @matchStatus, 1, NOW(), NOW(),
+                 @roundNumber, @scheduledTime, @schedulingEscalatedAt)
             ON CONFLICT (id) DO NOTHING
             """,
             new
@@ -242,7 +247,10 @@ public sealed class DbSeeder(string connectionString)
                 matchNumber,
                 team1Id,
                 team2Id,
-                matchStatus
+                matchStatus,
+                roundNumber,
+                scheduledTime,
+                schedulingEscalatedAt,
             });
         return id.Value;
     }

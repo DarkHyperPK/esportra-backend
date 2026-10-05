@@ -14,7 +14,7 @@ public static class DapperJsonbHelper
         "match_data", "screenshot_urls", "metadata", "match_details",
         "proposal_data", "match", "match_dispute", "reports", "riot_accounts",
         "data", "evidence_urls", "media", "details", "filters",
-        "default_value", "conditions", "value"
+        "default_value", "conditions", "value", "ocr_verification"
     };
 
     public static void FixJsonb(IEnumerable<dynamic> rows)

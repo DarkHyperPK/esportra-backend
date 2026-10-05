@@ -65,8 +65,6 @@ public static class BracketEndpoints
             if (boErr is not null) return boErr;
 
             var config = new BracketConfig(
-                DailyStartTime: req.DailyStartTime,
-                TournamentStartDate: req.TournamentStartDate,
                 SwissGroups: swissGroups,
                 SwissRounds: swissRounds);
             var roundConfig = new StageRoundConfiguration(req.Format, req.BestOf, effectiveBoMode, req.RoundBoOverrides);
@@ -160,7 +158,7 @@ public static class BracketEndpoints
                       AND m.round_index = 0
                       AND m.match_number = u.match_num
                       AND m.status NOT IN ('in_progress', 'completed')
-                      AND COALESCE(m.bracket_type, 'winners') = 'winners'
+                      AND COALESCE(m.bracket_type, 'winners') IN ('winners', 'final')
                     """,
                     new { versionId, matchNums, t1Ids, t2Ids, t1Seeds, t2Seeds }, tx);
 
@@ -228,6 +226,10 @@ public static class BracketEndpoints
                 WHERE version_id = @versionId
                   AND status != 'completed'
                 """,
+                new { versionId = version.Value });
+
+            await conn.ExecuteAsync(
+                "UPDATE brkt_versions SET cached_ui_state = NULL WHERE id = @versionId",
                 new { versionId = version.Value });
 
             await bracketHub.Clients
@@ -1675,7 +1677,7 @@ public static class BracketEndpoints
         var matchNumbers = (await conn.QueryAsync<int>(
             """
             SELECT match_number FROM brkt_matches
-            WHERE version_id = @versionId AND round_index = 0 AND bracket_type = 'winners'
+            WHERE version_id = @versionId AND round_index = 0 AND bracket_type IN ('winners', 'final')
             ORDER BY match_number
             """,
             new { versionId }, tx)).ToList();

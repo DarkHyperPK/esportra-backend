@@ -125,6 +125,59 @@ public sealed class BracketEndpointTests
             HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task SeedBracket_1v1FinalBracketType_Seeds1Participant()
+    {
+        // 1v1 brackets have bracket_type='final' on their only match (round 0).
+        // Before the fix, seeding returned seeded:0 because the query filtered only 'winners'.
+        var tournamentId = Guid.NewGuid();
+        var participantUserId = Guid.NewGuid();
+
+        await _seeder.SeedAuthUserAsync(OrganizerId);
+        await _seeder.SeedUserRoleAsync(OrganizerId, "organizer");
+        await _seeder.SeedTournamentAsync(OrganizerId, id: tournamentId);
+        await _seeder.SeedAuthUserAsync(participantUserId);
+        await _seeder.SeedParticipantAsync(participantUserId, tournamentId, "approved");
+
+        var stageId = await _seeder.SeedStageAsync(tournamentId);
+        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId);
+        await _seeder.SeedMatchAsync(versionId, bracketType: "final", roundIndex: 0, matchNumber: 1);
+
+        var client = _factory.CreateAuthenticatedClient(OrganizerId);
+        var response = await client.PostAsJsonAsync($"/api/stages/{stageId}/seed-bracket", new { });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.GetProperty("seeded").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SeedBracket_StandardWinnersBracketType_SeedsParticipants()
+    {
+        var tournamentId = Guid.NewGuid();
+        var p1UserId = Guid.NewGuid();
+        var p2UserId = Guid.NewGuid();
+
+        await _seeder.SeedAuthUserAsync(OrganizerId);
+        await _seeder.SeedUserRoleAsync(OrganizerId, "organizer");
+        await _seeder.SeedTournamentAsync(OrganizerId, id: tournamentId);
+        await _seeder.SeedAuthUserAsync(p1UserId);
+        await _seeder.SeedAuthUserAsync(p2UserId);
+        await _seeder.SeedParticipantAsync(p1UserId, tournamentId, "approved");
+        await _seeder.SeedParticipantAsync(p2UserId, tournamentId, "approved");
+
+        var stageId = await _seeder.SeedStageAsync(tournamentId);
+        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId);
+        await _seeder.SeedMatchAsync(versionId, bracketType: "winners", roundIndex: 0, matchNumber: 1);
+
+        var client = _factory.CreateAuthenticatedClient(OrganizerId);
+        var response = await client.PostAsJsonAsync($"/api/stages/{stageId}/seed-bracket", new { });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        body.GetProperty("seeded").GetInt32().Should().Be(2);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private async Task SeedBaseDataAsync()

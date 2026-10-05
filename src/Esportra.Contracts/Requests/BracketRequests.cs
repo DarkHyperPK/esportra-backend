@@ -11,9 +11,7 @@ public sealed record GenerateBracketRequest(
     string? BoMode = "per_stage",
     Dictionary<string, int>? RoundBoOverrides = null,
     int? BracketSize = null,
-    int? AdvancementCount = null,
-    string? DailyStartTime = "20:00",
-    string? TournamentStartDate = null);
+    int? AdvancementCount = null);
 
 public sealed record SwissNextRoundRequest(
     Guid StageId,

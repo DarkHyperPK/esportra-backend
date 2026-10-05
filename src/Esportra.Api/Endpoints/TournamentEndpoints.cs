@@ -6,10 +6,12 @@ using Dapper;
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Api.Services;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Auth;
 using Esportra.Core.Bracket;
 using Esportra.Core.Tournaments;
 using Esportra.Infrastructure.Email;
+using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Caching.Distributed;
@@ -568,6 +570,8 @@ public static class TournamentEndpoints
             var participants = FilterParticipantsForRole(allParticipants, access.IsOrganizer);
             var mockCount = await FetchMockCountAsync(conn, tournamentId, access.IsOrganizer);
             var participantMode = await ResolveParticipantModeAsync(gameCatalog, tournament);
+            var (unseededMatchCount, unscheduledFirstRoundCount, pendingEscalations) =
+                await FetchSchedulingCountsAsync(conn, tournamentId, access.IsOrganizer);
 
             return Results.Ok(new
             {
@@ -579,6 +583,9 @@ public static class TournamentEndpoints
                 staffPermissions = access.StaffPermissions,
                 staffRole = access.StaffRole,
                 mockCount,
+                unseededMatchCount,
+                unscheduledFirstRoundCount,
+                pendingEscalations,
             });
         }).RequireAuthorization("Authenticated");
 
@@ -1047,6 +1054,7 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             GameCatalogService gameCatalog,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1185,6 +1193,7 @@ public static class TournamentEndpoints
                 }, txn);
 
             txn.Commit();
+            riotIdRefresh.TournamentEntry(id, userCtx.UserIdGuid);
             return Results.Ok(row);
         }).RequireAuthorization("Authenticated");
 
@@ -1452,6 +1461,7 @@ public static class TournamentEndpoints
             Guid id,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1475,9 +1485,10 @@ public static class TournamentEndpoints
                 """,
                 new { id, userId = userCtx.UserIdGuid });
 
-            return updated > 0
-                ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "No eligible registration found for check-in." });
+            if (updated == 0)
+                return Results.NotFound(new { error = "No eligible registration found for check-in." });
+            riotIdRefresh.TournamentEntry(id, userCtx.UserIdGuid);
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/participants/{pid}/approve-check-in ─────
@@ -1686,6 +1697,7 @@ public static class TournamentEndpoints
             HttpContext ctx,
             IDbConnectionFactory db,
             TournamentAuthorizationService tournamentAuth,
+            IRiotIdRefreshTrigger riotIdRefresh,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1705,9 +1717,10 @@ public static class TournamentEndpoints
                 """,
                 new { participantId, id });
 
-            return updated > 0
-                ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "Participant not found or already checked in." });
+            if (updated == 0)
+                return Results.NotFound(new { error = "Participant not found or already checked in." });
+            riotIdRefresh.Competitors(participantId);
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/ban-participant ──────────────────────────
@@ -4893,6 +4906,51 @@ public static class TournamentEndpoints
         return await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM tournament_participants WHERE tournament_id = @tournamentId AND is_mock = TRUE",
             new { tournamentId });
+    }
+
+    private static async Task<(int unseededMatchCount, int unscheduledFirstRoundCount, int pendingEscalations)>
+        FetchSchedulingCountsAsync(IDbConnection conn, Guid tournamentId, bool isOrganizer)
+    {
+        if (!isOrganizer) return (0, 0, 0);
+
+        var unseeded = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM brkt_matches bm
+            JOIN brkt_versions bv ON bv.id = bm.version_id
+            WHERE bv.tournament_id = @tournamentId
+              AND bm.round_number = 0
+              AND bm.team1_id IS NULL
+              AND bv.status IN ('draft', 'active')
+            """,
+            new { tournamentId });
+
+        var unscheduled = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM brkt_matches bm
+            JOIN brkt_versions bv ON bv.id = bm.version_id
+            WHERE bv.tournament_id = @tournamentId
+              AND bm.round_number = 0
+              AND bm.team1_id IS NOT NULL
+              AND bm.scheduled_time IS NULL
+              AND bv.status IN ('draft', 'active')
+            """,
+            new { tournamentId });
+
+        var escalated = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*)
+            FROM brkt_matches bm
+            JOIN brkt_versions bv ON bv.id = bm.version_id
+            WHERE bv.tournament_id = @tournamentId
+              AND bm.scheduling_escalated_at IS NOT NULL
+              AND bm.status = 'pending'
+              AND bv.status IN ('draft', 'active')
+            """,
+            new { tournamentId });
+
+        return (unseeded, unscheduled, escalated);
     }
 
     private static async Task<string> ResolveParticipantModeAsync(GameCatalogService gameCatalog, dynamic tournament)

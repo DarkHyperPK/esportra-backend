@@ -1,0 +1,164 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using Microsoft.Extensions.Options;
+
+namespace Esportra.Api.ScoreboardOcr;
+
+/// <summary>Where a roster name came from; the OCR service echoes it on matches.</summary>
+public static class OcrNameSource
+{
+    /// <summary>Riot ID linked through Riot sign-in (ownership proven), or a verified desktop link.</summary>
+    public const string RiotVerified = "riot_verified";
+    /// <summary>A verified Riot ID's name before a recent rename.</summary>
+    public const string RiotPrevious = "riot_previous";
+    /// <summary>Riot tag typed on the profile, or a desktop link Riot hasn't verified.</summary>
+    public const string RiotClaimed = "riot_claimed";
+    public const string Username = "username";
+}
+
+public sealed record OcrRosterName(string Name, string Source);
+
+public sealed record OcrRosterPlayer(string UserId, IReadOnlyList<OcrRosterName> Candidates);
+
+public sealed record OcrRosters(IReadOnlyList<OcrRosterPlayer> Team1, IReadOnlyList<OcrRosterPlayer> Team2);
+
+public enum OcrCallStatus
+{
+    Success,
+    Unreadable,
+    Unavailable,
+}
+
+/// <summary>Outcome of one OCR call. <see cref="ResultJson"/> is set only on success.</summary>
+public sealed record OcrCallResult(OcrCallStatus Status, string? ResultJson, string? UserMessage);
+
+/// <summary>Result of the service health probe.</summary>
+public sealed record OcrHealth(
+    bool Reachable,
+    int Agents,
+    int BankAgents = 0,
+    IReadOnlyList<string>? Scripts = null,
+    string? CatalogVersion = null,
+    string? RefreshedAt = null,
+    IReadOnlyDictionary<string, string>? MissingScripts = null);
+
+/// <summary>Typed HTTP client for the internal scoreboard OCR service.</summary>
+public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrOptions> options, ILogger<ScoreboardOcrClient> logger)
+{
+    private const int MaxResultBytes = 256 * 1024;
+    private static readonly JsonSerializerOptions CamelCase = new(JsonSerializerDefaults.Web);
+
+    public bool IsConfigured => options.Value.IsConfigured;
+
+    public async Task<OcrCallResult> ParseValorantAsync(
+        byte[] image, string fileName, string contentType, OcrRosters rosters, CancellationToken ct)
+    {
+        var settings = options.Value;
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.BaseUrl), "/v1/valorant/scoreboard"));
+        request.Headers.Add("X-Service-Token", settings.ServiceToken);
+        var imageContent = new ByteArrayContent(image);
+        imageContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        request.Content = new MultipartFormDataContent
+        {
+            { imageContent, "image", fileName },
+            { new StringContent(JsonSerializer.Serialize(rosters, CamelCase)), "rosters" },
+        };
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
+        try
+        {
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            return await ReadResponseAsync(response, timeout.Token);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Scoreboard OCR service call failed");
+            return Unavailable();
+        }
+    }
+
+    /// <summary>Calls the service's /health (no token needed). Never throws.</summary>
+    public async Task<OcrHealth> HealthAsync(CancellationToken ct)
+    {
+        if (!IsConfigured) return new OcrHealth(false, 0);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var response = await http.GetAsync(new Uri(new Uri(options.Value.BaseUrl), "/health"), timeout.Token);
+            if (!response.IsSuccessStatusCode) return new OcrHealth(false, 0);
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+            var root = doc.RootElement;
+            int Int(string name) => root.TryGetProperty(name, out var v) && v.TryGetInt32(out var n) ? n : 0;
+            string? Str(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            var scripts = root.TryGetProperty("scripts", out var s) && s.ValueKind == JsonValueKind.Array
+                ? s.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList()
+                : [];
+            var missing = root.TryGetProperty("missingScripts", out var m) && m.ValueKind == JsonValueKind.Object
+                ? m.EnumerateObject().Where(p => p.Value.ValueKind == JsonValueKind.String).ToDictionary(p => p.Name, p => p.Value.GetString()!)
+                : [];
+            return new OcrHealth(true, Int("agents"), Int("bankAgents"), scripts, Str("catalogVersion"), Str("refreshedAt"), missing);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Scoreboard OCR health check failed");
+            return new OcrHealth(false, 0);
+        }
+    }
+
+    private async Task<OcrCallResult> ReadResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (body.Length > MaxResultBytes)
+        {
+            logger.LogWarning("Scoreboard OCR response too large ({Length} chars)", body.Length);
+            return Unavailable();
+        }
+
+        if (response.StatusCode is HttpStatusCode.UnprocessableEntity or HttpStatusCode.UnsupportedMediaType or HttpStatusCode.RequestEntityTooLarge)
+            return new OcrCallResult(OcrCallStatus.Unreadable, null, ReadDetail(body) ?? "We couldn't read a scoreboard from this screenshot.");
+
+        if (!response.IsSuccessStatusCode || !IsScoreboardResult(body))
+        {
+            logger.LogWarning("Scoreboard OCR service returned {Status}", (int)response.StatusCode);
+            return Unavailable();
+        }
+
+        return new OcrCallResult(OcrCallStatus.Success, body, null);
+    }
+
+    private static OcrCallResult Unavailable() =>
+        new(OcrCallStatus.Unavailable, null, "Screenshot reading is unavailable right now. Enter the result manually.");
+
+    private static bool IsScoreboardResult(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("players", out var players)
+                && players.ValueKind == JsonValueKind.Array;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string? ReadDetail(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String
+                ? detail.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+}

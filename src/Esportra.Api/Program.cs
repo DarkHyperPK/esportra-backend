@@ -349,6 +349,22 @@ builder.Services.AddHttpClient<RawgApiClient>();
 builder.Services.AddHttpClient<IgdbApiClient>();
 builder.Services.AddHttpClient<IDatHostService, DatHostService>();
 
+// ── Scoreboard screenshot OCR (internal service) ─────────────────────────────
+builder.Services.AddOptions<Esportra.Api.ScoreboardOcr.ScoreboardOcrOptions>()
+    .Bind(builder.Configuration.GetSection(Esportra.Api.ScoreboardOcr.ScoreboardOcrOptions.SectionName));
+builder.Services.AddHttpClient<Esportra.Api.ScoreboardOcr.ScoreboardOcrClient>();
+builder.Services.AddScoped<Esportra.Api.ScoreboardOcr.ScoreboardScreenshotStore>();
+builder.Services.AddScoped<Esportra.Api.Services.IRiotAccountLookup, Esportra.Api.Services.RiotAccountLookup>();
+builder.Services.AddScoped<Esportra.Api.Services.RiotIdRefreshService>();
+builder.Services.AddScoped<Esportra.Api.ScoreboardOcr.ScoreboardReportVerifier>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.RiotIdRefreshJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IRiotIdRefreshTrigger, Esportra.Api.ScheduledJobs.RiotIdRefreshTrigger>();
+builder.Services.AddScoped<Esportra.Api.Services.IRiotMatchLookup, Esportra.Api.Services.RiotMatchLookup>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScoreboardRiotCheckJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IScoreboardRiotCheckTrigger, Esportra.Api.ScheduledJobs.ScoreboardRiotCheckTrigger>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IReportAutoAcceptScheduler, Esportra.Api.ScheduledJobs.ReportAutoAcceptScheduler>();
+
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
 builder.Services.AddDataProtection()
     .SetApplicationName("Esportra");
@@ -407,6 +423,10 @@ builder.Services.AddScoped<Esportra.Core.Alerts.AdminAlertService>();
 builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
+
+// ── Desktop broadcast (PROJ-043) ──────────────────────────────────────────────
+builder.Services.AddScoped<Esportra.Infrastructure.Integrations.RiotMatchValidationService>();
+builder.Services.AddScoped<Esportra.Api.Jobs.RiotMatchValidationJob>();
 
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
@@ -514,6 +534,10 @@ using (var scope = app.Services.CreateScope())
 
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.TournamentStatusReconciliationJob>(
         "tournament-status-reconciliation", j => j.ExecuteAsync(CancellationToken.None), "*/5 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RiotIdRefreshJob>(
+        "riot-id-refresh", j => j.ExecuteAsync(CancellationToken.None), "20 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>(
+        "report-auto-accept", j => j.SweepAsync(CancellationToken.None), "*/5 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
         "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
@@ -631,6 +655,7 @@ app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapFeatureFlagEndpoints();
 app.MapBroadcastEndpoints();
+app.MapDesktopBroadcastEndpoints();
 app.MapGhostModeEndpoints();
 app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();
@@ -649,6 +674,8 @@ app.MapProfileResolveEndpoint();
 app.MapAvatarEndpoints();
 app.MapAvatarPoolEndpoints();
 app.MapMatchSystemEndpoints();
+app.MapScoreboardOcrEndpoints();
+app.MapScoreboardOcrDebugEndpoints();
 app.MapTeamEndpoints();
 app.MapTournamentEndpoints();
 app.MapTournamentTemplateEndpoints();
