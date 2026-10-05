@@ -23,10 +23,9 @@ public sealed class MatchCheckinOpenJob(
         {
             using var conn = db.CreateConnection();
 
-            var matchRow = await conn.QuerySingleOrDefaultAsync<(string Status, DateTime? ScheduledTime, DateTime? CheckInDeadline)>(
+            var matchRow = await conn.QuerySingleOrDefaultAsync<(string Status, DateTime? ScheduledTime)>(
                 """
-                SELECT status AS Status, scheduled_time AS ScheduledTime,
-                       check_in_deadline AS CheckInDeadline
+                SELECT status AS Status, scheduled_time AS ScheduledTime
                 FROM brkt_matches WHERE id = @matchId
                 """,
                 new { matchId });
@@ -37,7 +36,8 @@ public sealed class MatchCheckinOpenJob(
 
             var tournInfo = await conn.QuerySingleOrDefaultAsync<CheckinTournamentInfo>(
                 """
-                SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
+                SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName,
+                       t.check_in_deadline AS CheckInDeadline
                 FROM brkt_matches bm
                 JOIN brkt_rounds r ON r.id = bm.round_id
                 JOIN stages s ON s.id = r.stage_id
@@ -107,7 +107,7 @@ public sealed class MatchCheckinOpenJob(
 
             logger.LogInformation("[CheckinOpen] Notified {Count} captain(s) for match {MatchId}", captainUserIds.Count, matchId);
 
-            var deadline = (matchRow.CheckInDeadline ?? matchRow.ScheduledTime)?.ToUniversalTime();
+            var deadline = (tournInfo?.CheckInDeadline ?? matchRow.ScheduledTime)?.ToUniversalTime();
             if (deadline.HasValue)
             {
                 var reminderFireAt = deadline.Value - TimeSpan.FromMinutes(15);
@@ -127,4 +127,4 @@ public sealed class MatchCheckinOpenJob(
     }
 }
 
-internal sealed record CheckinTournamentInfo(string? Game, Guid TournamentId, string? TournamentName);
+internal sealed record CheckinTournamentInfo(string? Game, Guid TournamentId, string? TournamentName, DateTime? CheckInDeadline);
