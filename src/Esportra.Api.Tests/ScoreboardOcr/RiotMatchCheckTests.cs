@@ -202,4 +202,83 @@ public sealed class RiotMatchCheckTests
         var mate = payload.GetProperty("players").EnumerateArray().Single(p => p.GetProperty("gameName").GetString() == "Mate");
         (mate.GetProperty("isTeam2").GetBoolean(), mate.GetProperty("acs").GetInt32()).Should().Be((true, 4200 / 28));
     }
+
+    private static readonly string[] AllyNames = ["Saintt", "Sayaplayer", "DarkHyper", "Time in a Bottle", "Aim Not Found"];
+    private static readonly string[] EnemyNames = ["Paincake", "psycho", "ghastii", "شاي حبق", "CBlEctoplasm365"];
+
+    /// <summary>The user's Sunset 15-13: allies on Blue.</summary>
+    private static RiotMatch Sunset(string allySide = "Blue") =>
+        RiotMatchSamples.Match("riot-sunset", "Juliett", allySide == "Blue" ? 15 : 13, allySide == "Blue" ? 13 : 15, Now,
+            [.. AllyNames.Select(n => new RiotMatchSamples.Player($"p-{n}", n, "TAG", allySide)),
+             .. EnemyNames.Select(n => new RiotMatchSamples.Player($"p-{n}", n, "TAG", allySide == "Blue" ? "Red" : "Blue"))]);
+
+    private static JsonElement Read(string map = "Sunset", int ally = 15, int enemy = 13, IEnumerable<(string? Name, string Side)>? rows = null) =>
+        JsonSerializer.SerializeToElement(new
+        {
+            map = new { value = new { name = map } },
+            allyScore = new { value = ally },
+            enemyScore = new { value = enemy },
+            allyTeam = new { value = "team1" },
+            players = (rows ?? AllyNames.Select(n => ((string?)n, "ally")).Concat(EnemyNames.Select(n => ((string?)n, "enemy"))))
+                .Select(r => new { side = r.Side, nameRead = r.Name, name = new { value = r.Name } }),
+        });
+
+    [Fact]
+    public void SameGame_WhenMapScoreSidesAndEveryNameMatch()
+    {
+        ScoreboardRiotMatcher.SameGameAllySide(Read(), Sunset()).Should().Be("Blue");
+        ScoreboardRiotMatcher.SameGameAllySide(Read(), Sunset(allySide: "Red")).Should().Be("Red", "the screenshot owner's team may have played Red");
+    }
+
+    [Fact]
+    public void SameGame_ToleratesOcrLookAlikesAndUnreadableNames()
+    {
+        // "CBIEctoplasm365" read with a capital I, and the Arabic name unreadable without the model.
+        var rows = AllyNames.Select(n => ((string?)n, "ally"))
+            .Concat(EnemyNames.Select(n => (n == "شاي حبق" ? null : n == "CBlEctoplasm365" ? "CBIEctoplasm365" : (string?)n, "enemy")));
+
+        ScoreboardRiotMatcher.SameGameAllySide(Read(rows: rows), Sunset()).Should().Be("Blue");
+    }
+
+    [Fact]
+    public void NotTheSameGame_WhenAnythingDisagrees()
+    {
+        ScoreboardRiotMatcher.SameGameAllySide(Read(map: "Lotus"), Sunset()).Should().BeNull();
+        ScoreboardRiotMatcher.SameGameAllySide(Read(ally: 13, enemy: 15), Sunset()).Should().BeNull();
+        var stranger = AllyNames.Select(n => ((string?)(n == "psycho" ? "psycho" : n), "ally")).ToList();
+        stranger[0] = ("Somebody Else", "ally");
+        ScoreboardRiotMatcher.SameGameAllySide(Read(rows: stranger.Concat(EnemyNames.Select(n => ((string?)n, "enemy")))), Sunset())
+            .Should().BeNull("a name the game doesn't have means it's another game");
+        var swapped = AllyNames.Select(n => ((string?)n, "enemy")).Concat(EnemyNames.Select(n => ((string?)n, "ally")));
+        ScoreboardRiotMatcher.SameGameAllySide(Read(rows: swapped), Sunset()).Should().BeNull("the score is from the other side");
+        var tooFew = AllyNames.Take(3).Select(n => ((string?)n, "ally")).Concat(EnemyNames.Take(3).Select(n => ((string?)n, "enemy")));
+        ScoreboardRiotMatcher.SameGameAllySide(Read(rows: tooFew), Sunset()).Should().BeNull();
+    }
+
+    [Fact]
+    public void Candidate_IsTheAutoFetchShape_FromTheReportingTeam()
+    {
+        LinkedAccount[] linked = [new("u-saintt", "team1", "p-Saintt")];
+
+        var candidate = JsonSerializer.SerializeToElement(ScoreboardRiotMatcher.Candidate(Sunset(), "Blue", "team1", "team2", linked));
+
+        candidate.GetProperty("id").GetString().Should().Be("riot-sunset");
+        candidate.GetProperty("reporterSide").GetString().Should().Be("Red");
+        (candidate.GetProperty("myTeamScore").GetInt32(), candidate.GetProperty("enemyTeamScore").GetInt32()).Should().Be((13, 15));
+        candidate.GetProperty("result").GetString().Should().Be("Defeat");
+        var ghastii = candidate.GetProperty("players").EnumerateArray().Single(p => p.GetProperty("gameName").GetString() == "ghastii");
+        (ghastii.GetProperty("isTeam2").GetBoolean(), ghastii.GetProperty("tagLine").GetString()).Should().Be((true, "TAG"));
+    }
+
+    [Fact]
+    public void RiotSourcedCheck_HasOneRowPerRiotPlayer()
+    {
+        LinkedAccount[] linked = [new("cap1", "team1", "p-Saintt"), new("cap2", "team2", "p-ghastii")];
+
+        var check = ScoreboardVerification.FromRiotMatch(Sunset(), linked, null);
+
+        check.Players.Should().HaveCount(10);
+        check.Players.Single(p => p.Name == "Saintt").Should().Match<VerifiedPlayer>(p => p.UserId == "cap1" && p.Team == "team1" && p.Status == VerificationStatus.Verified);
+        check.Players.Single(p => p.Name == "psycho").Should().Match<VerifiedPlayer>(p => p.UserId == null && p.Team == "team2" && p.Status == VerificationStatus.Unknown);
+    }
 }

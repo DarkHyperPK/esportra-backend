@@ -149,6 +149,24 @@ public static class ScoreboardVerification
     }
 
     /// <summary>
+    /// The player check of a report taken straight from Riot ("Auto-fetch", or a screenshot that matched a
+    /// Riot game): one row per Riot player, on the roster when their PUUID is linked to a member.
+    /// </summary>
+    public static OcrVerification FromRiotMatch(RiotMatch match, IReadOnlyList<LinkedAccount> linked, RiotCheck? riot)
+    {
+        var owners = linked.GroupBy(a => a.Puuid).ToDictionary(g => g.Key, g => g.First());
+        var (blue, red) = ScoreboardRiotMatcher.SideTeams(match, linked);
+        var players = match.Players.Select((p, i) =>
+        {
+            var team = p.TeamId == "Blue" ? blue : red;
+            return owners.TryGetValue(p.Puuid, out var owner)
+                ? new VerifiedPlayer(i, p.GameName, team ?? owner.Team, owner.UserId, VerificationStatus.Verified, OcrNameSource.RiotVerified, p.GameName)
+                : new VerifiedPlayer(i, p.GameName, team, null, VerificationStatus.Unknown, null, p.GameName);
+        }).ToList();
+        return new OcrVerification(players, [], riot);
+    }
+
+    /// <summary>
     /// Riot's record backs the whole report: every row is a linked account that played, nothing needs a
     /// look, nothing differs from Riot (score, K/D/A), and both Riot sides map to the two bracket teams.
     /// Such a report doesn't need the opponent to confirm it.

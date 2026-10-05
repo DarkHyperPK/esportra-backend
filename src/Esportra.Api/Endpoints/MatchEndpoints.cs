@@ -187,81 +187,10 @@ public static class MatchEndpoints
                             continue;
                         }
 
-                        var gameLengthMillis = info.GetProperty("gameLengthMillis").GetInt64();
-                        var gameStartMillis = info.GetProperty("gameStartMillis").GetInt64();
-
-                        // Parse teams
-                        int blueRounds = 0, redRounds = 0;
-                        bool blueWon = false, redWon = false;
-                        foreach (var team in doc.RootElement.GetProperty("teams").EnumerateArray())
-                        {
-                            var tid = team.GetProperty("teamId").GetString();
-                            var won = team.GetProperty("won").GetBoolean();
-                            var rw = team.GetProperty("roundsWon").GetInt32();
-                            if (tid == "Blue") { blueRounds = rw; blueWon = won; }
-                            else if (tid == "Red") { redRounds = rw; redWon = won; }
-                        }
-
-                        // Parse players, find scanner
-                        string? scannerSide = null, scannerAgent = null;
-                        int kills = 0, deaths = 0, assists = 0;
-                        var playerList = new List<object>();
-                        var roundAggregates = ValorantMatchStatsHelper.BuildRoundAggregates(doc.RootElement);
-
-                        foreach (var p in doc.RootElement.GetProperty("players").EnumerateArray())
-                        {
-                            var pPuuid = p.GetProperty("puuid").GetString() ?? "";
-                            playerList.Add(ValorantMatchStatsHelper.BuildPlayerPayload(
-                                p,
-                                roundAggregates,
-                                team1Puuids,
-                                team2Puuids));
-
-                            if (pPuuid == scannerPuuid)
-                            {
-                                scannerSide = p.GetProperty("teamId").GetString() ?? "";
-                                scannerAgent = p.GetProperty("characterId").GetString() ?? "";
-                                var stats = p.GetProperty("stats");
-                                kills = stats.GetProperty("kills").GetInt32();
-                                deaths = stats.GetProperty("deaths").GetInt32();
-                                assists = stats.GetProperty("assists").GetInt32();
-                            }
-                        }
-
-                        if (scannerSide is null) continue; // scanner not in this match
-
-                        var isBlue = scannerSide == "Blue";
-                        var myRounds = isBlue ? blueRounds : redRounds;
-                        var enemyRounds = isBlue ? redRounds : blueRounds;
-                        var didWin = isBlue ? blueWon : redWon;
-
-                        var derivedDetails = ValorantMatchStatsHelper.BuildDerivedMatchDetails(doc.RootElement);
-                        var serializedDerived = ValorantMatchStatsHelper.SerializeDerivedDetails(derivedDetails);
-
-                        candidates.Add(new
-                        {
-                            id = riotMatchId,
-                            map = mapDisplayName,
-                            mapId = riotMapId,
-                            queueId,
-                            startTime = gameStartMillis,
-                            gameLengthMillis,
-                            myTeamScore = myRounds,
-                            enemyTeamScore = enemyRounds,
-                            reporterSide = scannerSide,
-                            score = $"{myRounds}-{enemyRounds}",
-                            result = didWin ? "Victory" : "Defeat",
-                            kda = $"{kills}/{deaths}/{assists}",
-                            agent = scannerAgent,
-                            isExpectedMap,
-                            blueTeam = new { roundsWon = blueRounds, won = blueWon },
-                            redTeam = new { roundsWon = redRounds, won = redWon },
-                            players = playerList,
-                            matchInfo = ValorantMatchStatsHelper.BuildMatchInfoPayload(doc.RootElement),
-                            roundTimeline = serializedDerived.RoundTimeline,
-                            economyTimeline = serializedDerived.EconomyTimeline,
-                            weaponSummaries = serializedDerived.WeaponSummaries,
-                        });
+                        var candidate = RiotMatchCandidates.Build(
+                            doc.RootElement, riotMatchId, scannerPuuid, team1Puuids, team2Puuids, isExpectedMap);
+                        if (candidate is null) continue; // scanner not in this match
+                        candidates.Add(candidate);
                     }
                     catch (Exception ex)
                     {

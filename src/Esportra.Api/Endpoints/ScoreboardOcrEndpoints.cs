@@ -83,10 +83,14 @@ public static class ScoreboardOcrEndpoints
         var puuids = linked.OrderBy(a => a.Team == reportingTeam ? 0 : 1).Select(a => a.Puuid).Distinct().Take(MaxPlayersSearched).ToList();
         var query = ScoreboardRiotMatcher.QueryFrom(result.RootElement, DateTimeOffset.UtcNow, ScoreboardRiotMatcher.MatchWindow);
         var riot = await ScoreboardRiotMatcher.FindAsync(riotMatches, puuids, query, RiotMatchBudget, ct);
+        object? candidate = null;
         if (riot.Match is { } riotMatch)
         {
             verification = ScoreboardVerification.ApplyRiotMatch(
                 verification, linked, riotMatch, [], ScoreboardRiotMatcher.ScoreFrom(result.RootElement), DateTimeOffset.UtcNow);
+            // Only a game the screenshot provably shows is handed back for automatic reporting.
+            if (ScoreboardRiotMatcher.SameGameAllySide(result.RootElement, riotMatch) is { } allySide)
+                candidate = ScoreboardRiotMatcher.Candidate(riotMatch, allySide, ScoreboardRiotMatcher.AllyTeamOf(result.RootElement), reportingTeam, linked);
         }
         await InsertParseAsync(conn, new ParseRow(parseId, id, request, userCtx.UserIdGuid, path, sha, call.ResultJson!, result.RootElement));
         return Results.Ok(new
@@ -98,7 +102,13 @@ public static class ScoreboardOcrEndpoints
             team2Id = match.Team2Id,
             result = result.RootElement.Clone(),
             verification = JsonSerializer.SerializeToElement(verification, OcrVerificationJson.Options),
-            riot = new { status = riot.Status, match = riot.Match is null ? null : ScoreboardRiotMatcher.Payload(riot.Match, linked) },
+            riot = new
+            {
+                status = riot.Status,
+                confident = candidate is not null,
+                candidate,
+                match = riot.Match is null ? null : ScoreboardRiotMatcher.Payload(riot.Match, linked),
+            },
         });
     }
 

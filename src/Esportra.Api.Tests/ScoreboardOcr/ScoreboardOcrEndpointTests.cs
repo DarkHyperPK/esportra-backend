@@ -659,6 +659,95 @@ public sealed class ScoreboardOcrEndpointTests
         verification.Players.Should().OnlyContain(p => p.RiotStatus == null);
     }
 
+    [Fact]
+    public async Task ParseScreenshot_TheSameGameInRiotHistory_ComesBackReadyToReport()
+    {
+        var seeded = await SeedMatchAsync();
+        await using (var conn = new NpgsqlConnection(_factory.ConnectionString))
+            await conn.ExecuteAsync(
+                "INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@id, @puuid, 'Ally1', 'EU1')",
+                new { id = seeded.Captain1, puuid = $"p-{seeded.Captain1:N}" });
+        var allies = Enumerable.Range(1, 5).Select(i => $"Ally{i}").ToArray();
+        var enemies = Enumerable.Range(1, 5).Select(i => $"Enemy{i}").ToArray();
+        var ocrResult = JsonSerializer.Serialize(new
+        {
+            game = "valorant",
+            engineVersion = "rapidocr-test",
+            map = new { value = new { name = "Ascent" }, confidence = 0.99 },
+            allyScore = new { value = 13, confidence = 0.9 },
+            enemyScore = new { value = 7, confidence = 0.9 },
+            allyTeam = new { value = "team1", confidence = 1 },
+            players = allies.Select(n => new { side = "ally", nameRead = n, name = new { value = n } })
+                .Concat(enemies.Select(n => new { side = "enemy", nameRead = n, name = new { value = n } })),
+        });
+        var match = RiotMatchSamples.Match("riot-same", "Ascent", 7, 13, DateTimeOffset.UtcNow,
+            [.. allies.Select((n, i) => new RiotMatchSamples.Player(i == 0 ? $"p-{seeded.Captain1:N}" : $"p-{n}", n, "EU1", "Red")),
+             .. enemies.Select(n => new RiotMatchSamples.Player($"p-{n}", n, "NA1", "Blue"))]);
+        var client = Authenticated(Configured(new StubHandler(HttpStatusCode.OK, ocrResult), new StubHandler(HttpStatusCode.OK, "{}"),
+            riot: new FakeMatchLookup(new RiotMatchLookupResult(RiotLookupStatus.Found, match))), seeded.Captain1);
+
+        var body = await (await client.PostAsync($"/api/matches/{seeded.MatchId}/reports/parse-screenshot", Form(seeded.Team1Id)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+
+        var riot = body.GetProperty("riot");
+        riot.GetProperty("confident").GetBoolean().Should().BeTrue();
+        var candidate = riot.GetProperty("candidate");
+        (candidate.GetProperty("id").GetString(), candidate.GetProperty("reporterSide").GetString()).Should().Be(("riot-same", "Red"));
+        (candidate.GetProperty("myTeamScore").GetInt32(), candidate.GetProperty("result").GetString()).Should().Be((13, "Victory"));
+        candidate.GetProperty("players").GetArrayLength().Should().Be(10);
+    }
+
+    [Fact]
+    public async Task RiotSourcedReport_EveryAccountLinked_IsAcceptedWithoutTheOpponent()
+    {
+        var seeded = await SeedMatchAsync();
+        await using (var conn = new NpgsqlConnection(_factory.ConnectionString))
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@a, @pa, 'AlphaCap', 'EU1');
+                INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@b, @pb, 'BravoCap', 'EU2');
+                """,
+                new { a = seeded.Captain1, pa = $"p-{seeded.Captain1:N}", b = seeded.Captain2, pb = $"p-{seeded.Captain2:N}" });
+        }
+        var riotCheck = new RecordingRiotCheck();
+        var factory = Configured(new StubHandler(HttpStatusCode.OK, OcrResult), new StubHandler(HttpStatusCode.OK, "{}"), riotCheck);
+        var response = await Authenticated(factory, seeded.Captain1).PostAsJsonAsync($"/api/matches/{seeded.MatchId}/reports", new
+        {
+            gameNumber = 1,
+            reportedByTeamId = seeded.Team1Id.ToString(),
+            team1Score = 13,
+            team2Score = 1,
+            riotMatchId = "riot-auto-fetch",
+            mapName = "Ascent",
+            matchData = new
+            {
+                players = new object[]
+                {
+                    new { gameName = "AlphaCap", isTeam1 = true, isTeam2 = false, kills = 10, deaths = 5, assists = 3 },
+                    new { gameName = "BravoCap", isTeam1 = false, isTeam2 = true, kills = 7, deaths = 7, assists = 2 },
+                },
+            },
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var reportId = Guid.Parse((await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString()!);
+        riotCheck.Reports.Should().Equal(reportId);
+        var match = RiotMatchSamples.Match("riot-auto-fetch", "Ascent", 13, 1, DateTimeOffset.UtcNow,
+            new RiotMatchSamples.Player($"p-{seeded.Captain1:N}", "AlphaCap", "EU1", "Blue", 10, 5, 3),
+            new RiotMatchSamples.Player($"p-{seeded.Captain2:N}", "BravoCap", "EU2", "Red", 7, 7, 2));
+        var lookup = new FakeMatchLookup(new RiotMatchLookupResult(RiotLookupStatus.NotFound), new RiotMatchLookupResult(RiotLookupStatus.Found, match));
+
+        await RiotCheckJob(new SubmittedReport(seeded, reportId, factory, riotCheck), lookup, new RecordingJobs())
+            .RunAsync(reportId, 0, CancellationToken.None);
+
+        lookup.ById.Should().Equal("riot-auto-fetch");
+        await using var check = new NpgsqlConnection(_factory.ConnectionString);
+        (await check.QuerySingleAsync<(string, string?)>("SELECT status, auto_accepted FROM match_result_reports WHERE id = @reportId", new { reportId }))
+            .Should().Be(("accepted", "riot_confirmed"));
+        var stored = await StoredVerificationAsync(reportId);
+        stored.Players.Select(p => (p.Name, p.RiotStatus)).Should().Equal(("AlphaCap", RiotStatus.Confirmed), ("BravoCap", RiotStatus.Confirmed));
+    }
+
     private async Task<int> CountParsesAsync(Guid matchId)
     {
         await using var conn = new NpgsqlConnection(_factory.ConnectionString);
