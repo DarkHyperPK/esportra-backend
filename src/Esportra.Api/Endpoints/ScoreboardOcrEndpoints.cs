@@ -26,6 +26,8 @@ public static class ScoreboardOcrEndpoints
 
     private static readonly TimeSpan RiotIdMaxAge = TimeSpan.FromHours(6);
     private static readonly TimeSpan RiotIdRefreshBudget = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan RiotMatchBudget = TimeSpan.FromSeconds(6);
+    private const int MaxPlayersSearched = 3;
 
     public static void MapScoreboardOcrEndpoints(this WebApplication app)
     {
@@ -42,6 +44,7 @@ public static class ScoreboardOcrEndpoints
         ScoreboardOcrClient ocr,
         ScoreboardScreenshotStore store,
         RiotIdRefreshService riotIds,
+        IRiotMatchLookup riotMatches,
         CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
@@ -73,6 +76,18 @@ public static class ScoreboardOcrEndpoints
         using var result = JsonDocument.Parse(call.ResultJson!);
         var sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
         var verification = await ScoreboardReportVerifier.ForParseAsync(conn, id, sha, result.RootElement, rosters);
+
+        // The same game in Riot's history: full Riot IDs and exact numbers for the review.
+        var linked = await ScoreboardRosterLoader.LoadLinkedAccountsAsync(conn, match.Team1Id, match.Team2Id);
+        var reportingTeam = request.CompetitorId == match.Team1Id ? "team1" : "team2";
+        var puuids = linked.OrderBy(a => a.Team == reportingTeam ? 0 : 1).Select(a => a.Puuid).Distinct().Take(MaxPlayersSearched).ToList();
+        var query = ScoreboardRiotMatcher.QueryFrom(result.RootElement, DateTimeOffset.UtcNow, ScoreboardRiotMatcher.MatchWindow);
+        var riot = await ScoreboardRiotMatcher.FindAsync(riotMatches, puuids, query, RiotMatchBudget, ct);
+        if (riot.Match is { } riotMatch)
+        {
+            verification = ScoreboardVerification.ApplyRiotMatch(
+                verification, linked, riotMatch, [], ScoreboardRiotMatcher.ScoreFrom(result.RootElement), DateTimeOffset.UtcNow);
+        }
         await InsertParseAsync(conn, new ParseRow(parseId, id, request, userCtx.UserIdGuid, path, sha, call.ResultJson!, result.RootElement));
         return Results.Ok(new
         {
@@ -83,6 +98,7 @@ public static class ScoreboardOcrEndpoints
             team2Id = match.Team2Id,
             result = result.RootElement.Clone(),
             verification = JsonSerializer.SerializeToElement(verification, OcrVerificationJson.Options),
+            riot = new { status = riot.Status, match = riot.Match is null ? null : ScoreboardRiotMatcher.Payload(riot.Match, linked) },
         });
     }
 

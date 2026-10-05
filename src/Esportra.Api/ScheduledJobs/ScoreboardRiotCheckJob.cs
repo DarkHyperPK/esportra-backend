@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Esportra.Api.Endpoints;
 using Esportra.Api.Hubs;
 using Esportra.Api.ScoreboardOcr;
 using Esportra.Api.Services;
@@ -33,6 +34,7 @@ public sealed class ScoreboardRiotCheckJob(
     IBackgroundJobClient jobs,
     ScoreboardReportVerifier verifier,
     IHubContext<MatchHub> matchHub,
+    IServiceProvider services,
     ILogger<ScoreboardRiotCheckJob> logger)
 {
     /// <summary>Riot can list a custom game minutes after it ends: look again after these delays.</summary>
@@ -41,9 +43,11 @@ public sealed class ScoreboardRiotCheckJob(
     private static readonly TimeSpan Window = TimeSpan.FromDays(2);
     private const int MaxPlayersSearched = 3;
 
+    public const string AutoAcceptReason = "riot_confirmed";
+
     private sealed record ReportRow(
         Guid Id, Guid MatchId, Guid ReportedByTeamId, int? Team1Score, int? Team2Score, string? MapName, string? MatchData,
-        string? OcrVerification, DateTime CreatedAt, string? PlayedOn, Guid Team1Id, Guid Team2Id);
+        string? OcrVerification, DateTime CreatedAt, string? PlayedOn, Guid Team1Id, Guid Team2Id, string Status, string? RiotMatchId);
 
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(Guid reportId, int attempt, CancellationToken ct)
@@ -54,7 +58,8 @@ public sealed class ScoreboardRiotCheckJob(
             SELECT r.id AS Id, r.match_id AS MatchId, r.reported_by_team_id AS ReportedByTeamId,
                    r.team1_score AS Team1Score, r.team2_score AS Team2Score, r.map_name AS MapName,
                    r.match_data::text AS MatchData, r.ocr_verification::text AS OcrVerification, r.created_at AS CreatedAt,
-                   p.result->'playedOn'->>'value' AS PlayedOn, m.team1_id AS Team1Id, m.team2_id AS Team2Id
+                   p.result->'playedOn'->>'value' AS PlayedOn, m.team1_id AS Team1Id, m.team2_id AS Team2Id,
+                   r.status AS Status, r.riot_match_id AS RiotMatchId
             FROM match_result_reports r
             JOIN brkt_matches m ON m.id = r.match_id
             LEFT JOIN scoreboard_ocr_parses p ON p.id = r.ocr_parse_id
@@ -76,7 +81,7 @@ public sealed class ScoreboardRiotCheckJob(
 
         var around = DateTime.TryParse(report.PlayedOn, out var played) ? new DateTimeOffset(played.Date.AddHours(12), TimeSpan.Zero) : new DateTimeOffset(report.CreatedAt, TimeSpan.Zero);
         var query = new RiotMatchQuery(report.MapName, report.Team1Score.Value, report.Team2Score.Value, around, Window);
-        var found = await riot.FindCustomGameAsync(puuids, query, ct);
+        var found = await FindAsync(report, puuids, query, ct);
 
         if (found.Status is RiotLookupStatus.NotFound or RiotLookupStatus.Retry && attempt < RetryDelays.Length)
         {
@@ -92,7 +97,7 @@ public sealed class ScoreboardRiotCheckJob(
 
         var submitted = ScoreboardReportVerifier.SubmittedPlayers(report.MatchData is null ? null : JsonDocument.Parse(report.MatchData).RootElement.Clone());
         var checkedVerification = ScoreboardVerification.ApplyRiotMatch(
-            verification, linked, match, submitted, report.Team1Score.Value, report.Team2Score.Value, DateTimeOffset.UtcNow);
+            verification, linked, match, submitted, (report.Team1Score.Value, report.Team2Score.Value), DateTimeOffset.UtcNow);
         await SaveAsync(conn, report, checkedVerification, match.MatchId, ct);
 
         var newFindings = checkedVerification.Players.Any(p => p.RiotStatus is { } r && RiotStatus.NeedsReview.Contains(r))
@@ -100,6 +105,37 @@ public sealed class ScoreboardRiotCheckJob(
         if (newFindings)
             await verifier.NotifyOrganizersAsync(conn, report.MatchId, report.Id, report.ReportedByTeamId, checkedVerification, ct);
         logger.LogInformation("Screenshot report {ReportId} checked against Riot match {RiotMatchId}", report.Id, match.MatchId);
+
+        // Riot's record backs every player and number: no need to wait for the opponent.
+        if (report.Status == "pending" && ScoreboardVerification.IsFullyConfirmed(checkedVerification, match, linked))
+            await AcceptAsync(conn, report, checkedVerification, ct);
+    }
+
+    /// <summary>The match the captain picked at upload (re-checked here, never trusted as sent), else a search.</summary>
+    private async Task<RiotMatchLookupResult> FindAsync(ReportRow report, IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(report.RiotMatchId))
+        {
+            var chosen = await riot.GetMatchAsync(report.RiotMatchId, puuids[0], ct);
+            if (chosen is { Status: RiotLookupStatus.Found, Match: { } match }
+                && RiotMatchLookup.Fits(match, query) && match.Players.Any(p => puuids.Contains(p.Puuid)))
+                return chosen;
+            if (chosen.Status == RiotLookupStatus.Unavailable) return chosen;
+        }
+        return await riot.FindCustomGameAsync(puuids, query, ct);
+    }
+
+    private async Task AcceptAsync(System.Data.IDbConnection conn, ReportRow report, OcrVerification verification, CancellationToken ct)
+    {
+        var outcome = await MatchSystemEndpoints.AcceptReportCoreAsync(
+            conn, report.MatchId, report.Id, respondedBy: null, AutoAcceptReason, requirePending: true, services, logger, ct);
+        if (!outcome.Accepted) return;
+        var accepted = verification with { Riot = verification.Riot! with { AutoAccepted = true } };
+        await conn.ExecuteAsync(
+            "UPDATE match_result_reports SET ocr_verification = @verification::jsonb WHERE id = @id",
+            new { id = report.Id, verification = JsonSerializer.Serialize(accepted, OcrVerificationJson.Options) });
+        await ReportAutoAcceptance.AnnounceAsync(conn, services, report.MatchId, report.Id, AutoAcceptReason, ct);
+        logger.LogInformation("Screenshot report {ReportId} accepted: Riot's record confirms every player and number", report.Id);
     }
 
     private async Task SaveAsync(System.Data.IDbConnection conn, ReportRow report, OcrVerification verification, string? riotMatchId, CancellationToken ct)

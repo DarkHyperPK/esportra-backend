@@ -91,15 +91,24 @@ public sealed class ScoreboardOcrEndpointTests
         public void Queue(Guid reportId) => Reports.Add(reportId);
     }
 
-    private sealed class FakeMatchLookup(RiotMatchLookupResult result) : IRiotMatchLookup
+    private sealed class FakeMatchLookup(RiotMatchLookupResult result, RiotMatchLookupResult? byId = null) : IRiotMatchLookup
     {
         public List<(IReadOnlyList<string> Puuids, RiotMatchQuery Query)> Calls { get; } = [];
+        public List<string> ById { get; } = [];
 
         public Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
         {
             Calls.Add((puuids, query));
             return Task.FromResult(result);
         }
+
+        public Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct)
+        {
+            ById.Add(matchId);
+            return Task.FromResult(byId ?? new RiotMatchLookupResult(RiotLookupStatus.NotFound));
+        }
+
+        public Task<string?> PuuidOfAsync(string gameName, string tagLine, CancellationToken ct) => Task.FromResult<string?>(null);
     }
 
     private sealed class RecordingJobs : IBackgroundJobClient
@@ -115,7 +124,7 @@ public sealed class ScoreboardOcrEndpointTests
         public bool ChangeState(string jobId, IState state, string expectedState) => true;
     }
 
-    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null) =>
+    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null, IRiotMatchLookup? riot = null) =>
         _factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ScoreboardOcr:BaseUrl", "http://ocr.test:8095");
@@ -126,6 +135,7 @@ public sealed class ScoreboardOcrEndpointTests
                 services.AddHttpClient(Options.DefaultName).ConfigurePrimaryHttpMessageHandler(() => storage);
                 services.AddScoped<IRiotAccountLookup>(_ => new NoRiot());
                 services.AddScoped<IScoreboardRiotCheckTrigger>(_ => riotCheck ?? new RecordingRiotCheck());
+                services.AddScoped<IRiotMatchLookup>(_ => riot ?? new FakeMatchLookup(new RiotMatchLookupResult(RiotLookupStatus.NotFound)));
             });
         });
 
@@ -397,13 +407,28 @@ public sealed class ScoreboardOcrEndpointTests
     private sealed record SubmittedReport(Seeded Seeded, Guid ReportId, WebApplicationFactory<Program> Factory, RecordingRiotCheck RiotCheck);
 
     /// <summary>A screenshot report naming AlphaCap (team1 captain, linked) and Ringer (on no roster).</summary>
-    private async Task<SubmittedReport> SubmitReportWithARingerAsync()
+    private Task<SubmittedReport> SubmitReportWithARingerAsync() => SubmitReportAsync(secondRowLinked: false);
+
+    /// <summary>
+    /// A screenshot report of AlphaCap (team1 captain) and a second row: Ringer (on no roster), or
+    /// BravoCap (team2 captain, linked) when <paramref name="secondRowLinked"/>.
+    /// </summary>
+    private async Task<SubmittedReport> SubmitReportAsync(bool secondRowLinked)
     {
         var seeded = await SeedMatchAsync();
         await using (var conn = new NpgsqlConnection(_factory.ConnectionString))
+        {
             await conn.ExecuteAsync(
                 "INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@id, @puuid, 'AlphaCap', 'EU1')",
                 new { id = seeded.Captain1, puuid = $"p-{seeded.Captain1:N}" });
+            if (secondRowLinked)
+            {
+                await conn.ExecuteAsync(
+                    "INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@id, @puuid, 'BravoCap', 'EU2')",
+                    new { id = seeded.Captain2, puuid = $"p-{seeded.Captain2:N}" });
+            }
+        }
+        var second = secondRowLinked ? "BravoCap" : "Ringer";
         var ocrResult = JsonSerializer.Serialize(new
         {
             game = "valorant",
@@ -418,13 +443,21 @@ public sealed class ScoreboardOcrEndpointTests
                     side = "ally", nameRead = "AlphaCap", name = new { value = "AlphaCap" },
                     rosterMatch = new { userId = seeded.Captain1.ToString(), team = "team1", source = "riot_verified", method = "read" },
                 },
-                new { side = "ally", nameRead = "Ringer", name = new { value = "Ringer" } },
+                secondRowLinked
+                    ? new
+                    {
+                        side = "enemy", nameRead = "BravoCap", name = new { value = "BravoCap" },
+                        rosterMatch = (object?)new { userId = seeded.Captain2.ToString(), team = "team2", source = "riot_verified", method = "read" },
+                    }
+                    : new { side = "ally", nameRead = "Ringer", name = new { value = "Ringer" }, rosterMatch = (object?)null },
             },
         });
         var riotCheck = new RecordingRiotCheck();
         var factory = Configured(new StubHandler(HttpStatusCode.OK, ocrResult), new StubHandler(HttpStatusCode.OK, "{}"), riotCheck);
         var client = Authenticated(factory, seeded.Captain1);
-        var parse = await (await client.PostAsync($"/api/matches/{seeded.MatchId}/reports/parse-screenshot", Form(seeded.Team1Id)))
+        // Unique bytes: the same image on another test's match would be flagged as a reused screenshot.
+        var image = Png.Concat(Guid.NewGuid().ToByteArray()).ToArray();
+        var parse = await (await client.PostAsync($"/api/matches/{seeded.MatchId}/reports/parse-screenshot", Form(seeded.Team1Id, image)))
             .Content.ReadFromJsonAsync<JsonElement>();
         var response = await client.PostAsJsonAsync($"/api/matches/{seeded.MatchId}/reports", new
         {
@@ -438,8 +471,8 @@ public sealed class ScoreboardOcrEndpointTests
             {
                 players = new[]
                 {
-                    new { gameName = "AlphaCap", isTeam1 = true, kills = 10, deaths = 5, assists = 3 },
-                    new { gameName = "Ringer", isTeam1 = true, kills = 7, deaths = 7, assists = 2 },
+                    new { gameName = "AlphaCap", isTeam1 = true, isTeam2 = false, kills = 10, deaths = 5, assists = 3 },
+                    new { gameName = second, isTeam1 = !secondRowLinked, isTeam2 = secondRowLinked, kills = 7, deaths = 7, assists = 2 },
                 },
             },
         });
@@ -454,7 +487,7 @@ public sealed class ScoreboardOcrEndpointTests
         return new ScoreboardRiotCheckJob(
             services.GetRequiredService<IDbConnectionFactory>(), lookup, jobs,
             services.GetRequiredService<ScoreboardReportVerifier>(), services.GetRequiredService<IHubContext<MatchHub>>(),
-            NullLogger<ScoreboardRiotCheckJob>.Instance);
+            services, NullLogger<ScoreboardRiotCheckJob>.Instance);
     }
 
     private async Task<OcrVerification> StoredVerificationAsync(Guid reportId)
@@ -502,6 +535,96 @@ public sealed class ScoreboardOcrEndpointTests
             new { organizer = submitted.Seeded.Organizer })).ToList();
         alerts.Should().HaveCount(2);
         alerts[1].Should().Contain("Ringer#XYZ played but isn't linked").And.Contain("K/D/A differs from Riot");
+        (await conn.QuerySingleAsync<string>("SELECT status FROM match_result_reports WHERE id = @id", new { id = submitted.ReportId }))
+            .Should().Be("pending", "a report Riot doesn't fully back still waits for the opponent");
+    }
+
+    [Fact]
+    public async Task RiotCheck_EveryPlayerAndNumberConfirmed_AcceptsWithoutTheOpponent()
+    {
+        var submitted = await SubmitReportAsync(secondRowLinked: true);
+        var match = RiotMatchSamples.Match("riot-ocr-2", "Ascent", 13, 1, DateTimeOffset.UtcNow,
+            new RiotMatchSamples.Player($"p-{submitted.Seeded.Captain1:N}", "AlphaCap", "EU1", "Blue", 10, 5, 3),
+            new RiotMatchSamples.Player($"p-{submitted.Seeded.Captain2:N}", "BravoCap", "EU2", "Red", 7, 7, 2));
+
+        await RiotCheckJob(submitted, new FakeMatchLookup(new RiotMatchLookupResult(RiotLookupStatus.Found, match)), new RecordingJobs())
+            .RunAsync(submitted.ReportId, 0, CancellationToken.None);
+
+        await using var conn = new NpgsqlConnection(_factory.ConnectionString);
+        (await conn.QuerySingleAsync<(string, string?)>(
+            "SELECT status, auto_accepted FROM match_result_reports WHERE id = @id", new { id = submitted.ReportId }))
+            .Should().Be(("accepted", "riot_confirmed"));
+        (await StoredVerificationAsync(submitted.ReportId)).Riot!.AutoAccepted.Should().BeTrue();
+        (await conn.QuerySingleAsync<Guid?>(
+            "SELECT winner_id FROM brkt_match_games WHERE match_id = @MatchId AND status = 'completed'", submitted.Seeded))
+            .Should().Be(submitted.Seeded.Team1Id);
+        (await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*)::int FROM notifications WHERE user_id = ANY(@users) AND type = 'result_accepted' AND data->>'auto_accepted' = 'riot_confirmed'",
+            new { users = new[] { submitted.Seeded.Captain1, submitted.Seeded.Captain2 } })).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task RiotCheck_AMatchIdThatDoesNotFitTheReport_IsIgnoredForASearch()
+    {
+        var submitted = await SubmitReportAsync(secondRowLinked: true);
+        await using (var conn = new NpgsqlConnection(_factory.ConnectionString))
+            await conn.ExecuteAsync("UPDATE match_result_reports SET riot_match_id = 'riot-other-game' WHERE id = @id", new { id = submitted.ReportId });
+        var otherGame = RiotMatchSamples.Match("riot-other-game", "Ascent", 13, 9, DateTimeOffset.UtcNow,
+            new RiotMatchSamples.Player($"p-{submitted.Seeded.Captain1:N}", "AlphaCap", "EU1", "Blue"));
+        var lookup = new FakeMatchLookup(
+            new RiotMatchLookupResult(RiotLookupStatus.NotFound), new RiotMatchLookupResult(RiotLookupStatus.Found, otherGame));
+
+        await RiotCheckJob(submitted, lookup, new RecordingJobs()).RunAsync(submitted.ReportId, ScoreboardRiotCheckJob.RetryDelays.Length, CancellationToken.None);
+
+        lookup.ById.Should().Equal("riot-other-game");
+        lookup.Calls.Should().ContainSingle("a game with a different score is not this report's game");
+        (await StoredVerificationAsync(submitted.ReportId)).Riot!.Status.Should().Be(RiotCheckStatus.NotFound);
+    }
+
+    [Fact]
+    public async Task ParseScreenshot_FindsTheGameInRiotHistory_ForTheReview()
+    {
+        var seeded = await SeedMatchAsync();
+        await using (var conn = new NpgsqlConnection(_factory.ConnectionString))
+            await conn.ExecuteAsync(
+                "INSERT INTO riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@id, @puuid, 'AlphaCap', 'EU1')",
+                new { id = seeded.Captain1, puuid = $"p-{seeded.Captain1:N}" });
+        var ocrResult = JsonSerializer.Serialize(new
+        {
+            game = "valorant",
+            engineVersion = "rapidocr-test",
+            map = new { value = new { name = "Ascent" }, confidence = 0.99 },
+            allyScore = new { value = 13, confidence = 0.9 },
+            enemyScore = new { value = 1, confidence = 0.9 },
+            allyTeam = new { value = "team1", confidence = 1 },
+            players = new object[]
+            {
+                new
+                {
+                    side = "ally", nameRead = "AlphaCap", name = new { value = "AlphaCap" },
+                    rosterMatch = new { userId = seeded.Captain1.ToString(), team = "team1", source = "riot_verified", method = "read" },
+                },
+            },
+        });
+        var match = RiotMatchSamples.Match("riot-parse-1", "Ascent", 13, 1, DateTimeOffset.UtcNow,
+            new RiotMatchSamples.Player($"p-{seeded.Captain1:N}", "AlphaCap", "EU1", "Blue", 21, 9, 4),
+            new RiotMatchSamples.Player("p-someone", "Someone", "XYZ", "Red"));
+        var lookup = new FakeMatchLookup(new RiotMatchLookupResult(RiotLookupStatus.Found, match));
+        var client = Authenticated(Configured(new StubHandler(HttpStatusCode.OK, ocrResult), new StubHandler(HttpStatusCode.OK, "{}"), riot: lookup), seeded.Captain1);
+
+        var response = await client.PostAsync($"/api/matches/{seeded.MatchId}/reports/parse-screenshot", Form(seeded.Team1Id));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var riot = body.GetProperty("riot");
+        riot.GetProperty("status").GetString().Should().Be("found");
+        riot.GetProperty("match").GetProperty("team1Rounds").GetInt32().Should().Be(13);
+        var alpha = riot.GetProperty("match").GetProperty("players").EnumerateArray().First(p => p.GetProperty("gameName").GetString() == "AlphaCap");
+        (alpha.GetProperty("tagLine").GetString(), alpha.GetProperty("kills").GetInt32(), alpha.GetProperty("isTeam1").GetBoolean())
+            .Should().Be(("EU1", 21, true));
+        var row = body.GetProperty("verification").GetProperty("players")[0];
+        (row.GetProperty("riotStatus").GetString(), row.GetProperty("riotId").GetString()).Should().Be(("confirmed", "AlphaCap#EU1"));
+        lookup.Calls.Single().Query.Map.Should().Be("Ascent");
     }
 
     [Fact]

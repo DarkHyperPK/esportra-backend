@@ -10,7 +10,10 @@ public sealed record RiotMatchPlayer(string Puuid, string GameName, string TagLi
     public string RiotId => $"{GameName}#{TagLine}";
 }
 
-public sealed record RiotMatch(string MatchId, string Map, string QueueId, int BlueRounds, int RedRounds, DateTimeOffset StartedAt, IReadOnlyList<RiotMatchPlayer> Players);
+/// <summary>A Riot match record; <paramref name="Raw"/> is Riot's JSON, for the full per-player stats.</summary>
+public sealed record RiotMatch(
+    string MatchId, string Map, string QueueId, int BlueRounds, int RedRounds, DateTimeOffset StartedAt, IReadOnlyList<RiotMatchPlayer> Players,
+    JsonElement? Raw = null);
 
 public enum RiotLookupStatus
 {
@@ -31,6 +34,12 @@ public interface IRiotMatchLookup
 {
     /// <summary>The custom game on this map with this score, from the first of these players' match histories that has it.</summary>
     Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct);
+
+    /// <summary>One match by id, read from the shard of a player who played it.</summary>
+    Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct);
+
+    /// <summary>The PUUID of a Riot ID ("name", "tag"), or null when Riot doesn't know it.</summary>
+    Task<string?> PuuidOfAsync(string gameName, string tagLine, CancellationToken ct);
 }
 
 /// <summary>
@@ -71,6 +80,37 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
             }
         }
         return new RiotMatchLookupResult(sawRetry ? RiotLookupStatus.Retry : RiotLookupStatus.NotFound);
+    }
+
+    public async Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(config["Riot:ApiKey"])) return new RiotMatchLookupResult(RiotLookupStatus.Unavailable);
+        var shard = await RiotShards.ResolveAsync(riot, cache, puuid, null, ct);
+        var (status, body) = await riot.ProxyAsync(shard, $"/val/match/v1/matches/{Uri.EscapeDataString(matchId)}", ct);
+        if (status is 401 or 403) return new RiotMatchLookupResult(RiotLookupStatus.Unavailable);
+        if (status is 429 or >= 500) return new RiotMatchLookupResult(RiotLookupStatus.Retry);
+        if (status != 200) return new RiotMatchLookupResult(RiotLookupStatus.NotFound);
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return new RiotMatchLookupResult(RiotLookupStatus.Found, ParseMatch(doc.RootElement));
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            logger.LogWarning(ex, "Could not read Riot match {MatchId}", matchId);
+            return new RiotMatchLookupResult(RiotLookupStatus.NotFound);
+        }
+    }
+
+    public async Task<string?> PuuidOfAsync(string gameName, string tagLine, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(config["Riot:ApiKey"])) return null;
+        var route = config["Riot:AccountRoute"] ?? "europe";
+        var (status, body) = await riot.ProxyAsync(
+            route, $"/riot/account/v1/accounts/by-riot-id/{Uri.EscapeDataString(gameName)}/{Uri.EscapeDataString(tagLine)}", ct);
+        if (status != 200) return null;
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.TryGetProperty("puuid", out var puuid) ? puuid.GetString() : null;
     }
 
     /// <summary>Custom games in the matchlist that started inside the window, closest first.</summary>
@@ -124,7 +164,8 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
             blue,
             red,
             DateTimeOffset.FromUnixTimeMilliseconds(info.GetProperty("gameStartMillis").GetInt64()),
-            players);
+            players,
+            root.Clone());
     }
 }
 

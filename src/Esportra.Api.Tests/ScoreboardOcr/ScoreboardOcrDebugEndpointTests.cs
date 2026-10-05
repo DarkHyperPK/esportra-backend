@@ -6,6 +6,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Endpoints;
 using Esportra.Api.ScoreboardOcr;
+using Esportra.Api.Services;
 using Esportra.Api.Tests.Infrastructure;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -38,7 +39,28 @@ public sealed class ScoreboardOcrDebugEndpointTests
         }
     }
 
-    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage) =>
+    private sealed class BenchRiot(RiotMatch match) : IRiotMatchLookup
+    {
+        public List<(string Name, string Tag)> Resolved { get; } = [];
+        public List<RiotMatchQuery> Queries { get; } = [];
+
+        public Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+        {
+            Queries.Add(query);
+            return Task.FromResult(new RiotMatchLookupResult(RiotLookupStatus.Found, match));
+        }
+
+        public Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct) =>
+            Task.FromResult(new RiotMatchLookupResult(RiotLookupStatus.NotFound));
+
+        public Task<string?> PuuidOfAsync(string gameName, string tagLine, CancellationToken ct)
+        {
+            Resolved.Add((gameName, tagLine));
+            return Task.FromResult<string?>("p-bench");
+        }
+    }
+
+    private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, IRiotMatchLookup? riot = null) =>
         _factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ScoreboardOcr:BaseUrl", "http://ocr.test:8095");
@@ -47,6 +69,7 @@ public sealed class ScoreboardOcrDebugEndpointTests
             {
                 services.AddHttpClient<ScoreboardOcrClient>().ConfigurePrimaryHttpMessageHandler(() => ocr);
                 services.AddHttpClient(Options.DefaultName).ConfigurePrimaryHttpMessageHandler(() => storage);
+                if (riot is not null) services.AddScoped(_ => riot);
             });
         });
 
@@ -164,5 +187,43 @@ public sealed class ScoreboardOcrDebugEndpointTests
     {
         await using var conn = new NpgsqlConnection(_factory.ConnectionString);
         return await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM scoreboard_ocr_parses");
+    }
+
+    [Fact]
+    public async Task Parse_WithARiotId_ReturnsTheGameFromRiotHistory()
+    {
+        var match = RiotMatchSamples.Match("riot-bench", "Juliett", 13, 9, DateTimeOffset.UtcNow,
+            new RiotMatchSamples.Player("p-bench", "ghastii", "EUW", "Blue", 23, 26, 6));
+        var riot = new BenchRiot(match);
+        var form = Form();
+        form.Add(new StringContent("ghastii#EUW"), "riotId");
+
+        const string read = """
+            {"game":"valorant","engineVersion":"rapidocr-test","players":[],"map":{"value":{"name":"Sunset"},"confidence":0.99},
+             "allyScore":{"value":13,"confidence":0.9},"enemyScore":{"value":9,"confidence":0.9}}
+            """;
+
+        var response = await As(Configured(new StubHandler(HttpStatusCode.OK, read), new StubHandler(HttpStatusCode.OK, "{}"), riot), await SeedUserAsync(admin: true))
+            .PostAsync("/api/debug/scoreboard-ocr", form);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var found = body.GetProperty("riot");
+        found.GetProperty("status").GetString().Should().Be("found");
+        var player = found.GetProperty("match").GetProperty("players")[0];
+        (player.GetProperty("gameName").GetString(), player.GetProperty("tagLine").GetString(), player.GetProperty("deaths").GetInt32())
+            .Should().Be(("ghastii", "EUW", 26));
+        riot.Resolved.Should().Equal(("ghastii", "EUW"));
+        riot.Queries.Single().Should().Match<RiotMatchQuery>(q => q.Map == "Sunset" && q.ScoreA == 13 && q.ScoreB == 9 && q.Window == TimeSpan.FromDays(30));
+    }
+
+    [Fact]
+    public async Task Parse_WithoutARiotId_SkipsRiot()
+    {
+        var response = await As(Configured(new StubHandler(HttpStatusCode.OK, OcrResult), new StubHandler(HttpStatusCode.OK, "{}")), await SeedUserAsync(admin: true))
+            .PostAsync("/api/debug/scoreboard-ocr", Form());
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("riot").ValueKind.Should().Be(JsonValueKind.Null);
     }
 }
