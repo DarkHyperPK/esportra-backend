@@ -13,8 +13,29 @@ permissions:
   contents: write
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      dotnet: ${{ steps.filter.outputs.dotnet }}
+      migrations: ${{ steps.filter.outputs.migrations }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            dotnet:
+              - 'src/**'
+              - '*.sln'
+              - 'Directory.*.props'
+            migrations:
+              - 'src/Esportra.Infrastructure/Migrations/Scripts/**'
+
   build:
     name: Build
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +53,8 @@ jobs:
 
   lint:
     name: Format & Lint
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +72,9 @@ jobs:
 
   test:
     name: Test
+    needs: [changes, build]
+    if: needs.changes.outputs.dotnet == 'true'
     runs-on: ubuntu-latest
-    needs: [build]
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +91,8 @@ jobs:
 
   migration-replay:
     name: Migration Lint & Replay
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -133,6 +159,12 @@ jobs:
   promote:
     name: Promote to deploy/staging
     needs: [build, lint, test, migration-replay]
+    if: |
+      always() && !cancelled() &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.migration-replay.result == 'success' || needs.migration-replay.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
