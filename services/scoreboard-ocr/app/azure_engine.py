@@ -69,6 +69,12 @@ class AzureOcrEngine:
         return self._fallback.recognize(crop_bgr, script)
 
 
+def _correct_font(text: str) -> str:
+    # Valorant's Tungsten font: angular 'v' is misread as '/' by Azure.
+    # Riot IDs cannot contain '/', so every '/' is a misread letter.
+    return text.replace("/", "v")
+
+
 def _parse_response(data: dict) -> list[OcrToken]:
     """Emit one token per line (not per word).
 
@@ -81,7 +87,7 @@ def _parse_response(data: dict) -> list[OcrToken]:
     read_result = data.get("readResult") or {}
     for block in read_result.get("blocks") or []:
         for line in block.get("lines") or []:
-            text: str = (line.get("text") or "").strip()
+            text: str = _correct_font((line.get("text") or "").strip())
             polygon: list[dict] = line.get("boundingPolygon") or []
             if not text or not polygon:
                 continue
