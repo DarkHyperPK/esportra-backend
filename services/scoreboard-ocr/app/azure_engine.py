@@ -48,7 +48,10 @@ class AzureOcrEngine:
         try:
             response = httpx.post(
                 self._url,
-                headers={"Ocp-Apim-Subscription-Key": self._key},
+                headers={
+                    "Ocp-Apim-Subscription-Key": self._key,
+                    "Content-Type": "application/octet-stream",
+                },
                 content=bytes(buf),
                 timeout=20,
             )
