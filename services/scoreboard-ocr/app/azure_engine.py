@@ -75,32 +75,65 @@ def _correct_font(text: str) -> str:
     return text.replace("/", "v")
 
 
-def _parse_response(data: dict) -> list[OcrToken]:
-    """Emit one token per line (not per word).
+def _is_rtl_line(words: list[dict]) -> bool:
+    """True when Azure returned words in right-to-left visual order.
 
-    Azure's line.text is already in reading order (right-to-left for Arabic),
-    and the pipeline expects line-level tokens matching PaddleOCR's output shape.
-    Per-word tokens would cause the pipeline to re-sort by x-position and
-    reverse Arabic word order.
+    For RTL scripts (Arabic etc.) the first word in the array is the
+    rightmost on screen, so its minimum x exceeds the last word's minimum x.
+    """
+    if len(words) < 2:
+        return False
+    def min_x(w: dict) -> float:
+        pts = w.get("boundingPolygon") or []
+        return min((p["x"] for p in pts), default=0.0)
+    return min_x(words[0]) > min_x(words[-1])
+
+
+def _parse_response(data: dict) -> list[OcrToken]:
+    """Hybrid token strategy: per-word for LTR, per-line for RTL.
+
+    LTR (English, Latin): per-word tokens preserve the precise x-positions
+    the pipeline uses for column detection. Emitting one big line token would
+    merge name + kills + deaths into one blob the pipeline cannot split.
+
+    RTL (Arabic etc.): Azure's word array is in reading order (rightmost word
+    first), but the pipeline re-sorts tokens by x left-to-right, reversing the
+    name. Emit one line-level token so the pipeline sees a single correctly
+    ordered string with the name's bounding box.
     """
     tokens: list[OcrToken] = []
     read_result = data.get("readResult") or {}
     for block in read_result.get("blocks") or []:
         for line in block.get("lines") or []:
-            text: str = _correct_font((line.get("text") or "").strip())
-            polygon: list[dict] = line.get("boundingPolygon") or []
-            if not text or not polygon:
+            words: list[dict] = line.get("words") or []
+            if not words:
                 continue
-            words = line.get("words") or []
-            conf = min((float(w.get("confidence", 0.0)) for w in words), default=0.0)
-            xs = [p["x"] for p in polygon]
-            ys = [p["y"] for p in polygon]
-            tokens.append(OcrToken(
-                text=text,
-                conf=conf,
-                x0=float(min(xs)),
-                y0=float(min(ys)),
-                x1=float(max(xs)),
-                y1=float(max(ys)),
-            ))
+
+            if _is_rtl_line(words):
+                text = _correct_font((line.get("text") or "").strip())
+                polygon: list[dict] = line.get("boundingPolygon") or []
+                if not text or not polygon:
+                    continue
+                conf = min((float(w.get("confidence", 0.0)) for w in words), default=0.0)
+                xs = [p["x"] for p in polygon]
+                ys = [p["y"] for p in polygon]
+                tokens.append(OcrToken(
+                    text=text, conf=conf,
+                    x0=float(min(xs)), y0=float(min(ys)),
+                    x1=float(max(xs)), y1=float(max(ys)),
+                ))
+            else:
+                for word in words:
+                    text = _correct_font(word.get("text", "").strip())
+                    conf = float(word.get("confidence", 0.0))
+                    polygon = word.get("boundingPolygon") or []
+                    if not text or not polygon:
+                        continue
+                    xs = [p["x"] for p in polygon]
+                    ys = [p["y"] for p in polygon]
+                    tokens.append(OcrToken(
+                        text=text, conf=conf,
+                        x0=float(min(xs)), y0=float(min(ys)),
+                        x1=float(max(xs)), y1=float(max(ys)),
+                    ))
     return tokens
