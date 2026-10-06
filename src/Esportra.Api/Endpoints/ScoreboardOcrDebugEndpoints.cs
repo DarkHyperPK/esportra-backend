@@ -115,7 +115,7 @@ public static class ScoreboardOcrDebugEndpoints
         var puuid = await riotMatches.PuuidOfAsync(parts[0], parts[1], ct);
         if (puuid is null) return new RiotLookupOutcome(RiotLookupState.NotFound, null);
         var query = ScoreboardRiotMatcher.QueryFrom(result, DateTimeOffset.UtcNow, DebugWindow);
-        return await ScoreboardRiotMatcher.FindAsync(riotMatches, [puuid], query, TimeSpan.FromSeconds(15), ct);
+        return await ScoreboardRiotMatcher.FindAsync(riotMatches, [puuid], query, TimeSpan.FromSeconds(15), ct, customOnly: false);
     }
 
     /// <summary>Newline-separated names → roster players with synthetic ids (team1-0, team1-1, …).</summary>

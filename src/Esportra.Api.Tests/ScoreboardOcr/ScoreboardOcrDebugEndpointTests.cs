@@ -50,6 +50,12 @@ public sealed class ScoreboardOcrDebugEndpointTests
             return Task.FromResult(new RiotMatchLookupResult(RiotLookupStatus.Found, match));
         }
 
+        public Task<RiotMatchLookupResult> FindAnyQueueAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+        {
+            Queries.Add(query);
+            return Task.FromResult(new RiotMatchLookupResult(RiotLookupStatus.Found, match));
+        }
+
         public Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct) =>
             Task.FromResult(new RiotMatchLookupResult(RiotLookupStatus.NotFound));
 
