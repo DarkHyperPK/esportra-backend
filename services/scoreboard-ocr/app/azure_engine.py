@@ -70,24 +70,31 @@ class AzureOcrEngine:
 
 
 def _parse_response(data: dict) -> list[OcrToken]:
+    """Emit one token per line (not per word).
+
+    Azure's line.text is already in reading order (right-to-left for Arabic),
+    and the pipeline expects line-level tokens matching PaddleOCR's output shape.
+    Per-word tokens would cause the pipeline to re-sort by x-position and
+    reverse Arabic word order.
+    """
     tokens: list[OcrToken] = []
     read_result = data.get("readResult") or {}
     for block in read_result.get("blocks") or []:
         for line in block.get("lines") or []:
-            for word in line.get("words") or []:
-                text: str = word.get("text", "").strip()
-                conf: float = float(word.get("confidence", 0.0))
-                polygon: list[dict] = word.get("boundingPolygon") or []
-                if not text or not polygon:
-                    continue
-                xs = [p["x"] for p in polygon]
-                ys = [p["y"] for p in polygon]
-                tokens.append(OcrToken(
-                    text=text,
-                    conf=conf,
-                    x0=float(min(xs)),
-                    y0=float(min(ys)),
-                    x1=float(max(xs)),
-                    y1=float(max(ys)),
-                ))
+            text: str = (line.get("text") or "").strip()
+            polygon: list[dict] = line.get("boundingPolygon") or []
+            if not text or not polygon:
+                continue
+            words = line.get("words") or []
+            conf = min((float(w.get("confidence", 0.0)) for w in words), default=0.0)
+            xs = [p["x"] for p in polygon]
+            ys = [p["y"] for p in polygon]
+            tokens.append(OcrToken(
+                text=text,
+                conf=conf,
+                x0=float(min(xs)),
+                y0=float(min(ys)),
+                x1=float(max(xs)),
+                y1=float(max(ys)),
+            ))
     return tokens
