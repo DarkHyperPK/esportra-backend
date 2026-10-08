@@ -52,8 +52,13 @@ ALTER TABLE public.venue_loyalty_config DROP CONSTRAINT IF EXISTS idx_venue_loya
 DROP INDEX IF EXISTS idx_venue_loyalty_config_venue;
 
 -- broadcast_licenses (may not exist on all envs)
-ALTER TABLE public.broadcast_licenses DROP CONSTRAINT IF EXISTS idx_broadcast_licenses_license_key;
-DROP INDEX IF EXISTS idx_broadcast_licenses_license_key;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'broadcast_licenses') THEN
+    ALTER TABLE public.broadcast_licenses DROP CONSTRAINT IF EXISTS idx_broadcast_licenses_license_key;
+    DROP INDEX IF EXISTS idx_broadcast_licenses_license_key;
+  END IF;
+END $$;
 
 -- public_tool_brackets (partial plain covered by full unique)
 ALTER TABLE public.public_tool_brackets DROP CONSTRAINT IF EXISTS idx_public_tool_brackets_share_token;
