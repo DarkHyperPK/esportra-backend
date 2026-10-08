@@ -142,6 +142,9 @@ async def valorant_scoreboard(
         else state.engine
     )
 
+    engine_name = getattr(active_engine, "version", type(active_engine).__name__)
+    log.info("scoreboard-ocr: using engine=%s (requested=%s, azure_configured=%s)", engine_name, engine, state.azure_engine is not None)
+
     async with state.gate:
         try:
             return await asyncio.wait_for(

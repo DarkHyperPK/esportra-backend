@@ -43,8 +43,8 @@ class AzureOcrEngine:
     def read(self, image_bgr: np.ndarray) -> list[OcrToken]:
         ok, buf = cv2.imencode(".jpg", image_bgr, _JPEG_QUALITY)
         if not ok:
-            log.warning("Azure OCR: failed to encode image as JPEG")
-            return []
+            log.warning("Azure OCR: failed to encode image as JPEG — falling back to PaddleOCR")
+            return self._fallback.read(image_bgr)
         try:
             response = httpx.post(
                 self._url,
@@ -57,13 +57,15 @@ class AzureOcrEngine:
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            log.warning("Azure OCR: HTTP %s — %s", exc.response.status_code, exc.response.text[:200])
-            raise
+            log.warning("Azure OCR: HTTP %s — %s — falling back to PaddleOCR", exc.response.status_code, exc.response.text[:200])
+            return self._fallback.read(image_bgr)
         except httpx.RequestError as exc:
-            log.warning("Azure OCR: request failed — %s", exc)
-            raise
+            log.warning("Azure OCR: request failed (%s) — falling back to PaddleOCR", exc)
+            return self._fallback.read(image_bgr)
 
-        return _parse_response(response.json())
+        tokens = _parse_response(response.json())
+        log.info("Azure OCR: returned %d tokens", len(tokens))
+        return tokens
 
     def recognize(self, crop_bgr: np.ndarray, script: str | None = None) -> tuple[str, float]:
         return self._fallback.recognize(crop_bgr, script)
