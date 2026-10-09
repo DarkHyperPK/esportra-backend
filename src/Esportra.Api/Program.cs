@@ -424,6 +424,10 @@ builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
 
+// ── Desktop broadcast (PROJ-043) ──────────────────────────────────────────────
+builder.Services.AddScoped<Esportra.Infrastructure.Integrations.RiotMatchValidationService>();
+builder.Services.AddScoped<Esportra.Api.Jobs.RiotMatchValidationJob>();
+
 // ── Discord bot DM notifications ──────────────────────────────────────────────
 builder.Services.AddHttpClient("Discord");
 builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
@@ -651,6 +655,7 @@ app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 app.MapFeatureFlagEndpoints();
 app.MapBroadcastEndpoints();
+app.MapDesktopBroadcastEndpoints();
 app.MapGhostModeEndpoints();
 app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();

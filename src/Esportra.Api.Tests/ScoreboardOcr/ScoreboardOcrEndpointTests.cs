@@ -102,6 +102,12 @@ public sealed class ScoreboardOcrEndpointTests
             return Task.FromResult(result);
         }
 
+        public Task<RiotMatchLookupResult> FindAnyQueueAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+        {
+            Calls.Add((puuids, query));
+            return Task.FromResult(result);
+        }
+
         public Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct)
         {
             ById.Add(matchId);

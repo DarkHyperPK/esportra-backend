@@ -35,6 +35,9 @@ public interface IRiotMatchLookup
     /// <summary>The custom game on this map with this score, from the first of these players' match histories that has it.</summary>
     Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct);
 
+    /// <summary>A game in any queue on this map with this score — for debug/testing where the screenshot may be from ranked or unrated.</summary>
+    Task<RiotMatchLookupResult> FindAnyQueueAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct);
+
     /// <summary>One match by id, read from the shard of a player who played it.</summary>
     Task<RiotMatchLookupResult> GetMatchAsync(string matchId, string puuid, CancellationToken ct);
 
@@ -50,7 +53,13 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
 {
     private const int MaxDetailsPerPlayer = 8;
 
-    public async Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+    public Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+        => FindInternalAsync(puuids, query, customOnly: true, ct);
+
+    public Task<RiotMatchLookupResult> FindAnyQueueAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
+        => FindInternalAsync(puuids, query, customOnly: false, ct);
+
+    private async Task<RiotMatchLookupResult> FindInternalAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, bool customOnly, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(config["Riot:ApiKey"])) return new RiotMatchLookupResult(RiotLookupStatus.Unavailable);
         var sawRetry = false;
@@ -62,7 +71,7 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
             if (status is 429 or >= 500) { sawRetry = true; continue; }
             if (status != 200) continue;
 
-            foreach (var matchId in CandidateIds(body, query).Take(MaxDetailsPerPlayer))
+            foreach (var matchId in CandidateIds(body, query, customOnly).Take(MaxDetailsPerPlayer))
             {
                 var (detailStatus, detail) = await riot.ProxyAsync(shard, $"/val/match/v1/matches/{Uri.EscapeDataString(matchId)}", ct);
                 if (detailStatus is 429 or >= 500) { sawRetry = true; break; }
@@ -71,7 +80,7 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
                 {
                     using var doc = JsonDocument.Parse(detail);
                     var match = ParseMatch(doc.RootElement);
-                    if (Fits(match, query)) return new RiotMatchLookupResult(RiotLookupStatus.Found, match);
+                    if (Fits(match, query, customOnly)) return new RiotMatchLookupResult(RiotLookupStatus.Found, match);
                 }
                 catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
                 {
@@ -113,8 +122,8 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
         return doc.RootElement.TryGetProperty("puuid", out var puuid) ? puuid.GetString() : null;
     }
 
-    /// <summary>Custom games in the matchlist that started inside the window, closest first.</summary>
-    public static IEnumerable<string> CandidateIds(string matchlistJson, RiotMatchQuery query)
+    /// <summary>Matchlist entries inside the window, closest first. When <paramref name="customOnly"/> is true, restricts to custom games.</summary>
+    public static IEnumerable<string> CandidateIds(string matchlistJson, RiotMatchQuery query, bool customOnly = true)
     {
         using var doc = JsonDocument.Parse(matchlistJson);
         if (!doc.RootElement.TryGetProperty("history", out var history) || history.ValueKind != JsonValueKind.Array) return [];
@@ -123,15 +132,15 @@ public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConf
                 Id: e.TryGetProperty("matchId", out var id) ? id.GetString() : null,
                 Queue: e.TryGetProperty("queueId", out var q) ? q.GetString() : null,
                 Start: e.TryGetProperty("gameStartTimeMillis", out var s) && s.TryGetInt64(out var ms) ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : (DateTimeOffset?)null))
-            .Where(e => e.Id is not null && (e.Queue is null || string.Equals(e.Queue, "custom", StringComparison.OrdinalIgnoreCase)))
+            .Where(e => e.Id is not null && (!customOnly || e.Queue is null || string.Equals(e.Queue, "custom", StringComparison.OrdinalIgnoreCase)))
             .Where(e => e.Start is null || (e.Start.Value - query.Around).Duration() <= query.Window)
             .OrderBy(e => e.Start is null ? TimeSpan.MaxValue : (e.Start.Value - query.Around).Duration())
             .Select(e => e.Id!)
             .ToList();
     }
 
-    public static bool Fits(RiotMatch match, RiotMatchQuery query) =>
-        string.Equals(match.QueueId, "custom", StringComparison.OrdinalIgnoreCase)
+    public static bool Fits(RiotMatch match, RiotMatchQuery query, bool customOnly = true) =>
+        (!customOnly || string.Equals(match.QueueId, "custom", StringComparison.OrdinalIgnoreCase))
         && (query.Map is null || string.Equals(match.Map, query.Map, StringComparison.OrdinalIgnoreCase))
         && ((match.BlueRounds == query.ScoreA && match.RedRounds == query.ScoreB) || (match.BlueRounds == query.ScoreB && match.RedRounds == query.ScoreA))
         && (match.StartedAt - query.Around).Duration() <= query.Window;

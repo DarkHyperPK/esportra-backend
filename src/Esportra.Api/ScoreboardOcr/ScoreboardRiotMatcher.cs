@@ -36,16 +36,20 @@ public static class ScoreboardRiotMatcher
         return new RiotMatchQuery(map, ally, enemy, playedOn, window);
     }
 
-    /// <summary>Bounded: Riot being slow or down never holds up an upload.</summary>
+    /// <summary>Bounded: Riot being slow or down never holds up an upload.
+    /// Pass <paramref name="customOnly"/>=false for debug/test paths where the screenshot may be from ranked or unrated.</summary>
     public static async Task<RiotLookupOutcome> FindAsync(
-        IRiotMatchLookup lookup, IReadOnlyList<string> puuids, RiotMatchQuery? query, TimeSpan budget, CancellationToken ct)
+        IRiotMatchLookup lookup, IReadOnlyList<string> puuids, RiotMatchQuery? query, TimeSpan budget, CancellationToken ct,
+        bool customOnly = true)
     {
         if (query is null || puuids.Count == 0) return new RiotLookupOutcome(RiotLookupState.Skipped, null);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(budget);
         try
         {
-            var found = await lookup.FindCustomGameAsync(puuids, query, timeout.Token);
+            var found = customOnly
+                ? await lookup.FindCustomGameAsync(puuids, query, timeout.Token)
+                : await lookup.FindAnyQueueAsync(puuids, query, timeout.Token);
             return found.Status switch
             {
                 RiotLookupStatus.Found when found.Match is not null => new RiotLookupOutcome(RiotLookupState.Found, found.Match),

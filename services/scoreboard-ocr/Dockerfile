@@ -12,8 +12,10 @@ RUN pip install -r requirements.txt \
     && pip install --no-deps -r requirements-ocr.txt
 
 COPY app ./app
-# Arabic and Korean name recognisers (PaddleOCR PP-OCRv5, checksum-verified). Never fails the build:
-# the service retries a failed download at start-up, and /health lists installed and missing scripts.
+# Arabic and Korean name recognisers (PaddleOCR PP-OCRv5). Never fails the build:
+# download_models tries modelscope.cn first, then falls back to HuggingFace (RapidAI/PP-OCRv5_rec)
+# which is reachable from international build runners. If both sources are unavailable the service
+# still starts, /health lists the missing scripts, and the startup retry (5s/1m/5m/6h) keeps trying.
 RUN python -m app.download_models
 
 # The models directory stays writable so the service can retry a failed download at start-up.

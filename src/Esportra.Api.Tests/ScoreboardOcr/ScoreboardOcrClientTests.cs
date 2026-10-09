@@ -48,7 +48,7 @@ public sealed class ScoreboardOcrClientTests
         var (client, handler) = Create(HttpStatusCode.OK, """{"players":[],"engineVersion":"x"}""");
         var rosters = new OcrRosters([new OcrRosterPlayer("u1", [new OcrRosterName("Kooltkk", OcrNameSource.RiotVerified)])], []);
 
-        var result = await client.ParseValorantAsync([1, 2, 3], "screenshot.png", "image/png", rosters, CancellationToken.None);
+        var result = await client.ParseValorantAsync([1, 2, 3], "screenshot.png", "image/png", rosters, "paddle", CancellationToken.None);
 
         result.Status.Should().Be(OcrCallStatus.Success);
         result.ResultJson.Should().Contain("players");
@@ -62,7 +62,7 @@ public sealed class ScoreboardOcrClientTests
     {
         var (client, _) = Create(HttpStatusCode.UnprocessableEntity, """{"detail":"Could not find the scoreboard columns."}""");
 
-        var result = await client.ParseValorantAsync([1], "s.png", "image/png", NoRosters, CancellationToken.None);
+        var result = await client.ParseValorantAsync([1], "s.png", "image/png", NoRosters, "paddle", CancellationToken.None);
 
         result.Status.Should().Be(OcrCallStatus.Unreadable);
         result.UserMessage.Should().Be("Could not find the scoreboard columns.");
@@ -77,7 +77,7 @@ public sealed class ScoreboardOcrClientTests
     {
         var (client, _) = Create(status, body);
 
-        var result = await client.ParseValorantAsync([1], "s.png", "image/png", NoRosters, CancellationToken.None);
+        var result = await client.ParseValorantAsync([1], "s.png", "image/png", NoRosters, "paddle", CancellationToken.None);
 
         result.Status.Should().Be(OcrCallStatus.Unavailable);
         result.ResultJson.Should().BeNull();
@@ -94,7 +94,7 @@ public sealed class ScoreboardOcrClientTests
         });
         var client = Build(handler, timeoutSeconds: 1);
 
-        var result = await client.ParseValorantAsync([1], "s.png", "image/png", NoRosters, CancellationToken.None);
+        var result = await client.ParseValorantAsync([1], "s.png", "image/png", NoRosters, "paddle", CancellationToken.None);
 
         result.Status.Should().Be(OcrCallStatus.Unavailable);
     }

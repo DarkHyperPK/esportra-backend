@@ -23,22 +23,17 @@ public sealed class CheckinReminderJob(
 
         using var conn = db.CreateConnection();
 
-        var matchRow = await conn.QuerySingleOrDefaultAsync<(string Status, DateTime? CheckInDeadline)>(
-            """
-            SELECT status AS Status, check_in_deadline AS CheckInDeadline
-            FROM brkt_matches WHERE id = @matchId
-            """,
+        var matchStatus = await conn.ExecuteScalarAsync<string?>(
+            "SELECT status FROM brkt_matches WHERE id = @matchId",
             new { matchId });
 
-        if (matchRow == default || matchRow.Status != "pending")
-            return;
-
-        if (matchRow.CheckInDeadline.HasValue && matchRow.CheckInDeadline.Value.ToUniversalTime() < DateTime.UtcNow)
+        if (matchStatus == null || matchStatus != "pending")
             return;
 
         var tournInfo = await conn.QuerySingleOrDefaultAsync<CheckinTournamentInfo>(
             """
-            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName
+            SELECT t.game AS Game, t.id AS TournamentId, t.name AS TournamentName,
+                   t.check_in_deadline AS CheckInDeadline
             FROM brkt_matches bm
             JOIN brkt_rounds r ON r.id = bm.round_id
             JOIN stages s ON s.id = r.stage_id
@@ -46,6 +41,9 @@ public sealed class CheckinReminderJob(
             WHERE bm.id = @matchId
             """,
             new { matchId });
+
+        if (tournInfo?.CheckInDeadline.HasValue == true && tournInfo.CheckInDeadline.Value.ToUniversalTime() < DateTime.UtcNow)
+            return;
         var gameSlug = tournInfo?.Game;
         Guid? tournamentId = tournInfo?.TournamentId is Guid tid && tid != Guid.Empty ? tid : null;
         var tournamentName = tournInfo?.TournamentName ?? "";

@@ -84,7 +84,11 @@ internal sealed class FakeDbCommand(Queue<object?[][]> queue, Queue<int> nonQuer
 
     public override void Cancel() { }
     public override int ExecuteNonQuery() => nonQueryQueue.Count > 0 ? nonQueryQueue.Dequeue() : 0;
-    public override object? ExecuteScalar() => null;
+    public override object? ExecuteScalar()
+    {
+        var rows = queue.Count > 0 ? queue.Dequeue() : [];
+        return rows.Length > 0 && rows[0].Length > 0 ? rows[0][0] : null;
+    }
     public override void Prepare() { }
 }
 

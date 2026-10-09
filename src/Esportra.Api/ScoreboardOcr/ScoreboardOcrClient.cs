@@ -52,7 +52,7 @@ public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrO
     public bool IsConfigured => options.Value.IsConfigured;
 
     public async Task<OcrCallResult> ParseValorantAsync(
-        byte[] image, string fileName, string contentType, OcrRosters rosters, CancellationToken ct)
+        byte[] image, string fileName, string contentType, OcrRosters rosters, string engine, CancellationToken ct)
     {
         var settings = options.Value;
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.BaseUrl), "/v1/valorant/scoreboard"));
@@ -63,6 +63,7 @@ public sealed class ScoreboardOcrClient(HttpClient http, IOptions<ScoreboardOcrO
         {
             { imageContent, "image", fileName },
             { new StringContent(JsonSerializer.Serialize(rosters, CamelCase)), "rosters" },
+            { new StringContent(engine), "engine" },
         };
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);

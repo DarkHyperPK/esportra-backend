@@ -51,27 +51,60 @@ def _read(engine: OcrEngine, crop: np.ndarray, script: str | None) -> tuple[str,
 
 
 def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | None]:
-    """Most confident read across the default and the installed script recognisers."""
-    best = ("", 0.0, None)
+    """Most confident read across the default and the installed script recognisers.
+
+    When two reads cover complementary scripts (e.g. Arabic chars + Latin digits),
+    both are combined rather than one being discarded.
+    """
+    reads: list[tuple[str, float, str | None]] = []
     for script in (None, *getattr(engine, "scripts", ())):
         try:
             text, conf = _read(engine, crop, script)
         except Exception as exc:  # noqa: BLE001 - an optional recogniser failing must not fail the parse
             log.warning("OCR %s recogniser failed on a name: %s", script or "default", exc)
             continue
-        if any(ch.isalnum() for ch in text) and conf > best[1]:
-            best = (text, conf, script)
-    return best
+        if any(ch.isalnum() for ch in text):
+            reads.append((text, conf, script))
+
+    if not reads:
+        return ("", 0.0, None)
+
+    # Combine complementary reads when one recogniser returns only script chars and
+    # another returns only ASCII chars (e.g. Arabic "عبس" + default "404" → "عبس404").
+    non_ascii = [(t, c, s) for t, c, s in reads if any(ord(ch) > 127 for ch in t) and c >= ACCEPT_FROM]
+    ascii_only = [(t, c, s) for t, c, s in reads if all(ord(ch) <= 127 for ch in t) and c >= ACCEPT_FROM]
+    if non_ascii and ascii_only:
+        best_na = max(non_ascii, key=lambda r: r[1])
+        best_a = max(ascii_only, key=lambda r: r[1])
+        na_text = best_na[0]
+        # Script read already captured both scripts (e.g. Arabic recogniser returned عبس404) — prefer it.
+        if any(ch.isalnum() and ord(ch) <= 127 for ch in na_text):
+            return best_na
+        # Script read is purely non-ASCII alphanumeric — combine with the ASCII-only portion.
+        if all(ord(ch) > 127 or not ch.isalnum() for ch in na_text):
+            return (na_text + best_a[0], min(best_na[1], best_a[1]), best_na[2])
+
+    return max(reads, key=lambda r: r[1])
+
+
+def _plausible_name(name: str) -> bool:
+    """True when the name looks like an actual player name rather than a badge glyph or single character."""
+    return sum(1 for ch in name if ch.isalnum()) > 1
 
 
 def recover_names(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns: list[Column], pitch: float) -> None:
-    starts = [r.name_x0 for r in rows if r.name]
-    if not starts or pitch <= 0:
+    if pitch <= 0:
         return
-    column_x0 = median(starts)
+    starts = [r.name_x0 for r in rows if r.name]
+    # When no names were detected by the initial pass (e.g. all non-Latin script scoreboard), crop
+    # from the left image edge. Rank-badge glyphs (x ~ 50 px) found by the initial pass also give a
+    # reasonable anchor — the full name area starts just right of them.
+    column_x0 = median(starts) if starts else 0.0
     right = min(stat_boundary(columns), columns[0].x0)
     for row in rows:
-        if row.name and row.name_conf >= REREAD_BELOW:
+        # Skip only rows with a confident, plausible name. Single-char badge glyphs ("口", "4") must
+        # be retried so the Arabic/Korean recogniser can overwrite them.
+        if _plausible_name(row.name) and row.name_conf >= REREAD_BELOW:
             continue
         x0, y0, x1, y1 = _name_box(row, column_x0, right, pitch, image.shape[:2])
         if x1 - x0 < 8 or y1 - y0 < 6:
