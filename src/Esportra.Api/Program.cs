@@ -656,6 +656,7 @@ app.MapAdminEndpoints();
 app.MapFeatureFlagEndpoints();
 app.MapBroadcastEndpoints();
 app.MapDesktopBroadcastEndpoints();
+app.MapBroadcastNodeEndpoints();
 app.MapGhostModeEndpoints();
 app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();
@@ -730,6 +731,7 @@ app.MapHub<LiveHub>("/hubs/live").RequireCors("EsportraPolicy");
 app.MapHub<VenueSyncHub>("/hubs/venue-sync").RequireCors("EsportraPolicy");
 app.MapHub<BRHub>("/hubs/br").RequireCors("EsportraPolicy");
 app.MapHub<AdminHub>("/hubs/admin").RequireCors("EsportraPolicy");
+app.MapHub<BroadcastHub>("/hubs/broadcast").RequireCors("EsportraPolicy");
 
 Console.WriteLine("[STARTUP] Pipeline configured. Starting app...");
 Console.Out.Flush();
