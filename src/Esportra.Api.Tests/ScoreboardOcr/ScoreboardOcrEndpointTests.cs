@@ -127,10 +127,13 @@ public sealed class ScoreboardOcrEndpointTests
     private WebApplicationFactory<Program> Configured(StubHandler ocr, StubHandler storage, RecordingRiotCheck? riotCheck = null, IRiotMatchLookup? riot = null) =>
         _factory.WithWebHostBuilder(builder =>
         {
-            builder.UseSetting("ScoreboardOcr:BaseUrl", "http://ocr.test:8095");
-            builder.UseSetting("ScoreboardOcr:ServiceToken", "test-token");
             builder.ConfigureTestServices(services =>
             {
+                services.Configure<ScoreboardOcrOptions>(opts =>
+                {
+                    opts.BaseUrl = "http://ocr.test:8095";
+                    opts.ServiceToken = "test-token";
+                });
                 services.AddHttpClient<ScoreboardOcrClient>().ConfigurePrimaryHttpMessageHandler(() => ocr);
                 services.AddHttpClient(Options.DefaultName).ConfigurePrimaryHttpMessageHandler(() => storage);
                 services.AddScoped<IRiotAccountLookup>(_ => new NoRiot());
