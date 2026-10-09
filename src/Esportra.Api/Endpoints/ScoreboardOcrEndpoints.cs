@@ -36,6 +36,24 @@ public static class ScoreboardOcrEndpoints
             .RequireAuthorization("Authenticated")
             .DisableAntiforgery()
             .WithMetadata(new RateLimitPolicyMetadata("screenshotOcr"));
+
+        app.MapGet("/api/scoreboard-ocr/enabled", EnabledAsync)
+            .RequireAuthorization("Authenticated");
+    }
+
+    private static async Task<IResult> EnabledAsync(HybridCache cache, IDbConnectionFactory db, CancellationToken ct)
+    {
+        var val = await cache.GetOrCreateAsync(
+            "ocr:kill-switch",
+            async _ =>
+            {
+                using var conn = db.CreateConnection();
+                return await conn.ExecuteScalarAsync<string>(
+                    "SELECT value FROM system_settings WHERE key = 'scoreboard_ocr_enabled'") ?? "false";
+            },
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+            cancellationToken: ct);
+        return Results.Ok(new { enabled = val == "true" });
     }
 
     private static async Task<IResult> ParseScreenshotAsync(
@@ -52,6 +70,19 @@ public static class ScoreboardOcrEndpoints
         if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
         if (!ocr.IsConfigured)
             return Results.Json(new { error = "Screenshot reading is not available right now." }, statusCode: 503);
+
+        var ocrEnabled = await cache.GetOrCreateAsync(
+            "ocr:kill-switch",
+            async _ =>
+            {
+                using var c = db.CreateConnection();
+                return await c.ExecuteScalarAsync<string>(
+                    "SELECT value FROM system_settings WHERE key = 'scoreboard_ocr_enabled'") ?? "false";
+            },
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+            cancellationToken: ct);
+        if (ocrEnabled != "true")
+            return Results.Json(new { error = "Screenshot reading is not available right now.", ocrEnabled = false }, statusCode: 503);
 
         var (request, formError) = await ReadRequestAsync(ctx, ct);
         if (request is null) return Results.BadRequest(new { error = formError });
