@@ -80,9 +80,14 @@ def best_read(engine: OcrEngine, crop: np.ndarray) -> tuple[str, float, str | No
         # Script read already captured both scripts (e.g. Arabic recogniser returned عبس404) — prefer it.
         if any(ch.isalnum() and ord(ch) <= 127 for ch in na_text):
             return best_na
-        # Script read is purely non-ASCII alphanumeric — combine with the ASCII-only portion.
+        # Script read is purely non-ASCII alphanumeric — combine only when the ASCII-only portion is
+        # entirely digits (a numeric Riot tag suffix like "404"). If it contains letters, the default
+        # model misread Arabic as Latin; trust the script read alone rather than producing a franken-name.
         if all(ord(ch) > 127 or not ch.isalnum() for ch in na_text):
-            return (na_text + best_a[0], min(best_na[1], best_a[1]), best_na[2])
+            ascii_alnum = [ch for ch in best_a[0] if ch.isalnum()]
+            if ascii_alnum and all(ch.isdigit() for ch in ascii_alnum):
+                return (na_text + best_a[0], min(best_na[1], best_a[1]), best_na[2])
+            return best_na
 
     return max(reads, key=lambda r: r[1])
 
@@ -102,15 +107,26 @@ def recover_names(image: np.ndarray, engine: OcrEngine, rows: list[Row], columns
     column_x0 = median(starts) if starts else 0.0
     right = min(stat_boundary(columns), columns[0].x0)
     for row in rows:
-        # Skip only rows with a confident, plausible name. Single-char badge glyphs ("口", "4") must
-        # be retried so the Arabic/Korean recogniser can overwrite them.
+        # Skip rows with a confident, plausible name — unless script recognisers are available and
+        # haven't been tried on this row yet. The default model can return plausible-looking ASCII
+        # garbage for Arabic/Korean text at high confidence, so those rows must still be re-read.
         if _plausible_name(row.name) and row.name_conf >= REREAD_BELOW:
-            continue
+            if not getattr(engine, "scripts", ()) or row.name_script is not None:
+                continue
         x0, y0, x1, y1 = _name_box(row, column_x0, right, pitch, image.shape[:2])
         if x1 - x0 < 8 or y1 - y0 < 6:
             continue
         text, conf, script = best_read(engine, image[y0:y1, x0:x1])
-        if conf >= ACCEPT_FROM and conf > row.name_conf:
+        # Accept a script-specific result even when it's marginally less confident than the initial
+        # default read, provided it actually contains non-ASCII alphanumeric content. The default
+        # model is overconfident on Arabic/Korean text it cannot correctly read.
+        is_script_upgrade = (
+            conf >= ACCEPT_FROM
+            and script is not None
+            and row.name_script is None
+            and any(ord(ch) > 127 and ch.isalnum() for ch in text)
+        )
+        if conf >= ACCEPT_FROM and (conf > row.name_conf or is_script_upgrade):
             row.name = text.rsplit("|", 1)[-1].strip() if script is None else text
             row.name_conf = conf
             row.name_script = script

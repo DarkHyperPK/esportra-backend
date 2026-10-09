@@ -5,9 +5,10 @@ from app.models import OcrField, PlayerRow, RosterMatch, RosterPlayer, Rosters
 from app.valorant.checks import check_kills, check_score
 from app.valorant.columns import find_header, match_alias
 from app.valorant.header import find_banner, is_valid_final, read_score
+from app.valorant.name_reread import best_read, recover_names
 from app.valorant.names import match_names, name_variants, resolve_ally_team
 from app.valorant.sides import classify_band, fill_last_unknown
-from app.valorant.rows import build_rows
+from app.valorant.rows import Row, build_rows
 from app.valorant.text import normalize_name, parse_number, split_kda
 
 
@@ -69,7 +70,95 @@ class FakeEngine:
         return (self.reads.pop(0) if self.reads else "", 0.9)
 
 
+class ScriptFakeEngine:
+    """Engine with configurable per-script recognize() results for testing name re-reading."""
+    version = "fake-script"
+
+    def __init__(self, by_script: dict[str | None, tuple[str, float]]) -> None:
+        self._by_script = by_script
+
+    @property
+    def scripts(self) -> tuple[str, ...]:
+        return tuple(k for k in self._by_script if k is not None)
+
+    def read(self, image):
+        return []
+
+    def recognize(self, crop, script=None):
+        return self._by_script.get(script, ("", 0.0))
+
+
 BLANK = np.zeros((200, 600, 3), dtype=np.uint8)
+_NAME_CROP = np.zeros((20, 80, 3), dtype=np.uint8)
+
+
+def test_best_read_prefers_arabic_over_latin_garbage():
+    """Default model returns ASCII garbage at high conf; Arabic model returns correct text at lower conf.
+    best_read must return the Arabic result, not combine them or pick the higher-conf ASCII garbage."""
+    engine = ScriptFakeEngine({None: ("GarbledLatin", 0.85), "arabic": ("عبدالله", 0.72)})
+    text, conf, script = best_read(engine, _NAME_CROP)
+    assert script == "arabic"
+    assert "عبدالله" in text
+    assert "GarbledLatin" not in text
+
+
+def test_best_read_combines_arabic_and_numeric_tag():
+    """Arabic model returns Arabic chars only; default returns digits only.
+    They should combine: عبس + 404 → عبس404."""
+    engine = ScriptFakeEngine({None: ("404", 0.80), "arabic": ("عبس", 0.75)})
+    text, conf, script = best_read(engine, _NAME_CROP)
+    assert "عبس" in text and "404" in text
+    assert script == "arabic"
+
+
+def test_best_read_does_not_combine_arabic_and_latin_letters():
+    """Arabic model returns Arabic chars; default model returns Latin letters (not digits).
+    Must NOT combine — Latin letters here are garbage from the default model misreading Arabic."""
+    engine = ScriptFakeEngine({None: ("RandomLetters", 0.80), "arabic": ("عبس", 0.75)})
+    text, conf, script = best_read(engine, _NAME_CROP)
+    assert text == "عبس"
+    assert script == "arabic"
+
+
+def _columns_for_reread():
+    """Minimal valid column set for recover_names tests (ACS, K, D, A at x=400-700)."""
+    header = [tok("ACS", 400, 100), tok("K", 500, 100), tok("D", 600, 100), tok("A", 700, 100)]
+    return find_header(header)
+
+
+def test_recover_names_reruns_on_high_conf_default_when_scripts_available():
+    """A row with a high-confidence ASCII name from the default model must still be re-read
+    when script recognisers are present (the default model mis-reads Arabic as ASCII)."""
+    engine = ScriptFakeEngine({None: ("AsciiGarbage", 0.90), "arabic": ("عبدالله", 0.70)})
+    row = Row(tokens=[tok("AsciiGarbage", 150, 160, w=120)])
+    row.name = "AsciiGarbage"
+    row.name_conf = 0.90
+    row.name_script = None
+    columns = _columns_for_reread()
+    image = np.zeros((300, 800, 3), dtype=np.uint8)
+    recover_names(image, engine, [row], columns, pitch=40.0)
+    assert row.name == "عبدالله"
+    assert row.name_script == "arabic"
+
+
+def test_recover_names_skips_row_already_confirmed_by_script():
+    """A row already confirmed by a script recogniser must not be re-read again."""
+    call_count = {"n": 0}
+
+    class CountingEngine(ScriptFakeEngine):
+        def recognize(self, crop, script=None):
+            call_count["n"] += 1
+            return super().recognize(crop, script)
+
+    engine = CountingEngine({None: ("SomeName", 0.90), "arabic": ("عبس", 0.80)})
+    row = Row(tokens=[tok("عبس", 150, 160, w=80)])
+    row.name = "عبس"
+    row.name_conf = 0.80
+    row.name_script = "arabic"
+    columns = _columns_for_reread()
+    image = np.zeros((300, 800, 3), dtype=np.uint8)
+    recover_names(image, engine, [row], columns, pitch=40.0)
+    assert call_count["n"] == 0  # already script-confirmed — no re-read
 
 
 def test_read_score_uses_banner_line_and_ignores_duration():
