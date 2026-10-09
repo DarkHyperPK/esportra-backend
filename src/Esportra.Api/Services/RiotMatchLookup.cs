@@ -51,7 +51,7 @@ public interface IRiotMatchLookup
 /// </summary>
 public sealed class RiotMatchLookup(RiotApiClient riot, HybridCache cache, IConfiguration config, ILogger<RiotMatchLookup> logger) : IRiotMatchLookup
 {
-    private const int MaxDetailsPerPlayer = 8;
+    private const int MaxDetailsPerPlayer = 100;
 
     public Task<RiotMatchLookupResult> FindCustomGameAsync(IReadOnlyList<string> puuids, RiotMatchQuery query, CancellationToken ct)
         => FindInternalAsync(puuids, query, customOnly: true, ct);

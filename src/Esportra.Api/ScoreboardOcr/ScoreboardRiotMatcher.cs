@@ -21,7 +21,7 @@ public sealed record RiotLookupOutcome(string Status, RiotMatch? Match);
 /// </summary>
 public static class ScoreboardRiotMatcher
 {
-    public static readonly TimeSpan MatchWindow = TimeSpan.FromDays(2);
+    public static readonly TimeSpan MatchWindow = TimeSpan.FromDays(14);
 
     /// <summary>Map, score and date from the OCR read; null when the score couldn't be read.</summary>
     public static RiotMatchQuery? QueryFrom(JsonElement result, DateTimeOffset fallback, TimeSpan window)
