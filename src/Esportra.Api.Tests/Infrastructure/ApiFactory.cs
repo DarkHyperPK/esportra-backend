@@ -41,6 +41,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         await _db.StartAsync();
         await ApplyBootstrapAsync();
         RunMigrations();
+        await EnableOcrForTestsAsync();
     }
 
     async Task IAsyncLifetime.DisposeAsync()
@@ -152,6 +153,16 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         var runner = new MigrationRunner(ConnectionString, NullLogger<MigrationRunner>.Instance);
         if (!runner.Run())
             throw new InvalidOperationException("Test database migration failed.");
+    }
+
+    private async Task EnableOcrForTestsAsync()
+    {
+        await using var conn = new NpgsqlConnection(ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "UPDATE system_settings SET value = 'true' WHERE key = 'scoreboard_ocr_enabled'",
+            conn);
+        await cmd.ExecuteNonQueryAsync();
     }
 
     private static string ResolveRepoPath(string relativePath)
