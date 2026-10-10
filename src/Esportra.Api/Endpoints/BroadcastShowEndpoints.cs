@@ -257,7 +257,7 @@ public static class BroadcastShowEndpoints
             ShowId: showId.ToString(),
             Title: show.Title,
             Status: show.Status,
-            Matches: matches.Select(m => new ShowMatchSlot(m.MatchId.ToString(), m.MatchCode, m.DisplayOrder, m.Status)).ToArray(),
+            Matches: matches.Select(m => new ShowMatchSlot(m.MatchId.ToString(), m.MatchCode ?? "MAIN", m.DisplayOrder, m.Status)).ToArray(),
             Casters: talent.Select(t => new ShowTalentSlot(t.Name, t.Handle, t.Role, t.DisplayOrder)).ToArray(),
             Sponsors: sponsors.Select(s => new ShowSponsorSlot(s.Name, s.LogoUrl, s.DisplaySlot, s.DisplayOrder)).ToArray()
         );
@@ -320,18 +320,16 @@ public static class BroadcastShowEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        var orgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT org_id FROM broadcast_shows WHERE id = @showId", new { showId });
+
+        if (orgId is null) return Results.NotFound(new { error = "show_not_found" });
+        if (!await IsOrgOwnerAsync(conn, orgId.Value, userCtx.UserIdGuid))
+            return Results.Json(new { error = "forbidden" }, statusCode: 403);
+
         var affected = await conn.ExecuteAsync(
-            """
-            DELETE FROM broadcast_show_matches
-            WHERE show_id = @showId
-              AND match_id = @matchId
-              AND EXISTS (
-                SELECT 1 FROM broadcast_shows bs
-                JOIN organizations o ON o.id = bs.org_id
-                WHERE bs.id = @showId AND o.owner_id = @userId
-              )
-            """,
-            new { showId, matchId, userId = userCtx.UserIdGuid });
+            "DELETE FROM broadcast_show_matches WHERE show_id = @showId AND match_id = @matchId",
+            new { showId, matchId });
 
         return affected > 0
             ? Results.Ok(new { success = true })
@@ -362,16 +360,24 @@ public static class BroadcastShowEndpoints
         if (!await IsOrgOwnerAsync(conn, show.OrgId, userCtx.UserIdGuid))
             return Results.Json(new { error = "forbidden" }, statusCode: 403);
 
-        var timestampColumn = req.Status switch
+        if (req.Status == "live")
         {
-            "live" => ", started_at = NOW()",
-            "ended" => ", ended_at = NOW()",
-            _ => string.Empty,
-        };
-
-        await conn.ExecuteAsync(
-            $"UPDATE broadcast_shows SET status = @status, updated_at = NOW(){timestampColumn} WHERE id = @showId",
-            new { status = req.Status, showId });
+            await conn.ExecuteAsync(
+                "UPDATE broadcast_shows SET status = @status, updated_at = NOW(), started_at = NOW() WHERE id = @showId",
+                new { status = req.Status, showId });
+        }
+        else if (req.Status == "ended")
+        {
+            await conn.ExecuteAsync(
+                "UPDATE broadcast_shows SET status = @status, updated_at = NOW(), ended_at = NOW() WHERE id = @showId",
+                new { status = req.Status, showId });
+        }
+        else
+        {
+            await conn.ExecuteAsync(
+                "UPDATE broadcast_shows SET status = @status, updated_at = NOW() WHERE id = @showId",
+                new { status = req.Status, showId });
+        }
 
         return Results.Ok(new { success = true, status = req.Status });
     }
@@ -398,7 +404,7 @@ public static class BroadcastShowEndpoints
         int TalentCount, int SponsorCount, int CrewCount);
     private sealed record ShowDetailMatchSlotRow(
         Guid Id, Guid MatchId, string? MatchCode, int DisplayOrder, string Status);
-    private sealed record ShowMatchRow(Guid MatchId, string MatchCode, int DisplayOrder, string Status);
+    private sealed record ShowMatchRow(Guid MatchId, string? MatchCode, int DisplayOrder, string Status);
     private sealed record TalentRow(string Name, string? Handle, string Role, int DisplayOrder);
     private sealed record SponsorRow(string Name, string? LogoUrl, string DisplaySlot, int DisplayOrder);
 }
