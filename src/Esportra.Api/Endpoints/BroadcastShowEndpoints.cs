@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Hubs;
@@ -141,6 +139,7 @@ public static class BroadcastShowEndpoints
             show.EndedAt,
             show.CreatedAt,
             show.UpdatedAt,
+            show.LastSyncedAt,
             show.TournamentId,
             show.NodeCount,
             show.MatchSlotCount,
@@ -173,6 +172,7 @@ public static class BroadcastShowEndpoints
                 s.ended_at         AS EndedAt,
                 s.created_at       AS CreatedAt,
                 s.updated_at       AS UpdatedAt,
+                s.last_synced_at   AS LastSyncedAt,
                 s.tournament_id    AS TournamentId,
                 (SELECT COUNT(*) FROM broadcast_nodes
                     WHERE org_id = s.org_id AND is_active = true)          AS NodeCount,
@@ -224,6 +224,19 @@ public static class BroadcastShowEndpoints
         if (!await IsOrgOwnerAsync(conn, show.OrgId, userCtx.UserIdGuid))
             return Results.Json(new { error = "forbidden" }, statusCode: 403);
 
+        var payload = await BuildShowConfigPayloadAsync(conn, show, showId);
+        await hub.Clients.Group(BroadcastHub.OrgGroup(show.OrgId)).SendAsync("ShowConfig", payload, ct);
+
+        await conn.ExecuteAsync(
+            "UPDATE broadcast_shows SET last_synced_at = NOW(), updated_at = NOW() WHERE id = @showId",
+            new { showId });
+
+        return Results.Ok(new { success = true });
+    }
+
+    private static async Task<ShowConfigPayload> BuildShowConfigPayloadAsync(
+        System.Data.IDbConnection conn, ShowRow show, Guid showId)
+    {
         var matches = await conn.QueryAsync<ShowMatchRow>(
             """
             SELECT match_id AS MatchId, match_code AS MatchCode,
@@ -253,7 +266,7 @@ public static class BroadcastShowEndpoints
             """,
             new { showId });
 
-        var payload = new ShowConfigPayload(
+        return new ShowConfigPayload(
             ShowId: showId.ToString(),
             Title: show.Title,
             Status: show.Status,
@@ -261,9 +274,6 @@ public static class BroadcastShowEndpoints
             Casters: talent.Select(t => new ShowTalentSlot(t.Name, t.Handle, t.Role, t.DisplayOrder)).ToArray(),
             Sponsors: sponsors.Select(s => new ShowSponsorSlot(s.Name, s.LogoUrl, s.DisplaySlot, s.DisplayOrder)).ToArray()
         );
-
-        await hub.Clients.Group(BroadcastHub.OrgGroup(show.OrgId)).SendAsync("ShowConfig", payload, ct);
-        return Results.Ok(new { success = true });
     }
 
     // ── POST /api/broadcast/shows/{showId}/matches ────────────────────────────
@@ -382,13 +392,11 @@ public static class BroadcastShowEndpoints
         return Results.Ok(new { success = true, status = req.Status });
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Private helpers (delegates to BroadcastHelpers) ──────────────────────
 
-    private static async Task<bool> IsOrgOwnerAsync(
+    private static Task<bool> IsOrgOwnerAsync(
         System.Data.IDbConnection conn, Guid orgId, Guid userId) =>
-        await conn.ExecuteScalarAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
-            new { orgId, userId });
+        BroadcastHelpers.IsOrgOwnerAsync(conn, orgId, userId);
 
     // ── Private row types ─────────────────────────────────────────────────────
 
@@ -399,7 +407,8 @@ public static class BroadcastShowEndpoints
     private sealed record ShowDetailRow(
         Guid Id, Guid OrgId, string Title, string Status,
         DateTimeOffset? ScheduledAt, DateTimeOffset? StartedAt, DateTimeOffset? EndedAt,
-        DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, Guid? TournamentId,
+        DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, DateTimeOffset? LastSyncedAt,
+        Guid? TournamentId,
         int NodeCount, int MatchSlotCount, int MatchSlotsWithCode,
         int TalentCount, int SponsorCount, int CrewCount);
     private sealed record ShowDetailMatchSlotRow(

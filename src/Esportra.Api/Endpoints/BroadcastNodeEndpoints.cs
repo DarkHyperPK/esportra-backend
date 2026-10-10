@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
@@ -188,18 +187,15 @@ public static class BroadcastNodeEndpoints
             : Results.NotFound(new { error = "node_not_found" });
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Private helpers (delegates to BroadcastHelpers) ──────────────────────
 
-    /// <summary>SHA-256 hex of the UTF-8 bytes of <paramref name="value"/>.</summary>
-    internal static string HashString(string value) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+    private static string HashString(string value) =>
+        BroadcastHelpers.HashString(value);
 
-    private static async Task<bool> IsOrgOwnerAsync(
+    private static Task<bool> IsOrgOwnerAsync(
         System.Data.IDbConnection conn, Guid orgId, Guid userId,
         System.Data.IDbTransaction? tx = null) =>
-        await conn.ExecuteScalarAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
-            new { orgId, userId }, tx);
+        BroadcastHelpers.IsOrgOwnerAsync(conn, orgId, userId, tx);
 
     private static string GenerateCode()
     {

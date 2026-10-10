@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
@@ -251,16 +250,14 @@ public static class BroadcastCrewEndpoints
             : Results.NotFound(new { error = "crew_member_not_found" });
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Private helpers (delegates to BroadcastHelpers) ──────────────────────
 
-    private static async Task<bool> IsOrgOwnerAsync(
+    private static Task<bool> IsOrgOwnerAsync(
         System.Data.IDbConnection conn, Guid orgId, Guid userId) =>
-        await conn.ExecuteScalarAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = @orgId AND owner_id = @userId)",
-            new { orgId, userId });
+        BroadcastHelpers.IsOrgOwnerAsync(conn, orgId, userId);
 
     private static string HashString(string value) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        BroadcastHelpers.HashString(value);
 
     // ── Private row types ─────────────────────────────────────────────────────
 
