@@ -88,7 +88,7 @@ public sealed class BroadcastReportEndpointsTests
 
         var tournamentId = await _seeder.SeedTournamentAsync(ownerId);
         var stageId = await _seeder.SeedStageAsync(tournamentId);
-        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId, "published");
+        var versionId = await _seeder.SeedBracketVersionAsync(tournamentId, stageId);
         var matchId = await _seeder.SeedMatchAsync(versionId, matchStatus: "completed");
 
         await using var conn = _seeder.OpenConnection();

@@ -44,15 +44,13 @@ public static class BroadcastSponsorProofEndpoints
         var node = await BroadcastHelpers.ValidateNodeBearerAsync(ctx, db);
         if (node is null) return Results.Unauthorized();
 
-        if (req.Impressions is null || req.Impressions.Count == 0)
-            return Results.Ok(new { accepted = 0 });
-
-        if (req.Impressions.Count > 50)
+        if (req.Impressions is not null && req.Impressions.Count > 50)
             return Results.BadRequest(new { error = "Batch too large. Maximum 50 impressions per call." });
 
         using var conn = db.CreateConnection();
 
-        // IDOR guard (CIO mandatory): node's org must own the show before any DB write
+        // IDOR guard (CIO mandatory): node's org must own the show before any DB write.
+        // Must run even on empty batches to prevent org-membership probing.
         var showOrgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
             "SELECT org_id FROM broadcast_shows WHERE id = @showId",
             new { showId });
@@ -62,6 +60,9 @@ public static class BroadcastSponsorProofEndpoints
 
         if (showOrgId.Value != node.OrgId)
             return Results.Json(new { error = "You do not have access to this show." }, statusCode: 403);
+
+        if (req.Impressions is null || req.Impressions.Count == 0)
+            return Results.Ok(new { accepted = 0 });
 
         // Validate each impression before any insert
         for (var i = 0; i < req.Impressions.Count; i++)

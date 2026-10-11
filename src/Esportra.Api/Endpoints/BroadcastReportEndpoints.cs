@@ -288,16 +288,16 @@ public static class BroadcastReportEndpoints
         var rawEvents = await conn.QueryAsync<SegmentEvent>(
             """
             SELECT
-                event_type                                AS EventType,
-                payload->>'segmentId'                     AS SegmentId,
-                payload->'data'->>'segmentName'           AS SegmentName,
-                payload->'data'->>'segmentType'           AS SegmentType,
-                (payload->'data'->>'wallClockMs')::bigint AS WallClockMs
+                event_type                           AS EventType,
+                payload->>'segmentId'                AS SegmentId,
+                payload->>'segmentName'              AS SegmentName,
+                payload->>'segmentType'              AS SegmentType,
+                (payload->>'wallClockMs')::bigint    AS WallClockMs
             FROM broadcast_events
             WHERE show_id = @showId
               AND event_type IN ('SegmentTake', 'SegmentDone')
-              AND (payload->'data'->>'wallClockMs') IS NOT NULL
-            ORDER BY (payload->'data'->>'wallClockMs')::bigint ASC
+              AND (payload->>'wallClockMs') IS NOT NULL
+            ORDER BY (payload->>'wallClockMs')::bigint ASC
             """,
             new { showId });
 

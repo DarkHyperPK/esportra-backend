@@ -170,7 +170,16 @@ public sealed class DesktopBroadcastEndpointsTests
         var created = await createResp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         var sessionId = created.GetProperty("sessionId").GetGuid();
 
-        // Try to write game result as the original organizer (different user)
+        // Attach a match and set up a show with otherOrganizer in broadcast_crew (can_submit_result = true).
+        // OrganizerId is NOT added to crew, so it gets 403.
+        var (matchId, _, _) = await SeedLiveMatchAsync();
+        await using var setupConn = _seeder.OpenConnection();
+        await setupConn.ExecuteAsync(
+            "UPDATE broadcast_sessions SET match_id = @matchId WHERE id = @sessionId",
+            new { matchId, sessionId });
+        await SetupShowWithCrewAsync(otherOrganizerId, matchId);
+
+        // Try to write game result as OrganizerId — not in broadcast_crew for this show
         var client = CreateDesktopClient(OrganizerId);
         var response = await client.PostAsJsonAsync(
             $"/api/broadcast/sessions/{sessionId}/game-result",
@@ -195,8 +204,13 @@ public sealed class DesktopBroadcastEndpointsTests
         var created = await createResp.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         var sessionId = created.GetProperty("sessionId").GetGuid();
 
-        // Attach a match to the session via direct DB
-        await AttachMatchToSessionAsync(sessionId);
+        // Attach a match, create a show, and add OrganizerId to broadcast_crew with can_submit_result
+        var (matchId, _, _) = await SeedLiveMatchAsync();
+        await using var setupConn = _seeder.OpenConnection();
+        await setupConn.ExecuteAsync(
+            "UPDATE broadcast_sessions SET match_id = @matchId WHERE id = @sessionId",
+            new { matchId, sessionId });
+        await SetupShowWithCrewAsync(OrganizerId, matchId);
 
         var payload = new { mapNumber = 1, teamAScore = 13, teamBScore = 7 };
 
@@ -355,6 +369,51 @@ public sealed class DesktopBroadcastEndpointsTests
         await conn.ExecuteAsync(
             "UPDATE broadcast_sessions SET match_id = @matchId WHERE id = @sessionId",
             new { matchId, sessionId });
+    }
+
+    /// <summary>
+    /// Creates an org + show, links <paramref name="matchId"/> into broadcast_show_matches,
+    /// and adds <paramref name="crewUserId"/> to broadcast_crew with can_submit_result = true.
+    /// Returns the showId.
+    /// </summary>
+    private async Task<Guid> SetupShowWithCrewAsync(Guid crewUserId, Guid matchId)
+    {
+        await using var conn = _seeder.OpenConnection();
+
+        var orgId = Guid.NewGuid();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.organizations (id, owner_id, name, slug, created_at, updated_at)
+            VALUES (@id, @ownerId, @name, @slug, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            new { id = orgId, ownerId = crewUserId, name = $"Org {orgId:N}"[..20], slug = $"sg-{orgId:N}"[..20] });
+
+        var showId = Guid.NewGuid();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.broadcast_shows
+                (id, org_id, title, status, created_by, created_at, updated_at)
+            VALUES (@id, @orgId, 'Test Show', 'live', @crewUserId, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            new { id = showId, orgId, crewUserId });
+
+        await conn.ExecuteAsync("""
+            INSERT INTO public.broadcast_show_matches
+                (show_id, match_id, display_order, status, match_code)
+            VALUES (@showId, @matchId, 1, 'live', 'MAIN')
+            ON CONFLICT DO NOTHING
+            """,
+            new { showId, matchId });
+
+        await conn.ExecuteAsync("""
+            INSERT INTO public.broadcast_crew
+                (show_id, user_id, role, can_submit_result, is_active)
+            VALUES (@showId, @userId, 'producer', true, true)
+            ON CONFLICT (show_id, user_id) DO NOTHING
+            """,
+            new { showId, userId = crewUserId });
+
+        return showId;
     }
 
     private async Task SeedPlayerStatAsync(Guid userId, Guid matchId, int kills = 10, int deaths = 5, int assists = 3)
