@@ -447,6 +447,8 @@ builder.Services.AddHangfireServer(opts =>
     opts.Queues = ["default", "notifications", "recovery"];
 });
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.JobSchedulingService>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.PublicVetoOverlayUsageJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.PublicVetoOverlayUsageScheduler>();
 
 // ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
@@ -653,6 +655,7 @@ app.MapHangfireDashboard("/hangfire", new Hangfire.DashboardOptions
 });
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapAdminPublicToolsEndpoints();
 app.MapFeatureFlagEndpoints();
 app.MapBroadcastEndpoints();
 app.MapDesktopBroadcastEndpoints();
