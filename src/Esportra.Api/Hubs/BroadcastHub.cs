@@ -1,25 +1,32 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Dapper;
+using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Hubs;
 
 /// <summary>
-/// SignalR hub for Esportra Air broadcast nodes (PROJ-057, T3).
-/// Authentication: node token (NOT Supabase JWT).
-/// Nodes present Authorization: Bearer &lt;token&gt; on the initial HTTP handshake.
-/// JWT-based [Authorize] is intentionally absent — auth is validated in OnConnectedAsync.
+/// SignalR hub for Esportra Air broadcast system (PROJ-057, T3/T26).
+/// Three connection types share one hub:
+///   node    — Bearer &lt;base64-32-bytes&gt;; validated via SHA-256 hash lookup in broadcast_nodes
+///   crew    — Supabase JWT; user has an active row in broadcast_crew for the given ?showId= param
+///   org-web — Supabase JWT; user owns an organization (organizations.owner_id = userId)
 ///
 /// Route:  /hubs/broadcast
-/// Groups: node:{nodeId} — commands targeting one node
-///         org:{orgId}   — org-wide events (e.g. overlay updates)
+/// Groups: node:{nodeId}   — commands targeting one node
+///         org:{orgId}     — org-wide events (overlay updates, ShowConfig pushes)
+///         crew:{showId}   — rundown / show state pushed to crew members
 /// </summary>
 public sealed class BroadcastHub : Hub
 {
     private readonly IDbConnectionFactory _db;
     private readonly ILogger<BroadcastHub> _logger;
+
+    // Per-connection invocation counters. Static so the state survives hub instance recreation per method call.
+    private static readonly ConcurrentDictionary<string, RateBucket> s_rateLimits = new();
 
     public BroadcastHub(IDbConnectionFactory db, ILogger<BroadcastHub> logger)
     {
@@ -39,57 +46,34 @@ public sealed class BroadcastHub : Hub
             return;
         }
 
-        var authHeader = httpCtx.Request.Headers.Authorization.ToString();
-        const string bearer = "Bearer ";
-        if (!authHeader.StartsWith(bearer, StringComparison.OrdinalIgnoreCase))
+        var token = ExtractBearerToken(httpCtx);
+        if (token is null)
         {
             _logger.LogWarning("[BroadcastHub] Rejected — missing Bearer token. connId={ConnId}", Context.ConnectionId);
             Context.Abort();
             return;
         }
 
-        var token = authHeader[bearer.Length..].Trim();
-        if (string.IsNullOrEmpty(token))
-        {
-            Context.Abort();
-            return;
-        }
-
         try
         {
-            var tokenHash = HashToken(token);
             using var conn = _db.CreateConnection();
 
-            var node = await conn.QuerySingleOrDefaultAsync<NodeRecord>(
-                """
-                SELECT id AS Id, org_id AS OrgId
-                FROM broadcast_nodes
-                WHERE token_hash = @tokenHash AND is_active = true
-                """,
-                new { tokenHash });
-
-            if (node is null)
+            if (await TryConnectAsNodeAsync(token, conn))
             {
-                _logger.LogWarning("[BroadcastHub] Rejected — invalid or inactive token. connId={ConnId}", Context.ConnectionId);
-                Context.Abort();
+                await base.OnConnectedAsync();
                 return;
             }
 
-            await conn.ExecuteAsync(
-                "UPDATE broadcast_nodes SET last_seen_at = NOW() WHERE id = @id",
-                new { id = node.Id });
+            if (await TryConnectAsJwtAsync(httpCtx, conn))
+            {
+                await base.OnConnectedAsync();
+                return;
+            }
 
-            Context.Items["NodeId"] = node.Id;
-            Context.Items["OrgId"] = node.OrgId;
-
-            await Groups.AddToGroupAsync(Context.ConnectionId, NodeGroup(node.Id));
-            await Groups.AddToGroupAsync(Context.ConnectionId, OrgGroup(node.OrgId));
-
-            _logger.LogInformation(
-                "[BroadcastHub] Node connected — nodeId={NodeId} orgId={OrgId} connId={ConnId}",
-                node.Id, node.OrgId, Context.ConnectionId);
-
-            await base.OnConnectedAsync();
+            _logger.LogWarning(
+                "[BroadcastHub] Rejected — not a valid node token or authenticated user. connId={ConnId}",
+                Context.ConnectionId);
+            Context.Abort();
         }
         catch (Exception ex)
         {
@@ -100,27 +84,35 @@ public sealed class BroadcastHub : Hub
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        if (TryGetNodeId(out var nodeId))
+        s_rateLimits.TryRemove(Context.ConnectionId, out _);
+
+        var connType = Context.Items.TryGetValue("ConnectionType", out var ct) ? ct as string : null;
+
+        switch (connType)
         {
-            if (Context.Items.TryGetValue("OrgId", out var orgVal) && orgVal is Guid orgId)
-                await Groups.RemoveFromGroupAsync(Context.ConnectionId, OrgGroup(orgId));
-
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, NodeGroup(nodeId));
-
-            _logger.LogInformation(
-                "[BroadcastHub] Node disconnected — nodeId={NodeId} reason={Reason}",
-                nodeId, exception?.Message ?? "clean close");
+            case "node":
+                await DisconnectNodeAsync(exception);
+                break;
+            case "crew":
+                await DisconnectCrewAsync();
+                break;
+            case "org-web":
+                if (Context.Items.TryGetValue("OrgId", out var orgVal) && orgVal is Guid orgId)
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, OrgGroup(orgId));
+                _logger.LogInformation("[BroadcastHub] Org-web disconnected — connId={ConnId}", Context.ConnectionId);
+                break;
         }
 
         await base.OnDisconnectedAsync(exception);
     }
 
-    // ── Hub methods (called by nodes) ─────────────────────────────────────────
+    // ── Hub methods (nodes only) ──────────────────────────────────────────────
 
     /// <summary>Periodic heartbeat from a node. Updates last_seen_at.</summary>
     public async Task NodeHeartbeat(HeartbeatPayload payload)
     {
-        if (!TryGetNodeId(out var nodeId)) return;
+        if (!IsNodeConnection(out var nodeId)) return;
+        if (IsRateLimited()) return;
 
         try
         {
@@ -137,26 +129,103 @@ public sealed class BroadcastHub : Hub
 
     /// <summary>
     /// Event emitted by the node (GEP stats, game state, etc.).
-    /// Persisted to broadcast_events in P3 — debug-logged for now.
+    /// All four CIO security guards run before any DB write.
     /// </summary>
-    public Task NodeEvent(BroadcastEventPayload payload)
+    public async Task NodeEvent(BroadcastEventPayload payload)
     {
-        if (!TryGetNodeId(out var nodeId)) return Task.CompletedTask;
+        if (!IsNodeConnection(out var nodeId)) return;
+        if (IsRateLimited()) return;
 
-        _logger.LogDebug(
-            "[BroadcastHub] NodeEvent — nodeId={NodeId} type={EventType}",
-            nodeId, payload.EventType);
+        // Guard (c): event_id must be a valid UUID
+        if (!BroadcastEventGuard.IsValidEventId(payload.EventId))
+        {
+            _logger.LogWarning(
+                "[BroadcastHub] NodeEvent rejected — invalid event_id. nodeId={NodeId} eventType={EventType}",
+                nodeId, payload.EventType);
+            return;
+        }
 
-        return Task.CompletedTask;
+        // Guard (a): event_type server-side allowlist
+        if (!BroadcastEventGuard.IsAllowedEventType(payload.EventType))
+        {
+            _logger.LogWarning(
+                "[BroadcastHub] NodeEvent rejected — disallowed event_type. nodeId={NodeId} eventType={EventType}",
+                nodeId, payload.EventType);
+            return;
+        }
+
+        // Guard (b): payload size cap — serialize entire payload; log eventType only, never contents
+        if (!BroadcastEventGuard.IsPayloadWithinSizeLimit(payload, out var serializedPayload))
+        {
+            _logger.LogWarning(
+                "[BroadcastHub] NodeEvent rejected — payload exceeds {MaxBytes} bytes. nodeId={NodeId} eventType={EventType}",
+                BroadcastEventGuard.MaxPayloadBytes, nodeId, payload.EventType);
+            return;
+        }
+
+        // Guard (d): show_id is server-derived from the node's org — never from the payload
+        if (!Context.Items.TryGetValue("OrgId", out var orgVal) || orgVal is not Guid orgId)
+        {
+            _logger.LogWarning(
+                "[BroadcastHub] NodeEvent rejected — missing OrgId in context. nodeId={NodeId}",
+                nodeId);
+            return;
+        }
+
+        try
+        {
+            using var conn = _db.CreateConnection();
+
+            var showId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM broadcast_shows WHERE org_id = @orgId AND status = 'live' LIMIT 1",
+                new { orgId });
+
+            if (!showId.HasValue)
+            {
+                _logger.LogWarning(
+                    "[BroadcastHub] NodeEvent dropped — no live show for org. nodeId={NodeId} orgId={OrgId}",
+                    nodeId, orgId);
+                return;
+            }
+
+            var dataJson = payload.Data.HasValue
+                ? System.Text.Json.JsonSerializer.Serialize(payload.Data.Value)
+                : "{}";
+
+            await conn.ExecuteAsync(
+                "INSERT INTO broadcast_events (show_id, node_id, event_id, event_type, payload, source) " +
+                "VALUES (@showId, @nodeId, @eventId, @eventType, @payload::jsonb, 'node') " +
+                "ON CONFLICT (event_id) DO NOTHING",
+                new
+                {
+                    showId = showId.Value,
+                    nodeId,
+                    eventId = payload.EventId,
+                    eventType = payload.EventType,
+                    payload = dataJson,
+                });
+
+            _logger.LogDebug(
+                "[BroadcastHub] NodeEvent persisted — nodeId={NodeId} showId={ShowId} eventType={EventType}",
+                nodeId, showId.Value, payload.EventType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "[BroadcastHub] NodeEvent insert failed. nodeId={NodeId} eventType={EventType}",
+                nodeId, payload.EventType);
+        }
     }
 
     /// <summary>
     /// Node acknowledges a command sent by the organizer.
-    /// Linked to broadcast_commands in P3 — debug-logged for now.
+    /// Linked to broadcast_commands in P4 — debug-logged for now.
     /// </summary>
     public Task CommandAck(CommandAckPayload payload)
     {
-        if (!TryGetNodeId(out var nodeId)) return Task.CompletedTask;
+        if (!IsNodeConnection(out var nodeId)) return Task.CompletedTask;
+        if (IsRateLimited()) return Task.CompletedTask;
 
         _logger.LogDebug(
             "[BroadcastHub] CommandAck — nodeId={NodeId} commandId={CommandId} status={Status}",
@@ -169,8 +238,157 @@ public sealed class BroadcastHub : Hub
 
     public static string NodeGroup(Guid nodeId) => $"node:{nodeId}";
     public static string OrgGroup(Guid orgId) => $"org:{orgId}";
+    public static string CrewGroup(Guid showId) => $"crew:{showId}";
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Private connection helpers ────────────────────────────────────────────
+
+    private async Task<bool> TryConnectAsNodeAsync(string token, System.Data.IDbConnection conn)
+    {
+        var tokenHash = HashToken(token);
+        var node = await conn.QuerySingleOrDefaultAsync<NodeRecord>(
+            """
+            SELECT id AS Id, org_id AS OrgId
+            FROM broadcast_nodes
+            WHERE token_hash = @tokenHash AND is_active = true
+            """,
+            new { tokenHash });
+
+        if (node is null) return false;
+
+        await conn.ExecuteAsync(
+            "UPDATE broadcast_nodes SET last_seen_at = NOW() WHERE id = @id",
+            new { id = node.Id });
+
+        Context.Items["ConnectionType"] = "node";
+        Context.Items["NodeId"] = node.Id;
+        Context.Items["OrgId"] = node.OrgId;
+
+        await Groups.AddToGroupAsync(Context.ConnectionId, NodeGroup(node.Id));
+        await Groups.AddToGroupAsync(Context.ConnectionId, OrgGroup(node.OrgId));
+
+        _logger.LogInformation(
+            "[BroadcastHub] Node connected — nodeId={NodeId} orgId={OrgId} connId={ConnId}",
+            node.Id, node.OrgId, Context.ConnectionId);
+
+        return true;
+    }
+
+    private async Task<bool> TryConnectAsJwtAsync(HttpContext httpCtx, System.Data.IDbConnection conn)
+    {
+        if (httpCtx.User.Identity?.IsAuthenticated != true) return false;
+
+        var userCtx = httpCtx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return false;
+
+        var userId = userCtx.UserIdGuid;
+        var showIdRaw = httpCtx.Request.Query["showId"].ToString();
+
+        if (Guid.TryParse(showIdRaw, out var showId) && await TryConnectAsCrewAsync(conn, userId, showId))
+            return true;
+
+        return await TryConnectAsOrgWebAsync(conn, userId);
+    }
+
+    private async Task<bool> TryConnectAsCrewAsync(System.Data.IDbConnection conn, Guid userId, Guid showId)
+    {
+        var crew = await conn.QuerySingleOrDefaultAsync<CrewRecord>(
+            """
+            SELECT c.show_id AS ShowId, c.role AS Role, bs.org_id AS OrgId
+            FROM broadcast_crew c
+            JOIN broadcast_shows bs ON bs.id = c.show_id
+            WHERE c.show_id = @showId AND c.user_id = @userId AND c.is_active = true
+            """,
+            new { showId, userId });
+
+        if (crew is null) return false;
+
+        Context.Items["ConnectionType"] = "crew";
+        Context.Items["UserId"] = userId;
+        Context.Items["ShowId"] = showId;
+        Context.Items["OrgId"] = crew.OrgId;
+
+        await Groups.AddToGroupAsync(Context.ConnectionId, CrewGroup(showId));
+
+        _logger.LogInformation(
+            "[BroadcastHub] Crew connected — userId={UserId} showId={ShowId} role={Role} connId={ConnId}",
+            userId, showId, crew.Role, Context.ConnectionId);
+
+        return true;
+    }
+
+    private async Task<bool> TryConnectAsOrgWebAsync(System.Data.IDbConnection conn, Guid userId)
+    {
+        var orgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
+            new { userId });
+
+        if (!orgId.HasValue) return false;
+
+        Context.Items["ConnectionType"] = "org-web";
+        Context.Items["UserId"] = userId;
+        Context.Items["OrgId"] = orgId.Value;
+
+        await Groups.AddToGroupAsync(Context.ConnectionId, OrgGroup(orgId.Value));
+
+        _logger.LogInformation(
+            "[BroadcastHub] Org-web connected — userId={UserId} orgId={OrgId} connId={ConnId}",
+            userId, orgId.Value, Context.ConnectionId);
+
+        return true;
+    }
+
+    private async Task DisconnectNodeAsync(Exception? exception)
+    {
+        if (!TryGetNodeId(out var nodeId)) return;
+
+        if (Context.Items.TryGetValue("OrgId", out var orgVal) && orgVal is Guid orgId)
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, OrgGroup(orgId));
+
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, NodeGroup(nodeId));
+
+        _logger.LogInformation(
+            "[BroadcastHub] Node disconnected — nodeId={NodeId} reason={Reason}",
+            nodeId, exception?.Message ?? "clean close");
+    }
+
+    private async Task DisconnectCrewAsync()
+    {
+        if (Context.Items.TryGetValue("ShowId", out var showVal) && showVal is Guid showId)
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, CrewGroup(showId));
+
+        Context.Items.TryGetValue("UserId", out var userIdVal);
+        _logger.LogInformation(
+            "[BroadcastHub] Crew disconnected — userId={UserId} connId={ConnId}",
+            userIdVal, Context.ConnectionId);
+    }
+
+    // ── Private utility helpers ───────────────────────────────────────────────
+
+    private bool IsNodeConnection(out Guid nodeId)
+    {
+        if (Context.Items.TryGetValue("ConnectionType", out var ct)
+            && ct is string connType && connType == "node"
+            && TryGetNodeId(out nodeId))
+        {
+            return true;
+        }
+
+        _logger.LogWarning(
+            "[BroadcastHub] Non-node connection attempted node-only method. connId={ConnId}",
+            Context.ConnectionId);
+        nodeId = default;
+        return false;
+    }
+
+    private bool IsRateLimited()
+    {
+        var bucket = s_rateLimits.GetOrAdd(Context.ConnectionId, _ => new RateBucket());
+        if (bucket.TryConsume()) return false;
+
+        _logger.LogWarning("[BroadcastHub] Rate limit exceeded — aborting connId={ConnId}", Context.ConnectionId);
+        Context.Abort();
+        return true;
+    }
 
     private bool TryGetNodeId(out Guid nodeId)
     {
@@ -183,14 +401,45 @@ public sealed class BroadcastHub : Hub
         return false;
     }
 
-    /// <summary>
-    /// SHA-256 of the UTF-8 bytes of the token string. Must match the hash
-    /// stored in broadcast_nodes.token_hash during pairing.
-    /// </summary>
+    private static string? ExtractBearerToken(HttpContext httpCtx)
+    {
+        var authHeader = httpCtx.Request.Headers.Authorization.ToString();
+        const string bearer = "Bearer ";
+        if (!authHeader.StartsWith(bearer, StringComparison.OrdinalIgnoreCase)) return null;
+        var token = authHeader[bearer.Length..].Trim();
+        return string.IsNullOrEmpty(token) ? null : token;
+    }
+
+    /// <summary>SHA-256 hex of the UTF-8 bytes of <paramref name="token"/>.</summary>
     private static string HashToken(string token) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 
     private sealed record NodeRecord(Guid Id, Guid OrgId);
+    private sealed record CrewRecord(Guid ShowId, string Role, Guid OrgId);
+
+    /// <summary>Sliding-window rate bucket: 60 calls per 60 seconds per connection.</summary>
+    private sealed class RateBucket
+    {
+        private readonly object _lock = new();
+        private int _count;
+        private DateTime _windowStart = DateTime.UtcNow;
+
+        public bool TryConsume()
+        {
+            lock (_lock)
+            {
+                var now = DateTime.UtcNow;
+                if ((now - _windowStart).TotalSeconds >= 60)
+                {
+                    _windowStart = now;
+                    _count = 0;
+                }
+
+                _count++;
+                return _count <= 60;
+            }
+        }
+    }
 }
 
 // ── Hub payload records ───────────────────────────────────────────────────────
@@ -201,7 +450,8 @@ public sealed record HeartbeatPayload(
 
 public sealed record BroadcastEventPayload(
     string EventType,
-    JsonElement? Data = null);
+    JsonElement? Data = null,
+    string EventId = "");
 
 public sealed record CommandAckPayload(
     string CommandId,

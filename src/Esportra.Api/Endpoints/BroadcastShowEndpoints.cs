@@ -1,7 +1,9 @@
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Hubs;
+using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
+using Esportra.Core.Broadcast;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -15,7 +17,8 @@ public static class BroadcastShowEndpoints
     public static void MapBroadcastShowEndpoints(this WebApplication app)
     {
         app.MapPost("/api/broadcast/shows", CreateShow)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
         app.MapGet("/api/broadcast/shows", ListShows)
             .RequireAuthorization("Authenticated");
@@ -24,15 +27,22 @@ public static class BroadcastShowEndpoints
             .RequireAuthorization("Authenticated");
 
         app.MapPost("/api/broadcast/shows/{showId}/push-config", PushShowConfig)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
         app.MapPost("/api/broadcast/shows/{showId}/matches", AddShowMatch)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
         app.MapDelete("/api/broadcast/shows/{showId}/matches/{matchId}", RemoveShowMatch)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
         app.MapMethods("/api/broadcast/shows/{showId}/status", ["PATCH"], UpdateShowStatus)
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
+
+        app.MapGet("/api/broadcast/shows/{showId}/vod-chapters", GetVodChapters)
             .RequireAuthorization("Authenticated");
     }
 
@@ -392,6 +402,70 @@ public static class BroadcastShowEndpoints
         return Results.Ok(new { success = true, status = req.Status });
     }
 
+    // ── GET /api/broadcast/shows/{showId}/vod-chapters ───────────────────────
+
+    private static async Task<IResult> GetVodChapters(
+        Guid showId,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var show = await conn.QuerySingleOrDefaultAsync<ShowChapterRow>(
+            """
+            SELECT id AS Id, org_id AS OrgId, status AS Status, started_at AS StartedAt
+            FROM broadcast_shows
+            WHERE id = @showId
+            """,
+            new { showId });
+
+        if (show is null) return Results.NotFound(new { error = "show_not_found" });
+        if (!await IsOrgOwnerAsync(conn, show.OrgId, userCtx.UserIdGuid))
+            return Results.Json(new { error = "forbidden" }, statusCode: 403);
+
+        if (show.Status != "ended")
+            return Results.Json(new { error = "Show has not ended" }, statusCode: 409);
+
+        var rawEvents = await conn.QueryAsync<SegmentEvent>(
+            """
+            SELECT
+                event_type                           AS EventType,
+                payload->>'segmentId'                AS SegmentId,
+                payload->>'segmentName'              AS SegmentName,
+                payload->>'segmentType'              AS SegmentType,
+                (payload->>'wallClockMs')::bigint    AS WallClockMs
+            FROM broadcast_events
+            WHERE show_id = @showId
+              AND event_type IN ('SegmentTake', 'SegmentDone')
+              AND (payload->>'wallClockMs') IS NOT NULL
+            ORDER BY (payload->>'wallClockMs')::bigint ASC
+            """,
+            new { showId });
+
+        var showStartedAtMs = show.StartedAt.HasValue
+            ? ((DateTimeOffset)show.StartedAt.Value).ToUnixTimeMilliseconds()
+            : 0L;
+
+        var chapters = VodChapterCalculator.Compute(rawEvents, showStartedAtMs);
+
+        return Results.Ok(new
+        {
+            showId = showId.ToString(),
+            chapters = chapters.Select(c => new
+            {
+                segmentId = c.SegmentId,
+                segmentName = c.SegmentName,
+                segmentType = c.SegmentType,
+                offsetSeconds = c.OffsetSeconds,
+                durationSeconds = c.DurationSeconds,
+                incomplete = c.Incomplete,
+            }).ToArray(),
+        });
+    }
+
     // ── Private helpers (delegates to BroadcastHelpers) ──────────────────────
 
     private static Task<bool> IsOrgOwnerAsync(
@@ -401,6 +475,7 @@ public static class BroadcastShowEndpoints
     // ── Private row types ─────────────────────────────────────────────────────
 
     private sealed record ShowRow(Guid Id, Guid OrgId, string Title, string Status);
+    private sealed record ShowChapterRow(Guid Id, Guid OrgId, string Status, DateTimeOffset? StartedAt);
     private sealed record ShowListRow(Guid Id, string Title, string Status,
         DateTimeOffset? ScheduledAt, DateTimeOffset? StartedAt, DateTimeOffset? EndedAt,
         DateTimeOffset CreatedAt, Guid? TournamentId);

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
 using Esportra.Api.Jobs;
+using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Esportra.Infrastructure.Database;
 using Hangfire;
@@ -64,7 +65,8 @@ public static class DesktopBroadcastEndpoints
                 });
 
             return Results.Ok(new { sessionId, matchCode = req.MatchCode.Trim().ToUpperInvariant() });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Authenticated")
+          .WithMetadata(new RateLimitPolicyMetadata("strict"));
 
         // ── GET /api/broadcast/sessions ───────────────────────────────────────
         app.MapGet("/api/broadcast/sessions", async (
@@ -124,76 +126,12 @@ public static class DesktopBroadcastEndpoints
             [FromBody] GameResultRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
-            IHubContext<MatchHub> hubCtx,
+            IHubContext<MatchHub> matchHub,
+            IHubContext<BroadcastHub> broadcastHub,
             CancellationToken ct) =>
-        {
-            var versionResult = CheckDesktopVersion(ctx);
-            if (versionResult is not null) return versionResult;
-
-            var userCtx = ctx.Items["UserContext"] as UserContext;
-            if (userCtx is null) return Results.Unauthorized();
-            if (!userCtx.Roles.Contains("organizer", StringComparer.OrdinalIgnoreCase))
-                return Results.Json(new { error = "Only organizers can write game results." }, statusCode: 403);
-
-            if (req.MapNumber < 1) return Results.BadRequest(new { error = "mapNumber must be >= 1." });
-            if (req.TeamAScore < 0 || req.TeamBScore < 0)
-                return Results.BadRequest(new { error = "Scores must be non-negative." });
-
-            using var conn = db.CreateConnection();
-
-            var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT id, organizer_id, match_id, series_total FROM broadcast_sessions WHERE id = @sessionId",
-                new { sessionId });
-
-            if (session is null) return Results.NotFound(new { error = "Session not found." });
-
-            if ((Guid)session.organizer_id != userCtx.UserIdGuid)
-                return Results.Json(new { error = "You do not own this session." }, statusCode: 403);
-
-            if (session.match_id is null)
-                return Results.BadRequest(new { error = "Session has no match attached." });
-
-            Guid matchId = (Guid)session.match_id;
-
-            // Idempotency: same mapNumber + same scores = no-op
-            var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                """
-                SELECT id, team1_score, team2_score FROM brkt_match_games
-                WHERE match_id = @matchId AND game_number = @gameNumber
-                """,
-                new { matchId, gameNumber = req.MapNumber });
-
-            if (existing is not null
-                && (int)existing.team1_score == req.TeamAScore
-                && (int)existing.team2_score == req.TeamBScore)
-            {
-                var matchStatusNoop = await conn.QuerySingleOrDefaultAsync<string>(
-                    "SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId });
-                return Results.Ok(new { ok = true, matchStatus = matchStatusNoop ?? "unknown" });
-            }
-
-            await UpsertGameResult(conn, matchId, req);
-
-            await conn.ExecuteAsync(
-                "UPDATE broadcast_sessions SET last_seen_at = NOW(), series_map = @mapNumber WHERE id = @sessionId",
-                new { sessionId, mapNumber = req.MapNumber });
-
-            var matchStatus = await TryCompleteMatchAsync(conn, matchId, (int)session.series_total, req.MapNumber);
-
-            var payload = new
-            {
-                matchId,
-                mapNumber = req.MapNumber,
-                teamAScore = req.TeamAScore,
-                teamBScore = req.TeamBScore,
-            };
-
-            await hubCtx.Clients
-                .Group(MatchHub.MatchGroup(matchId.ToString()))
-                .SendAsync(MatchHubEvents.BroadcastGameResult, payload, ct);
-
-            return Results.Ok(new { ok = true, matchStatus });
-        }).RequireAuthorization("Authenticated");
+            await HandleGameResultAsync(sessionId, req, ctx, db, matchHub, broadcastHub, ct))
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("strict"));
 
         // ── GET /api/tournaments/active-match ─────────────────────────────────
         // Called by the companion every time Valorant launches. Cached 30s per user.
@@ -324,7 +262,7 @@ public static class DesktopBroadcastEndpoints
                 TimeSpan.FromMinutes(5));
 
             return Results.Ok(new { statId, source = "companion" });
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Authenticated").RequireRateLimiting("strict");
 
         // ── GET /api/player/stats/recent ──────────────────────────────────────
         // Performance Mode panel. Limit clamped server-side; players see only their own rows.
@@ -462,7 +400,7 @@ public static class DesktopBroadcastEndpoints
                 cancellationToken: ct);
 
             return Results.Ok(stats);
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Authenticated").RequireRateLimiting("fixed");
 
         // ── GET /api/player/companion-stats/summary ───────────────────────────
         // Career aggregate stats + agent/map breakdowns. Single user; no sensitive data.
@@ -709,6 +647,247 @@ public static class DesktopBroadcastEndpoints
 
         return rows.ToList();
     }
+
+    // ── P4 game-result helpers ────────────────────────────────────────────────
+
+    private static async Task<IResult> HandleGameResultAsync(
+        Guid sessionId, GameResultRequest req, HttpContext ctx,
+        IDbConnectionFactory db, IHubContext<MatchHub> matchHub,
+        IHubContext<BroadcastHub> broadcastHub, CancellationToken ct)
+    {
+        // Web operators resolving a GEP conflict (force: true) are trusted via
+        // Supabase JWT + can_submit_result check below — skip the desktop version gate.
+        if (req.Force != true)
+        {
+            var versionResult = CheckDesktopVersion(ctx);
+            if (versionResult is not null) return versionResult;
+        }
+
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        if (req.MapNumber < 1)
+            return Results.BadRequest(new { error = "mapNumber must be >= 1." });
+        if (req.TeamAScore < 0 || req.TeamBScore < 0)
+            return Results.BadRequest(new { error = "Scores must be non-negative." });
+        if (req.GepEventId is not null && !BroadcastEventGuard.IsValidEventId(req.GepEventId))
+            return Results.BadRequest(new { error = "gepEventId must be a valid UUID." });
+
+        using var conn = db.CreateConnection();
+
+        var session = await conn.QuerySingleOrDefaultAsync<BroadcastSessionRow>(
+            "SELECT id, organizer_id, match_id, series_total FROM broadcast_sessions WHERE id = @sessionId",
+            new { sessionId });
+
+        if (session is null) return Results.NotFound(new { error = "Session not found." });
+        if (session.MatchId is null)
+            return Results.BadRequest(new { error = "Session has no match attached." });
+
+        Guid matchId = session.MatchId.Value;
+        var showId = await DeriveShowIdAsync(conn, sessionId);
+        var authError = await CheckGameResultAuthAsync(conn, userCtx.UserIdGuid, showId, session.OrganizerId);
+        if (authError is not null) return authError;
+
+        // AC5: gepEventId idempotency — must run before any write
+        if (req.GepEventId is not null)
+        {
+            var dupEvent = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                "SELECT id FROM broadcast_events WHERE event_id = @eventId LIMIT 1",
+                new { eventId = req.GepEventId });
+            if (dupEvent.HasValue)
+                return Results.Ok(new { ok = true, idempotent = true });
+        }
+
+        // Natural idempotency: same mapNumber + same scores = no-op
+        var existingGame = await conn.QuerySingleOrDefaultAsync<BroadcastGameRow>(
+            "SELECT id, team1_score, team2_score FROM brkt_match_games WHERE match_id = @matchId AND game_number = @gameNumber",
+            new { matchId, gameNumber = req.MapNumber });
+
+        if (existingGame is not null
+            && existingGame.Team1Score == req.TeamAScore
+            && existingGame.Team2Score == req.TeamBScore)
+        {
+            var noopStatus = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId });
+            return Results.Ok(new { ok = true, matchStatus = noopStatus ?? "unknown" });
+        }
+
+        await UpsertGameResult(conn, matchId, req);
+
+        var matchGameId = await conn.QuerySingleAsync<Guid>(
+            "SELECT id FROM brkt_match_games WHERE match_id = @matchId AND game_number = @gameNumber",
+            new { matchId, gameNumber = req.MapNumber });
+
+        await conn.ExecuteAsync(
+            "UPDATE broadcast_sessions SET last_seen_at = NOW(), series_map = @mapNumber WHERE id = @sessionId",
+            new { sessionId, mapNumber = req.MapNumber });
+
+        var matchStatus = await TryCompleteMatchAsync(conn, matchId, session.SeriesTotal, req.MapNumber);
+
+        if (showId.HasValue)
+            await WriteAuditEventAsync(conn, showId.Value, req, sessionId, userCtx.UserIdGuid);
+
+        await matchHub.Clients
+            .Group(MatchHub.MatchGroup(matchId.ToString()))
+            .SendAsync(MatchHubEvents.BroadcastGameResult,
+                new { matchId, mapNumber = req.MapNumber, teamAScore = req.TeamAScore, teamBScore = req.TeamBScore },
+                ct);
+
+        bool isGepConflict = showId.HasValue
+            && req.GepConflict == true
+            && req.GepTeamAScore.HasValue
+            && req.GepTeamBScore.HasValue
+            && (req.GepTeamAScore.Value != req.TeamAScore || req.GepTeamBScore.Value != req.TeamBScore);
+
+        if (isGepConflict)
+        {
+            var corrId = await WriteConflictCorrectionAsync(
+                conn, showId!.Value, matchGameId, req, userCtx.UserIdGuid);
+            await broadcastHub.Clients.Group(BroadcastHub.CrewGroup(showId.Value))
+                .SendAsync("ResultConflict",
+                    new
+                    {
+                        sessionId,
+                        correctionId = corrId,
+                        mapNumber = req.MapNumber,
+                        submittedA = req.TeamAScore,
+                        submittedB = req.TeamBScore,
+                        gepA = req.GepTeamAScore,
+                        gepB = req.GepTeamBScore
+                    },
+                    ct);
+            return Results.Ok(new { ok = true, conflict = new { pending = true, correctionId = corrId } });
+        }
+
+        if (showId.HasValue && req.Force == true)
+        {
+            await WriteConflictOverrideCorrectionAsync(
+                conn, showId.Value, matchGameId, req, userCtx.UserIdGuid);
+            return Results.Ok(new { ok = true, resolved = true });
+        }
+
+        return Results.Ok(new { ok = true, matchStatus });
+    }
+
+    private static async Task<Guid?> DeriveShowIdAsync(
+        System.Data.IDbConnection conn, Guid sessionId) =>
+        await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT bsm.show_id
+            FROM broadcast_sessions bs
+            JOIN broadcast_show_matches bsm ON bsm.match_id = bs.match_id
+            JOIN broadcast_shows bsh ON bsh.id = bsm.show_id
+            WHERE bs.id = @sessionId
+            LIMIT 1
+            """,
+            new { sessionId });
+
+    private static async Task<IResult?> CheckGameResultAuthAsync(
+        System.Data.IDbConnection conn, Guid userId, Guid? showId, Guid sessionOrganizerId)
+    {
+        // No show attached: reject — result submission requires a show-linked session (CIO H1 fix)
+        if (!showId.HasValue)
+            return Results.Json(
+                new { error = "Result submission requires a show-attached broadcast session." },
+                statusCode: 409);
+
+        // Show attached: require can_submit_result on broadcast_crew (CIO mandatory)
+        var canSubmit = await conn.QuerySingleOrDefaultAsync<bool?>(
+            """
+            SELECT can_submit_result FROM broadcast_crew
+            WHERE show_id = @showId AND user_id = @userId
+            LIMIT 1
+            """,
+            new { showId, userId });
+
+        return canSubmit != true
+            ? Results.Json(
+                new { error = "You do not have permission to submit results for this show." },
+                statusCode: 403)
+            : null;
+    }
+
+    private static async Task WriteAuditEventAsync(
+        System.Data.IDbConnection conn, Guid showId, GameResultRequest req,
+        Guid sessionId, Guid userId)
+    {
+        // Use gepEventId as event_id when available so AC5 idempotency works on the next call.
+        // Fall back to a new UUID when no GEP event ID is present.
+        var eventId = req.GepEventId ?? Guid.NewGuid().ToString();
+        var payload = JsonSerializer.Serialize(new
+        {
+            mapNumber = req.MapNumber,
+            teamAScore = req.TeamAScore,
+            teamBScore = req.TeamBScore,
+            operatorUserId = userId.ToString(),
+            sessionId = sessionId.ToString(),
+            gepEventId = req.GepEventId,
+        });
+
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO broadcast_events (show_id, event_id, event_type, payload, source)
+            VALUES (@showId, @eventId, 'MatchResultSubmitted', @payload::jsonb, 'web')
+            ON CONFLICT (event_id) DO NOTHING
+            """,
+            new { showId, eventId, payload });
+    }
+
+    private static async Task<Guid> WriteConflictCorrectionAsync(
+        System.Data.IDbConnection conn, Guid showId, Guid matchGameId,
+        GameResultRequest req, Guid userId)
+    {
+        var beforeState = JsonSerializer.Serialize(new
+        {
+            teamAScore = req.GepTeamAScore,
+            teamBScore = req.GepTeamBScore,
+        });
+        var afterState = JsonSerializer.Serialize(new
+        {
+            teamAScore = req.TeamAScore,
+            teamBScore = req.TeamBScore,
+        });
+
+        return await conn.QuerySingleAsync<Guid>(
+            """
+            INSERT INTO broadcast_corrections
+                (show_id, corrected_by, correction_type, target_id, target_type,
+                 before_state, after_state, reason, source, node_id)
+            VALUES
+                (@showId, @userId, 'gep_conflict', @matchGameId, 'brkt_match_game',
+                 @beforeState::jsonb, @afterState::jsonb,
+                 'GEP score differs from submitted score',
+                 'broadcast', NULL)
+            RETURNING id
+            """,
+            new { showId, userId, matchGameId, beforeState, afterState });
+    }
+
+    private static async Task WriteConflictOverrideCorrectionAsync(
+        System.Data.IDbConnection conn, Guid showId, Guid matchGameId,
+        GameResultRequest req, Guid userId)
+    {
+        var afterState = JsonSerializer.Serialize(new
+        {
+            teamAScore = req.TeamAScore,
+            teamBScore = req.TeamBScore,
+        });
+
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO broadcast_corrections
+                (show_id, corrected_by, correction_type, target_id, target_type,
+                 after_state, reason, source, node_id)
+            VALUES
+                (@showId, @userId, 'gep_conflict_override', @matchGameId, 'brkt_match_game',
+                 @afterState::jsonb, 'Operator confirmed final score',
+                 'broadcast', NULL)
+            """,
+            new { showId, userId, matchGameId, afterState });
+    }
+
+    private sealed record BroadcastSessionRow(Guid Id, Guid OrganizerId, Guid? MatchId, int SeriesTotal);
+    private sealed record BroadcastGameRow(Guid Id, int Team1Score, int Team2Score);
 }
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
@@ -723,7 +902,12 @@ public sealed record GameResultRequest(
     int MapNumber,
     int TeamAScore,
     int TeamBScore,
-    RoundResult[]? RoundResults = null);
+    RoundResult[]? RoundResults = null,
+    bool? GepConflict = null,
+    int? GepTeamAScore = null,
+    int? GepTeamBScore = null,
+    string? GepEventId = null,
+    bool? Force = null);
 
 public sealed record RoundResult(string Winner, string Cause);
 
