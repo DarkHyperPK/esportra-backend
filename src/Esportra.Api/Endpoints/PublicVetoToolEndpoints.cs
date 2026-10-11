@@ -32,10 +32,71 @@ internal static partial class PublicToolEndpoints
             return session is null ? Results.NotFound() : Results.Ok(session);
         }).AllowAnonymous();
 
+        app.MapGet("/api/tools/map-veto/overlay/{token}", LoadTrackedPublicVetoOverlayAsync).AllowAnonymous();
+
+        app.MapGet("/api/tools/map-veto/overlay/{token}/history", async (string token, IDbConnectionFactory db) =>
+        {
+            var history = await LoadPublicVetoHistoryAsync(db, token);
+            return history is null ? Results.NotFound() : Results.Ok(history);
+        }).AllowAnonymous();
+
         app.MapGet("/api/tools/map-veto/{token}/history", async (string token, IDbConnectionFactory db) =>
         {
             var history = await LoadPublicVetoHistoryAsync(db, token);
             return history is null ? Results.NotFound() : Results.Ok(history);
+        }).AllowAnonymous();
+
+        app.MapPut("/api/tools/map-veto/host/{token}/settings", async (
+            string token,
+            PublicVetoSettingsRequest req,
+            IDbConnectionFactory db,
+            IHubContext<VetoHub> hub,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
+            var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                "SELECT * FROM public.public_veto_sessions WHERE host_token = @token AND expires_at > now() FOR UPDATE",
+                new { token }, tx);
+            if (row is null) return Results.NotFound();
+            var sessionId = (Guid)row.id;
+            var actionCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM public.public_veto_actions WHERE session_id = @sessionId",
+                new { sessionId }, tx);
+            if (actionCount != 0 || (string)row.status is "completed" or "toss_choice_pending")
+                return Results.Json(new { error = "Veto settings can only change before the first action or toss result." }, statusCode: 409);
+            if (row.toss_winner_team_id is not null)
+                return Results.Json(new { error = "Reset the toss before changing settings." }, statusCode: 409);
+
+            string[] pool = row.selected_map_pool;
+            var sequence = req.Sequence ?? VetoSequences.GetSequence((int)row.best_of, (string)row.game, pool.Length).ToArray();
+            var error = ValidatePublicVetoSequence(sequence, (int)row.best_of, pool.Length);
+            if (error is not null) return Results.BadRequest(new { error });
+            var first = sequence[0];
+            await conn.ExecuteAsync(
+                """
+                UPDATE public.public_veto_sessions
+                SET toss_enabled = @tossEnabled,
+                    custom_sequence = @sequence::jsonb,
+                    status = @status,
+                    current_team_id = @currentTeamId,
+                    current_action = @currentAction,
+                    current_action_number = 1,
+                    updated_at = now()
+                WHERE id = @sessionId
+                """,
+                new
+                {
+                    sessionId,
+                    req.TossEnabled,
+                    sequence = req.Sequence is null ? null : JsonSerializer.Serialize(sequence, JsonOptions),
+                    status = req.TossEnabled ? "pending_toss" : "in_progress",
+                    currentTeamId = req.TossEnabled ? (Guid?)null : first.Team == "T1" ? (Guid)row.team1_id : (Guid)row.team2_id,
+                    currentAction = req.TossEnabled ? null : first.Action
+                }, tx);
+            tx.Commit();
+            await BroadcastPublicVetoUpdatedAsync(hub, sessionId, ct);
+            return Results.Ok(await LoadPublicVetoByTokenAsync(db, token, "host"));
         }).AllowAnonymous();
 
         app.MapPost("/api/tools/map-veto/team/{token}/ban", async (
@@ -66,9 +127,10 @@ internal static partial class PublicToolEndpoints
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM public.public_veto_sessions WHERE host_token = @token AND expires_at > now()",
-                new { token });
+                "SELECT * FROM public.public_veto_sessions WHERE host_token = @token AND expires_at > now() FOR UPDATE",
+                new { token }, tx);
             if (row is null) return Results.NotFound();
             if ((string)row.status != "pending_toss")
                 return Results.Json(new { error = "Toss has already been resolved for this session." }, statusCode: 409);
@@ -84,7 +146,8 @@ internal static partial class PublicToolEndpoints
                        updated_at = now()
                  WHERE id = @id
                 """,
-                new { id = sessionId, winnerId });
+                new { id = sessionId, winnerId }, tx);
+            tx.Commit();
             await BroadcastPublicVetoTossResultAsync(hub, sessionId, winnerId, winnerName, ct);
             return Results.Ok(await LoadPublicVetoByTokenAsync(db, token, "host"));
         }).AllowAnonymous();
@@ -97,12 +160,14 @@ internal static partial class PublicToolEndpoints
             CancellationToken ct) =>
         {
             using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 SELECT * FROM public.public_veto_sessions
                 WHERE (team1_token = @token OR team2_token = @token) AND expires_at > now()
+                FOR UPDATE
                 """,
-                new { token });
+                new { token }, tx);
             if (row is null) return Results.NotFound();
             if ((string)row.status == "pending_toss")
                 return Results.Json(new { error = "Toss has not been run yet." }, statusCode: 409);
@@ -114,8 +179,8 @@ internal static partial class PublicToolEndpoints
             var winnerId = (Guid)row.toss_winner_team_id;
             var opponentId = winnerId == (Guid)row.team1_id ? (Guid)row.team2_id : (Guid)row.team1_id;
             var firstActorId = req.GoFirst ? winnerId : opponentId;
-            string[] mapPool = row.selected_map_pool;
-            var firstStep = VetoSequences.GetStep((int)row.best_of, 1, (string)row.game, mapPool.Length);
+            VetoStep[] sequence = GetPublicVetoSequence((string?)row.custom_sequence, (int)row.best_of, (string)row.game, ((string[])row.selected_map_pool).Length);
+            var firstStep = sequence[0];
             if (firstStep is null) return Results.BadRequest(new { error = "Invalid veto sequence." });
             var secondActorId = firstActorId == (Guid)row.team1_id ? (Guid)row.team2_id : (Guid)row.team1_id;
             var currentTeamId = firstStep.Team == "T1" ? firstActorId : secondActorId;
@@ -131,7 +196,8 @@ internal static partial class PublicToolEndpoints
                        updated_at = now()
                  WHERE id = @id
                 """,
-                new { id = sessionId, firstActorId, currentTeamId, action = firstStep.Action });
+                new { id = sessionId, firstActorId, currentTeamId, action = firstStep.Action }, tx);
+            tx.Commit();
             await BroadcastPublicVetoUpdatedAsync(hub, sessionId, ct);
             return Results.Ok(await LoadPublicVetoByTokenAsync(db, token, "team"));
         }).AllowAnonymous();
@@ -142,21 +208,22 @@ internal static partial class PublicToolEndpoints
             IHubContext<VetoHub> hub) =>
         {
             using var conn = db.CreateConnection();
+            using var tx = conn.BeginTransaction();
             var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT * FROM public.public_veto_sessions WHERE host_token = @token AND expires_at > now()",
-                new { token });
+                "SELECT * FROM public.public_veto_sessions WHERE host_token = @token AND expires_at > now() FOR UPDATE",
+                new { token }, tx);
             if (row is null) return Results.NotFound();
             var sessionId = (Guid)row.id;
-            using var tx = conn.BeginTransaction();
+            VetoStep[] sequence = GetPublicVetoSequence((string?)row.custom_sequence, (int)row.best_of, (string)row.game, ((string[])row.selected_map_pool).Length);
             await conn.ExecuteAsync(
                 """
                 UPDATE public.public_veto_sessions
-                   SET status = 'pending_toss',
+                   SET status = @status,
                        toss_winner_team_id = NULL,
                        toss_completed_at = NULL,
                        toss_first_actor_team_id = NULL,
-                       current_team_id = NULL,
-                       current_action = NULL,
+                       current_team_id = @currentTeamId,
+                       current_action = @currentAction,
                        current_action_number = 1,
                        team1_banned_maps = '{}',
                        team2_banned_maps = '{}',
@@ -168,7 +235,13 @@ internal static partial class PublicToolEndpoints
                  WHERE id = @id;
                 DELETE FROM public.public_veto_actions WHERE session_id = @id;
                 """,
-                new { id = sessionId },
+                new
+                {
+                    id = sessionId,
+                    status = (bool)row.toss_enabled ? "pending_toss" : "in_progress",
+                    currentTeamId = (bool)row.toss_enabled ? (Guid?)null : sequence[0].Team == "T1" ? (Guid)row.team1_id : (Guid)row.team2_id,
+                    currentAction = (bool)row.toss_enabled ? null : sequence[0].Action
+                },
                 tx);
             tx.Commit();
             await BroadcastPublicVetoResetAsync(hub, sessionId);
@@ -204,25 +277,28 @@ internal static partial class PublicToolEndpoints
                 """,
                 new { game, limit = config.MapPoolSize })).ToArray();
         }
+        if (mapPool.Length != VetoSequences.GetGameConfig(game).MapPoolSize)
+            return ToolResult<object>.Fail("Map pool size does not match the selected game.");
         var id = Guid.NewGuid();
         var team1Id = Guid.NewGuid();
         var team2Id = Guid.NewGuid();
         var hostToken = GenerateToken();
         var team1Token = GenerateToken();
         var team2Token = GenerateToken();
+        var overlayToken = GenerateToken();
 
         await conn.ExecuteAsync(
             """
             INSERT INTO public.public_veto_sessions
                 (id, game, best_of, team1_name, team2_name, team1_id, team2_id,
                  current_action_number, status,
-                 selected_map_pool, host_token, team1_token, team2_token)
+                 selected_map_pool, host_token, team1_token, team2_token, overlay_token)
             VALUES
                 (@id, @game, @bestOf, @team1, @team2, @team1Id, @team2Id,
                  1, 'pending_toss',
-                 @mapPool, @hostToken, @team1Token, @team2Token)
+                 @mapPool, @hostToken, @team1Token, @team2Token, @overlayToken)
             """,
-            new { id, game, bestOf, team1, team2, team1Id, team2Id, mapPool, hostToken, team1Token, team2Token });
+            new { id, game, bestOf, team1, team2, team1Id, team2Id, mapPool, hostToken, team1Token, team2Token, overlayToken });
 
         return ToolResult<object>.Ok(new
         {
@@ -236,9 +312,12 @@ internal static partial class PublicToolEndpoints
     private static async Task<object?> LoadPublicVetoByTokenAsync(IDbConnectionFactory db, string token, string role)
     {
         using var conn = db.CreateConnection();
-        var where = role == "host"
-            ? "host_token = @token"
-            : "(team1_token = @token OR team2_token = @token)";
+        var where = role switch
+        {
+            "host" => "host_token = @token",
+            "overlay" => "overlay_token = @token",
+            _ => "(team1_token = @token OR team2_token = @token)"
+        };
         var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
             $"""
             SELECT *
@@ -278,6 +357,40 @@ internal static partial class PublicToolEndpoints
         return side == "T1" ? (Guid)row.team1_id : (Guid)row.team2_id;
     }
 
+    private static VetoStep[] GetPublicVetoSequence(string? customSequence, int bestOf, string game, int poolSize)
+    {
+        if (!string.IsNullOrWhiteSpace(customSequence))
+            return JsonSerializer.Deserialize<VetoStep[]>(customSequence, JsonOptions) ?? [];
+        return VetoSequences.GetSequence(bestOf, game, poolSize).ToArray();
+    }
+
+    internal static string? ValidatePublicVetoSequence(VetoStep[] sequence, int bestOf, int poolSize)
+    {
+        var standard = VetoSequences.GetSequence(bestOf, "valorant", poolSize);
+        if (sequence.Length != standard.Count)
+            return "The veto order must keep the same number of steps.";
+        if (sequence.Count(step => step.Action == "ban") != standard.Count(step => step.Action == "ban") ||
+            sequence.Count(step => step.Action == "pick") != standard.Count(step => step.Action == "pick") ||
+            sequence.Count(step => step.Action == "pick_side") != standard.Count(step => step.Action == "pick_side"))
+            return "The veto order must keep the format's ban, pick, and side counts.";
+        for (var index = 0; index < sequence.Length; index++)
+        {
+            var step = sequence[index];
+            if (step.ActionNumber != index + 1 || step.Team is not ("T1" or "T2"))
+                return "Every step needs a consecutive number and a valid team.";
+            if (index == sequence.Length - 1)
+            {
+                if (step.Action != "pick_side" || !step.IsDecider)
+                    return "The last step must be the decider side choice.";
+                continue;
+            }
+            if (step.IsDecider || step.Action == "pick_side" && (index == 0 || sequence[index - 1].Action != "pick") ||
+                step.Action == "pick" && sequence[index + 1].Action != "pick_side")
+                return "Each pick must be followed by its side choice; the decider must be last.";
+        }
+        return null;
+    }
+
     private static async Task<IResult> ApplyPublicVetoActionAsync(
         IDbConnectionFactory db,
         IHubContext<VetoHub> hub,
@@ -287,13 +400,15 @@ internal static partial class PublicToolEndpoints
         string? side)
     {
         using var conn = db.CreateConnection();
+        using var tx = conn.BeginTransaction();
         var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
             """
             SELECT *
             FROM public.public_veto_sessions
             WHERE (team1_token = @token OR team2_token = @token) AND expires_at > now()
+            FOR UPDATE
             """,
-            new { token });
+            new { token }, tx);
         if (row is null) return Results.NotFound(new { error = "Map veto not found." });
         if ((string)row.status == "pending_toss")
             return Results.Json(new { error = "Toss has not been run yet." }, statusCode: 409);
@@ -316,7 +431,7 @@ internal static partial class PublicToolEndpoints
         foreach (var picked in t1Picked.Concat(t2Picked)) used.Add(picked.MapId);
         if (used.Contains(mapId) && action != "pick_side") return Results.BadRequest(new { error = "Map has already been used." });
 
-        var sequence = VetoSequences.GetSequence((int)row.best_of, (string)row.game, mapPool.Length);
+        VetoStep[] sequence = GetPublicVetoSequence((string?)row.custom_sequence, (int)row.best_of, (string)row.game, mapPool.Length);
         var current = sequence.FirstOrDefault(s => s.ActionNumber == (int)row.current_action_number);
         var next = sequence.FirstOrDefault(s => s.ActionNumber == (int)row.current_action_number + 1);
         var completed = next is null;
@@ -388,7 +503,8 @@ internal static partial class PublicToolEndpoints
                 mapId,
                 actionNumber = (int)row.current_action_number,
                 side
-            });
+            }, tx);
+        tx.Commit();
         var sessionId = (Guid)row.id;
         var response = await LoadPublicVetoByTokenAsync(db, token, "team");
         await BroadcastPublicVetoUpdatedAsync(hub, sessionId);
@@ -403,7 +519,7 @@ internal static partial class PublicToolEndpoints
             SELECT id::text AS id, game, map_name, map_image_url, is_active
             FROM public.game_maps
             WHERE id::text = ANY(@ids)
-            ORDER BY map_name
+            ORDER BY array_position(@ids, id::text)
             """,
             new { ids = pool })).ToArray();
         var role = row.host_token == token ? "host"
@@ -452,6 +568,9 @@ internal static partial class PublicToolEndpoints
             hostToken = role == "host" ? row.host_token : null,
             team1Token = role == "host" ? row.team1_token : null,
             team2Token = role == "host" ? row.team2_token : null,
+            overlayToken = role == "host" ? row.overlay_token : null,
+            tossEnabled = row.toss_enabled,
+            sequence = GetPublicVetoSequence((string?)row.custom_sequence, (int)row.best_of, (string)row.game, pool.Length),
             role,
             expiresAt = row.expires_at,
             startedAt = row.started_at,
@@ -462,6 +581,9 @@ internal static partial class PublicToolEndpoints
                 : null,
             tossCompletedAt = row.toss_completed_at,
             tossFirstActorTeamId = row.toss_first_actor_team_id,
+            tossFirstActorSide = row.toss_first_actor_team_id is Guid firstActor
+                ? (firstActor == t1Id ? "team1" : "team2")
+                : null,
             isTossWinner,
             tossFirstActorName,
             currentTeamSide
@@ -475,7 +597,7 @@ internal static partial class PublicToolEndpoints
             """
             SELECT id
             FROM public.public_veto_sessions
-            WHERE (host_token = @token OR team1_token = @token OR team2_token = @token)
+            WHERE (host_token = @token OR team1_token = @token OR team2_token = @token OR overlay_token = @token)
               AND expires_at > now()
             """,
             new { token });
@@ -506,4 +628,5 @@ public sealed record PublicVetoCreateRequest(string? Game, int BestOf, string? T
 public sealed record PublicVetoActionRequest(string MapId);
 public sealed record PublicVetoPickSideRequest(string MapId, string Side);
 public sealed record PublicVetoTossChoiceRequest(bool GoFirst);
+public sealed record PublicVetoSettingsRequest(bool TossEnabled, VetoStep[]? Sequence);
 public sealed record PickedMapDto(string MapId, string? Side);
