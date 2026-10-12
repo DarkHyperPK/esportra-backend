@@ -225,10 +225,16 @@ builder.Services.AddHealthChecks()
 // ── SignalR ────────────────────────────────────────────────────────────────────
 // Redis backplane ensures hub group broadcasts reach all clients regardless of
 // which API instance handled the mutation request (supports horizontal scaling).
-builder.Services.AddSignalR(opts =>
+// Only registered when Redis is explicitly configured so integration tests
+// (which have no Redis) fall back to the default in-process backplane.
+var hasRedis = !string.IsNullOrWhiteSpace(builder.Configuration["REDIS_URL"])
+    || !string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Redis"));
+var signalRBuilder = builder.Services.AddSignalR(opts =>
 {
     opts.EnableDetailedErrors = builder.Environment.IsDevelopment();
-}).AddStackExchangeRedis(opts => opts.Configuration = redisConfig);
+});
+if (hasRedis)
+    signalRBuilder.AddStackExchangeRedis(opts => opts.Configuration = redisConfig);
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
 static string[] ResolveAllowedOrigins(IConfiguration config)
