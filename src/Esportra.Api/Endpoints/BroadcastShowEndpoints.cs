@@ -14,6 +14,17 @@ public static class BroadcastShowEndpoints
     private static readonly HashSet<string> ValidShowStatuses =
         ["draft", "scheduled", "live", "ended", "cancelled"];
 
+    // Terminal states cannot transition to anything.
+    // Any non-terminal state → "cancelled" is always allowed.
+    private static readonly Dictionary<string, HashSet<string>> AllowedTransitions = new()
+    {
+        ["draft"] = ["scheduled", "live", "cancelled"],
+        ["scheduled"] = ["draft", "live", "cancelled"],
+        ["live"] = ["ended", "cancelled"],
+        ["ended"] = [],
+        ["cancelled"] = [],
+    };
+
     public static void MapBroadcastShowEndpoints(this WebApplication app)
     {
         app.MapPost("/api/broadcast/shows", CreateShow)
@@ -379,6 +390,11 @@ public static class BroadcastShowEndpoints
         if (show is null) return Results.NotFound(new { error = "show_not_found" });
         if (!await IsOrgOwnerAsync(conn, show.OrgId, userCtx.UserIdGuid))
             return Results.Json(new { error = "forbidden" }, statusCode: 403);
+
+        if (!AllowedTransitions.TryGetValue(show.Status, out var allowed) || !allowed.Contains(req.Status))
+            return Results.Json(
+                new { error = $"Cannot transition show from '{show.Status}' to '{req.Status}'" },
+                statusCode: 409);
 
         if (req.Status == "live")
         {

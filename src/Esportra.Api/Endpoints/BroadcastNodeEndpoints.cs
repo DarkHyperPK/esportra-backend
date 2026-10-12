@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 
@@ -17,7 +18,8 @@ public static class BroadcastNodeEndpoints
         app.MapPost("/api/broadcast/nodes/codes", GeneratePairingCode)
             .RequireAuthorization("Authenticated");
 
-        app.MapPost("/api/broadcast/nodes/pair", PairNode);
+        app.MapPost("/api/broadcast/nodes/pair", PairNode)
+            .WithMetadata(new RateLimitPolicyMetadata("strict"));
 
         app.MapGet("/api/broadcast/nodes", ListNodes)
             .RequireAuthorization("Authenticated");

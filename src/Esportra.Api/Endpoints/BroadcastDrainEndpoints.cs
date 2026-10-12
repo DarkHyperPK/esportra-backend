@@ -157,9 +157,10 @@ public static class BroadcastDrainEndpoints
                 await conn.ExecuteAsync(
                     """
                     INSERT INTO broadcast_corrections
-                        (show_id, corrected_by, node_id, correction_type, source, after_state, reason, created_at)
+                        (show_id, corrected_by, node_id, correction_type, source, after_state, reason, client_key, created_at)
                     VALUES
-                        (@showId, NULL, @nodeId, 'fix_data', 'node', @afterState::jsonb, @reason, COALESCE(@ts, NOW()))
+                        (@showId, NULL, @nodeId, 'fix_data', 'node', @afterState::jsonb, @reason, @clientKey, COALESCE(@ts, NOW()))
+                    ON CONFLICT (client_key) WHERE client_key IS NOT NULL DO NOTHING
                     """,
                     new
                     {
@@ -167,6 +168,7 @@ public static class BroadcastDrainEndpoints
                         nodeId = node.NodeId,
                         afterState,
                         reason = correction.Reason,
+                        clientKey = correction.IdempotencyKey,
                         ts = correction.Ts,
                     });
 
@@ -205,4 +207,6 @@ public sealed record DrainCorrectionItem(
     int TeamAScore,
     int TeamBScore,
     string? Reason = null,
-    DateTimeOffset? Ts = null);
+    DateTimeOffset? Ts = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("idempotencyKey")]
+    string? IdempotencyKey = null);
