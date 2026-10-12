@@ -80,8 +80,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("Supabase:ServiceKey", "test-service-key");
         builder.UseSetting("Supabase:Url", "http://localhost:54321");
 
-        // SwappableDistributedCache falls back to in-memory when Redis is unavailable
-        builder.UseSetting("Redis:ConnectionString", "");
+        // Clear the Development appsettings Redis entry so hasRedis=false in tests (no Redis in CI)
+        builder.UseSetting("ConnectionStrings:Redis", "");
 
         // No-op email sink
         builder.UseSetting("Resend:ApiKey", "re_test_00000000000000000000000000000000");
