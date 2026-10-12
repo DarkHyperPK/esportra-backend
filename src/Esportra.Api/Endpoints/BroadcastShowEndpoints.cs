@@ -100,7 +100,7 @@ public static class BroadcastShowEndpoints
     // ── GET /api/broadcast/shows?orgId= ──────────────────────────────────────
 
     private static async Task<IResult> ListShows(
-        [FromQuery] Guid orgId,
+        [FromQuery] Guid? orgId,
         HttpContext ctx,
         IDbConnectionFactory db,
         CancellationToken ct)
@@ -108,11 +108,11 @@ public static class BroadcastShowEndpoints
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
 
-        if (orgId == Guid.Empty)
+        if (!orgId.HasValue || orgId.Value == Guid.Empty)
             return Results.BadRequest(new { error = "orgId is required" });
 
         using var conn = db.CreateConnection();
-        if (!await IsOrgOwnerAsync(conn, orgId, userCtx.UserIdGuid))
+        if (!await IsOrgOwnerAsync(conn, orgId.Value, userCtx.UserIdGuid))
             return Results.Json(new { error = "forbidden" }, statusCode: 403);
 
         var shows = await conn.QueryAsync<ShowListRow>(
@@ -124,7 +124,7 @@ public static class BroadcastShowEndpoints
             WHERE org_id = @orgId
             ORDER BY created_at DESC
             """,
-            new { orgId });
+            new { orgId = orgId.Value });
 
         return Results.Ok(shows);
     }
@@ -500,8 +500,8 @@ public static class BroadcastShowEndpoints
         DateTime? ScheduledAt, DateTime? StartedAt, DateTime? EndedAt,
         DateTime CreatedAt, DateTime UpdatedAt, DateTime? LastSyncedAt,
         Guid? TournamentId,
-        int NodeCount, int MatchSlotCount, int MatchSlotsWithCode,
-        int TalentCount, int SponsorCount, int CrewCount);
+        long NodeCount, long MatchSlotCount, long MatchSlotsWithCode,
+        long TalentCount, long SponsorCount, long CrewCount);
     private sealed record ShowDetailMatchSlotRow(
         Guid Id, Guid MatchId, string? MatchCode, int DisplayOrder, string Status);
     private sealed record ShowMatchRow(Guid MatchId, string? MatchCode, int DisplayOrder, string Status);
