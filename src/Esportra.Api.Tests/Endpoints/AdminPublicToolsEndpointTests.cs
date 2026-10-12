@@ -18,6 +18,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -29,6 +30,35 @@ namespace Esportra.Api.Tests.Endpoints;
 
 public sealed class AdminPublicToolsEndpointTests
 {
+    [Fact]
+    public async Task BracketCompatibility_PreviewRespondsAndAllExistingApiRoutesRemainMapped()
+    {
+        await using var host = await PublicToolsTestHost.CreateAsync();
+        var preview = await host.PostJsonAsync("/api/tools/brackets/preview", new
+        {
+            title = "Compatibility smoke",
+            format = "single_elimination",
+            teams = new[] { "Alpha", "Bravo" },
+            bestOf = 3,
+            bracketSize = 2,
+        }, identity: null);
+
+        preview.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await preview.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("title").GetString().Should().Be("Compatibility smoke");
+        body.GetProperty("teams").GetArrayLength().Should().Be(2);
+        host.BracketRoutes.Should().BeEquivalentTo(
+            "POST /api/tools/brackets/preview",
+            "POST /api/tools/brackets",
+            "GET /api/tools/brackets/mine",
+            "GET /api/tools/brackets/{id:guid}",
+            "GET /api/tools/brackets/share/{token}",
+            "PATCH /api/tools/brackets/{id:guid}/matches/{matchId:guid}",
+            "POST /api/tools/brackets/{id:guid}/reset",
+            "PATCH /api/tools/brackets/{id:guid}/sharing",
+            "DELETE /api/tools/brackets/{id:guid}");
+    }
+
     [Theory]
     [InlineData(null, HttpStatusCode.Unauthorized)]
     [InlineData("member", HttpStatusCode.Forbidden)]
@@ -177,6 +207,13 @@ internal sealed class PublicToolsTestHost(WebApplication app, RecordingPublicToo
 {
     public RecordingPublicToolsDb Db { get; } = db;
     public IBackgroundJobClient Jobs { get; } = jobs;
+    public IReadOnlyCollection<string> BracketRoutes => ((IEndpointRouteBuilder)app).DataSources
+        .SelectMany(source => source.Endpoints)
+        .OfType<RouteEndpoint>()
+        .Where(endpoint => endpoint.RoutePattern.RawText?.StartsWith("/api/tools/brackets", StringComparison.Ordinal) == true)
+        .SelectMany(endpoint => endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods
+            .Select(method => $"{method} {endpoint.RoutePattern.RawText}") ?? [])
+        .ToArray();
 
     public static async Task<PublicToolsTestHost> CreateAsync(IDbConnectionFactory? database = null)
     {
@@ -210,6 +247,13 @@ internal sealed class PublicToolsTestHost(WebApplication app, RecordingPublicToo
     public async Task<HttpResponseMessage> GetAsync(string path, string? identity = "super")
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        if (identity is not null) request.Headers.Add("X-Test-Identity", identity);
+        return await app.GetTestClient().SendAsync(request);
+    }
+
+    public async Task<HttpResponseMessage> PostJsonAsync<T>(string path, T body, string? identity = "super")
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
         if (identity is not null) request.Headers.Add("X-Test-Identity", identity);
         return await app.GetTestClient().SendAsync(request);
     }

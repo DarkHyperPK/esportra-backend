@@ -75,6 +75,20 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.dotnet == 'true'
     runs-on: ubuntu-latest
+    services:
+      public-tools-postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: publictoolstest
+          POSTGRES_DB: postgres
+        ports:
+          - 55460:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +102,8 @@ jobs:
 
       - name: Run tests
         run: dotnet test --no-restore -c Release
+        env:
+          PROJ060_POSTGRES_TEST_CONNECTION: "Host=127.0.0.1;Port=55460;Database=postgres;Username=postgres;Password=publictoolstest"
 
   migration-replay:
     name: Migration Lint & Replay

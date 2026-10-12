@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -21,15 +22,25 @@ namespace Esportra.Api.Tests.Infrastructure;
 /// </summary>
 public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _db = new PostgreSqlBuilder()
-        .WithImage("postgres:15-alpine")
-        .WithDatabase("esportra_test")
-        .WithUsername("postgres")
-        .WithPassword("test")
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(5432))
-        .Build();
+    private readonly string? _externalConnectionString;
+    private readonly PostgreSqlContainer? _db;
 
-    public string ConnectionString => _db.GetConnectionString();
+    public ApiFactory()
+    {
+        _externalConnectionString = Environment.GetEnvironmentVariable("ESPORTRA_INTEGRATION_TEST_CONNECTION");
+        if (_externalConnectionString is null)
+        {
+            _db = new PostgreSqlBuilder()
+                .WithImage("postgres:15-alpine")
+                .WithDatabase("esportra_test")
+                .WithUsername("postgres")
+                .WithPassword("test")
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(5432))
+                .Build();
+        }
+    }
+
+    public string ConnectionString => _externalConnectionString ?? _db!.GetConnectionString();
 
     /// <summary>A <see cref="DbSeeder"/> pre-wired to the test database.</summary>
     public DbSeeder Seeder => new(ConnectionString);
@@ -38,7 +49,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     async Task IAsyncLifetime.InitializeAsync()
     {
-        await _db.StartAsync();
+        if (_db is not null) await _db.StartAsync();
         await ApplyBootstrapAsync();
         RunMigrations();
         await EnableOcrForTestsAsync();
@@ -46,7 +57,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     async Task IAsyncLifetime.DisposeAsync()
     {
-        await _db.DisposeAsync();
+        if (_db is not null) await _db.DisposeAsync();
         await base.DisposeAsync();
     }
 
@@ -70,6 +81,15 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     {
         builder.UseEnvironment("Development");
 
+        // The default Windows Event Log provider requires machine-level write
+        // access. Integration tests only need console output and must also run
+        // under unprivileged local and CI accounts.
+        builder.ConfigureLogging(logging =>
+        {
+            logging.ClearProviders();
+            logging.AddConsole();
+        });
+
         builder.UseSetting("ConnectionStrings:Postgres", ConnectionString);
         builder.UseSetting("ConnectionStrings:PostgresMigrations", ConnectionString);
         builder.UseSetting("ConnectionStrings:Hangfire", ConnectionString);
@@ -82,6 +102,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
         // SwappableDistributedCache falls back to in-memory when Redis is unavailable
         builder.UseSetting("Redis:ConnectionString", "");
+        builder.UseSetting("RateLimit:Enabled", "false");
 
         // No-op email sink
         builder.UseSetting("Resend:ApiKey", "re_test_00000000000000000000000000000000");

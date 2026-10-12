@@ -140,7 +140,7 @@ public static class BroadcastSponsorProofEndpoints
                 bsi.slot_type           AS SlotType,
                 SUM(EXTRACT(EPOCH FROM (
                     COALESCE(bsi.ended_at, bs.ended_at) - bsi.started_at
-                )))                     AS TotalSeconds,
+                )))::double precision   AS TotalSeconds,
                 COUNT(*) FILTER (WHERE bsi.ended_at IS NOT NULL)  AS PlacementCount,
                 COUNT(*) FILTER (WHERE bsi.ended_at IS NULL)      AS IncompleteCount
             FROM broadcast_sponsor_impressions bsi
@@ -188,7 +188,7 @@ public static class BroadcastSponsorProofEndpoints
 
     // ── Private row types ─────────────────────────────────────────────────────
 
-    private sealed record ShowBasicRow(Guid Id, Guid OrgId, string Title, DateTimeOffset? EndedAt);
+    private sealed record ShowBasicRow(Guid Id, Guid OrgId, string Title, DateTime? EndedAt);
     private sealed record SponsorProofRow(
         Guid SponsorId,
         string SponsorName,

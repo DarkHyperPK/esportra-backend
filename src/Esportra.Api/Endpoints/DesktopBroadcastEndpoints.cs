@@ -676,7 +676,14 @@ public static class DesktopBroadcastEndpoints
         using var conn = db.CreateConnection();
 
         var session = await conn.QuerySingleOrDefaultAsync<BroadcastSessionRow>(
-            "SELECT id, organizer_id, match_id, series_total FROM broadcast_sessions WHERE id = @sessionId",
+            """
+            SELECT id AS Id,
+                   organizer_id AS OrganizerId,
+                   match_id AS MatchId,
+                   series_total::integer AS SeriesTotal
+            FROM broadcast_sessions
+            WHERE id = @sessionId
+            """,
             new { sessionId });
 
         if (session is null) return Results.NotFound(new { error = "Session not found." });

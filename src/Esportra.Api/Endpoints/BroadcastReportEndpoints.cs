@@ -54,7 +54,10 @@ public static class BroadcastReportEndpoints
         var matchesTask = FetchMatchesAsync(db, showId);
         var crewTask = FetchCrewAsync(db, showId);
         var sponsorsTask = FetchSponsorsAsync(db, showId);
-        var chaptersTask = FetchChaptersAsync(db, showId, show.StartedAt);
+        var chaptersTask = FetchChaptersAsync(
+            db,
+            showId,
+            show.StartedAt.HasValue ? new DateTimeOffset(show.StartedAt.Value) : null);
         var correctionsCountTask = FetchCorrectionsCountAsync(db, showId);
         var playersTask = FetchPlayersAsync(db, showId);
 
@@ -242,7 +245,7 @@ public static class BroadcastReportEndpoints
                 bsi.slot_type           AS SlotType,
                 SUM(EXTRACT(EPOCH FROM (
                     COALESCE(bsi.ended_at, bs.ended_at) - bsi.started_at
-                )))                     AS TotalSeconds,
+                )))::double precision   AS TotalSeconds,
                 COUNT(*) FILTER (WHERE bsi.ended_at IS NOT NULL)  AS PlacementCount,
                 COUNT(*) FILTER (WHERE bsi.ended_at IS NULL)      AS IncompleteCount
             FROM broadcast_sponsor_impressions bsi
@@ -376,9 +379,9 @@ public static class BroadcastReportEndpoints
         Guid OrgId,
         string Title,
         string Status,
-        DateTimeOffset? ScheduledAt,
-        DateTimeOffset? StartedAt,
-        DateTimeOffset? EndedAt);
+        DateTime? ScheduledAt,
+        DateTime? StartedAt,
+        DateTime? EndedAt);
 
     private sealed class MatchReportEntry(
         Guid matchId,
