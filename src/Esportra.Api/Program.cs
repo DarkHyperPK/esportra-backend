@@ -223,10 +223,12 @@ builder.Services.AddHealthChecks()
     .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
 
 // ── SignalR ────────────────────────────────────────────────────────────────────
+// Redis backplane ensures hub group broadcasts reach all clients regardless of
+// which API instance handled the mutation request (supports horizontal scaling).
 builder.Services.AddSignalR(opts =>
 {
     opts.EnableDetailedErrors = builder.Environment.IsDevelopment();
-});
+}).AddStackExchangeRedis(opts => opts.Configuration = redisConfig);
 
 // ── CORS ───────────────────────────────────────────────────────────────────────
 static string[] ResolveAllowedOrigins(IConfiguration config)
