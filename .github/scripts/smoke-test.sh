@@ -51,6 +51,11 @@ echo ""
 echo "── SignalR negotiate ──"
 smoke "Notifications hub"    POST "/hubs/notifications/negotiate?negotiateVersion=1" "401"
 smoke "Bracket hub"          POST "/hubs/bracket/negotiate?negotiateVersion=1" "401"
+smoke "Broadcast hub"        POST "/hubs/broadcast/negotiate?negotiateVersion=1" "401"
+
+echo ""
+echo "── Broadcast API boundary ──"
+smoke "Shows (unauthed)"     GET  "/api/broadcast/shows?orgId=00000000-0000-0000-0000-000000000001" "401"
 
 echo ""
 echo "══════════════════════════════"
