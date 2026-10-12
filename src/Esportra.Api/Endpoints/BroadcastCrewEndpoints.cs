@@ -131,7 +131,6 @@ public static class BroadcastCrewEndpoints
         var tokenHash = HashString(req.Token);
 
         using var conn = db.CreateConnection();
-        conn.Open();
         using var tx = conn.BeginTransaction();
 
         // FOR UPDATE prevents concurrent claims of the same invite token.
@@ -263,9 +262,9 @@ public static class BroadcastCrewEndpoints
 
     private sealed record InviteRow(Guid Id, Guid ShowId, string Role);
     private sealed record CrewListRow(Guid Id, Guid UserId, string Role,
-        DateTimeOffset? JoinedAt, bool IsActive, string? Username, string? AvatarUrl);
+        DateTime? JoinedAt, bool IsActive, string? Username, string? AvatarUrl);
     private sealed record PendingInviteRow(Guid Id, Guid ShowId, string Role,
-        DateTimeOffset ExpiresAt, DateTimeOffset CreatedAt);
+        DateTime ExpiresAt, DateTime CreatedAt);
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────

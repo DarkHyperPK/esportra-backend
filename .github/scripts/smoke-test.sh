@@ -51,7 +51,9 @@ echo ""
 echo "── SignalR negotiate ──"
 smoke "Notifications hub"    POST "/hubs/notifications/negotiate?negotiateVersion=1" "401"
 smoke "Bracket hub"          POST "/hubs/bracket/negotiate?negotiateVersion=1" "401"
-smoke "Broadcast hub"        POST "/hubs/broadcast/negotiate?negotiateVersion=1" "401"
+# BroadcastHub uses custom post-negotiate auth (3 connection types incl. node bearer tokens
+# that don't carry Supabase JWTs), so negotiate intentionally returns 200 for all clients.
+smoke "Broadcast hub"        POST "/hubs/broadcast/negotiate?negotiateVersion=1" "200"
 
 echo ""
 echo "── Broadcast API boundary ──"

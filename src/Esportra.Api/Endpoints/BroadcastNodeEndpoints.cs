@@ -76,7 +76,6 @@ public static class BroadcastNodeEndpoints
 
         var codeHash = HashString(req.Code.ToUpperInvariant());
         using var conn = db.CreateConnection();
-        conn.Open();
         using var tx = conn.BeginTransaction();
 
         // Atomically lock and read the code row — FOR UPDATE prevents concurrent claims.
