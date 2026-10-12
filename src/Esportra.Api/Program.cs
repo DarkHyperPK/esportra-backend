@@ -187,8 +187,10 @@ static ConfigurationOptions BuildRedisConfig(IConfiguration config)
     }
 
     // Fallback to SE.Redis connection string format
-    var connStr = config.GetConnectionString("Redis") ?? "localhost:6379";
-    return ConfigurationOptions.Parse(connStr);
+    // ?? does not guard against empty string — use IsNullOrWhiteSpace so tests that clear
+    // ConnectionStrings:Redis to "" still get a parseable fallback.
+    var connStr = config.GetConnectionString("Redis");
+    return ConfigurationOptions.Parse(string.IsNullOrWhiteSpace(connStr) ? "localhost:6379" : connStr);
 }
 
 // AbortOnConnectFail=false means startup never blocks; SE.Redis reconnects automatically
