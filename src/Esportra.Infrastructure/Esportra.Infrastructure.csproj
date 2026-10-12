@@ -9,11 +9,11 @@
     <PackageReference Include="Dapper" Version="2.1.72" />
     <PackageReference Include="dbup-postgresql" Version="5.0.40" />
     <PackageReference Include="MailKit" Version="4.17.0" />
-    <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="9.0.3" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection" Version="9.0.20" />
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.4.0" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.20" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.4" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.20" />
     <PackageReference Include="Npgsql" Version="10.0.1" />
     <PackageReference Include="StackExchange.Redis" Version="2.11.8" />
   </ItemGroup>

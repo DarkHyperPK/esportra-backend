@@ -55,7 +55,7 @@ public static class SponsorPlacementAssetEndpoints
         {
             validated = await SponsorCreativeImageValidator.ValidateAsync(file, validationPolicy, ct);
         }
-        catch (Exception exception) when (exception is InvalidDataException or SixLabors.ImageSharp.ImageFormatException or NotSupportedException)
+        catch (Exception exception) when (exception is InvalidDataException or NotSupportedException)
         {
             return Results.BadRequest(new { error = exception is InvalidDataException ? exception.Message : "Creative must be a valid JPEG, PNG, or WebP raster image." });
         }
