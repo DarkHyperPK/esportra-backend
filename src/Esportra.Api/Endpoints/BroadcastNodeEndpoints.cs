@@ -209,8 +209,8 @@ public static class BroadcastNodeEndpoints
         return new string(chars);
     }
 
-    private sealed record PairingCodeRow(Guid Id, Guid OrgId, DateTimeOffset? ClaimedAt);
-    private sealed record NodeListRow(Guid Id, string Name, string Capabilities, DateTimeOffset? LastSeenAt, bool IsActive);
+    private sealed record PairingCodeRow(Guid Id, Guid OrgId, DateTime? ClaimedAt);
+    private sealed record NodeListRow(Guid Id, string Name, string Capabilities, DateTime? LastSeenAt, bool IsActive);
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────

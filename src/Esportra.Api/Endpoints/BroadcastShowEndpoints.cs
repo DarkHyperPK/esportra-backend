@@ -491,14 +491,14 @@ public static class BroadcastShowEndpoints
     // ── Private row types ─────────────────────────────────────────────────────
 
     private sealed record ShowRow(Guid Id, Guid OrgId, string Title, string Status);
-    private sealed record ShowChapterRow(Guid Id, Guid OrgId, string Status, DateTimeOffset? StartedAt);
+    private sealed record ShowChapterRow(Guid Id, Guid OrgId, string Status, DateTime? StartedAt);
     private sealed record ShowListRow(Guid Id, string Title, string Status,
-        DateTimeOffset? ScheduledAt, DateTimeOffset? StartedAt, DateTimeOffset? EndedAt,
-        DateTimeOffset CreatedAt, Guid? TournamentId);
+        DateTime? ScheduledAt, DateTime? StartedAt, DateTime? EndedAt,
+        DateTime CreatedAt, Guid? TournamentId);
     private sealed record ShowDetailRow(
         Guid Id, Guid OrgId, string Title, string Status,
-        DateTimeOffset? ScheduledAt, DateTimeOffset? StartedAt, DateTimeOffset? EndedAt,
-        DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, DateTimeOffset? LastSyncedAt,
+        DateTime? ScheduledAt, DateTime? StartedAt, DateTime? EndedAt,
+        DateTime CreatedAt, DateTime UpdatedAt, DateTime? LastSyncedAt,
         Guid? TournamentId,
         int NodeCount, int MatchSlotCount, int MatchSlotsWithCode,
         int TalentCount, int SponsorCount, int CrewCount);
