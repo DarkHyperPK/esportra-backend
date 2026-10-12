@@ -405,9 +405,17 @@ public sealed class BroadcastHub : Hub
     {
         var authHeader = httpCtx.Request.Headers.Authorization.ToString();
         const string bearer = "Bearer ";
-        if (!authHeader.StartsWith(bearer, StringComparison.OrdinalIgnoreCase)) return null;
-        var token = authHeader[bearer.Length..].Trim();
-        return string.IsNullOrEmpty(token) ? null : token;
+        if (authHeader.StartsWith(bearer, StringComparison.OrdinalIgnoreCase))
+        {
+            var token = authHeader[bearer.Length..].Trim();
+            if (!string.IsNullOrEmpty(token)) return token;
+        }
+
+        // SignalR WebSocket upgrades cannot carry custom headers; the web client sends the
+        // JWT via ?access_token= which the JWT middleware reads for auth but does not write
+        // back to the Authorization header.
+        var queryToken = httpCtx.Request.Query["access_token"].ToString();
+        return string.IsNullOrEmpty(queryToken) ? null : queryToken;
     }
 
     /// <summary>SHA-256 hex of the UTF-8 bytes of <paramref name="token"/>.</summary>
