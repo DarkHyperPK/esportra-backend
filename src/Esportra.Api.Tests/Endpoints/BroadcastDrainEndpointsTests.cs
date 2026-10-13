@@ -348,11 +348,43 @@ public sealed partial class BroadcastDrainEndpointsTests
             {
                 corrections = new[]
                 {
-                    new { matchCode = "GF1", mapIndex = 0, teamAScore = 13, teamBScore = 7 },
+                    new { matchCode = "GF1", mapIndex = 1, teamAScore = 13, teamBScore = 7 },
                 },
             });
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(10)]
+    public async Task DrainCorrections_Returns400_AndDoesNotInsert_WhenMapNumberIsInvalid(int mapIndex)
+    {
+        var (rawToken, _, showId, _) = await SeedNodeAndLiveShowAsync();
+        var response = await CreateNodeClient(rawToken).PostAsJsonAsync(
+            $"/api/broadcast/shows/{showId}/corrections",
+            new { corrections = new[] { new { matchCode = "GF1", mapIndex, teamAScore = 13, teamBScore = 7 } } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var conn = _seeder.OpenConnection();
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM broadcast_corrections WHERE show_id = @showId", new { showId }))
+            .Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DrainCorrections_Returns403_AndDoesNotInsert_WhenExistingShowBelongsToAnotherOrganization()
+    {
+        var (rawToken, _, _, _) = await SeedNodeAndLiveShowAsync();
+        var (_, _, foreignShowId, _) = await SeedNodeAndLiveShowAsync();
+        var response = await CreateNodeClient(rawToken).PostAsJsonAsync(
+            $"/api/broadcast/shows/{foreignShowId}/corrections",
+            new { corrections = new[] { new { matchCode = "GF1", mapIndex = 1, teamAScore = 13, teamBScore = 7 } } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        await using var conn = _seeder.OpenConnection();
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM broadcast_corrections WHERE show_id = @foreignShowId", new { foreignShowId }))
+            .Should().Be(0);
     }
 
     [Fact]

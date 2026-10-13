@@ -39,6 +39,10 @@ public sealed partial class BroadcastShowEndpointsTests
         var (_, foreignOrg) = await SeedOrgOwnerAsync();
         var tournamentId = await _seeder.SeedTournamentAsync(ownerId);
         var client = _factory.CreateAuthenticatedClient(ownerId);
+        var unassignedWorkspace = await client.GetFromJsonAsync<JsonElement>($"/api/tournaments/{tournamentId}/broadcast");
+        unassignedWorkspace.GetProperty("canManage").GetBoolean().Should().BeFalse();
+        unassignedWorkspace.GetProperty("access").GetString().Should().Be("organization_required");
+        unassignedWorkspace.GetProperty("shows").GetArrayLength().Should().Be(0);
         (await client.PostAsJsonAsync($"/api/tournaments/{tournamentId}/broadcast/shows", new { title = "Invalid", orgId = foreignOrg })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await client.PostAsJsonAsync($"/api/tournaments/{tournamentId}/broadcast/shows", new { title = "Owned", orgId })).StatusCode.Should().Be(HttpStatusCode.OK);
         await using var conn = _seeder.OpenConnection();
@@ -47,21 +51,24 @@ public sealed partial class BroadcastShowEndpointsTests
     }
 
     [Fact]
-    public async Task TournamentBroadcast_OrganizerDoesNotInheritOrganizationOwnerRights()
+    public async Task TournamentBroadcast_OrganizationLinkUsesCanonicalOwnerAndDeniesPreviousOrganizer()
     {
         var (ownerId, orgId) = await SeedOrgOwnerAsync();
-        var (organizerId, otherOrg) = await SeedOrgOwnerAsync();
+        var (organizerId, _) = await SeedOrgOwnerAsync();
         var tournamentId = await _seeder.SeedTournamentAsync(organizerId);
         await using var conn = _seeder.OpenConnection();
         await conn.ExecuteAsync("UPDATE tournaments SET organization_id = @orgId WHERE id = @tournamentId", new { orgId, tournamentId });
+        // The existing organization-link trigger synchronizes organizer_id to
+        // the organization's owner; the original creator is no longer organizer.
+        (await conn.QuerySingleAsync<Guid>("SELECT organizer_id FROM tournaments WHERE id = @tournamentId", new { tournamentId }))
+            .Should().Be(ownerId);
         var client = _factory.CreateAuthenticatedClient(organizerId);
-        var workspace = await client.GetFromJsonAsync<JsonElement>($"/api/tournaments/{tournamentId}/broadcast");
-        workspace.GetProperty("canManage").GetBoolean().Should().BeFalse();
-        workspace.GetProperty("shows").GetArrayLength().Should().Be(0);
+        (await client.GetAsync($"/api/tournaments/{tournamentId}/broadcast")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await client.PostAsJsonAsync($"/api/tournaments/{tournamentId}/broadcast/shows", new { title = "Unauthorized" })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         var (outsider, _) = await SeedOrgOwnerAsync();
         (await _factory.CreateAuthenticatedClient(outsider).GetAsync($"/api/tournaments/{tournamentId}/broadcast")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await _factory.CreateAuthenticatedClient(ownerId).GetAsync($"/api/tournaments/{tournamentId}/broadcast")).StatusCode.Should().Be(HttpStatusCode.OK);
+        var ownerWorkspace = await _factory.CreateAuthenticatedClient(ownerId).GetFromJsonAsync<JsonElement>($"/api/tournaments/{tournamentId}/broadcast");
+        ownerWorkspace.GetProperty("canManage").GetBoolean().Should().BeTrue();
     }
 
     [Fact]
