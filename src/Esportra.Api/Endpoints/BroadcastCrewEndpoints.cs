@@ -13,6 +13,7 @@ public static class BroadcastCrewEndpoints
 
     public static void MapBroadcastCrewEndpoints(this WebApplication app)
     {
+        app.MapBroadcastCrewWorkspaceEndpoints();
         app.MapPost("/api/broadcast/shows/{showId}/crew/invites", CreateCrewInvite)
             .RequireAuthorization("Authenticated");
 
@@ -192,7 +193,7 @@ public static class BroadcastCrewEndpoints
             """
             SELECT c.id AS Id, c.user_id AS UserId, c.role AS Role,
                    c.joined_at AS JoinedAt, c.is_active AS IsActive,
-                   p.username AS Username, p.avatar_url AS AvatarUrl
+                   p.username AS DisplayName, p.avatar_url AS AvatarUrl
             FROM broadcast_crew c
             LEFT JOIN profiles p ON p.id = c.user_id
             WHERE c.show_id = @showId AND c.is_active = true
@@ -262,7 +263,7 @@ public static class BroadcastCrewEndpoints
 
     private sealed record InviteRow(Guid Id, Guid ShowId, string Role);
     private sealed record CrewListRow(Guid Id, Guid UserId, string Role,
-        DateTime? JoinedAt, bool IsActive, string? Username, string? AvatarUrl);
+        DateTime? JoinedAt, bool IsActive, string? DisplayName, string? AvatarUrl);
     private sealed record PendingInviteRow(Guid Id, Guid ShowId, string Role,
         DateTime ExpiresAt, DateTime CreatedAt);
 }

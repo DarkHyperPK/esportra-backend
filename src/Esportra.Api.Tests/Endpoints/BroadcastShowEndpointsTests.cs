@@ -19,7 +19,7 @@ namespace Esportra.Api.Tests.Endpoints;
 ///   GetShow    — happy path, 401 unauthenticated, 404 unknown show, 403 not org owner
 /// </summary>
 [Collection(IntegrationCollection.Name)]
-public sealed class BroadcastShowEndpointsTests
+public sealed partial class BroadcastShowEndpointsTests
 {
     private readonly ApiFactory _factory;
     private readonly DbSeeder _seeder;

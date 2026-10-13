@@ -128,6 +128,8 @@ public static class BroadcastDrainEndpoints
 
             if (req.Corrections is null || req.Corrections.Count == 0)
                 return Results.Ok(new { inserted = 0 });
+            if (req.Corrections.Count > 100 || req.Corrections.Any(item => item is null || item.MapIndex is < 1 or > 9 || item.TeamAScore < 0 || item.TeamBScore < 0 || item.Reason?.Length > 500 || string.IsNullOrWhiteSpace(item.MatchCode) || item.MatchCode.Length > 64 || item.MatchCode.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('_' or '-')) || (item.IdempotencyKey is not null && !Guid.TryParse(item.IdempotencyKey, out _))))
+                return Results.BadRequest(new { error = "Invalid correction batch. Use up to 100 valid map results." });
 
             using var conn = db.CreateConnection();
 

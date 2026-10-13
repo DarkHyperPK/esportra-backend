@@ -117,9 +117,10 @@ public sealed class BroadcastHub : Hub
         try
         {
             using var conn = _db.CreateConnection();
-            await conn.ExecuteAsync(
-                "UPDATE broadcast_nodes SET last_seen_at = NOW() WHERE id = @id",
+            var affected = await conn.ExecuteAsync(
+                "UPDATE broadcast_nodes SET last_seen_at = NOW() WHERE id = @id AND is_active = true",
                 new { id = nodeId });
+            if (affected == 0) Context.Abort();
         }
         catch (Exception ex)
         {
@@ -177,8 +178,12 @@ public sealed class BroadcastHub : Hub
             using var conn = _db.CreateConnection();
 
             var showId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT id FROM broadcast_shows WHERE org_id = @orgId AND status = 'live' LIMIT 1",
-                new { orgId });
+                """
+                SELECT s.id FROM broadcast_shows s JOIN broadcast_nodes n ON n.org_id = s.org_id
+                WHERE s.org_id = @orgId AND n.id = @nodeId AND n.is_active = true AND s.status = 'live'
+                ORDER BY s.started_at DESC LIMIT 1
+                """,
+                new { orgId, nodeId });
 
             if (!showId.HasValue)
             {

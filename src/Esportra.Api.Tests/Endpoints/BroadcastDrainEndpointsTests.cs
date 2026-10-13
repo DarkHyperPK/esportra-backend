@@ -24,7 +24,7 @@ namespace Esportra.Api.Tests.Endpoints;
 ///   - Drain endpoint partial-rejects a mixed valid/invalid batch
 /// </summary>
 [Collection(IntegrationCollection.Name)]
-public sealed class BroadcastDrainEndpointsTests
+public sealed partial class BroadcastDrainEndpointsTests
 {
     private readonly ApiFactory _factory;
     private readonly DbSeeder _seeder;

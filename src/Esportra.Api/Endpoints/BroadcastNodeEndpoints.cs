@@ -16,7 +16,8 @@ public static class BroadcastNodeEndpoints
     public static void MapBroadcastNodeEndpoints(this WebApplication app)
     {
         app.MapPost("/api/broadcast/nodes/codes", GeneratePairingCode)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
         app.MapPost("/api/broadcast/nodes/pair", PairNode)
             .WithMetadata(new RateLimitPolicyMetadata("strict"));
@@ -25,7 +26,8 @@ public static class BroadcastNodeEndpoints
             .RequireAuthorization("Authenticated");
 
         app.MapDelete("/api/broadcast/nodes/{nodeId}", DeactivateNode)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated")
+            .WithMetadata(new RateLimitPolicyMetadata("fixed"));
     }
 
     // ── POST /api/broadcast/nodes/codes ──────────────────────────────────────
@@ -154,7 +156,7 @@ public static class BroadcastNodeEndpoints
                    last_seen_at AS LastSeenAt, is_active AS IsActive
             FROM broadcast_nodes
             WHERE org_id = @orgId AND is_active = true
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC LIMIT 100
             """,
             new { orgId });
 
