@@ -72,12 +72,21 @@ public static class BroadcastSponsorProofEndpoints
                 return Results.BadRequest(new { error = $"impressions[{i}].sponsorId is required." });
             if (imp.StartedAt == default)
                 return Results.BadRequest(new { error = $"impressions[{i}].startedAt is required." });
+            if (imp.EndedAt < imp.StartedAt)
+                return Results.BadRequest(new { error = $"impressions[{i}].endedAt must not precede startedAt." });
             if (!ValidSlotTypes.Contains(imp.SlotType ?? ""))
                 return Results.BadRequest(new
                 {
                     error = $"impressions[{i}].slotType must be one of: lower_third, scorebug, break_fullscreen, custom."
                 });
         }
+
+        var sponsorIds = req.Impressions.Select(imp => imp.SponsorId).Distinct().ToArray();
+        if (await conn.ExecuteScalarAsync<int>("SELECT COUNT(*)::int FROM broadcast_show_sponsors WHERE show_id = @showId AND id = ANY(@sponsorIds)", new { showId, sponsorIds }) != sponsorIds.Length)
+            return Results.Json(new { error = "Sponsors must belong to this show." }, statusCode: 403);
+        var segmentIds = req.Impressions.Where(imp => imp.SegmentId.HasValue).Select(imp => imp.SegmentId!.Value).Distinct().ToArray();
+        if (segmentIds.Length > 0 && await conn.ExecuteScalarAsync<int>("SELECT COUNT(*)::int FROM rundown_segments WHERE show_id = @showId AND id = ANY(@segmentIds)", new { showId, segmentIds }) != segmentIds.Length)
+            return Results.Json(new { error = "Segments must belong to this show." }, statusCode: 403);
 
         // Insert via service_role connection (API connection IS the service_role connection;
         // no authenticated-user INSERT policy exists on broadcast_sponsor_impressions by design).
@@ -90,7 +99,11 @@ public static class BroadcastSponsorProofEndpoints
                     (show_id, sponsor_id, segment_id, started_at, ended_at, slot_type)
                 VALUES
                     (@showId, @sponsorId, @segmentId, @startedAt, @endedAt, @slotType)
-                ON CONFLICT (show_id, sponsor_id, started_at) DO NOTHING
+                ON CONFLICT (show_id, sponsor_id, started_at) DO UPDATE
+                SET ended_at = EXCLUDED.ended_at
+                WHERE broadcast_sponsor_impressions.ended_at IS NULL
+                  AND EXCLUDED.ended_at IS NOT NULL
+                  AND broadcast_sponsor_impressions.slot_type = EXCLUDED.slot_type
                 """,
                 new
                 {
@@ -104,7 +117,7 @@ public static class BroadcastSponsorProofEndpoints
             accepted += rows;
         }
 
-        return Results.Ok(new { accepted });
+        return Results.Ok(new { accepted, acknowledged = req.Impressions.Count });
     }
 
     // ── GET /api/broadcast/shows/{showId}/sponsor-proof ───────────────────────

@@ -92,6 +92,7 @@ public sealed class SmtpEmailService(
                     Get("endDate"), Get("game"),
                     Get("teamName"), Get("registrationType")),
 
+            EmailType.BroadcastCrewInvite => EmailTemplates.BroadcastCrewInvite(Get("showTitle"), Get("role"), Get("acceptUrl")),
             EmailType.TeamInvite =>
                 EmailTemplates.TeamInvite(
                     Get("inviteeName"), Get("teamName"),

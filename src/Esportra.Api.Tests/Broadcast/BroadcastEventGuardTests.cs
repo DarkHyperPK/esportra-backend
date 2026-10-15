@@ -13,6 +13,26 @@ namespace Esportra.Api.Tests.Broadcast;
 /// </summary>
 public sealed class BroadcastEventGuardTests
 {
+    [Fact]
+    public void Production_metadata_accepts_only_typed_actions_and_incidents()
+    {
+        var action = JsonSerializer.SerializeToElement(new { action = "hold", actorKind = "operator", cause = "manual", wallClockMs = 1000 });
+        var incident = JsonSerializer.SerializeToElement(new { kind = "stale_feed", status = "opened", actorKind = "system", cause = "missing_events", wallClockMs = 1000 });
+        BroadcastEventGuard.IsValidTypedMetadata("ProductionAction", action).Should().BeTrue();
+        BroadcastEventGuard.IsValidTypedMetadata("ProductionAction", JsonSerializer.SerializeToElement(new { action = "manual_take", actorKind = "operator", cause = "manual", wallClockMs = 1000 })).Should().BeTrue();
+        BroadcastEventGuard.IsValidTypedMetadata("ProductionIncident", incident).Should().BeTrue();
+        BroadcastEventGuard.IsValidTypedMetadata("ProductionAction", JsonSerializer.SerializeToElement(new { action = "hold", actorKind = "operator", cause = "manual", wallClockMs = 1000, rawGep = "secret" })).Should().BeFalse();
+        BroadcastEventGuard.IsValidTypedMetadata("ProductionIncident", JsonSerializer.SerializeToElement(new { kind = "stale_feed", actorKind = "system", cause = "missing_events", wallClockMs = 1000 })).Should().BeFalse();
+    }
+    [Fact]
+    public void Round_metadata_rejects_raw_game_fields_and_invalid_clock_values()
+    {
+        var valid = JsonSerializer.SerializeToElement(new { segmentId = "round:00000000-0000-4000-8000-000000000061:HAVEN:1", segmentName = "HAVEN · Round 1", segmentType = "round", wallClockMs = 1000 });
+        BroadcastEventGuard.IsValidTypedMetadata("RoundStarted", valid).Should().BeTrue();
+        BroadcastEventGuard.IsValidTypedMetadata("RoundEnded", valid).Should().BeTrue();
+        BroadcastEventGuard.IsValidTypedMetadata("RoundStarted", JsonSerializer.SerializeToElement(new { rawGep = "capture", wallClockMs = 1000 })).Should().BeFalse();
+        BroadcastEventGuard.IsValidTypedMetadata("RoundStarted", JsonSerializer.SerializeToElement(new { segmentId = "round:bad:HAVEN:1", segmentName = "Round", segmentType = "round", wallClockMs = -1 })).Should().BeFalse();
+    }
     // ── (a) event_type allowlist ──────────────────────────────────────────────
 
     [Theory]

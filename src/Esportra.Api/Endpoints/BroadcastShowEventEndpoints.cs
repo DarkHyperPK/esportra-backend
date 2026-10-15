@@ -30,6 +30,7 @@ public static class BroadcastShowEventEndpoints
         {
             if (item is null || !BroadcastEventGuard.IsValidEventId(item.EventId) ||
                 !BroadcastEventGuard.IsAllowedEventType(item.EventType) ||
+                !BroadcastEventGuard.IsValidTypedMetadata(item.EventType, item.Payload) ||
                 !BroadcastEventGuard.IsDataWithinSizeLimit(item.Payload, out var json)) continue;
             rows.Add(new { event_id = Guid.Parse(item.EventId).ToString(), event_type = item.EventType, payload = JsonSerializer.Deserialize<JsonElement>(json), created_at = item.Ts?.UtcDateTime ?? DateTime.UtcNow });
         }

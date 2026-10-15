@@ -168,7 +168,7 @@ public static class BroadcastReportEndpoints
 
             var gameId = row.GameId.Value;
             var hasOverride = correctionsByGame.TryGetValue(gameId, out var types)
-                && types.Contains("gep_conflict_override");
+                && (types.Contains("gep_conflict_override") || types.Contains("air_result_review"));
             var hasAnyCorrection = correctionsByGame.ContainsKey(gameId);
             var matchBroadcastSubmitted = broadcastMatchIds.Contains(row.MatchId);
 
@@ -298,7 +298,7 @@ public static class BroadcastReportEndpoints
                 (payload->>'wallClockMs')::bigint    AS WallClockMs
             FROM broadcast_events
             WHERE show_id = @showId
-              AND event_type IN ('SegmentTake', 'SegmentDone')
+              AND event_type IN ('SegmentTake', 'SegmentDone', 'RoundStarted', 'RoundEnded')
               AND (payload->>'wallClockMs') IS NOT NULL
             ORDER BY (payload->>'wallClockMs')::bigint ASC
             """,

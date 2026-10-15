@@ -10,6 +10,17 @@ namespace Esportra.Infrastructure.Email;
 /// </summary>
 public static class EmailTemplates
 {
+    public static (string Subject, string Html) BroadcastCrewInvite(string showTitle, string role, string acceptUrl) =>
+    (
+        $"Broadcast crew invitation: {showTitle.Replace('\r', ' ').Replace('\n', ' ')}",
+        Wrap($"Crew invitation for {E(showTitle)}", "Broadcast Invitation", $"""
+            {Eyebrow("Esportra Air crew")}
+            {H1($"Join the broadcast for {E(showTitle)}")}
+            {P($"You have been invited as <strong>{E(role.Replace('_', ' '))}</strong>. Sign in with the invited email address to accept.")}
+            {Btn(acceptUrl, "Review invitation")}
+            {P("This invitation expires in 72 hours and can be revoked by the organizer.")}
+        """)
+    );
     // ── Palette ───────────────────────────────────────────────────────────────
     private const string PageBg = "#050505";
     private const string CardBg = "#0a0a0c";

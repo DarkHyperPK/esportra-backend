@@ -463,12 +463,17 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.PublicVetoOverlayUsageSche
 // ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
+builder.Services.AddScoped<Esportra.Core.Broadcast.IBroadcastEnrollmentRepository, BroadcastEnrollmentRepository>();
+builder.Services.AddHostedService<BroadcastEnrollmentJob>();
 
 // ── OpenAPI ────────────────────────────────────────────────────────────────────
 builder.Services.AddOpenApi();
 
 // ═════════════════════════════════════════════════════════════════════════════
 Console.WriteLine("[STARTUP] Building app...");
+builder.Services.AddScoped<Esportra.Api.Services.AirAccountService>();
+builder.Services.AddSingleton<Esportra.Api.Services.AirAccessSigner>();
+
 var app = builder.Build();
 Console.WriteLine("[STARTUP] App built successfully.");
 
@@ -675,6 +680,13 @@ app.MapBroadcastCrewEndpoints();
 app.MapBroadcastDrainEndpoints();
 app.MapBroadcastSponsorProofEndpoints();
 app.MapBroadcastReportEndpoints();
+app.MapAirAuthEndpoints();
+app.MapAirAccountEndpoints();
+app.MapBroadcastBracketPresentationEndpoints();
+app.MapAirProjectEndpoints();
+app.MapAirEventEndpoints();
+app.MapAirAssetEndpoints();
+app.MapAirAdminEndpoints();
 app.MapGhostModeEndpoints();
 app.MapOperationsEndpoints();
 app.MapIntegrationEndpoints();

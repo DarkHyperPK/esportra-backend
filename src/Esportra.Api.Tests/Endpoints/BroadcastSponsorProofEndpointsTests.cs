@@ -29,7 +29,7 @@ namespace Esportra.Api.Tests.Endpoints;
 ///   - placementCount counts only closed impressions
 /// </summary>
 [Collection(IntegrationCollection.Name)]
-public sealed class BroadcastSponsorProofEndpointsTests
+public sealed partial class BroadcastSponsorProofEndpointsTests
 {
     private readonly ApiFactory _factory;
     private readonly DbSeeder _seeder;

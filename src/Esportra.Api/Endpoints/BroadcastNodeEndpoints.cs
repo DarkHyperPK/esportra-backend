@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Hubs;
+using Microsoft.AspNetCore.SignalR;
 using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
@@ -24,6 +26,14 @@ public static class BroadcastNodeEndpoints
 
         app.MapGet("/api/broadcast/nodes", ListNodes)
             .RequireAuthorization("Authenticated");
+
+        app.MapGet("/api/broadcast/nodes/session", async (HttpContext ctx, IDbConnectionFactory db) =>
+        {
+            var node = await BroadcastHelpers.ValidateNodeBearerAsync(ctx, db);
+            return node is null
+                ? Results.Json(new { error = "node_not_active" }, statusCode: 401)
+                : Results.Ok(new { nodeId = node.NodeId, active = true });
+        }).AllowAnonymous().WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
         app.MapDelete("/api/broadcast/nodes/{nodeId}", DeactivateNode)
             .RequireAuthorization("Authenticated")
@@ -153,7 +163,8 @@ public static class BroadcastNodeEndpoints
         var nodes = await conn.QueryAsync<NodeListRow>(
             """
             SELECT id AS Id, name AS Name, capabilities AS Capabilities,
-                   last_seen_at AS LastSeenAt, is_active AS IsActive
+                   last_seen_at AS LastSeenAt, is_active AS IsActive,
+                   runtime_status::text AS RuntimeStatus, runtime_seen_at AS RuntimeSeenAt
             FROM broadcast_nodes
             WHERE org_id = @orgId AND is_active = true
             ORDER BY created_at DESC LIMIT 100
@@ -169,6 +180,7 @@ public static class BroadcastNodeEndpoints
         Guid nodeId,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<BroadcastHub> hub,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -185,9 +197,9 @@ public static class BroadcastNodeEndpoints
             """,
             new { nodeId, userId = userCtx.UserIdGuid });
 
-        return affected > 0
-            ? Results.Ok(new { success = true })
-            : Results.NotFound(new { error = "node_not_found" });
+        if (affected == 0) return Results.NotFound(new { error = "node_not_found" });
+        await hub.Clients.Group($"node:{nodeId}").SendAsync("NodeRevoked", cancellationToken: ct);
+        return Results.Ok(new { success = true });
     }
 
     // ── Private helpers (delegates to BroadcastHelpers) ──────────────────────
@@ -211,7 +223,7 @@ public static class BroadcastNodeEndpoints
     }
 
     private sealed record PairingCodeRow(Guid Id, Guid OrgId, DateTime? ClaimedAt);
-    private sealed record NodeListRow(Guid Id, string Name, string Capabilities, DateTime? LastSeenAt, bool IsActive);
+    private sealed record NodeListRow(Guid Id, string Name, string Capabilities, DateTime? LastSeenAt, bool IsActive, string? RuntimeStatus, DateTime? RuntimeSeenAt);
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────

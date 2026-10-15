@@ -1,12 +1,17 @@
 using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using Dapper;
+using System.Net.Mail;
+using Esportra.Api.Hubs;
+using Esportra.Infrastructure.Email;
+using Microsoft.AspNetCore.SignalR;
+using Esportra.Api.Middleware;
 using Esportra.Contracts.Auth;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Esportra.Api.Endpoints;
 
-public static class BroadcastCrewEndpoints
+public static partial class BroadcastCrewEndpoints
 {
     private static readonly HashSet<string> ValidCrewRoles =
         ["producer", "observer", "monitor", "technical_director", "replay_operator"];
@@ -14,8 +19,9 @@ public static class BroadcastCrewEndpoints
     public static void MapBroadcastCrewEndpoints(this WebApplication app)
     {
         app.MapBroadcastCrewWorkspaceEndpoints();
+        app.MapBroadcastCrewInvitationInbox();
         app.MapPost("/api/broadcast/shows/{showId}/crew/invites", CreateCrewInvite)
-            .RequireAuthorization("Authenticated");
+            .RequireAuthorization("Authenticated").WithMetadata(new RateLimitPolicyMetadata("strict"));
 
         app.MapDelete("/api/broadcast/shows/{showId}/crew/invites/{inviteId}", RevokeCrewInvite)
             .RequireAuthorization("Authenticated");
@@ -37,6 +43,10 @@ public static class BroadcastCrewEndpoints
         [FromBody] CreateCrewInviteRequest req,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IEmailService email,
+        IHubContext<NotificationHub> notifications,
+        IConfiguration config,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -47,6 +57,13 @@ public static class BroadcastCrewEndpoints
             {
                 error = "role must be one of: producer, observer, monitor, technical_director, replay_operator",
             });
+        string? recipientEmail = null;
+        if (!string.IsNullOrWhiteSpace(req.Email))
+        {
+            if (req.Email.Length > 254 || !MailAddress.TryCreate(req.Email.Trim(), out var address) || address.Address != req.Email.Trim())
+                return Results.BadRequest(new { error = "Enter a valid email address." });
+            recipientEmail = address.Address.ToLowerInvariant();
+        }
 
         using var conn = db.CreateConnection();
         var orgId = await conn.QuerySingleOrDefaultAsync<Guid?>(
@@ -56,28 +73,19 @@ public static class BroadcastCrewEndpoints
         if (!await IsOrgOwnerAsync(conn, orgId.Value, userCtx.UserIdGuid))
             return Results.Json(new { error = "forbidden" }, statusCode: 403);
 
-        // Token shown once — raw never stored; only SHA-256 hash persisted.
-        var rawToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        var tokenHash = HashString(rawToken);
-        var expiresAt = DateTimeOffset.UtcNow.AddHours(72);
+        var invite = await IssueTargetedInvite(conn, showId, orgId.Value, userCtx.UserIdGuid, req.Role, recipientEmail);
+        var inviteId = invite.Id; var rawToken = invite.Token; var expiresAt = invite.ExpiresAt;
+        var recipientId = invite.RecipientId; var title = invite.Title;
 
-        var inviteId = await conn.QuerySingleAsync<Guid>(
-            """
-            INSERT INTO broadcast_crew_invites (show_id, org_id, role, token_hash, created_by, expires_at)
-            VALUES (@showId, @orgId, @role, @tokenHash, @createdBy, @expiresAt)
-            RETURNING id
-            """,
-            new
-            {
-                showId,
-                orgId = orgId.Value,
-                role = req.Role,
-                tokenHash,
-                createdBy = userCtx.UserIdGuid,
-                expiresAt,
-            });
+        var emailStatus = recipientEmail is null ? "not_requested" : await SendCrewInviteEmail(email, config, recipientEmail, title, req.Role, rawToken, ct);
+        await conn.ExecuteAsync("UPDATE broadcast_crew_invites SET email_status = @emailStatus WHERE id = @inviteId", new { emailStatus, inviteId });
+        if (recipientId.HasValue)
+        {
+            try { await notifications.Clients.Group(NotificationHub.UserGroup(recipientId.Value.ToString())).SendAsync(NotificationHubEvents.NewNotification, new { type = "broadcast", title = "Broadcast crew invitation" }, ct); }
+            catch { loggerFactory.CreateLogger("BroadcastCrewInvites").LogWarning("Crew invitation notification push failed; inbox remains available."); }
+        }
 
-        return Results.Ok(new { inviteId, token = rawToken, expiresAt });
+        return Results.Ok(new { inviteId, token = rawToken, expiresAt, emailStatus, recipientBound = recipientEmail is not null });
     }
 
     // ── DELETE /api/broadcast/shows/{showId}/crew/invites/{inviteId} ──────────
@@ -137,7 +145,7 @@ public static class BroadcastCrewEndpoints
         // FOR UPDATE prevents concurrent claims of the same invite token.
         var invite = await conn.QuerySingleOrDefaultAsync<InviteRow>(
             """
-            SELECT id AS Id, show_id AS ShowId, role AS Role
+            SELECT id AS Id, show_id AS ShowId, role AS Role, recipient_email AS RecipientEmail, recipient_user_id AS RecipientUserId
             FROM broadcast_crew_invites
             WHERE token_hash = @tokenHash
               AND expires_at > NOW()
@@ -151,6 +159,7 @@ public static class BroadcastCrewEndpoints
             tx.Rollback();
             return Results.NotFound(new { error = "invite_not_found_or_expired" });
         }
+        if (!await InviteRecipientMatches(conn, tx, invite, userCtx.UserIdGuid)) return Results.Json(new { error = "Sign in with the invited account to accept this invitation." }, statusCode: 403);
 
         await conn.ExecuteAsync(
             "UPDATE broadcast_crew_invites SET claimed_at = NOW(), claimed_by = @userId WHERE id = @id",
@@ -204,7 +213,7 @@ public static class BroadcastCrewEndpoints
         var pendingInvites = await conn.QueryAsync<PendingInviteRow>(
             """
             SELECT id AS Id, show_id AS ShowId, role AS Role,
-                   expires_at AS ExpiresAt, created_at AS CreatedAt
+                   expires_at AS ExpiresAt, created_at AS CreatedAt, recipient_email AS RecipientEmail, email_status AS EmailStatus
             FROM broadcast_crew_invites
             WHERE show_id = @showId
               AND claimed_at IS NULL
@@ -261,15 +270,15 @@ public static class BroadcastCrewEndpoints
 
     // ── Private row types ─────────────────────────────────────────────────────
 
-    private sealed record InviteRow(Guid Id, Guid ShowId, string Role);
+    private sealed record InviteRow(Guid Id, Guid ShowId, string Role, string? RecipientEmail, Guid? RecipientUserId);
     private sealed record CrewListRow(Guid Id, Guid UserId, string Role,
         DateTime? JoinedAt, bool IsActive, string? DisplayName, string? AvatarUrl);
     private sealed record PendingInviteRow(Guid Id, Guid ShowId, string Role,
-        DateTime ExpiresAt, DateTime CreatedAt);
+        DateTime ExpiresAt, DateTime CreatedAt, string? RecipientEmail, string? EmailStatus);
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
 
-public sealed record CreateCrewInviteRequest(string Role);
+public sealed record CreateCrewInviteRequest(string Role, string? Email = null);
 
 public sealed record AcceptCrewInviteRequest(string Token);

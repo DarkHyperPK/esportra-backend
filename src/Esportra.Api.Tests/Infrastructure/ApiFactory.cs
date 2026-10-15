@@ -44,6 +44,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     /// <summary>A <see cref="DbSeeder"/> pre-wired to the test database.</summary>
     public DbSeeder Seeder => new(ConnectionString);
+    public TestEmailSink EmailSink { get; } = new();
 
     // ── IAsyncLifetime ────────────────────────────────────────────────────────
 
@@ -113,6 +114,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
         builder.ConfigureServices(services =>
         {
+            services.RemoveAll<Esportra.Infrastructure.Email.IEmailService>();
+            services.AddSingleton<Esportra.Infrastructure.Email.IEmailService>(EmailSink);
             services.RemoveAll<IDbConnectionFactory>();
             services.AddSingleton<IDbConnectionFactory>(new NpgsqlConnectionFactory(ConnectionString));
         });

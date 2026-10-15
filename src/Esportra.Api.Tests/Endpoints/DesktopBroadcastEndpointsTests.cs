@@ -226,6 +226,53 @@ public sealed class DesktopBroadcastEndpointsTests
     }
 
     // ── T-009: GET /api/tournaments/active-match ─────────────────────────────
+    [Fact]
+    public async Task GameResult_Bo3CompletesAtTwoWins_UpdatesSeriesScores_RejectsLateAutomaticMaps()
+    {
+        await SeedBaseDataAsync(); var client = CreateDesktopClient(OrganizerId);
+        var (matchId, teamA, _) = await SeedLiveMatchAsync();
+        await SetupShowWithCrewAsync(OrganizerId, matchId);
+        await using var conn = _seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE brkt_matches SET best_of = 3 WHERE id = @matchId", new { matchId });
+        var created = await client.PostAsJsonAsync("/api/broadcast/sessions", new { matchId, matchCode = "FINAL", seriesTotal = 3 });
+        created.StatusCode.Should().Be(HttpStatusCode.OK);
+        var session = (await created.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("sessionId").GetGuid();
+        var path = $"/api/broadcast/sessions/{session}/game-result";
+        var first = await client.PostAsJsonAsync(path, new { mapNumber = 1, teamAScore = 13, teamBScore = 7 });
+        first.StatusCode.Should().Be(HttpStatusCode.OK, await first.Content.ReadAsStringAsync());
+        (await conn.ExecuteScalarAsync<int>("SELECT team1_score FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be(1);
+        (await conn.ExecuteScalarAsync<string>("SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be("in_progress");
+        var second = await client.PostAsJsonAsync(path, new { mapNumber = 2, teamAScore = 13, teamBScore = 9 });
+        second.StatusCode.Should().Be(HttpStatusCode.OK, await second.Content.ReadAsStringAsync());
+        (await conn.ExecuteScalarAsync<Guid>("SELECT winner_id FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be(teamA);
+        (await conn.ExecuteScalarAsync<int>("SELECT team1_score FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be(2);
+        (await conn.ExecuteScalarAsync<string>("SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be("completed");
+        (await client.PostAsJsonAsync(path, new { mapNumber = 2, teamAScore = 13, teamBScore = 9 })).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync(path, new { mapNumber = 3, teamAScore = 0, teamBScore = 13 })).StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await client.PostAsJsonAsync(path, new { mapNumber = 4, teamAScore = 0, teamBScore = 13 })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM brkt_match_games WHERE match_id = @matchId", new { matchId })).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GameResult_ConcurrentMapsStayConsistent_AndInactiveCrewOrWrongFormatCannotWrite()
+    {
+        await SeedBaseDataAsync(); var client = CreateDesktopClient(OrganizerId);
+        var (matchId, _, _) = await SeedLiveMatchAsync(); var show = await SetupShowWithCrewAsync(OrganizerId, matchId);
+        var created = await client.PostAsJsonAsync("/api/broadcast/sessions", new { matchId, matchCode = "FINAL", seriesTotal = 3 });
+        var session = (await created.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("sessionId").GetGuid();
+        var path = $"/api/broadcast/sessions/{session}/game-result";
+        (await client.PostAsJsonAsync(path, new { mapNumber = 1, teamAScore = 13, teamBScore = 7 })).StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var conn = _seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE brkt_matches SET best_of = 3 WHERE id = @matchId; UPDATE broadcast_crew SET is_active = false WHERE show_id = @show", new { matchId, show });
+        (await client.PostAsJsonAsync(path, new { mapNumber = 1, teamAScore = 13, teamBScore = 7 })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM brkt_match_games WHERE match_id = @matchId", new { matchId })).Should().Be(0);
+        await conn.ExecuteAsync("UPDATE broadcast_crew SET is_active = true WHERE show_id = @show", new { show });
+        var responses = await Task.WhenAll(client.PostAsJsonAsync(path, new { mapNumber = 1, teamAScore = 13, teamBScore = 7 }), client.PostAsJsonAsync(path, new { mapNumber = 2, teamAScore = 13, teamBScore = 9 }));
+        foreach (var response in responses) response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        (await conn.ExecuteScalarAsync<int>("SELECT team1_score FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be(2);
+        (await conn.ExecuteScalarAsync<string>("SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId })).Should().Be("completed");
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM broadcast_events WHERE show_id = @show AND event_type = 'MatchResultSubmitted'", new { show })).Should().Be(2);
+    }
 
     [Fact]
     public async Task ActiveMatch_NoRiotAccount_ReturnsNullMatchId()
@@ -238,6 +285,24 @@ public sealed class DesktopBroadcastEndpointsTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         body.GetProperty("matchId").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task GameResult_MultipleShowsRequireExplicitShow_AndCheckThatShowsCrewPermission()
+    {
+        await SeedBaseDataAsync(); var client = CreateDesktopClient(OrganizerId);
+        var (matchId, _, _) = await SeedLiveMatchAsync(); var firstShow = await SetupShowWithCrewAsync(OrganizerId, matchId);
+        var secondShow = await SetupShowWithCrewAsync(OrganizerId, matchId);
+        var created = await client.PostAsJsonAsync("/api/broadcast/sessions", new { matchId, matchCode = "FINAL", seriesTotal = 1 });
+        var session = (await created.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("sessionId").GetGuid();
+        var path = $"/api/broadcast/sessions/{session}/game-result";
+        (await client.PostAsJsonAsync(path, new { mapNumber = 1, teamAScore = 13, teamBScore = 7 })).StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var conn = _seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE broadcast_crew SET can_submit_result = false WHERE show_id = @secondShow", new { secondShow });
+        (await client.PostAsJsonAsync(path, new { showId = secondShow, mapNumber = 1, teamAScore = 13, teamBScore = 7 })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await client.PostAsJsonAsync(path, new { showId = firstShow, mapNumber = 1, teamAScore = 13, teamBScore = 7 })).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM broadcast_events WHERE show_id = @firstShow AND event_type = 'MatchResultSubmitted'", new { firstShow })).Should().Be(1);
+        (await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM broadcast_events WHERE show_id = @secondShow AND event_type = 'MatchResultSubmitted'", new { secondShow })).Should().Be(0);
     }
 
     [Fact]
@@ -380,7 +445,7 @@ public sealed class DesktopBroadcastEndpointsTests
     {
         await using var conn = _seeder.OpenConnection();
 
-        var orgId = Guid.NewGuid();
+        var orgId = await conn.ExecuteScalarAsync<Guid?>("SELECT id FROM organizations WHERE owner_id = @crewUserId", new { crewUserId }) ?? Guid.NewGuid();
         await conn.ExecuteAsync("""
             INSERT INTO public.organizations (id, owner_id, name, slug, created_at, updated_at)
             VALUES (@id, @ownerId, @name, @slug, NOW(), NOW())

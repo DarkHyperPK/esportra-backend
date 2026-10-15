@@ -27,14 +27,22 @@ public static partial class BroadcastMatchPlanningEndpoints
         if (show.TournamentId is null) return Results.Ok(Array.Empty<MatchChoice>());
         var matches = await conn.QueryAsync<MatchChoice>($"""
             SELECT bm.id AS Id, COALESCE(t1.name, tp1.team_name, sp1.username, 'TBD') AS TeamA,
-                   COALESCE(t2.name, tp2.team_name, sp2.username, 'TBD') AS TeamB
+                   COALESCE(t2.name, tp2.team_name, sp2.username, 'TBD') AS TeamB,
+                   bm.status AS Status, bm.scheduled_time AS ScheduledAt, t.name AS TournamentName
             FROM brkt_matches bm JOIN brkt_versions v ON v.id = bm.version_id
+            JOIN tournaments t ON t.id = v.tournament_id
             {BracketTeamResolutionSql.BracketMatchTeam1Joins}
             {BracketTeamResolutionSql.BracketMatchTeam2Joins}
-            WHERE v.tournament_id = @tournamentId AND v.status IN ('published', 'active') AND NOT EXISTS
+            WHERE v.tournament_id = @tournamentId AND t.organization_id = @orgId AND t.deleted_at IS NULL
+              AND v.status IN ('published', 'active')
+              AND bm.status IN ('pending', 'scheduled', 'in_progress')
+              AND bm.winner_id IS NULL AND bm.team1_id IS NOT NULL AND bm.team2_id IS NOT NULL
+              AND NULLIF(BTRIM(COALESCE(t1.name, tp1.team_name, sp1.username)), '') IS NOT NULL
+              AND NULLIF(BTRIM(COALESCE(t2.name, tp2.team_name, sp2.username)), '') IS NOT NULL
+              AND NOT EXISTS
               (SELECT 1 FROM broadcast_show_matches sm WHERE sm.show_id = @showId AND sm.match_id = bm.id)
-            ORDER BY bm.id LIMIT 200
-            """, new { showId, tournamentId = show.TournamentId });
+            ORDER BY bm.scheduled_time NULLS LAST, bm.id LIMIT 200
+            """, new { showId, tournamentId = show.TournamentId, orgId = show.OrgId });
         return Results.Ok(matches);
     }
 
@@ -60,5 +68,5 @@ public static partial class BroadcastMatchPlanningEndpoints
     private static partial Regex MatchCodePattern();
     public sealed record CodeChange(string? MatchCode);
     private sealed record ShowScope(Guid OrgId, Guid? TournamentId, string Status);
-    private sealed record MatchChoice(Guid Id, string TeamA, string TeamB);
+    private sealed record MatchChoice(Guid Id, string TeamA, string TeamB, string Status, DateTime? ScheduledAt, string TournamentName);
 }

@@ -506,8 +506,8 @@ public static class DesktopBroadcastEndpoints
         return null;
     }
 
-    private static async Task UpsertGameResult(
-        System.Data.IDbConnection conn, Guid matchId, GameResultRequest req)
+    internal static async Task UpsertGameResult(
+        System.Data.IDbConnection conn, Guid matchId, GameResultRequest req, System.Data.IDbTransaction tx)
     {
         await conn.ExecuteAsync(
             """
@@ -527,53 +527,35 @@ public static class DesktopBroadcastEndpoints
                 gameNumber = req.MapNumber,
                 teamAScore = req.TeamAScore,
                 teamBScore = req.TeamBScore,
-            });
+            }, tx);
     }
 
-    private static async Task<string> TryCompleteMatchAsync(
-        System.Data.IDbConnection conn, Guid matchId, int seriesTotal, int currentMap)
+    internal static async Task<string> TryCompleteMatchAsync(
+        System.Data.IDbConnection conn, Guid matchId, int seriesTotal, BroadcastSeriesState match, System.Data.IDbTransaction tx)
     {
-        if (currentMap < seriesTotal)
-            return "in_progress";
-
-        // All maps played — determine series winner by map wins
-        var games = await conn.QueryAsync<dynamic>(
-            "SELECT team1_score, team2_score FROM brkt_match_games WHERE match_id = @matchId AND status = 'completed'",
-            new { matchId });
-
-        int team1Wins = 0, team2Wins = 0;
-        foreach (var g in games)
-        {
-            if ((int)g.team1_score > (int)g.team2_score) team1Wins++;
-            else if ((int)g.team2_score > (int)g.team1_score) team2Wins++;
-        }
-
-        var match = await conn.QuerySingleOrDefaultAsync<dynamic>(
-            "SELECT team1_id, team2_id FROM brkt_matches WHERE id = @matchId", new { matchId });
-        if (match is null) return "in_progress";
-
-        Guid? winnerId = team1Wins > team2Wins ? (Guid?)match.team1_id
-                       : team2Wins > team1Wins ? (Guid?)match.team2_id
+        var wins = await conn.QuerySingleAsync<BroadcastSeriesWins>("""
+            SELECT COUNT(*) FILTER (WHERE team1_score > team2_score) AS Team1,
+                   COUNT(*) FILTER (WHERE team2_score > team1_score) AS Team2
+            FROM brkt_match_games WHERE match_id = @matchId AND status = 'completed'
+              AND game_number BETWEEN 1 AND @seriesTotal
+            """, new { matchId, seriesTotal }, tx);
+        var needed = seriesTotal / 2 + 1;
+        Guid? winnerId = wins.Team1 >= needed ? match.Team1Id
+                       : wins.Team2 >= needed ? match.Team2Id
                        : null;
-        Guid? loserId = winnerId == (Guid?)match.team1_id ? (Guid?)match.team2_id
-                      : winnerId == (Guid?)match.team2_id ? (Guid?)match.team1_id
+        Guid? loserId = winnerId.HasValue && winnerId == match.Team1Id ? match.Team2Id
+                      : winnerId.HasValue && winnerId == match.Team2Id ? match.Team1Id
                       : null;
-
-        if (winnerId.HasValue)
-        {
-            await conn.ExecuteAsync(
-                """
-                UPDATE brkt_matches
-                SET status = 'completed', winner_id = @winnerId, loser_id = @loserId, updated_at = NOW()
-                WHERE id = @matchId
-                """,
-                new { matchId, winnerId, loserId });
-
-            return "completed";
-        }
-
-        return "in_progress";
+        var status = winnerId.HasValue ? "completed" : "in_progress";
+        await conn.ExecuteAsync("""
+            UPDATE brkt_matches SET status = @status, team1_score = @team1Wins, team2_score = @team2Wins,
+                winner_id = @winnerId, loser_id = @loserId, updated_at = NOW() WHERE id = @matchId
+            """, new { matchId, status, team1Wins = (int)wins.Team1, team2Wins = (int)wins.Team2, winnerId, loserId }, tx);
+        return status;
     }
+
+    private sealed record BroadcastSeriesWins(long Team1, long Team2);
+    internal sealed record BroadcastSeriesState(Guid? Team1Id, Guid? Team2Id, string Status, int BestOf);
 
     private static async Task<ActiveMatchDto> QueryActiveMatchAsync(
         IDbConnectionFactory db, Guid userId, CancellationToken ct)
@@ -691,16 +673,30 @@ public static class DesktopBroadcastEndpoints
             return Results.BadRequest(new { error = "Session has no match attached." });
 
         Guid matchId = session.MatchId.Value;
-        var showId = await DeriveShowIdAsync(conn, sessionId);
+        var shows = (await conn.QueryAsync<Guid>("""
+            SELECT DISTINCT bsm.show_id FROM broadcast_show_matches bsm
+            WHERE bsm.match_id = @matchId AND (@requestedShow IS NULL OR bsm.show_id = @requestedShow)
+            LIMIT 2
+            """, new { matchId, requestedShow = req.ShowId })).ToArray();
+        if (shows.Length > 1) return Results.Conflict(new { error = "This match is in multiple shows. Select its broadcast show before submitting the result." });
+        Guid? showId = shows.FirstOrDefault() is var single && single != Guid.Empty ? single : null;
         var authError = await CheckGameResultAuthAsync(conn, userCtx.UserIdGuid, showId, session.OrganizerId);
         if (authError is not null) return authError;
+        if (req.MapNumber > session.SeriesTotal)
+            return Results.BadRequest(new { error = "Map number exceeds this session's series format." });
+        using var tx = conn.BeginTransaction();
+        // Serialize all map/series/audit writes for this match; a delayed count cannot reopen it.
+        var currentMatch = await conn.QuerySingleOrDefaultAsync<BroadcastSeriesState>("SELECT team1_id AS Team1Id, team2_id AS Team2Id, status AS Status, COALESCE(best_of, 1) AS BestOf FROM brkt_matches WHERE id = @matchId FOR UPDATE", new { matchId }, tx);
+        if (currentMatch is null) return Results.NotFound(new { error = "Match not found." });
+        if (currentMatch.Team1Id is null || currentMatch.Team2Id is null || currentMatch.BestOf != session.SeriesTotal)
+            return Results.Conflict(new { error = "Session format or teams do not match the tournament. Reconnect with the current match setup." });
 
         // AC5: gepEventId idempotency — must run before any write
         if (req.GepEventId is not null)
         {
             var dupEvent = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT id FROM broadcast_events WHERE event_id = @eventId LIMIT 1",
-                new { eventId = req.GepEventId });
+                new { eventId = req.GepEventId }, tx);
             if (dupEvent.HasValue)
                 return Results.Ok(new { ok = true, idempotent = true });
         }
@@ -708,37 +704,34 @@ public static class DesktopBroadcastEndpoints
         // Natural idempotency: same mapNumber + same scores = no-op
         var existingGame = await conn.QuerySingleOrDefaultAsync<BroadcastGameRow>(
             "SELECT id, team1_score, team2_score FROM brkt_match_games WHERE match_id = @matchId AND game_number = @gameNumber",
-            new { matchId, gameNumber = req.MapNumber });
+            new { matchId, gameNumber = req.MapNumber }, tx);
 
         if (existingGame is not null
             && existingGame.Team1Score == req.TeamAScore
             && existingGame.Team2Score == req.TeamBScore)
         {
             var noopStatus = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId });
+                "SELECT status FROM brkt_matches WHERE id = @matchId", new { matchId }, tx);
             return Results.Ok(new { ok = true, matchStatus = noopStatus ?? "unknown" });
         }
 
-        await UpsertGameResult(conn, matchId, req);
+        if (currentMatch.Status is "cancelled" or "forfeit" or "walkover" or "bye" || currentMatch.Status == "completed" && req.Force != true)
+            return Results.Conflict(new { error = "This series is finalized. Review its result before changing it." });
+
+        await UpsertGameResult(conn, matchId, req, tx);
 
         var matchGameId = await conn.QuerySingleAsync<Guid>(
             "SELECT id FROM brkt_match_games WHERE match_id = @matchId AND game_number = @gameNumber",
-            new { matchId, gameNumber = req.MapNumber });
+            new { matchId, gameNumber = req.MapNumber }, tx);
 
         await conn.ExecuteAsync(
-            "UPDATE broadcast_sessions SET last_seen_at = NOW(), series_map = @mapNumber WHERE id = @sessionId",
-            new { sessionId, mapNumber = req.MapNumber });
+            "UPDATE broadcast_sessions SET last_seen_at = NOW(), series_map = GREATEST(series_map, @mapNumber) WHERE id = @sessionId",
+            new { sessionId, mapNumber = req.MapNumber }, tx);
 
-        var matchStatus = await TryCompleteMatchAsync(conn, matchId, session.SeriesTotal, req.MapNumber);
+        var matchStatus = await TryCompleteMatchAsync(conn, matchId, session.SeriesTotal, currentMatch, tx);
 
         if (showId.HasValue)
-            await WriteAuditEventAsync(conn, showId.Value, req, sessionId, userCtx.UserIdGuid);
-
-        await matchHub.Clients
-            .Group(MatchHub.MatchGroup(matchId.ToString()))
-            .SendAsync(MatchHubEvents.BroadcastGameResult,
-                new { matchId, mapNumber = req.MapNumber, teamAScore = req.TeamAScore, teamBScore = req.TeamBScore },
-                ct);
+            await WriteAuditEventAsync(conn, showId.Value, req, sessionId, userCtx.UserIdGuid, tx);
 
         bool isGepConflict = showId.HasValue
             && req.GepConflict == true
@@ -746,11 +739,19 @@ public static class DesktopBroadcastEndpoints
             && req.GepTeamBScore.HasValue
             && (req.GepTeamAScore.Value != req.TeamAScore || req.GepTeamBScore.Value != req.TeamBScore);
 
+        Guid? corrId = null;
         if (isGepConflict)
         {
-            var corrId = await WriteConflictCorrectionAsync(
-                conn, showId!.Value, matchGameId, req, userCtx.UserIdGuid);
-            await broadcastHub.Clients.Group(BroadcastHub.CrewGroup(showId.Value))
+            corrId = await WriteConflictCorrectionAsync(conn, showId!.Value, matchGameId, req, userCtx.UserIdGuid, tx);
+        }
+        else if (showId.HasValue && req.Force == true)
+            await WriteConflictOverrideCorrectionAsync(conn, showId.Value, matchGameId, req, userCtx.UserIdGuid, tx);
+        tx.Commit();
+        await matchHub.Clients.Group(MatchHub.MatchGroup(matchId.ToString()))
+            .SendAsync(MatchHubEvents.BroadcastGameResult, new { matchId, mapNumber = req.MapNumber, teamAScore = req.TeamAScore, teamBScore = req.TeamBScore }, ct);
+        if (corrId.HasValue)
+        {
+            await broadcastHub.Clients.Group(BroadcastHub.CrewGroup(showId!.Value))
                 .SendAsync("ResultConflict",
                     new
                     {
@@ -768,26 +769,11 @@ public static class DesktopBroadcastEndpoints
 
         if (showId.HasValue && req.Force == true)
         {
-            await WriteConflictOverrideCorrectionAsync(
-                conn, showId.Value, matchGameId, req, userCtx.UserIdGuid);
             return Results.Ok(new { ok = true, resolved = true });
         }
 
         return Results.Ok(new { ok = true, matchStatus });
     }
-
-    private static async Task<Guid?> DeriveShowIdAsync(
-        System.Data.IDbConnection conn, Guid sessionId) =>
-        await conn.QuerySingleOrDefaultAsync<Guid?>(
-            """
-            SELECT bsm.show_id
-            FROM broadcast_sessions bs
-            JOIN broadcast_show_matches bsm ON bsm.match_id = bs.match_id
-            JOIN broadcast_shows bsh ON bsh.id = bsm.show_id
-            WHERE bs.id = @sessionId
-            LIMIT 1
-            """,
-            new { sessionId });
 
     private static async Task<IResult?> CheckGameResultAuthAsync(
         System.Data.IDbConnection conn, Guid userId, Guid? showId, Guid sessionOrganizerId)
@@ -802,7 +788,7 @@ public static class DesktopBroadcastEndpoints
         var canSubmit = await conn.QuerySingleOrDefaultAsync<bool?>(
             """
             SELECT can_submit_result FROM broadcast_crew
-            WHERE show_id = @showId AND user_id = @userId
+            WHERE show_id = @showId AND user_id = @userId AND is_active = true
             LIMIT 1
             """,
             new { showId, userId });
@@ -816,7 +802,7 @@ public static class DesktopBroadcastEndpoints
 
     private static async Task WriteAuditEventAsync(
         System.Data.IDbConnection conn, Guid showId, GameResultRequest req,
-        Guid sessionId, Guid userId)
+        Guid sessionId, Guid userId, System.Data.IDbTransaction tx)
     {
         // Use gepEventId as event_id when available so AC5 idempotency works on the next call.
         // Fall back to a new UUID when no GEP event ID is present.
@@ -837,12 +823,12 @@ public static class DesktopBroadcastEndpoints
             VALUES (@showId, @eventId, 'MatchResultSubmitted', @payload::jsonb, 'web')
             ON CONFLICT (event_id) DO NOTHING
             """,
-            new { showId, eventId, payload });
+            new { showId, eventId, payload }, tx);
     }
 
     private static async Task<Guid> WriteConflictCorrectionAsync(
         System.Data.IDbConnection conn, Guid showId, Guid matchGameId,
-        GameResultRequest req, Guid userId)
+        GameResultRequest req, Guid userId, System.Data.IDbTransaction tx)
     {
         var beforeState = JsonSerializer.Serialize(new
         {
@@ -867,12 +853,12 @@ public static class DesktopBroadcastEndpoints
                  'broadcast', NULL)
             RETURNING id
             """,
-            new { showId, userId, matchGameId, beforeState, afterState });
+            new { showId, userId, matchGameId, beforeState, afterState }, tx);
     }
 
     private static async Task WriteConflictOverrideCorrectionAsync(
         System.Data.IDbConnection conn, Guid showId, Guid matchGameId,
-        GameResultRequest req, Guid userId)
+        GameResultRequest req, Guid userId, System.Data.IDbTransaction tx)
     {
         var afterState = JsonSerializer.Serialize(new
         {
@@ -890,7 +876,7 @@ public static class DesktopBroadcastEndpoints
                  @afterState::jsonb, 'Operator confirmed final score',
                  'broadcast', NULL)
             """,
-            new { showId, userId, matchGameId, afterState });
+            new { showId, userId, matchGameId, afterState }, tx);
     }
 
     private sealed record BroadcastSessionRow(Guid Id, Guid OrganizerId, Guid? MatchId, int SeriesTotal);
@@ -914,7 +900,8 @@ public sealed record GameResultRequest(
     int? GepTeamAScore = null,
     int? GepTeamBScore = null,
     string? GepEventId = null,
-    bool? Force = null);
+    bool? Force = null,
+    Guid? ShowId = null);
 
 public sealed record RoundResult(string Winner, string Cause);
 

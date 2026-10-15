@@ -23,6 +23,10 @@ public static class BroadcastEventGuard
         "MatchResultSubmitted",
         "ShowStarted",
         "ShowEnded",
+        "RoundStarted",
+        "RoundEnded",
+        "ProductionAction",
+        "ProductionIncident",
     };
 
     /// <summary>Maximum JSON-encoded payload size in bytes.</summary>
@@ -33,6 +37,37 @@ public static class BroadcastEventGuard
     /// </summary>
     public static bool IsAllowedEventType(string eventType) =>
         AllowedEventTypes.Contains(eventType);
+
+    public static bool IsValidTypedMetadata(string eventType, JsonElement? data)
+    {
+        if (eventType is "ProductionAction" or "ProductionIncident") return IsValidProductionMetadata(eventType, data);
+        if (eventType is not ("RoundStarted" or "RoundEnded")) return true;
+        if (data is not { ValueKind: JsonValueKind.Object } value) return false;
+        var fields = new HashSet<string>(["segmentId", "segmentName", "segmentType", "wallClockMs"]);
+        if (value.EnumerateObject().Any(property => !fields.Remove(property.Name)) || fields.Count != 0) return false;
+        return value.GetProperty("segmentId") is { ValueKind: JsonValueKind.String } id && id.GetString() is { Length: <= 100 } key &&
+            System.Text.RegularExpressions.Regex.IsMatch(key, "^round:[0-9a-fA-F-]{36}:[A-Z0-9_-]{1,24}:[1-9][0-9]{0,2}$") && Guid.TryParse(key.Split(':')[1], out _) && int.Parse(key.Split(':')[3]) <= 500 &&
+            value.GetProperty("segmentName") is { ValueKind: JsonValueKind.String } name && name.GetString() is { Length: > 0 and <= 100 } label && !label.Any(char.IsControl) &&
+            value.GetProperty("segmentType").ValueKind == JsonValueKind.String && value.GetProperty("segmentType").GetString() == "round" &&
+            value.GetProperty("wallClockMs").ValueKind == JsonValueKind.Number && value.GetProperty("wallClockMs").TryGetInt64(out var stamp) && stamp is >= 0 and <= 253402300799999;
+    }
+
+    private static bool IsValidProductionMetadata(string eventType, JsonElement? data)
+    {
+        if (data is not { ValueKind: JsonValueKind.Object } value) return false;
+        var allowed = new HashSet<string>(["action", "kind", "status", "actorKind", "cause", "wallClockMs", "outputId"]);
+        if (value.EnumerateObject().Any(property => !allowed.Remove(property.Name))) return false;
+        string? Field(string name) => value.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String ? field.GetString() : null;
+        if (Field("actorKind") is not ("operator" or "automation" or "observer" or "game-feed" or "system") ||
+            Field("cause") is not ("manual" or "trigger" or "hold_expired" or "connection" or "missing_events") ||
+            !value.TryGetProperty("wallClockMs", out var clock) || clock.ValueKind != JsonValueKind.Number ||
+            !clock.TryGetInt64(out var stamp) || stamp is < 0 or > 253402300799999) return false;
+        if (eventType == "ProductionAction")
+            return value.EnumerateObject().Count() == 4 && (Field("action") is "hold" or "skip" or "take_requested" or "manual_take" or "resume" or "technical_pause" or "timeout_started" or "timeout_ended" or "data_fixed" or "data_fix_queued");
+        return (Field("kind") is "obs_drop" or "stale_feed" or "output_drop") &&
+            (Field("status") is "opened" or "resolved") && !value.TryGetProperty("action", out _) &&
+            (!value.TryGetProperty("outputId", out _) || Guid.TryParse(Field("outputId"), out var outputId) && outputId != Guid.Empty);
+    }
 
     /// <summary>
     /// Returns <c>true</c> when <paramref name="eventId"/> can be parsed as a UUID.

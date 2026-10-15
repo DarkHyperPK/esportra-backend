@@ -6,8 +6,11 @@ namespace Esportra.Api.Endpoints;
 
 public static class BroadcastActivityEndpoints
 {
-    public static void MapBroadcastActivityEndpoints(this WebApplication app) =>
+    public static void MapBroadcastActivityEndpoints(this WebApplication app)
+    {
+        app.MapBroadcastTimelineEndpoints();
         app.MapGet("/api/broadcast/shows/{showId:guid}/activity", List).RequireAuthorization("Authenticated");
+    }
 
     private static async Task<IResult> List(Guid showId, HttpContext ctx, IDbConnectionFactory db,
         [FromQuery] DateTimeOffset? beforeAt = null, [FromQuery] Guid? beforeId = null, [FromQuery] int limit = 50)

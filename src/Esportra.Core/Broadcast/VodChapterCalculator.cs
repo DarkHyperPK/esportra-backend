@@ -49,7 +49,7 @@ public static class VodChapterCalculator
         foreach (var (segmentId, segEvents) in grouped)
         {
             var takes = segEvents
-                .Where(e => e.EventType == "SegmentTake")
+                .Where(e => e.EventType is "SegmentTake" or "RoundStarted")
                 .OrderBy(e => e.WallClockMs)
                 .ToList();
 
@@ -60,7 +60,7 @@ public static class VodChapterCalculator
 
             // Find the first SegmentDone at or after the last SegmentTake
             var done = segEvents
-                .Where(e => e.EventType == "SegmentDone" && e.WallClockMs >= lastTake.WallClockMs)
+                .Where(e => (e.EventType is "SegmentDone" or "RoundEnded") && e.WallClockMs >= lastTake.WallClockMs)
                 .OrderBy(e => e.WallClockMs)
                 .FirstOrDefault();
 

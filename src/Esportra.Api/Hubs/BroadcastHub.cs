@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Broadcast;
+using Esportra.Core.Broadcast;
 using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Hubs;
@@ -114,12 +116,25 @@ public sealed class BroadcastHub : Hub
         if (!IsNodeConnection(out var nodeId)) return;
         if (IsRateLimited()) return;
 
+        if (payload.Runtime is not null && !NodeRuntimeRules.IsValid(payload.Runtime)) return;
+        var runtime = payload.Runtime is null ? null : JsonSerializer.Serialize(payload.Runtime, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         try
         {
             using var conn = _db.CreateConnection();
+            if (payload.Runtime?.Plan is { } plan && !await conn.ExecuteScalarAsync<bool>("""
+                SELECT EXISTS(SELECT 1 FROM broadcast_shows s JOIN broadcast_nodes n ON n.org_id = s.org_id
+                    WHERE n.id = @nodeId AND n.is_active = true AND s.id = @showId
+                      AND s.rundown_version >= @version AND s.rundown_version >= COALESCE(@pending, @version))
+                """, new { nodeId, showId = plan.ShowId, version = plan.Version, pending = plan.PendingVersion })) return;
             var affected = await conn.ExecuteAsync(
-                "UPDATE broadcast_nodes SET last_seen_at = NOW() WHERE id = @id AND is_active = true",
-                new { id = nodeId });
+                """
+                UPDATE broadcast_nodes
+                SET last_seen_at = NOW(),
+                    runtime_status = COALESCE(@runtime::jsonb, runtime_status),
+                    runtime_seen_at = CASE WHEN @runtime IS NULL THEN runtime_seen_at ELSE NOW() END
+                WHERE id = @id AND is_active = true
+                """,
+                new { id = nodeId, runtime });
             if (affected == 0) Context.Abort();
         }
         catch (Exception ex)
@@ -147,7 +162,7 @@ public sealed class BroadcastHub : Hub
         }
 
         // Guard (a): event_type server-side allowlist
-        if (!BroadcastEventGuard.IsAllowedEventType(payload.EventType))
+        if (!BroadcastEventGuard.IsAllowedEventType(payload.EventType) || !BroadcastEventGuard.IsValidTypedMetadata(payload.EventType, payload.Data))
         {
             _logger.LogWarning(
                 "[BroadcastHub] NodeEvent rejected — disallowed event_type. nodeId={NodeId} eventType={EventType}",
@@ -459,7 +474,8 @@ public sealed class BroadcastHub : Hub
 
 public sealed record HeartbeatPayload(
     DateTimeOffset Timestamp,
-    string? Status = null);
+    string? Status = null,
+    NodeRuntimeStatus? Runtime = null);
 
 public sealed record BroadcastEventPayload(
     string EventType,

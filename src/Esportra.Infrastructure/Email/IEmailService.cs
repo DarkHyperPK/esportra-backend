@@ -22,4 +22,5 @@ public enum EmailType
     MatchChatMessage,
     DisputeResolved,
     DisputeComment,
+    BroadcastCrewInvite,
 }

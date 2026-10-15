@@ -10,7 +10,7 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
-public static class BroadcastShowEndpoints
+public static partial class BroadcastShowEndpoints
 {
     private static readonly HashSet<string> ValidShowStatuses =
         ["draft", "scheduled", "live", "ended", "cancelled"];
@@ -32,9 +32,21 @@ public static class BroadcastShowEndpoints
         app.MapBroadcastMatchPlanningEndpoints();
         app.MapBroadcastShowEventEndpoints();
         app.MapBroadcastRundownEndpoints();
+        app.MapBroadcastRundownTemplateEndpoints();
+        app.MapBroadcastScreenEndpoints();
         app.MapBroadcastTalentEndpoints();
         app.MapBroadcastShowLifecycleEndpoints();
         app.MapBroadcastActivityEndpoints();
+        app.MapBroadcastResultProposalEndpoints();
+        app.MapGet("/api/broadcast/shows/{showId:guid}/enrollment", GetEnrollment).RequireAuthorization("Authenticated");
+        app.MapPut("/api/broadcast/shows/{showId:guid}/enrollment", SetEnrollment).RequireAuthorization("Authenticated").WithMetadata(new RateLimitPolicyMetadata("fixed"));
+        app.MapGet("/api/broadcast/shows/{showId:guid}/appearance", GetAppearance).RequireAuthorization("Authenticated");
+        app.MapPut("/api/broadcast/shows/{showId:guid}/appearance", SaveAppearance).RequireAuthorization("Authenticated").WithMetadata(new RateLimitPolicyMetadata("fixed"));
+        app.MapGet("/api/broadcast/nodes/shows/{showId:guid}/matches/{matchId:guid}/context", GetNodeMatchContext).AllowAnonymous().WithMetadata(new RateLimitPolicyMetadata("fixed"));
+        app.MapGet("/api/broadcast/shows/{showId:guid}/publication", GetPublication)
+            .RequireAuthorization("Authenticated");
+        app.MapGet("/api/broadcast/nodes/shows/{showId:guid}/publication", GetNodePublication)
+            .AllowAnonymous().WithMetadata(new RateLimitPolicyMetadata("fixed"));
         app.MapTournamentBroadcastEndpoints();
         app.MapPost("/api/broadcast/shows", CreateShow)
             .RequireAuthorization("Authenticated")
@@ -196,6 +208,8 @@ public static class BroadcastShowEndpoints
                 m.TeamB,
                 m.BestOf,
                 MatchTitle = $"{m.TeamA} vs {m.TeamB}",
+                m.MatchStatus,
+                m.ScheduledAt,
             }).ToArray(),
         });
     }
@@ -244,7 +258,7 @@ public static class BroadcastShowEndpoints
                    sm.display_order AS DisplayOrder, sm.status AS Status,
                    COALESCE(t1.name, tp1.team_name, sp1.username, 'TBD') AS TeamA,
                    COALESCE(t2.name, tp2.team_name, sp2.username, 'TBD') AS TeamB,
-                   COALESCE(bm.best_of, 1) AS BestOf
+                   COALESCE(bm.best_of, 1) AS BestOf, bm.status AS MatchStatus, bm.scheduled_time AS ScheduledAt
             FROM broadcast_show_matches sm JOIN brkt_matches bm ON bm.id = sm.match_id
             JOIN brkt_versions bv ON bv.id = bm.version_id JOIN tournaments mt ON mt.id = bv.tournament_id
             JOIN broadcast_shows bs ON bs.id = sm.show_id
@@ -273,7 +287,8 @@ public static class BroadcastShowEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<BroadcastHub> hub,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] PushShowConfigRequest? request = null)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -290,17 +305,21 @@ public static class BroadcastShowEndpoints
         if (!Esportra.Core.Broadcast.BroadcastShowRules.CanSendConfiguration(show.Status))
             return Results.Conflict(new { error = "Ended or cancelled shows cannot send configuration." });
         var payload = await BuildShowConfigPayloadAsync(conn, show, showId);
+        if (request?.MatchId is Guid requestedMatch)
+        {
+            var match = payload.Matches.FirstOrDefault(item => item.MatchId == requestedMatch.ToString());
+            if (match is null) return Results.BadRequest(new { error = "Choose an eligible match in this show." });
+            payload = payload with { PreferredMatchCode = match.MatchCode };
+        }
+        var version = await PublishRundown(conn, showId, payload);
+        if (version is null) return Results.Conflict(new { error = "Show closed before publication. Reload it." });
+        payload = payload with { RundownVersion = version };
         await hub.Clients.Group(BroadcastHub.OrgGroup(show.OrgId)).SendAsync("ShowConfig", payload, ct);
-
-        await conn.ExecuteAsync(
-            "UPDATE broadcast_shows SET last_synced_at = NOW(), updated_at = NOW() WHERE id = @showId",
-            new { showId });
-
-        return Results.Ok(new { success = true });
+        return Results.Ok(new { success = true, rundownVersion = version });
     }
 
     private static async Task<ShowConfigPayload> BuildShowConfigPayloadAsync(
-        System.Data.IDbConnection conn, ShowRow show, Guid showId)
+        System.Data.IDbConnection conn, ShowRow show, Guid showId, Guid? retainedMatchId = null)
     {
         var tournament = await conn.QuerySingleOrDefaultAsync<ConfigTournamentRow>("""
             SELECT t.id AS Id, t.name AS Name, t.slug AS Slug, t.game AS Game
@@ -310,14 +329,15 @@ public static class BroadcastShowEndpoints
         var matches = await conn.QueryAsync<ConfigMatchRow>(
             $"""
             SELECT sm.match_id AS MatchId, sm.match_code AS MatchCode,
-                   sm.display_order AS DisplayOrder, sm.status AS Status,
+                   sm.display_order AS DisplayOrder, bm.status AS Status,
                    COALESCE(t1.name, tp1.team_name, sp1.username) AS Team1Name,
                    COALESCE(t2.name, tp2.team_name, sp2.username) AS Team2Name,
                    COALESCE(t1.tag, '') AS Team1Tag, COALESCE(t2.tag, '') AS Team2Tag,
                    COALESCE(t1.logo_url, sp1.avatar_url) AS Team1Logo,
                    COALESCE(t2.logo_url, sp2.avatar_url) AS Team2Logo,
                    COALESCE(bm.team1_score, 0) AS Team1Score, COALESCE(bm.team2_score, 0) AS Team2Score,
-                   COALESCE(bm.best_of, 1) AS BestOf
+                   COALESCE(bm.best_of, 1) AS BestOf, bm.scheduled_time AS ScheduledAt,
+                   bm.team1_id AS Team1Id, bm.team2_id AS Team2Id
             FROM broadcast_show_matches sm JOIN brkt_matches bm ON bm.id = sm.match_id
             JOIN brkt_versions bv ON bv.id = bm.version_id JOIN tournaments mt ON mt.id = bv.tournament_id
             JOIN broadcast_shows bs ON bs.id = sm.show_id
@@ -325,14 +345,14 @@ public static class BroadcastShowEndpoints
             {BracketTeamResolutionSql.BracketMatchTeam2Joins}
             WHERE sm.show_id = @showId AND mt.organization_id = bs.org_id AND mt.deleted_at IS NULL
               AND (bs.tournament_id IS NULL OR bs.tournament_id = mt.id)
+              AND bv.status IN ('published', 'active') AND bm.team1_id IS NOT NULL AND bm.team2_id IS NOT NULL
+              AND ((bm.winner_id IS NULL AND bm.status IN ('pending', 'scheduled', 'in_progress'))
+                   OR bm.status = 'completed')
             ORDER BY sm.display_order LIMIT 200
             """,
-            new { showId });
+            new { showId, retainedMatchId });
 
-        var rundown = (await conn.QueryAsync<ShowRundownSlot>("""
-            SELECT id::text AS Id, title AS Title, type AS Type, duration_seconds AS DurationSeconds,
-                   config->>'notes' AS Notes FROM rundown_segments WHERE show_id = @showId ORDER BY display_order LIMIT 200
-            """, new { showId })).ToArray();
+        var rundown = await ReadRundownPlans(conn, showId);
         var vetoHistory = (await conn.QueryAsync<ConfigVetoRow>("""
             SELECT a.match_id AS MatchId, a.action_number AS ActionNumber, a.action_type AS Action,
                    gm.map_name AS Map, a.team_side AS TeamSide, a.side AS Side
@@ -344,9 +364,10 @@ public static class BroadcastShowEndpoints
             SELECT gm.map_name FROM tournament_map_pools p JOIN game_maps gm ON gm.id = p.map_id
             WHERE p.tournament_id = @tournamentId ORDER BY gm.map_name LIMIT 100
             """, new { tournamentId = tournament?.Id })).ToArray();
+        var rosters = await ReadRegisteredRosters(conn, tournament?.Id, matches.SelectMany(match => new[] { match.Team1Id, match.Team2Id }));
         var slots = matches.Select(match => new ShowMatchSlot(match.MatchId.ToString(), match.MatchCode ?? "MAIN", match.DisplayOrder, match.Status,
-            [new ShowTeamSlot(match.Team1Name ?? "TBD", match.Team1Tag, match.Team1Logo, match.Team1Score), new ShowTeamSlot(match.Team2Name ?? "TBD", match.Team2Tag, match.Team2Logo, match.Team2Score)], match.BestOf,
-            BroadcastVetoProjection.Project(vetoHistory[match.MatchId].Select(action => new BroadcastVetoAction(action.ActionNumber, action.Action, action.Map, action.TeamSide, action.Side))))).ToArray();
+            [new ShowTeamSlot(match.Team1Name ?? "TBD", match.Team1Tag, match.Team1Logo, match.Team1Score, match.Team1Id, rosters.GetValueOrDefault(match.Team1Id ?? Guid.Empty) ?? []), new ShowTeamSlot(match.Team2Name ?? "TBD", match.Team2Tag, match.Team2Logo, match.Team2Score, match.Team2Id, rosters.GetValueOrDefault(match.Team2Id ?? Guid.Empty) ?? [])], match.BestOf,
+            BroadcastVetoProjection.Project(vetoHistory[match.MatchId].Select(action => new BroadcastVetoAction(action.ActionNumber, action.Action, action.Map, action.TeamSide, action.Side))), match.ScheduledAt)).ToArray();
 
         var talent = await conn.QueryAsync<TalentRow>(
             """
@@ -359,7 +380,7 @@ public static class BroadcastShowEndpoints
 
         var sponsors = await conn.QueryAsync<SponsorRow>(
             """
-            SELECT name AS Name, logo_url AS LogoUrl, display_slot AS DisplaySlot,
+            SELECT id AS Id, name AS Name, logo_url AS LogoUrl, display_slot AS DisplaySlot,
                    display_order AS DisplayOrder
             FROM broadcast_show_sponsors
             WHERE show_id = @showId AND is_active = true
@@ -371,9 +392,9 @@ public static class BroadcastShowEndpoints
             ShowId: showId.ToString(),
             Title: show.Title,
             Status: show.Status,
-            Matches: slots,
+            Matches: slots.Where(item => item.Status != "completed" || item.MatchId == retainedMatchId?.ToString()).ToArray(),
             Casters: talent.Select(t => new ShowTalentSlot(t.Name, t.Handle, t.Role, t.DisplayOrder)).ToArray(),
-            Sponsors: sponsors.Select(s => new ShowSponsorSlot(s.Name, s.LogoUrl, s.DisplaySlot, s.DisplayOrder)).ToArray(),
+            Sponsors: sponsors.Select(s => new ShowSponsorSlot(s.Name, s.LogoUrl, s.DisplaySlot, s.DisplayOrder, s.Id)).ToArray(),
             Rundown: rundown,
             Teams: slots.FirstOrDefault()?.Teams ?? [],
             EventLabel: tournament?.Name ?? show.Title,
@@ -382,7 +403,9 @@ public static class BroadcastShowEndpoints
             TournamentSlug: tournament?.Slug,
             Game: tournament?.Game,
             Veto: slots.FirstOrDefault()?.Veto ?? [],
-            MapPool: mapPool
+            MapPool: mapPool,
+            Appearance: ReadAppearance(await conn.ExecuteScalarAsync<string>("SELECT appearance::text FROM broadcast_shows WHERE id = @showId", new { showId })),
+            MatchHistory: slots.Where(item => item.Status == "completed").ToArray()
         );
     }
 
@@ -423,6 +446,9 @@ public static class BroadcastShowEndpoints
             SELECT EXISTS(SELECT 1 FROM brkt_matches m JOIN brkt_versions v ON v.id = m.version_id
               JOIN tournaments t ON t.id = v.tournament_id JOIN broadcast_shows s ON s.id = @showId
               WHERE m.id = @matchId AND t.organization_id = s.org_id AND v.status IN ('published', 'active')
+                AND t.deleted_at IS NULL AND m.winner_id IS NULL
+                AND m.team1_id IS NOT NULL AND m.team2_id IS NOT NULL
+                AND m.status IN ('pending', 'scheduled', 'in_progress')
                 AND (s.tournament_id IS NULL OR s.tournament_id = t.id))
             """, new { showId, matchId = req.MatchId }, tx);
         if (!validMatch) return Results.BadRequest(new { error = "Match must belong to the show's organization and linked tournament." });
@@ -568,7 +594,7 @@ public static class BroadcastShowEndpoints
                 (payload->>'wallClockMs')::bigint    AS WallClockMs
             FROM broadcast_events
             WHERE show_id = @showId
-              AND event_type IN ('SegmentTake', 'SegmentDone')
+              AND event_type IN ('SegmentTake', 'SegmentDone', 'RoundStarted', 'RoundEnded')
               AND (payload->>'wallClockMs') IS NOT NULL
             ORDER BY (payload->>'wallClockMs')::bigint ASC
             """,
@@ -606,7 +632,7 @@ public static class BroadcastShowEndpoints
     private sealed record ShowRow(Guid Id, Guid OrgId, string Title, string Status);
     private sealed record ConfigTournamentRow(Guid Id, string Name, string Slug, string Game);
     private sealed record ConfigVetoRow(Guid MatchId, int ActionNumber, string Action, string? Map, string? TeamSide, string? Side);
-    private sealed record ConfigMatchRow(Guid MatchId, string? MatchCode, int DisplayOrder, string Status, string? Team1Name, string? Team2Name, string Team1Tag, string Team2Tag, string? Team1Logo, string? Team2Logo, int Team1Score, int Team2Score, int BestOf);
+    private sealed record ConfigMatchRow(Guid MatchId, string? MatchCode, int DisplayOrder, string Status, string? Team1Name, string? Team2Name, string Team1Tag, string Team2Tag, string? Team1Logo, string? Team2Logo, int Team1Score, int Team2Score, int BestOf, DateTime? ScheduledAt, Guid? Team1Id, Guid? Team2Id);
     private sealed record ShowChapterRow(Guid Id, Guid OrgId, string Status, DateTime? StartedAt);
     private sealed record ShowListRow(Guid Id, Guid OrgId, string Title, string Status,
         DateTime? ScheduledAt, DateTime? StartedAt, DateTime? EndedAt,
@@ -619,10 +645,10 @@ public static class BroadcastShowEndpoints
         long NodeCount, long MatchSlotCount, long MatchSlotsWithCode,
         long TalentCount, long SponsorCount, long CrewCount);
     private sealed record ShowDetailMatchSlotRow(
-        Guid Id, Guid MatchId, string? MatchCode, int DisplayOrder, string Status, string TeamA, string TeamB, int BestOf);
+        Guid Id, Guid MatchId, string? MatchCode, int DisplayOrder, string Status, string TeamA, string TeamB, int BestOf, string MatchStatus, DateTime? ScheduledAt);
     private sealed record ShowMatchRow(Guid MatchId, string? MatchCode, int DisplayOrder, string Status);
     private sealed record TalentRow(string Name, string? Handle, string Role, int DisplayOrder);
-    private sealed record SponsorRow(string Name, string? LogoUrl, string DisplaySlot, int DisplayOrder);
+    private sealed record SponsorRow(Guid Id, string Name, string? LogoUrl, string DisplaySlot, int DisplayOrder);
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
@@ -657,10 +683,16 @@ public sealed record ShowConfigPayload(
     string? TournamentSlug = null,
     string? Game = null,
     BroadcastVetoStep[]? Veto = null,
-    string[]? MapPool = null);
+    string[]? MapPool = null,
+    string? PreferredMatchCode = null,
+    long? RundownVersion = null,
+    BroadcastAppearance? Appearance = null,
+    ShowMatchSlot[]? MatchHistory = null);
 
-public sealed record ShowRundownSlot(string Id, string Title, string Type, int? DurationSeconds, string? Notes);
-public sealed record ShowTeamSlot(string Name, string Tag, string? LogoUrl, int SeriesScore);
+public sealed record PushShowConfigRequest(Guid? MatchId = null);
+
+public sealed record ShowRundownSlot(string Id, string Title, string Type, int? DurationSeconds, string? Notes, string? Overlay = null, string? MatchId = null, BroadcastSegmentPlan? Plan = null, string? PlanWarning = null);
+public sealed record ShowTeamSlot(string Name, string Tag, string? LogoUrl, int SeriesScore, Guid? TeamId = null, BroadcastRosterName[]? Roster = null);
 
 public sealed record ShowMatchSlot(
     string MatchId,
@@ -669,7 +701,8 @@ public sealed record ShowMatchSlot(
     string Status,
     ShowTeamSlot[]? Teams = null,
     int BestOf = 1,
-    BroadcastVetoStep[]? Veto = null);
+    BroadcastVetoStep[]? Veto = null,
+    DateTime? ScheduledAt = null);
 
 public sealed record ShowTalentSlot(
     string Name,
@@ -681,4 +714,5 @@ public sealed record ShowSponsorSlot(
     string Name,
     string? LogoUrl,
     string DisplaySlot,
-    int DisplayOrder);
+    int DisplayOrder,
+    Guid? SponsorId = null);

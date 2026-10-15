@@ -74,7 +74,7 @@ public static class BroadcastDrainEndpoints
                 }
 
                 // Guard (a): event_type allowlist
-                if (!BroadcastEventGuard.IsAllowedEventType(evt.EventType))
+                if (!BroadcastEventGuard.IsAllowedEventType(evt.EventType) || !BroadcastEventGuard.IsValidTypedMetadata(evt.EventType, evt.Payload))
                 {
                     rejected++;
                     continue;

@@ -61,6 +61,9 @@ public static class BroadcastPlanningEndpoints
         await conn.ExecuteAsync("""
             UPDATE broadcast_shows SET title = CASE WHEN @hasTitle THEN @title ELSE title END,
               tournament_id = CASE WHEN @hasTournament THEN @tournamentId ELSE tournament_id END,
+              follow_bracket = CASE WHEN @hasTournament AND tournament_id IS DISTINCT FROM @tournamentId THEN false ELSE follow_bracket END,
+              followed_stage_ids = CASE WHEN @hasTournament AND tournament_id IS DISTINCT FROM @tournamentId THEN '{}'::uuid[] ELSE followed_stage_ids END,
+              enrollment_revision = CASE WHEN @hasTournament AND tournament_id IS DISTINCT FROM @tournamentId THEN enrollment_revision + 1 ELSE enrollment_revision END,
               scheduled_at = CASE WHEN @hasSchedule THEN @scheduledAt ELSE scheduled_at END,
               updated_at = NOW() WHERE id = @showId
             """, new { showId, hasTitle, title, hasTournament, tournamentId, hasSchedule, scheduledAt }, tx);

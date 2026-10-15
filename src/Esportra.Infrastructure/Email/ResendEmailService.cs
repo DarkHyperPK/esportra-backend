@@ -91,6 +91,7 @@ public sealed class ResendEmailService(
 
         return type switch
         {
+            EmailType.BroadcastCrewInvite => EmailTemplates.BroadcastCrewInvite(Get("showTitle"), Get("role"), Get("acceptUrl")),
             EmailType.Welcome =>
                 EmailTemplates.Welcome(Get("username")),
 
