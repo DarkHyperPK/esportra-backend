@@ -5,6 +5,7 @@ using FluentAssertions;
 using Xunit;
 
 namespace Esportra.Core.Tests;
+
 public sealed class AirProjectRulesTests
 {
     private static AirProjectDocument Document() => new(1, [], [], [], new("manual", []));

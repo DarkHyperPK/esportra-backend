@@ -8,6 +8,7 @@ using FluentAssertions;
 using Xunit;
 
 namespace Esportra.Api.Tests.Endpoints;
+
 public sealed partial class BroadcastShowEndpointsTests
 {
     [Fact]
