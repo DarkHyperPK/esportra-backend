@@ -1094,6 +1094,18 @@ public static class TournamentEndpoints
                 conn, txn, id, userCtx.UserIdGuid, (int?)tourn.max_teams, reservedSlots);
             if (capacityError is not null) { txn.Rollback(); return capacityError; }
 
+            Guid? banCheckTeamId = req.TeamId is not null && Guid.TryParse(req.TeamId, out var parsedBanTeam) ? parsedBanTeam : null;
+            var isBanned = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM tournament_bans
+                    WHERE tournament_id = @id AND is_active = TRUE
+                      AND (user_id = @userId OR (@teamId IS NOT NULL AND team_id = @teamId))
+                )
+                """,
+                new { id, userId = userCtx.UserIdGuid, teamId = banCheckTeamId }, txn);
+            if (isBanned) { txn.Rollback(); return Results.BadRequest(new { error = "You are banned from this tournament." }); }
+
             var requiredDiscordLinks = GetDiscordLinkCount((string?)tourn.settings);
             if (requiredDiscordLinks > 0)
             {
@@ -3864,11 +3876,12 @@ public static class TournamentEndpoints
             var bans = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tb.id, tb.tournament_id, tb.ban_reason, tb.banned_at, tb.is_active,
+                       tb.lifted_at,
                        t.name AS tournament_name, t.slug AS tournament_slug
                 FROM public.tournament_bans tb
                 JOIN public.tournaments t ON t.id = tb.tournament_id
-                WHERE tb.user_id = @userId AND tb.is_active = TRUE
-                ORDER BY tb.banned_at DESC
+                WHERE tb.user_id = @userId
+                ORDER BY tb.is_active DESC, tb.banned_at DESC
                 """, new { userId = userCtx.UserIdGuid });
             return Results.Ok(bans);
         }).RequireAuthorization("Authenticated");
@@ -3886,6 +3899,7 @@ public static class TournamentEndpoints
             var bans = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tb.id, tb.tournament_id, tb.team_id, tb.ban_reason, tb.banned_at,
+                       tb.is_active, tb.lifted_at,
                        t.name AS tournament_name, t.slug AS tournament_slug,
                        tm.name AS team_name
                 FROM public.tournament_bans tb
@@ -3894,8 +3908,8 @@ public static class TournamentEndpoints
                 WHERE tb.team_id IN (
                     SELECT team_id FROM team_members
                     WHERE user_id = @userId AND role = 'captain' AND is_active = TRUE
-                ) AND tb.is_active = TRUE
-                ORDER BY tb.banned_at DESC
+                )
+                ORDER BY tb.is_active DESC, tb.banned_at DESC
                 """, new { userId = userCtx.UserIdGuid });
             return Results.Ok(bans);
         }).RequireAuthorization("Authenticated");
@@ -4001,6 +4015,46 @@ public static class TournamentEndpoints
             }
 
             return Results.Ok(new { success = true, participantRestored = ban.participant_id is not null });
+        }).RequireAuthorization("Authenticated");
+
+        // ── PATCH /api/tournaments/{id}/participants/{pid}/restore ────────────
+        app.MapPatch("/api/tournaments/{id}/participants/{pid}/restore", async (
+            Guid id,
+            Guid pid,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            TournamentAuthorizationService tournamentAuth,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            if (!await tournamentAuth.CanManageTournamentAsync(userCtx, id, ct: ct))
+                return Results.Forbid();
+
+            using var conn = db.CreateConnection();
+
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'approved'
+                WHERE id = @pid AND tournament_id = @id
+                  AND status IN ('disqualified', 'rejected', 'cancelled')
+                """, new { pid, id });
+
+            if (affected > 0)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE tournament_bans
+                    SET is_active = FALSE, lifted_by = @liftedBy, lifted_at = NOW()
+                    WHERE participant_id = @pid AND tournament_id = @id AND is_active = TRUE
+                    """, new { pid, id, liftedBy = userCtx.UserIdGuid });
+            }
+
+            return affected > 0
+                ? Results.Ok(new { success = true })
+                : Results.NotFound(new { error = "Participant not found or already active." });
         }).RequireAuthorization("Authenticated");
 
         // ── GET /api/tournaments/{id}/participants/me ─────────────────────────
@@ -5421,6 +5475,7 @@ public static class TournamentEndpoints
             ["check_in"] = ["ongoing", "cancelled"],
             ["ongoing"] = ["completed", "cancelled"],
             ["completed"] = ["open", "draft", "cancelled"],
+            ["cancelled"] = ["open", "draft"],
             ["approved"] = ["open", "published", "cancelled"],
         };
 
@@ -5646,9 +5701,28 @@ public static class TournamentEndpoints
             }
             catch { /* best effort: stale winner clear must not block status change */ }
 
-            await conn.ExecuteAsync(
-                "UPDATE tournament_stages SET status = 'active' WHERE tournament_id = @id AND status = 'completed'",
-                new { id });
+            if (string.Equals(req.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE brkt_matches SET status = 'cancelled'
+                    WHERE version_id IN (
+                        SELECT bv.id FROM brkt_versions bv
+                        JOIN tournament_stages ts ON ts.id = bv.stage_id
+                        WHERE ts.tournament_id = @id
+                    ) AND status NOT IN ('completed', 'cancelled')
+                    """, new { id });
+
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_stages SET status = 'cancelled' WHERE tournament_id = @id AND status NOT IN ('completed', 'cancelled')",
+                    new { id });
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE tournament_stages SET status = 'active' WHERE tournament_id = @id AND status = 'completed'",
+                    new { id });
+            }
         }
 
         if (req.Status != "completed" || updated is null) return;
