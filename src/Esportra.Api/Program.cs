@@ -555,8 +555,7 @@ using (var scope = app.Services.CreateScope())
         "riot-id-refresh", j => j.ExecuteAsync(CancellationToken.None), "20 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>(
         "report-auto-accept", j => j.SweepAsync(CancellationToken.None), "*/5 * * * *");
-    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.VetoCleanupJob>(
-        "veto-cleanup", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
         "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
