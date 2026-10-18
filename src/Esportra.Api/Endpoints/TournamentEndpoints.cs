@@ -4033,6 +4033,8 @@ public static class TournamentEndpoints
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();
+            conn.Open();
+            using var tx = conn.BeginTransaction();
 
             var affected = await conn.ExecuteAsync(
                 """
@@ -4040,7 +4042,7 @@ public static class TournamentEndpoints
                 SET status = 'approved'
                 WHERE id = @pid AND tournament_id = @id
                   AND status IN ('disqualified', 'rejected', 'cancelled')
-                """, new { pid, id });
+                """, new { pid, id }, tx);
 
             if (affected > 0)
             {
@@ -4049,8 +4051,10 @@ public static class TournamentEndpoints
                     UPDATE tournament_bans
                     SET is_active = FALSE, lifted_by = @liftedBy, lifted_at = NOW()
                     WHERE participant_id = @pid AND tournament_id = @id AND is_active = TRUE
-                    """, new { pid, id, liftedBy = userCtx.UserIdGuid });
+                    """, new { pid, id, liftedBy = userCtx.UserIdGuid }, tx);
             }
+
+            tx.Commit();
 
             return affected > 0
                 ? Results.Ok(new { success = true })
@@ -5699,7 +5703,12 @@ public static class TournamentEndpoints
                     reason: "tournament status changed away from completed", ct);
                 txClear.Commit();
             }
-            catch { /* best effort: stale winner clear must not block status change */ }
+            catch (Exception ex)
+            {
+                ctx.RequestServices.GetService<ILoggerFactory>()
+                    ?.CreateLogger("TournamentEndpoints")
+                    ?.LogWarning(ex, "ClearWinnerAsync failed for tournament {Id} on status change to {Status}; continuing", id, req.Status);
+            }
 
             if (string.Equals(req.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
             {
@@ -5737,7 +5746,12 @@ public static class TournamentEndpoints
                     reason: "tournament status changed to completed", ct);
                 txWinner.Commit();
             }
-            catch { /* trigger still blocks; winner set must not block status change */ }
+            catch (Exception ex)
+            {
+                ctx.RequestServices.GetService<ILoggerFactory>()
+                    ?.CreateLogger("TournamentEndpoints")
+                    ?.LogWarning(ex, "SetWinnerAsync failed for tournament {Id} on completed transition; continuing", id);
+            }
         }
 
         await conn.ExecuteAsync(
