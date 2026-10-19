@@ -1789,6 +1789,43 @@ public static class TournamentEndpoints
                 new { id }, tx);
 
             await CascadeForfeitMatchesAsync(conn, tx, id, bannedSlotId, versionId, finalizer, bracketHub, ct);
+
+            // GAP-1: FinalizeAsync (inside cascade) fires match_ready notifications outside our tx.
+            // If the banned team was seeded into a next-round slot before being forfeited, their
+            // captains received a false "match ready" notification. Delete it now.
+            if (banTeamId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM public.notifications
+                    WHERE type = 'match_ready'
+                      AND user_id IN (SELECT user_id FROM team_members WHERE team_id = @teamId AND is_active = TRUE)
+                      AND (data->>'match_id') IN (
+                          SELECT m.id::text FROM public.brkt_matches m
+                          JOIN public.brkt_versions bv ON bv.id = m.version_id
+                          WHERE bv.tournament_id = @tournamentId
+                            AND (m.team1_id = @bannedSlotId OR m.team2_id = @bannedSlotId)
+                      )
+                    """,
+                    new { teamId = banTeamId, tournamentId = id, bannedSlotId }, tx);
+            }
+            else if (banUserId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM public.notifications
+                    WHERE type = 'match_ready'
+                      AND user_id = @userId
+                      AND (data->>'match_id') IN (
+                          SELECT m.id::text FROM public.brkt_matches m
+                          JOIN public.brkt_versions bv ON bv.id = m.version_id
+                          WHERE bv.tournament_id = @tournamentId
+                            AND (m.team1_id = @bannedSlotId OR m.team2_id = @bannedSlotId)
+                      )
+                    """,
+                    new { userId = banUserId, tournamentId = id, bannedSlotId }, tx);
+            }
+
             await RemoveFromBRGroupsAsync(conn, tx, participantId, banTeamId, id);
             await NotifyBannedUsersAsync(conn, tx, banTeamId, banUserId, id, req.BanReason);
 
@@ -5341,10 +5378,17 @@ public static class TournamentEndpoints
                     int winnerScore = bestOf <= 1 ? 1 : (int)Math.Ceiling(bestOf / 2.0);
                     int t1Score = team1 == opponent ? winnerScore : 0;
                     int t2Score = team2 == opponent ? winnerScore : 0;
-                    // FinalizeAsync uses its own connection — cannot participate in our tx.
-                    // TODO: If our tx rolls back (e.g. notification INSERT fails), these match
-                    // forfeits are already committed. Track as a known partial-state risk.
-                    await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(opponent.Value, bannedSlotId, t1Score, t2Score), ct);
+                    // FinalizeAsync opens its own connection and commits outside our tx (GAP-2 known risk).
+                    // GAP-3: retry once on version mismatch (InvalidOperationException) — another request
+                    // may have incremented the version between our read and the finalize write.
+                    try
+                    {
+                        await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(opponent.Value, bannedSlotId, t1Score, t2Score), ct);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        await finalizer.FinalizeAsync(matchId, new FinalizeMatchOptions(opponent.Value, bannedSlotId, t1Score, t2Score), ct);
+                    }
                 }
                 else
                 {
@@ -5385,6 +5429,32 @@ public static class TournamentEndpoints
             .SendAsync(BracketHubEvents.MatchUpdated,
                 new { versionId, reason = "participant_banned", bannedSlotId },
                 ct);
+
+        // GAP-6: Clear party codes and cancel active veto sessions for any match involving
+        // the banned slot in this tournament. Completed forfeit matches still retain team_id
+        // values so this catches matches force-completed by the cascade above.
+        await conn.ExecuteAsync(
+            """
+            UPDATE public.brkt_matches
+            SET party_code = NULL
+            WHERE (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
+              AND version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)
+            """,
+            new { bannedSlotId, tournamentId }, tx);
+
+        await conn.ExecuteAsync(
+            """
+            UPDATE public.match_map_vetos
+            SET status = 'cancelled'
+            WHERE status = 'in_progress'
+              AND match_id IN (
+                  SELECT m.id FROM public.brkt_matches m
+                  JOIN public.brkt_versions bv ON bv.id = m.version_id
+                  WHERE bv.tournament_id = @tournamentId
+                    AND (m.team1_id = @bannedSlotId OR m.team2_id = @bannedSlotId)
+              )
+            """,
+            new { bannedSlotId, tournamentId }, tx);
 
         var pendingCount = await conn.QuerySingleAsync<int>(
             "SELECT COUNT(*) FROM brkt_matches WHERE version_id = @versionId AND status != 'completed'",
