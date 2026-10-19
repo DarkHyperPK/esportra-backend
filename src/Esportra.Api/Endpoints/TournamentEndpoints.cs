@@ -5425,29 +5425,54 @@ public static class TournamentEndpoints
     private static async Task RemoveFromBRGroupsAsync(
         IDbConnection conn, IDbTransaction tx, Guid participantId, Guid? banTeamId, Guid tournamentId)
     {
+        var tournamentStageFilter =
+            """
+            AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
+                SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
+            ))
+            """;
+
         if (banTeamId.HasValue)
         {
             await conn.ExecuteAsync(
+                $"DELETE FROM br_group_teams WHERE team_id = @teamId {tournamentStageFilter}",
+                new { teamId = banTeamId, tournamentId }, tx);
+
+            await conn.ExecuteAsync(
                 """
-                DELETE FROM br_group_teams
+                DELETE FROM br_lobby_results
                 WHERE team_id = @teamId
-                  AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
-                      SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
-                  ))
+                  AND lobby_id IN (
+                      SELECT l.id FROM br_lobbies l
+                      JOIN br_groups bg ON bg.id = l.group_id
+                      JOIN tournament_stages ts ON ts.id = bg.stage_id
+                      WHERE ts.tournament_id = @tournamentId
+                  )
                 """,
                 new { teamId = banTeamId, tournamentId }, tx);
         }
         else
         {
             await conn.ExecuteAsync(
-                """
-                DELETE FROM br_group_teams
-                WHERE participant_id = @participantId
-                  AND group_id IN (SELECT id FROM br_groups WHERE stage_id IN (
-                      SELECT id FROM tournament_stages WHERE tournament_id = @tournamentId
-                  ))
-                """,
+                $"DELETE FROM br_group_teams WHERE participant_id = @participantId {tournamentStageFilter}",
                 new { participantId, tournamentId }, tx);
+
+            var hasParticipantIdCol = await Esportra.Core.Br.BrSchemaRepository.ColumnExistsAsync(conn, "br_lobby_results", "participant_id", tx);
+            if (hasParticipantIdCol)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    DELETE FROM br_lobby_results
+                    WHERE participant_id = @participantId
+                      AND lobby_id IN (
+                          SELECT l.id FROM br_lobbies l
+                          JOIN br_groups bg ON bg.id = l.group_id
+                          JOIN tournament_stages ts ON ts.id = bg.stage_id
+                          WHERE ts.tournament_id = @tournamentId
+                      )
+                    """,
+                    new { participantId, tournamentId }, tx);
+            }
         }
     }
 

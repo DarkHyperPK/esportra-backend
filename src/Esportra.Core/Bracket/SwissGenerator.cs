@@ -114,6 +114,20 @@ public sealed class SwissNextRoundService(
 
         using var conn = db.CreateConnection();
 
+        var disqualifiedSlotIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT COALESCE(tp.team_id, tp.id)
+            FROM tournament_participants tp
+            JOIN tournament_stages ts ON ts.tournament_id = tp.tournament_id
+            WHERE ts.id = @stageId AND tp.status = 'disqualified'
+            """,
+            new { stageId })).ToHashSet();
+
+        if (disqualifiedSlotIds.Count > 0)
+            standingsList = standingsList
+                .Where(s => !disqualifiedSlotIds.Contains(s.TeamId))
+                .ToList();
+
         var totalTeams = await conn.ExecuteScalarAsync<int>(
             """
             SELECT COUNT(*) FROM (
@@ -136,7 +150,7 @@ public sealed class SwissNextRoundService(
         if (currentRound >= maxRounds)
             return (false, $"Round limit reached ({maxRounds} rounds).");
 
-        var history = await LoadMatchHistoryAsync(versionId, conn);
+        var history = await LoadMatchHistoryAsync(versionId, conn, disqualifiedSlotIds);
         if (history.ExistingCount == 0)
             return (false, "No match history found. Cannot generate pairings.");
 
@@ -189,7 +203,8 @@ public sealed class SwissNextRoundService(
         return (true, null);
     }
 
-    private static async Task<MatchHistory> LoadMatchHistoryAsync(Guid versionId, System.Data.IDbConnection conn)
+    private static async Task<MatchHistory> LoadMatchHistoryAsync(
+        Guid versionId, System.Data.IDbConnection conn, HashSet<Guid>? excludedSlotIds = null)
     {
         var rows = (await conn.QueryAsync(
             "SELECT team1_id, team2_id, team1_seed, team2_seed, group_id FROM public.brkt_matches WHERE version_id = @versionId",
@@ -205,14 +220,14 @@ public sealed class SwissNextRoundService(
             string gid = (string?)m.group_id ?? "default";
             if (!groupMap.ContainsKey(gid)) groupMap[gid] = [];
 
-            if (m.team1_id is Guid t1)
+            if (m.team1_id is Guid t1 && (excludedSlotIds is null || !excludedSlotIds.Contains(t1)))
             {
                 groupMap[gid].Add(t1);
                 teamGroupMap[t1] = gid;
                 if (m.team1_seed is int s1 && !teamSeedMap.ContainsKey(t1))
                     teamSeedMap[t1] = s1;
             }
-            if (m.team2_id is Guid t2)
+            if (m.team2_id is Guid t2 && (excludedSlotIds is null || !excludedSlotIds.Contains(t2)))
             {
                 groupMap[gid].Add(t2);
                 teamGroupMap[t2] = gid;
