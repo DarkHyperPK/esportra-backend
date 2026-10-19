@@ -25,7 +25,7 @@ public static class BroadcastNodeEndpoints
                 : Results.Ok(new { nodeId = node.NodeId, active = true });
         }).AllowAnonymous().WithMetadata(new RateLimitPolicyMetadata("fixed"));
 
-        app.MapDelete("/api/broadcast/nodes/{nodeId}", DeactivateNode)
+        app.MapDelete("/api/broadcast/nodes/{nodeId:guid}", DeactivateNode)
             .RequireAuthorization("Authenticated")
             .WithMetadata(new RateLimitPolicyMetadata("fixed"));
     }
