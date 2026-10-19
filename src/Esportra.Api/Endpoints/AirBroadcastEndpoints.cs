@@ -54,6 +54,7 @@ public static partial class AirBroadcastEndpoints
         routes.MapGet("/matches/{matchId:guid}/draft", GetDraft);
         routes.MapPut("/matches/{matchId:guid}/draft", SaveDraft);
         routes.MapGet("/matches/{matchId:guid}/bracket", GetBracket);
+        routes.MapGet("/matches/{matchId:guid}/roster", GetRoster);
         routes.MapPost("/packages/{packageId:guid}/events", SavePackageEvents);
         routes.MapGet("/packages/{packageId:guid}/activity", PackageActivity);
         routes.MapGet("/packages/{packageId:guid}/result-proposals", ListAirResults);
@@ -79,8 +80,46 @@ public static partial class AirBroadcastEndpoints
         using var conn = db.CreateConnection();
         if (!await AuthorizedDevice(conn, ctx, accounts)) return Results.Json(new { error = "An active Air account and registered production PC are required. Check access in Settings & help." }, statusCode: 403);
         var matches = await Matches(conn, AirAccountEndpoints.User(ctx));
-        return Results.Ok(new { matches = matches.Select(m => new { m.Id, m.TournamentId, m.TournamentName, m.Game, m.TeamA, m.TeamB, m.ScheduledAt, m.Status, m.BestOf, packId = AirGamePacks.Resolve(m.Game), supported = AirGamePacks.Resolve(m.Game) is not null }) });
+        return Results.Ok(new { matches = matches.Select(m => new { m.Id, m.TournamentId, m.TournamentName, m.Game, m.TeamA, m.TeamB, m.TagA, m.TagB, m.LogoA, m.LogoB, m.ScheduledAt, m.Status, m.BestOf, packId = AirGamePacks.Resolve(m.Game), supported = AirGamePacks.Resolve(m.Game) is not null }) });
     }
+    private static async Task<IResult> GetRoster(Guid matchId, HttpContext ctx, IDbConnectionFactory db, AirAccountService accounts)
+    {
+        using var conn = db.CreateConnection();
+        if (!await AuthorizedDevice(conn, ctx, accounts)) return Results.Json(new { error = "An active Air account and registered production PC are required." }, statusCode: 403);
+        var userId = AirAccountEndpoints.User(ctx);
+        var matches = await Matches(conn, userId, matchId);
+        if (matches.Length == 0) return Results.NotFound();
+        var match = matches[0];
+
+        var players = await conn.QueryAsync<AirRosterPlayer>("""
+            SELECT tp.id AS ParticipantId,
+                   COALESCE(t.id, tp.id) AS TeamId,
+                   p.id AS UserId,
+                   COALESCE(p.username, tp.team_name, 'Unknown') AS DisplayName,
+                   p.avatar_url AS AvatarUrl,
+                   tp.role AS Role
+            FROM tournament_participants tp
+            LEFT JOIN profiles p ON p.id = tp.user_id
+            LEFT JOIN teams t ON t.id = tp.team_id
+            WHERE tp.tournament_id = @tournamentId
+              AND tp.status IN ('approved', 'confirmed')
+              AND (tp.team_id = @team1Id OR tp.team_id = @team2Id
+                   OR (tp.team_id IS NULL AND tp.id = @team1Id)
+                   OR (tp.team_id IS NULL AND tp.id = @team2Id))
+            ORDER BY tp.team_id NULLS LAST, tp.created_at
+            LIMIT 50
+            """, new { tournamentId = match.TournamentId, team1Id = match.Team1Id, team2Id = match.Team2Id });
+
+        var byTeam = players.GroupBy(p => p.TeamId).ToDictionary(g => g.Key, g => g.ToArray());
+        return Results.Ok(new
+        {
+            matchId,
+            team1 = new { id = match.Team1Id, name = match.TeamA, tag = match.TagA, logo = match.LogoA, players = byTeam.GetValueOrDefault(match.Team1Id, []) },
+            team2 = new { id = match.Team2Id, name = match.TeamB, tag = match.TagB, logo = match.LogoB, players = byTeam.GetValueOrDefault(match.Team2Id, []) },
+        });
+    }
+
+    private sealed record AirRosterPlayer(Guid ParticipantId, Guid TeamId, Guid? UserId, string DisplayName, string? AvatarUrl, string? Role);
     private sealed record AirMatch(Guid Id, Guid TournamentId, string TournamentName, string Game, string Status,
         int BestOf, DateTime? ScheduledAt, Guid Team1Id, Guid Team2Id, string TeamA, string TeamB,
         string TagA, string TagB, string? LogoA, string? LogoB, int ScoreA, int ScoreB);
