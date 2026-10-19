@@ -12,12 +12,16 @@ public sealed partial class BroadcastShowEndpointsTests
     public async Task Pairing_RoutesWereRetired_WhenWorkstationsMovedToAccountSignIn()
     {
         await SeedOrgOwnerAsync();
-        // No route exists anymore: Air signs in with an account, codes were the
-        // scrapped web-broadcast flow.
-        (await _factory.CreateClient().PostAsync("/api/broadcast/nodes/codes",
-            JsonContent.Create(new { }))).StatusCode.Should().Be(HttpStatusCode.NotFound);
-        (await _factory.CreateClient().PostAsync("/api/broadcast/nodes/pair",
-            JsonContent.Create(new { }))).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        // No pairing handler exists anymore: Air signs in with an account, codes
+        // were the scrapped web-broadcast flow. These POSTs may answer 405 rather
+        // than 404 because the node-revocation route /nodes/{nodeId} has the same
+        // path shape and ASP.NET's method matcher rejects the method before the
+        // GUID constraint is evaluated. What matters is that pairing never succeeds.
+        foreach (var path in new[] { "/api/broadcast/nodes/codes", "/api/broadcast/nodes/pair" })
+        {
+            var response = await _factory.CreateClient().PostAsync(path, JsonContent.Create(new { }));
+            response.StatusCode.Should().BeOneOf(HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed);
+        }
     }
 
     [Fact]
