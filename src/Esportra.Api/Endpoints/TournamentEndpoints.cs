@@ -5424,11 +5424,19 @@ public static class TournamentEndpoints
               AND status NOT IN ('completed', 'disputed')
             """, new { bannedSlotId, tournamentId }, tx);
 
-        await bracketHub.Clients
-            .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
-            .SendAsync(BracketHubEvents.MatchUpdated,
-                new { versionId, reason = "participant_banned", bannedSlotId },
-                ct);
+        // Broadcast to every version group for this tournament — DE brackets have
+        // separate UB and LB versions; broadcasting to only the latest misses the rest.
+        var allVersionIds = (await conn.QueryAsync<Guid>(
+            "SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId",
+            new { tournamentId }, tx)).AsList();
+        foreach (var vid in allVersionIds)
+        {
+            await bracketHub.Clients
+                .Group(BracketHub.BracketGroup(vid.ToString()))
+                .SendAsync(BracketHubEvents.MatchUpdated,
+                    new { versionId = vid, reason = "participant_banned", bannedSlotId },
+                    ct);
+        }
 
         // GAP-6: Clear party codes and cancel active veto sessions for any match involving
         // the banned slot in this tournament. Completed forfeit matches still retain team_id
