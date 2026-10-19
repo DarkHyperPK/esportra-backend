@@ -5316,14 +5316,15 @@ public static class TournamentEndpoints
         {
             var pendingMatches = (await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, team1_id, team2_id, best_of
-                FROM public.brkt_matches
-                WHERE version_id = @versionId
-                  AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
-                  AND status NOT IN ('completed', 'disputed')
-                ORDER BY round_index ASC, match_number ASC
+                SELECT m.id, m.team1_id, m.team2_id, m.best_of
+                FROM public.brkt_matches m
+                JOIN public.brkt_versions bv ON bv.id = m.version_id
+                WHERE bv.tournament_id = @tournamentId
+                  AND (m.team1_id = @bannedSlotId OR m.team2_id = @bannedSlotId)
+                  AND m.status NOT IN ('completed', 'disputed')
+                ORDER BY m.round_index ASC, m.match_number ASC
                 """,
-                new { versionId, bannedSlotId }, tx)).AsList();
+                new { tournamentId, bannedSlotId }, tx)).AsList();
 
             if (pendingMatches.Count == 0) break;
 
@@ -5358,6 +5359,26 @@ public static class TournamentEndpoints
                 }
             }
         }
+
+        // Remove banned team from any remaining pending slots across all bracket versions.
+        // Handles advancement edges that placed the team into rounds beyond the cascade window.
+        await conn.ExecuteAsync(
+            """
+            UPDATE public.brkt_matches
+            SET team1_id = NULL
+            WHERE team1_id = @bannedSlotId
+              AND version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)
+              AND status NOT IN ('completed', 'disputed')
+            """, new { bannedSlotId, tournamentId }, tx);
+
+        await conn.ExecuteAsync(
+            """
+            UPDATE public.brkt_matches
+            SET team2_id = NULL
+            WHERE team2_id = @bannedSlotId
+              AND version_id IN (SELECT id FROM public.brkt_versions WHERE tournament_id = @tournamentId)
+              AND status NOT IN ('completed', 'disputed')
+            """, new { bannedSlotId, tournamentId }, tx);
 
         await bracketHub.Clients
             .Group(BracketHub.BracketGroup(versionId.Value.ToString()))
