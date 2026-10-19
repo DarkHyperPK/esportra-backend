@@ -5514,8 +5514,7 @@ public static class TournamentEndpoints
                 WHERE team_id = @teamId
                   AND lobby_id IN (
                       SELECT l.id FROM br_lobbies l
-                      JOIN br_groups bg ON bg.id = l.group_id
-                      JOIN tournament_stages ts ON ts.id = bg.stage_id
+                      JOIN tournament_stages ts ON ts.id = l.stage_id
                       WHERE ts.tournament_id = @tournamentId
                   )
                 """,
@@ -5536,8 +5535,7 @@ public static class TournamentEndpoints
                     WHERE participant_id = @participantId
                       AND lobby_id IN (
                           SELECT l.id FROM br_lobbies l
-                          JOIN br_groups bg ON bg.id = l.group_id
-                          JOIN tournament_stages ts ON ts.id = bg.stage_id
+                          JOIN tournament_stages ts ON ts.id = l.stage_id
                           WHERE ts.tournament_id = @tournamentId
                       )
                     """,
