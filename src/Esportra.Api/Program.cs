@@ -681,6 +681,7 @@ app.MapBroadcastSponsorProofEndpoints();
 app.MapBroadcastReportEndpoints();
 app.MapAirAuthEndpoints();
 app.MapAirAccountEndpoints();
+app.MapAirBroadcastEndpoints();
 app.MapBroadcastBracketPresentationEndpoints();
 app.MapAirProjectEndpoints();
 app.MapAirEventEndpoints();

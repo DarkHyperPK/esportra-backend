@@ -6,7 +6,7 @@ namespace Esportra.Api.Endpoints;
 
 public static partial class BroadcastShowEndpoints
 {
-    private static async Task<Dictionary<Guid, BroadcastRosterName[]>> ReadRegisteredRosters(IDbConnection conn, Guid? tournamentId, IEnumerable<Guid?> teamIds)
+    internal static async Task<Dictionary<Guid, BroadcastRosterName[]>> ReadRegisteredRosters(IDbConnection conn, Guid? tournamentId, IEnumerable<Guid?> teamIds)
     {
         var ids = teamIds.Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
         if (tournamentId is null || ids.Length == 0) return [];

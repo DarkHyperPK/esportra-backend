@@ -1,7 +1,7 @@
 {
   "baseline": "20260317_001_baseline.sql",
   "generatedBy": ".github/scripts/audit-replay-legacy-deps.py",
-  "postBaselineScriptCount": 241,
+  "postBaselineScriptCount": 312,
   "legacyTables": {
     "admin_permissions": {
       "firstSeenIn": "20260323_001_seed_rbac_normalized.sql",
@@ -25,6 +25,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -48,6 +49,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -72,6 +74,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -93,6 +96,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -117,6 +121,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -138,6 +143,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -162,6 +168,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -185,14 +192,15 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
     },
-    "brkt_match_games": {
-      "firstSeenIn": "20260318_001_drop_riot_match_id_unique.sql",
+    "brkt_match_events": {
+      "firstSeenIn": "20260918000002_add_missing_fk_indexes.sql",
       "operations": [
-        "alter"
+        "index"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -206,6 +214,30 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "brkt_match_games": {
+      "firstSeenIn": "20260318_001_drop_riot_match_id_unique.sql",
+      "operations": [
+        "alter",
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -216,7 +248,8 @@
         "join",
         "alter",
         "references",
-        "update"
+        "update",
+        "index"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -230,6 +263,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -251,6 +285,29 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "deduped": {
+      "firstSeenIn": "20261004120000_normalize_scheduling_config_jsonb_keys.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -272,6 +329,51 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "dupes": {
+      "firstSeenIn": "20260919000002_add_team_slug.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "expanded": {
+      "firstSeenIn": "20261004120000_normalize_scheduling_config_jsonb_keys.sql",
+      "operations": [
+        "join"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -297,15 +399,15 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
     },
-    "match_checkins": {
-      "firstSeenIn": "20260905000010_fix_match_checkins_solo_fk.sql",
+    "jsonb_each": {
+      "firstSeenIn": "20261004120000_normalize_scheduling_config_jsonb_keys.sql",
       "operations": [
-        "alter",
-        "policy"
+        "join"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -319,13 +421,15 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
     },
-    "match_completed_events": {
-      "firstSeenIn": "20260827000100_sprint2_schema_fixes.sql",
+    "match_checkins": {
+      "firstSeenIn": "20260912000002_drop_match_checkins_team_fkey.sql",
       "operations": [
+        "alter",
         "index"
       ],
       "columnsMentioned": [],
@@ -340,6 +444,30 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "match_completed_events": {
+      "firstSeenIn": "20260827000100_sprint2_schema_fixes.sql",
+      "operations": [
+        "index",
+        "alter"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -362,6 +490,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -370,7 +499,8 @@
       "firstSeenIn": "20260607120000_fix_null_veto_picked_maps.sql",
       "operations": [
         "alter",
-        "update"
+        "update",
+        "index"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -384,6 +514,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -391,7 +522,8 @@
     "match_messages": {
       "firstSeenIn": "20260609160000_match_messages_competitor_team_id.sql",
       "operations": [
-        "alter"
+        "alter",
+        "index"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -405,6 +537,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -429,6 +562,29 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "match_time_proposals": {
+      "firstSeenIn": "20260918000002_add_missing_fk_indexes.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -450,6 +606,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -471,6 +628,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -492,6 +650,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -513,6 +672,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -534,6 +694,51 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "organization_albums": {
+      "firstSeenIn": "20260918000002_add_missing_fk_indexes.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "organization_media": {
+      "firstSeenIn": "20260918000002_add_missing_fk_indexes.sql",
+      "operations": [
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -557,6 +762,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -580,6 +786,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -603,6 +810,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -624,6 +832,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -649,6 +858,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -670,6 +880,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -691,6 +902,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -712,6 +924,30 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "riot_accounts": {
+      "firstSeenIn": "20260918000001_drop_duplicate_indexes.sql",
+      "operations": [
+        "alter",
+        "index"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -733,6 +969,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -754,6 +991,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -779,6 +1017,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -802,6 +1041,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -824,6 +1064,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -848,6 +1089,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -870,12 +1112,36 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
     },
     "stage_participants": {
       "firstSeenIn": "20260827000100_sprint2_schema_fixes.sql",
+      "operations": [
+        "index",
+        "alter"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "team_invitations": {
+      "firstSeenIn": "20260918000002_add_missing_fk_indexes.sql",
       "operations": [
         "index"
       ],
@@ -891,6 +1157,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -914,6 +1181,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -942,6 +1210,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -963,6 +1232,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -989,6 +1259,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1010,17 +1281,15 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
     },
-    "tournament_disputes": {
-      "firstSeenIn": "20260318_002_dispute_reference_number.sql",
+    "tournament_bans": {
+      "firstSeenIn": "20260918000002_add_missing_fk_indexes.sql",
       "operations": [
-        "alter",
-        "update",
-        "join",
-        "references"
+        "index"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -1034,6 +1303,34 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
+        "user_id",
+        "venue_id"
+      ]
+    },
+    "tournament_disputes": {
+      "firstSeenIn": "20260318_002_dispute_reference_number.sql",
+      "operations": [
+        "alter",
+        "update",
+        "join",
+        "references",
+        "index",
+        "policy"
+      ],
+      "columnsMentioned": [],
+      "onConflictColumns": [
+        "game",
+        "group_id",
+        "id",
+        "key",
+        "lobby_id",
+        "map_name",
+        "permission",
+        "role",
+        "role_id",
+        "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1045,7 +1342,8 @@
         "index",
         "references",
         "join",
-        "update"
+        "update",
+        "delete"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -1059,6 +1357,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1082,6 +1381,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1108,6 +1408,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1117,7 +1418,8 @@
       "operations": [
         "index",
         "insert",
-        "join"
+        "join",
+        "alter"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -1132,6 +1434,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1153,6 +1456,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1177,6 +1481,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1201,6 +1506,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
@@ -1210,7 +1516,8 @@
       "operations": [
         "index",
         "insert",
-        "join"
+        "join",
+        "alter"
       ],
       "columnsMentioned": [],
       "onConflictColumns": [
@@ -1225,6 +1532,7 @@
         "role",
         "role_id",
         "roster_id",
+        "slug",
         "user_id",
         "venue_id"
       ]
