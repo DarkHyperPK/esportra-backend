@@ -677,6 +677,7 @@ app.MapBroadcastNodeEndpoints();
 app.MapBroadcastShowEndpoints();
 app.MapBroadcastCrewEndpoints();
 app.MapBroadcastDrainEndpoints();
+app.MapBroadcastOverlayTokenEndpoints();
 app.MapBroadcastSponsorProofEndpoints();
 app.MapBroadcastReportEndpoints();
 app.MapAirAuthEndpoints();

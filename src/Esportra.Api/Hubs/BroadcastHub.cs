@@ -11,16 +11,19 @@ using Microsoft.AspNetCore.SignalR;
 namespace Esportra.Api.Hubs;
 
 /// <summary>
-/// SignalR hub for Esportra Air broadcast system (PROJ-057, T3/T26).
-/// Three connection types share one hub:
-///   node    — Bearer &lt;base64-32-bytes&gt;; validated via SHA-256 hash lookup in broadcast_nodes
-///   crew    — Supabase JWT; user has an active row in broadcast_crew for the given ?showId= param
-///   org-web — Supabase JWT; user owns an organization (organizations.owner_id = userId)
+/// SignalR hub for Esportra Air broadcast system (PROJ-057, T3/T26; PROJ-062 overlay-source).
+/// Four connection types share one hub:
+///   node           — Bearer &lt;base64-32-bytes&gt;; validated via SHA-256 hash lookup in broadcast_nodes
+///   crew           — Supabase JWT; user has an active row in broadcast_crew for the given ?showId= param
+///   org-web        — Supabase JWT; user owns an organization (organizations.owner_id = userId)
+///   overlay-source — ?overlay_token=&lt;raw&gt;; read-only; SHA-256 lookup in broadcast_overlay_tokens
+///                    (NEVER uses ?access_token= — OBS logs every browser source URL unconditionally)
 ///
 /// Route:  /hubs/broadcast
-/// Groups: node:{nodeId}   — commands targeting one node
-///         org:{orgId}     — org-wide events (overlay updates, ShowConfig pushes)
-///         crew:{showId}   — rundown / show state pushed to crew members
+/// Groups: node:{nodeId}    — commands targeting one node
+///         org:{orgId}      — org-wide events (overlay updates, ShowConfig pushes)
+///         crew:{showId}    — rundown / show state pushed to crew members
+///         overlay:{showId} — revocation push to all browser sources for a show
 /// </summary>
 public sealed class BroadcastHub : Hub
 {
@@ -48,17 +51,32 @@ public sealed class BroadcastHub : Hub
             return;
         }
 
-        var token = ExtractBearerToken(httpCtx);
-        if (token is null)
-        {
-            _logger.LogWarning("[BroadcastHub] Rejected — missing Bearer token. connId={ConnId}", Context.ConnectionId);
-            Context.Abort();
-            return;
-        }
-
         try
         {
             using var conn = _db.CreateConnection();
+
+            // Overlay-source: check ?overlay_token= BEFORE the JWT path.
+            // OBS unconditionally logs browser source URLs; a JWT must never appear in a URL.
+            var overlayToken = httpCtx.Request.Query["overlay_token"].ToString();
+            if (!string.IsNullOrEmpty(overlayToken))
+            {
+                if (await TryConnectAsOverlaySourceAsync(overlayToken, conn))
+                {
+                    await base.OnConnectedAsync();
+                    return;
+                }
+                _logger.LogWarning("[BroadcastHub] Rejected — invalid overlay token. connId={ConnId}", Context.ConnectionId);
+                Context.Abort();
+                return;
+            }
+
+            var token = ExtractBearerToken(httpCtx);
+            if (token is null)
+            {
+                _logger.LogWarning("[BroadcastHub] Rejected — missing Bearer token. connId={ConnId}", Context.ConnectionId);
+                Context.Abort();
+                return;
+            }
 
             if (await TryConnectAsNodeAsync(token, conn))
             {
@@ -102,6 +120,13 @@ public sealed class BroadcastHub : Hub
                 if (Context.Items.TryGetValue("OrgId", out var orgVal) && orgVal is Guid orgId)
                     await Groups.RemoveFromGroupAsync(Context.ConnectionId, OrgGroup(orgId));
                 _logger.LogInformation("[BroadcastHub] Org-web disconnected — connId={ConnId}", Context.ConnectionId);
+                break;
+            case "overlay-source":
+                if (Context.Items.TryGetValue("OrgId", out var oOrgVal) && oOrgVal is Guid oOrgId)
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, OrgGroup(oOrgId));
+                if (Context.Items.TryGetValue("ShowId", out var oShowVal) && oShowVal is Guid oShowId)
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, OverlayGroup(oShowId));
+                _logger.LogInformation("[BroadcastHub] Overlay-source disconnected — connId={ConnId}", Context.ConnectionId);
                 break;
         }
 
@@ -254,13 +279,66 @@ public sealed class BroadcastHub : Hub
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Called by browser source overlays to confirm liveness. Updates last_ping_at.
+    /// Only valid for overlay-source connections.
+    /// </summary>
+    public async Task OverlayPing()
+    {
+        if (!Context.Items.TryGetValue("ConnectionType", out var ct) || ct as string != "overlay-source") return;
+        if (!Context.Items.TryGetValue("OverlayTokenId", out var idVal) || idVal is not Guid tokenId) return;
+
+        try
+        {
+            using var conn = _db.CreateConnection();
+            await conn.ExecuteAsync(
+                "UPDATE broadcast_overlay_tokens SET last_ping_at = NOW() WHERE id = @id AND revoked_at IS NULL",
+                new { id = tokenId });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[BroadcastHub] OverlayPing update failed. tokenId={TokenId}", tokenId);
+        }
+    }
+
     // ── Group name helpers (used by IHubContext callers) ──────────────────────
 
     public static string NodeGroup(Guid nodeId) => $"node:{nodeId}";
     public static string OrgGroup(Guid orgId) => $"org:{orgId}";
     public static string CrewGroup(Guid showId) => $"crew:{showId}";
+    public static string OverlayGroup(Guid showId) => $"overlay:{showId}";
 
     // ── Private connection helpers ────────────────────────────────────────────
+
+    private async Task<bool> TryConnectAsOverlaySourceAsync(string rawToken, System.Data.IDbConnection conn)
+    {
+        var tokenHash = HashToken(rawToken);
+        var overlay = await conn.QuerySingleOrDefaultAsync<OverlayTokenRecord>(
+            """
+            SELECT id AS Id, show_id AS ShowId, org_id AS OrgId
+            FROM broadcast_overlay_tokens
+            WHERE token_hash = @tokenHash
+              AND revoked_at IS NULL
+              AND expires_at > NOW()
+            """,
+            new { tokenHash });
+
+        if (overlay is null) return false;
+
+        Context.Items["ConnectionType"] = "overlay-source";
+        Context.Items["OverlayTokenId"] = overlay.Id;
+        Context.Items["ShowId"] = overlay.ShowId;
+        Context.Items["OrgId"] = overlay.OrgId;
+
+        await Groups.AddToGroupAsync(Context.ConnectionId, OrgGroup(overlay.OrgId));
+        await Groups.AddToGroupAsync(Context.ConnectionId, OverlayGroup(overlay.ShowId));
+
+        _logger.LogInformation(
+            "[BroadcastHub] Overlay-source connected — tokenId={TokenId} showId={ShowId} connId={ConnId}",
+            overlay.Id, overlay.ShowId, Context.ConnectionId);
+
+        return true;
+    }
 
     private async Task<bool> TryConnectAsNodeAsync(string token, System.Data.IDbConnection conn)
     {
@@ -444,6 +522,7 @@ public sealed class BroadcastHub : Hub
 
     private sealed record NodeRecord(Guid Id, Guid OrgId);
     private sealed record CrewRecord(Guid ShowId, string Role, Guid OrgId);
+    private sealed record OverlayTokenRecord(Guid Id, Guid ShowId, Guid OrgId);
 
     /// <summary>Sliding-window rate bucket: 60 calls per 60 seconds per connection.</summary>
     private sealed class RateBucket
