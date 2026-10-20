@@ -5391,12 +5391,17 @@ public static class TournamentEndpoints
                 }
                 else
                 {
+                    // No opponent yet — clear the banned slot without completing the match.
+                    // Leaving it 'pending' means when another team eventually advances here
+                    // they appear alone and the organizer grants them a walkover.
+                    // The NULL stops the loop from re-finding this match on the next pass.
                     await conn.ExecuteAsync(
                         """
                         UPDATE public.brkt_matches
-                        SET status = 'completed', winner_id = NULL, loser_id = @bannedSlotId,
-                            result_notes = 'Forfeit — team banned', version = version + 1, updated_at = NOW()
-                        WHERE id = @matchId AND status != 'completed'
+                        SET team1_id = CASE WHEN team1_id = @bannedSlotId THEN NULL ELSE team1_id END,
+                            team2_id = CASE WHEN team2_id = @bannedSlotId THEN NULL ELSE team2_id END
+                        WHERE id = @matchId
+                          AND (team1_id = @bannedSlotId OR team2_id = @bannedSlotId)
                         """,
                         new { matchId, bannedSlotId }, tx);
                 }
