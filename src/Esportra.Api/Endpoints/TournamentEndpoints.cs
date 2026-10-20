@@ -4070,7 +4070,6 @@ public static class TournamentEndpoints
                 return Results.Forbid();
 
             using var conn = db.CreateConnection();
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             var affected = await conn.ExecuteAsync(
