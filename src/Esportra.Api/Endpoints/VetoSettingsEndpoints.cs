@@ -1,5 +1,6 @@
 using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Esportra.Core.Match;
@@ -39,6 +40,7 @@ public static class VetoSettingsEndpoints
             VetoDbService veto,
             VetoSettingsService vetoSettings,
             IHubContext<VetoHub> hub,
+            EventLicenseService licenseService,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -53,6 +55,11 @@ public static class VetoSettingsEndpoints
 
             if (!Enum.TryParse<VetoMode>(req.Mode, ignoreCase: true, out var mode))
                 return Results.BadRequest(new { error = "Invalid mode. Use 'default' or 'custom'." });
+
+            // BE-5: Custom veto sequences require Organizer Pro
+            if (mode == VetoMode.Custom
+                && !await licenseService.IsOrganizerProAsync(existing.TournamentId, ct))
+                return Results.Json(new { error = "organizer_pro_required" }, statusCode: 402);
 
             try
             {

@@ -597,6 +597,7 @@ public static class TournamentEndpoints
             IDbConnectionFactory db,
             GameCatalogService gameCatalog,
             HybridCache cache,
+            EventLicenseService licenseService,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -606,21 +607,18 @@ public static class TournamentEndpoints
             if (!userCtx.Roles.Contains("organizer", StringComparer.OrdinalIgnoreCase))
                 return Results.Json(new { error = "Organizer role required to create tournaments" }, statusCode: 403);
 
+            // BE-2: Bracket tier gate — free tier supports ≤32 teams only
+            if (req.MaxTeams > 32)
+                return Results.Json(
+                    new { error = "bracket_upgrade_required", contact_us_url = licenseService.ContactUsUrl },
+                    statusCode: 402);
+
             using var conn = db.CreateConnection();
 
-            var isVerifiedOrganizer = await conn.ExecuteScalarAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM verified_roles
-                    WHERE user_id = @userId AND role = 'organizer'::app_role
-                      AND status = 'approved' AND is_active = TRUE
-                ) AND EXISTS(
-                    SELECT 1 FROM organizations WHERE owner_id = @userId
-                )
-                """,
-                new { userId = userCtx.UserIdGuid });
-            if (!isVerifiedOrganizer)
-                return Results.Json(new { error = "Approved organizer verification and organization required" }, statusCode: 403);
+            // Secondary verified_roles check removed — PROJ-058 DB-2.
+            // The primary organizer role gate at line 606 is retained.
+            // Org creation (POST /api/organizations) now auto-assigns user_roles +
+            // verified_roles atomically, so the role check above is the single gate.
 
             using var tx = conn.BeginTransaction();
 
@@ -727,6 +725,19 @@ public static class TournamentEndpoints
 
                 var tournamentId = (Guid)tournament.id;
 
+                // BE-2: Reserve an event license immediately after the tournament row is created.
+                // The quota trigger fires on INSERT; on quota_exhausted we roll back the whole transaction.
+                // organizationId was verified non-null by the earlier organizer gate; use .Value safely.
+                var licenseResult = await licenseService.ReserveNewAsync(
+                    tournamentId, userCtx.UserIdGuid, organizationId!.Value, req.MaxTeams, ct);
+                if (!licenseResult.IsOk)
+                {
+                    tx.Rollback();
+                    return Results.Json(
+                        new { error = licenseResult.Error, contact_us_url = licenseService.ContactUsUrl },
+                        statusCode: 402);
+                }
+
                 // BR tournaments start with no stages — organizers configure via stage setup wizard
                 await InsertStagesAsync(conn, tx, tournamentId, req.Stages, req.MaxTeams);
                 await InsertMapPoolAsync(conn, tx, tournamentId, req.MapPoolIds);
@@ -763,6 +774,7 @@ public static class TournamentEndpoints
             TournamentAuthorizationService tournamentAuth,
             PlacementResolutionService placementResolution,
             HybridCache cache,
+            EventLicenseService licenseService,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -791,6 +803,17 @@ public static class TournamentEndpoints
             var catalog = validationResult.ctx!.Catalog;
             var effectiveEndDate = validationResult.ctx.EffectiveEndDate;
             var reservedSlotsForUpdate = validationResult.ctx.ReservedSlotsForUpdate;
+
+            // BE-3: Publish gate — only block when a non-active license exists.
+            // Null license (legacy/grandfathered tournament) passes through.
+            if (req.Status is "open" or "published")
+            {
+                var license = await licenseService.GetForTournamentAsync(id, ct);
+                if (license is not null && license.Status != "active")
+                    return Results.Json(
+                        new { error = "license_required", contact_us_url = licenseService.ContactUsUrl },
+                        statusCode: 402);
+            }
 
             using var tx = conn.BeginTransaction();
 

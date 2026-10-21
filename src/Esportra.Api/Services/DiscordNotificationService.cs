@@ -52,6 +52,17 @@ public sealed class DiscordNotificationService
         if (!IsConfigured) return false;
         if (!DmEligibleTypes.Contains(notificationType)) return false;
 
+        // BE-8: Organizer Pro required for Discord DMs on tournament-linked notifications.
+        // Null tournamentId = platform-level notification; null license = legacy tournament.
+        // Both pass through without a gate check.
+        if (tournamentId.HasValue && !await IsOrganizerProForTournamentAsync(tournamentId.Value))
+        {
+            _logger.LogDebug(
+                "Discord DM skipped — Organizer Pro not active for tournament {TournamentId}",
+                tournamentId);
+            return false;
+        }
+
         try
         {
             using var conn = _db.CreateConnection();
@@ -116,6 +127,36 @@ public sealed class DiscordNotificationService
         foreach (var userId in userIds)
         {
             await TrySendDmAsync(userId, notificationType, title, message, gameSlug, tournamentId);
+        }
+    }
+
+    /// <summary>
+    /// Returns true when the tournament has Organizer Pro, or when no license row
+    /// exists (legacy/grandfathered tournament). Direct Dapper query — no cache —
+    /// because this service is a singleton and cannot safely hold a scoped cache key.
+    /// </summary>
+    private async Task<bool> IsOrganizerProForTournamentAsync(Guid tournamentId)
+    {
+        try
+        {
+            using var conn = _db.CreateConnection();
+            var result = await conn.QuerySingleOrDefaultAsync<bool?>(
+                """
+                SELECT has_organizer_pro
+                FROM event_licenses
+                WHERE tournament_id = @tournamentId
+                """,
+                new { tournamentId });
+
+            // null row = legacy tournament = grandfathered = true
+            return result is null || result.Value;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to check Organizer Pro for tournament {TournamentId}; defaulting to allowed",
+                tournamentId);
+            return true;
         }
     }
 

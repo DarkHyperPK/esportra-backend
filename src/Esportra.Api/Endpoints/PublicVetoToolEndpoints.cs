@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Dapper;
 using Esportra.Api.Hubs;
+using Esportra.Api.Services;
 using Esportra.Contracts.Database;
 using Esportra.Core.Match;
 using Microsoft.AspNetCore.SignalR;
@@ -14,8 +15,16 @@ internal static partial class PublicToolEndpoints
     {
         app.MapPost("/api/tools/map-veto", async (
             PublicVetoCreateRequest req,
-            IDbConnectionFactory db) =>
+            IDbConnectionFactory db,
+            EventLicenseService licenseService,
+            CancellationToken ct) =>
         {
+            // BE-7: Gate on Organizer Pro only when a tournament_id is linked.
+            // Standalone public tool (no tournament) is always free.
+            if (req.TournamentId.HasValue
+                && !await licenseService.IsOrganizerProAsync(req.TournamentId.Value, ct))
+                return Results.Json(new { error = "organizer_pro_required" }, statusCode: 402);
+
             var built = await CreatePublicVetoAsync(db, req);
             return built.Error is not null ? Results.BadRequest(new { error = built.Error }) : Results.Ok(built.Payload);
         }).AllowAnonymous();
@@ -624,7 +633,7 @@ internal static partial class PublicToolEndpoints
     }
 }
 
-public sealed record PublicVetoCreateRequest(string? Game, int BestOf, string? Team1Name, string? Team2Name, string[]? MapIds);
+public sealed record PublicVetoCreateRequest(string? Game, int BestOf, string? Team1Name, string? Team2Name, string[]? MapIds, Guid? TournamentId = null);
 public sealed record PublicVetoActionRequest(string MapId);
 public sealed record PublicVetoPickSideRequest(string MapId, string Side);
 public sealed record PublicVetoTossChoiceRequest(bool GoFirst);

@@ -9,6 +9,7 @@ using Esportra.Core.Match;
 using Esportra.Infrastructure.Integrations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -86,6 +87,7 @@ public static class VetoEndpoints
             GameCatalogService gameCatalog,
             IHubContext<VetoHub> hub,
             VetoSettingsService vetoSettings,
+            EventLicenseService licenseService,
             ILogger<VetoDbService> logger,
             CancellationToken ct) =>
         {
@@ -103,6 +105,10 @@ public static class VetoEndpoints
                 using var conn = db.CreateConnection();
                 var (tournamentRow, tournamentErr) = await ValidateVetoTournamentGateAsync(req.TournamentId, gameCatalog, conn, ct);
                 if (tournamentErr is not null) return tournamentErr;
+
+                // BE-6: Veto overlay (init) requires Organizer Pro on the tournament
+                if (!await licenseService.IsOrganizerProAsync(req.TournamentId, ct))
+                    return Results.Json(new { error = "organizer_pro_required" }, statusCode: 402);
 
                 var authErr = await ValidateVetoInitAuthAsync(userCtx, req, veto, ct);
                 if (authErr is not null) return authErr;
