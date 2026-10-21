@@ -30,6 +30,7 @@ public static class DesktopBroadcastEndpoints
             [FromBody] CreateBroadcastSessionRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            Esportra.Api.Services.EventLicenseService licenseService,
             CancellationToken ct) =>
         {
             var versionResult = CheckDesktopVersion(ctx);
@@ -46,6 +47,25 @@ public static class DesktopBroadcastEndpoints
                 return Results.BadRequest(new { error = "seriesTotal must be between 1 and 5." });
 
             using var conn = db.CreateConnection();
+
+            // BE-9 (PROJ-058): Organizer Pro required for desktop broadcast.
+            // Derive tournament from matchId — CreateBroadcastSessionRequest has no tournamentId.
+            if (req.MatchId.HasValue)
+            {
+                var broadcastTournamentId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                    """
+                    SELECT ts.tournament_id
+                    FROM brkt_matches bm
+                    JOIN brkt_versions bv ON bv.id = bm.version_id
+                    JOIN tournament_stages ts ON ts.id = bv.stage_id
+                    WHERE bm.id = @matchId
+                    """,
+                    new { matchId = req.MatchId.Value });
+
+                if (broadcastTournamentId.HasValue
+                    && !await licenseService.IsOrganizerProAsync(broadcastTournamentId.Value, ct))
+                    return Results.Json(new { error = "organizer_pro_required" }, statusCode: 402);
+            }
 
             var sessionId = await conn.QuerySingleAsync<Guid>(
                 """

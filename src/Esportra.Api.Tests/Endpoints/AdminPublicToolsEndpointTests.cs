@@ -226,6 +226,8 @@ internal sealed class PublicToolsTestHost(WebApplication app, RecordingPublicToo
         builder.Services.AddSingleton<IDbConnectionFactory>(database ?? db);
         builder.Services.AddSingleton(jobs);
         builder.Services.AddScoped<PublicVetoOverlayUsageScheduler>();
+        builder.Services.AddHybridCache();
+        builder.Services.AddScoped<Esportra.Api.Services.EventLicenseService>();
         builder.Services.AddSignalR();
         builder.Services.AddAuthentication("test").AddScheme<AuthenticationSchemeOptions, PublicToolsTestAuth>("test", _ => { });
         builder.Services.AddAuthorization(o => o.AddPolicy("Authenticated", p => p.RequireAuthenticatedUser()));

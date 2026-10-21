@@ -1,0 +1,33 @@
+-- RBAC Decoupling — PROJ-058 DB-2
+-- 2026-10-22
+--
+-- Purpose
+-- -------
+-- Self-serve organizer onboarding: any authenticated user may now call
+-- POST /api/organizations. The endpoint atomically:
+--   1. INSERTs the organization row.
+--   2. UPSERTs user_roles  (user_id, role='organizer', is_active=TRUE)
+--   3. UPSERTs verified_roles (user_id, role='organizer', status='approved', is_active=TRUE)
+--   4. Evicts the user-ctx:{userId} HybridCache entry so the new role is
+--      visible on the very next request.
+--
+-- The secondary verified_roles prerequisite check that previously blocked
+-- POST /api/organizations (OrganizationEndpoints.cs) and
+-- POST /api/tournaments (TournamentEndpoints.cs ~line 618) has been removed
+-- from application code in this same changeset.
+-- The primary organizer-role gate on POST /api/tournaments (line 606) is
+-- retained; it now passes because org creation auto-assigns the role.
+--
+-- Existing data
+-- -------------
+-- The 3 existing organizer accounts already hold user_roles + verified_roles
+-- rows. No backfill is required; ON CONFLICT DO NOTHING / DO UPDATE clauses
+-- in the application upserts are safe to replay against them.
+--
+-- Schema changes
+-- --------------
+-- None. Table structure for user_roles and verified_roles is unchanged.
+-- This file is a DbUp journal entry that records the behavioral change.
+
+-- Idempotency marker: no-op SQL that DbUp can execute cleanly on any replay.
+SELECT 1;

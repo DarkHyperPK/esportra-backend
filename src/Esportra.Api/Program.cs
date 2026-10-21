@@ -434,6 +434,9 @@ builder.Services.AddScoped<Esportra.Api.Services.BillingService>();
 builder.Services.AddScoped<IStaffAuthorizationService, StaffAuthorizationService>();
 builder.Services.AddScoped<Esportra.Api.Services.TournamentAuthorizationService>();
 
+// ── Event licensing (PROJ-058) ────────────────────────────────────────────────
+builder.Services.AddScoped<Esportra.Api.Services.EventLicenseService>();
+
 // ── Desktop broadcast (PROJ-043) ──────────────────────────────────────────────
 builder.Services.AddScoped<Esportra.Infrastructure.Integrations.RiotMatchValidationService>();
 builder.Services.AddScoped<Esportra.Api.Jobs.RiotMatchValidationJob>();
@@ -715,6 +718,7 @@ app.MapLeaderboardEndpoints();
 app.MapMessagingEndpoints();
 app.MapVetoEndpoints();
 app.MapVetoSettingsEndpoints();
+app.MapEventLicenseEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapStorageEndpoints();
 app.MapSponsorPlacementAssetEndpoints();

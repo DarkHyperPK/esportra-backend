@@ -1309,32 +1309,21 @@ public static class OrganizationEndpoints
 
         // ── POST /api/organizations ────────────────────────────────────────────
         // Create a new organization.
+        // Self-serve: any authenticated user may create one org. The org INSERT
+        // and role auto-assignment (user_roles + verified_roles) run in a single
+        // transaction so the user holds the organizer role atomically. Cache
+        // eviction ensures the new role is visible on the next request.
         app.MapPost("/api/organizations", async (
             [FromBody] CreateOrganizationRequest req,
             HttpContext ctx,
             IDbConnectionFactory db,
+            HybridCache cache,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            // TEMPORARY: Verified organizer gate (will be replaced by AuthorizationEnforcementMiddleware)
-            if (!userCtx.Roles.Contains("organizer", StringComparer.OrdinalIgnoreCase))
-                return Results.Json(new { error = "Organizer role required to create an organization" }, statusCode: 403);
-
             using var conn = db.CreateConnection();
-
-            var isVerified = await conn.ExecuteScalarAsync<bool>(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM verified_roles
-                    WHERE user_id = @userId AND role = 'organizer'::app_role
-                      AND status = 'approved' AND is_active = TRUE
-                )
-                """,
-                new { userId = userCtx.UserIdGuid });
-            if (!isVerified)
-                return Results.Json(new { error = "Approved organizer verification required" }, statusCode: 403);
 
             var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 "SELECT id FROM organizations WHERE owner_id = @userId LIMIT 1",
@@ -1347,6 +1336,9 @@ public static class OrganizationEndpoints
                 .Replace("'", "")
                 .Replace("\"", "");
             slug = System.Text.RegularExpressions.Regex.Replace(slug, "[^a-z0-9-]", "");
+
+            conn.Open();
+            using var tx = conn.BeginTransaction();
 
             var org = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -1365,7 +1357,32 @@ public static class OrganizationEndpoints
                     socialLinks = req.SocialLinks.HasValue
                         ? req.SocialLinks.Value.GetRawText()
                         : "{}"
-                });
+                },
+                tx);
+
+            // Auto-assign organizer role atomically with org creation (PROJ-058 DB-2).
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO user_roles (user_id, role, is_active)
+                VALUES (@userId, 'organizer', TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET is_active = TRUE
+                """,
+                new { userId = userCtx.UserIdGuid },
+                tx);
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO verified_roles (user_id, role, status, is_active)
+                VALUES (@userId, 'organizer'::app_role, 'approved', TRUE)
+                ON CONFLICT (user_id, role) DO UPDATE SET status = 'approved', is_active = TRUE
+                """,
+                new { userId = userCtx.UserIdGuid },
+                tx);
+
+            tx.Commit();
+
+            // Evict cached UserContext so the organizer role is visible immediately (BE-11).
+            try { await cache.RemoveAsync($"user-ctx:{userCtx.UserId}", ct); } catch { /* best effort */ }
 
             return Results.Created($"/api/organizations/{((Guid)org.id)}", org);
         }).RequireAuthorization("Authenticated");
