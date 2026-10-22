@@ -1829,7 +1829,7 @@ public static class TournamentEndpoints
                 return Results.NotFound(new { error = "No refund proof available for your registration." });
 
             var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
-            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            var serviceKey = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable." }, statusCode: 500);
 
