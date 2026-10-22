@@ -1258,6 +1258,33 @@ public static class TournamentEndpoints
                     """,
                     new { pid = (Guid)participant.id });
 
+                // Notify organizer
+                var meta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT t.organizer_id, t.name AS tournament_name,
+                           COALESCE(tp.team_name, pr.username) AS participant_name
+                    FROM tournament_participants tp
+                    JOIN tournaments t ON t.id = tp.tournament_id
+                    LEFT JOIN profiles pr ON pr.id = tp.user_id
+                    WHERE tp.id = @pid
+                    """,
+                    new { pid = (Guid)participant.id });
+                if (meta is not null && meta.organizer_id is not null)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO notifications (user_id, type, title, message, data)
+                        VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                        """,
+                        new
+                        {
+                            userId = (Guid)meta.organizer_id,
+                            title = "Withdrawal Request",
+                            message = $"{(string)(meta.participant_name ?? "A participant")} has requested a withdrawal and refund for {(string)meta.tournament_name}.",
+                            data = $"{{\"tournament_id\":\"{id}\"}}"
+                        });
+                }
+
                 return Results.Ok(new
                 {
                     success = true,
@@ -1374,6 +1401,26 @@ public static class TournamentEndpoints
                     notes = string.IsNullOrWhiteSpace(refundNotes) ? (string?)null : refundNotes.Trim()
                 });
 
+            // Notify participant their refund has been processed
+            var participantUserId = (Guid?)participant.user_id;
+            if (participantUserId.HasValue)
+            {
+                var tournName = await conn.QuerySingleOrDefaultAsync<string>(
+                    "SELECT name FROM tournaments WHERE id = @id", new { id });
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, data)
+                    VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                    """,
+                    new
+                    {
+                        userId = participantUserId.Value,
+                        title = "Refund Processed",
+                        message = $"Your refund for {tournName ?? "the tournament"} has been processed. The organizer has uploaded proof of the refund.",
+                        data = $"{{\"tournament_id\":\"{id}\"}}"
+                    });
+            }
+
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
 
@@ -1393,6 +1440,8 @@ public static class TournamentEndpoints
             if (!await CanManageTournamentParticipantsAsync(conn, userCtx, id))
                 return Results.Forbid();
 
+            var denyReq = await ctx.Request.ReadFromJsonAsync<DenyWithdrawalRequest>(ct);
+
             var affected = await conn.ExecuteAsync(
                 """
                 UPDATE tournament_participants
@@ -1403,9 +1452,36 @@ public static class TournamentEndpoints
                 """,
                 new { participantId, id });
 
-            return affected > 0
-                ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "No pending withdrawal found." });
+            if (affected == 0)
+                return Results.NotFound(new { error = "No pending withdrawal found." });
+
+            // Notify participant their withdrawal was denied
+            var denyMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT tp.user_id, t.name AS tournament_name
+                FROM tournament_participants tp
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE tp.id = @participantId
+                """,
+                new { participantId });
+            if (denyMeta?.user_id is not null)
+            {
+                var reason = string.IsNullOrWhiteSpace(denyReq?.Reason) ? "" : $" Reason: {denyReq.Reason}";
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO notifications (user_id, type, title, message, data)
+                    VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                    """,
+                    new
+                    {
+                        userId = (Guid)denyMeta.user_id,
+                        title = "Withdrawal Request Denied",
+                        message = $"Your withdrawal request for {(string)denyMeta.tournament_name} was denied. You remain registered.{reason}",
+                        data = $"{{\"tournament_id\":\"{id}\"}}"
+                    });
+            }
+
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/participants/{participantId}/approve-payment ──
@@ -1650,6 +1726,65 @@ public static class TournamentEndpoints
                 ?? InferReceiptContentType(storagePath);
 
             // PDFs pass through; images get resized on-the-fly if oversized
+            if (contentType == "application/pdf")
+            {
+                var stream = await objectResp.Content.ReadAsStreamAsync(ct);
+                return Results.Stream(stream, contentType);
+            }
+
+            var rawBytes = await objectResp.Content.ReadAsByteArrayAsync(ct);
+            if (rawBytes.Length > 200_000)
+            {
+                var (compressed, compressedType, _) = CompressReceiptImage(new MemoryStream(rawBytes), Path.GetExtension(storagePath));
+                return Results.File(compressed, compressedType);
+            }
+            return Results.File(rawBytes, contentType);
+        }).RequireAuthorization("Authenticated");
+
+        // ── GET /api/tournaments/{id}/participants/{participantId}/refund-proof ──
+        // Streams the organizer-uploaded refund proof from private storage.
+        app.MapGet("/api/tournaments/{id}/participants/{participantId}/refund-proof", async (
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IConfiguration config,
+            IHttpClientFactory httpFactory,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await CanManageTournamentParticipantsAsync(conn, userCtx, id))
+                return Results.Forbid();
+
+            var proofRef = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT refund_proof_url FROM tournament_participants WHERE id = @participantId AND tournament_id = @id",
+                new { participantId, id });
+            if (string.IsNullOrWhiteSpace(proofRef)) return Results.NotFound(new { error = "No refund proof found." });
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
+            var serviceKey = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
+                return Results.Json(new { error = "File storage is temporarily unavailable." }, statusCode: 500);
+
+            if (!TryParseStorageRef(proofRef, out var bucket, out var storagePath))
+                return Results.BadRequest(new { error = "Invalid refund proof reference." });
+
+            var http = httpFactory.CreateClient();
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
+            http.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+            var objectResp = await http.GetAsync(
+                $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}",
+                HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!objectResp.IsSuccessStatusCode)
+                return Results.NotFound(new { error = "Refund proof file not found." });
+
+            var contentType = objectResp.Content.Headers.ContentType?.MediaType
+                ?? InferReceiptContentType(storagePath);
+
             if (contentType == "application/pdf")
             {
                 var stream = await objectResp.Content.ReadAsStreamAsync(ct);
@@ -6949,6 +7084,7 @@ public sealed record RegisterTournamentRequest(
     string? PaymentReceiptUrl = null);
 public sealed record UpdateBannerRequest(string? Url);
 public sealed record PaymentRejectionRequest(string? Reason = null);
+public sealed record DenyWithdrawalRequest(string? Reason = null);
 
 // ── Organizer Dispute request records ────────────────────────────────────────
 
