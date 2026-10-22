@@ -1800,6 +1800,70 @@ public static class TournamentEndpoints
             return Results.File(rawBytes, contentType);
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/tournaments/{id}/my-refund-proof ──
+        // Participant fetches their own refund proof. Auth: caller must own the participant record.
+        app.MapGet("/api/tournaments/{id}/my-refund-proof", async (
+            Guid id,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IConfiguration config,
+            IHttpClientFactory httpFactory,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            var proofRef = await conn.QuerySingleOrDefaultAsync<string>(
+                """
+                SELECT refund_proof_url
+                FROM tournament_participants
+                WHERE tournament_id = @id
+                  AND user_id = @userId
+                  AND status = 'cancelled'
+                  AND refund_processed_at IS NOT NULL
+                """,
+                new { id, userId = userCtx.UserId });
+
+            if (string.IsNullOrWhiteSpace(proofRef))
+                return Results.NotFound(new { error = "No refund proof available for your registration." });
+
+            var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
+            var serviceKey  = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+            if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
+                return Results.Json(new { error = "File storage is temporarily unavailable." }, statusCode: 500);
+
+            if (!TryParseStorageRef(proofRef, out var bucket, out var storagePath))
+                return Results.BadRequest(new { error = "Invalid refund proof reference." });
+
+            var http = httpFactory.CreateClient();
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
+            http.DefaultRequestHeaders.Add("apikey", serviceKey);
+
+            var objectResp = await http.GetAsync(
+                $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}",
+                HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!objectResp.IsSuccessStatusCode)
+                return Results.NotFound(new { error = "Refund proof file not found." });
+
+            var contentType = objectResp.Content.Headers.ContentType?.MediaType
+                ?? InferReceiptContentType(storagePath);
+
+            if (contentType == "application/pdf")
+            {
+                var stream = await objectResp.Content.ReadAsStreamAsync(ct);
+                return Results.Stream(stream, contentType);
+            }
+
+            var rawBytes = await objectResp.Content.ReadAsByteArrayAsync(ct);
+            if (rawBytes.Length > 200_000)
+            {
+                var (compressed, compressedType, _) = CompressReceiptImage(new MemoryStream(rawBytes), Path.GetExtension(storagePath));
+                return Results.File(compressed, compressedType);
+            }
+            return Results.File(rawBytes, contentType);
+        }).RequireAuthorization("Authenticated");
+
         app.MapPost("/api/tournaments/{id}/check-in", async (
             Guid id,
             HttpContext ctx,
