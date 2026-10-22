@@ -1588,7 +1588,7 @@ public static class BracketEndpoints
               AND (tpart.is_mock = TRUE OR tpart.participant_type = 'solo')
             LEFT JOIN profiles solop ON solop.id = tpart.user_id
             WHERE sp.stage_id = @stageId
-              AND sp.status IN ('approved', 'checked_in', 'pending')
+              AND sp.status IN ('approved', 'checked_in')
               AND sp.team_id IS NOT NULL
             ORDER BY sp.seed ASC NULLS LAST, sp.created_at ASC
             """,
@@ -1602,7 +1602,7 @@ public static class BracketEndpoints
                 LEFT JOIN teams t ON t.id = tp.team_id
                 LEFT JOIN profiles solop ON solop.id = tp.user_id
                 WHERE tp.tournament_id = @tournamentId
-                  AND tp.status::text IN ('approved', 'checked_in', 'pending')
+                  AND tp.status::text IN ('approved', 'checked_in')
                 ORDER BY tp.created_at ASC
                 """,
                 new { tournamentId })).ToList();

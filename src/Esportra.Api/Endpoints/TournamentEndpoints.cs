@@ -1227,6 +1227,8 @@ public static class TournamentEndpoints
         MapOrganizerDisputeEndpoints(app);
 
         // ── DELETE /api/tournaments/{id}/register — withdraw ──────────────────
+        // Free registrations: instant cancel.
+        // Paid (approved payment): creates a withdrawal request for the organizer to process.
         app.MapDelete("/api/tournaments/{id}/register", async (
             Guid id,
             HttpContext ctx,
@@ -1237,19 +1239,184 @@ public static class TournamentEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-            var affected = await conn.ExecuteAsync(
+
+            var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                UPDATE tournament_participants
-                SET status = 'cancelled'
+                SELECT id, payment_status, entry_fee_paid, withdrawal_requested_at
+                FROM tournament_participants
                 WHERE tournament_id = @id
                   AND (user_id = @userId OR team_captain_id = @userId)
                   AND status NOT IN ('rejected', 'cancelled')
                 """,
                 new { id, userId = userCtx.UserIdGuid });
+            if (participant is null)
+                return Results.NotFound(new { error = "No active registration found to withdraw." });
+
+            bool hasPaid = participant.entry_fee_paid == true
+                && participant.payment_status is "approved";
+
+            if (hasPaid)
+            {
+                if (participant.withdrawal_requested_at is not null)
+                    return Results.Conflict(new { error = "Withdrawal already requested. The organizer will process your refund." });
+
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE tournament_participants
+                    SET withdrawal_requested_at = NOW(),
+                        status = 'withdrawal_pending'::registration_status
+                    WHERE id = @pid
+                    """,
+                    new { pid = (Guid)participant.id });
+
+                return Results.Ok(new
+                {
+                    success = true,
+                    withdrawalPending = true,
+                    message = "Withdrawal requested. The organizer will review and process your refund."
+                });
+            }
+
+            await conn.ExecuteAsync(
+                "UPDATE tournament_participants SET status = 'cancelled' WHERE id = @pid",
+                new { pid = (Guid)participant.id });
+
+            return Results.Ok(new { success = true, withdrawalPending = false });
+        }).RequireAuthorization("Authenticated");
+
+        // ── POST /api/tournaments/{id}/participants/{participantId}/process-refund ──
+        // Organizer uploads refund proof and completes the withdrawal.
+        app.MapPost("/api/tournaments/{id}/participants/{participantId}/process-refund", async (
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            IConfiguration config,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await CanManageTournamentParticipantsAsync(conn, userCtx, id))
+                return Results.Forbid();
+
+            var participant = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                """
+                SELECT id, status::text AS status, withdrawal_requested_at, team_name, user_id,
+                       entry_fee_amount, payment_status
+                FROM tournament_participants
+                WHERE id = @participantId AND tournament_id = @id
+                """,
+                new { participantId, id });
+            if (participant is null)
+                return Results.NotFound(new { error = "Participant not found." });
+
+            string status = (string)participant.status;
+            if (status != "withdrawal_pending")
+                return Results.BadRequest(new { error = "This participant has not requested a withdrawal." });
+
+            var form = await ctx.Request.ReadFormAsync(ct);
+            var file = form.Files.GetFile("refund_proof");
+            string? refundProofRef = null;
+            var refundNotes = form["notes"].ToString();
+
+            if (file is not null && file.Length > 0)
+            {
+                if (file.Length > 5 * 1024 * 1024)
+                    return Results.BadRequest(new { error = "File must be under 5MB." });
+
+                var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp", ".pdf" };
+                var ext = Path.GetExtension(file.FileName)?.ToLowerInvariant() ?? ".jpg";
+                if (!allowedExtensions.Contains(ext))
+                    return Results.BadRequest(new { error = "File extension not allowed." });
+
+                var supabaseUrl = config["Supabase:Url"]?.TrimEnd('/') ?? config["SupabaseUrl"]?.TrimEnd('/');
+                var serviceKey = config["Supabase:ServiceKey"] ?? config["Supabase:ServiceRoleKey"] ?? config["SupabaseServiceRoleKey"];
+
+                if (!string.IsNullOrWhiteSpace(supabaseUrl) && !string.IsNullOrWhiteSpace(serviceKey))
+                {
+                    byte[] uploadBytes;
+                    string uploadContentType;
+                    if (file.ContentType != "application/pdf")
+                    {
+                        using var srcStream = file.OpenReadStream();
+                        (uploadBytes, uploadContentType, ext) = CompressReceiptImage(srcStream, ext);
+                    }
+                    else
+                    {
+                        using var ms = new MemoryStream();
+                        await file.CopyToAsync(ms, ct);
+                        uploadBytes = ms.ToArray();
+                        uploadContentType = file.ContentType;
+                    }
+
+                    var bucket = "tournaments.payment.receipts";
+                    var storagePath = $"{id}/refunds/{participantId}{ext}";
+
+                    using var http = new HttpClient();
+                    http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
+                    http.DefaultRequestHeaders.Add("apikey", serviceKey);
+                    http.DefaultRequestHeaders.Add("x-upsert", "true");
+
+                    using var content = new ByteArrayContent(uploadBytes);
+                    content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(uploadContentType);
+                    await http.PostAsync($"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}", content, ct);
+                    refundProofRef = $"{bucket}/{storagePath}";
+                }
+            }
+
+            await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'cancelled',
+                    refund_proof_url = @refundProof,
+                    refund_processed_at = NOW(),
+                    refund_processed_by = @processedBy,
+                    refund_notes = @notes
+                WHERE id = @participantId AND tournament_id = @id
+                """,
+                new
+                {
+                    participantId,
+                    id,
+                    refundProof = refundProofRef,
+                    processedBy = userCtx.UserIdGuid,
+                    notes = string.IsNullOrWhiteSpace(refundNotes) ? (string?)null : refundNotes.Trim()
+                });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated").DisableAntiforgery();
+
+        // ── POST /api/tournaments/{id}/participants/{participantId}/deny-withdrawal ──
+        // Organizer denies the withdrawal request, participant stays registered.
+        app.MapPost("/api/tournaments/{id}/participants/{participantId}/deny-withdrawal", async (
+            Guid id,
+            Guid participantId,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            if (!await CanManageTournamentParticipantsAsync(conn, userCtx, id))
+                return Results.Forbid();
+
+            var affected = await conn.ExecuteAsync(
+                """
+                UPDATE tournament_participants
+                SET status = 'approved',
+                    withdrawal_requested_at = NULL
+                WHERE id = @participantId AND tournament_id = @id
+                  AND status::text = 'withdrawal_pending'
+                """,
+                new { participantId, id });
 
             return affected > 0
                 ? Results.Ok(new { success = true })
-                : Results.NotFound(new { error = "No active registration found to withdraw." });
+                : Results.NotFound(new { error = "No pending withdrawal found." });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/tournaments/{id}/participants/{participantId}/approve-payment ──
@@ -1398,17 +1565,33 @@ public static class TournamentEndpoints
             if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(serviceKey))
                 return Results.Json(new { error = "File storage is temporarily unavailable. Please try again later." }, statusCode: 500);
 
-            var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
             var bucket = "tournaments.payment.receipts";
+
+            // Compress images before upload (phone photos are often 3-5MB)
+            byte[] uploadBytes;
+            string uploadContentType;
+            if (file.ContentType != "application/pdf")
+            {
+                using var srcStream = file.OpenReadStream();
+                (uploadBytes, uploadContentType, ext) = CompressReceiptImage(srcStream, ext);
+            }
+            else
+            {
+                using var ms = new MemoryStream();
+                await file.CopyToAsync(ms, ct);
+                uploadBytes = ms.ToArray();
+                uploadContentType = file.ContentType;
+            }
+
+            var storagePath = $"{id}/{userCtx.UserIdGuid}{ext}";
 
             using var http = new HttpClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
             http.DefaultRequestHeaders.Add("apikey", serviceKey);
             http.DefaultRequestHeaders.Add("x-upsert", "true");
 
-            using var stream = file.OpenReadStream();
-            using var content = new StreamContent(stream);
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
+            using var content = new ByteArrayContent(uploadBytes);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(uploadContentType);
 
             var uploadUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
             var resp = await http.PostAsync(uploadUrl, content, ct);
@@ -1434,7 +1617,7 @@ public static class TournamentEndpoints
         }).RequireAuthorization("Authenticated").DisableAntiforgery();
 
         // ── GET /api/tournaments/{id}/participants/{participantId}/receipt ────
-        // Fallback stream when direct public storage URLs are unavailable (RLS / migration).
+        // Streams the receipt file from Supabase private storage via service_role key.
         app.MapGet("/api/tournaments/{id}/participants/{participantId}/receipt", async (
             Guid id,
             Guid participantId,
@@ -1465,19 +1648,32 @@ public static class TournamentEndpoints
             if (!TryParseStorageRef(receiptRef, out var bucket, out var storagePath))
                 return Results.BadRequest(new { error = "Invalid receipt reference." });
 
-            using var http = httpFactory.CreateClient();
+            var http = httpFactory.CreateClient();
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", serviceKey);
             http.DefaultRequestHeaders.Add("apikey", serviceKey);
 
             var objectUrl = $"{supabaseUrl}/storage/v1/object/{bucket}/{storagePath}";
-            using var objectResp = await http.GetAsync(objectUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            var objectResp = await http.GetAsync(objectUrl, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!objectResp.IsSuccessStatusCode)
                 return Results.NotFound(new { error = "Receipt file not found." });
 
             var contentType = objectResp.Content.Headers.ContentType?.MediaType
                 ?? InferReceiptContentType(storagePath);
-            var bytes = await objectResp.Content.ReadAsByteArrayAsync(ct);
-            return Results.File(bytes, contentType);
+
+            // PDFs pass through; images get resized on-the-fly if oversized
+            if (contentType == "application/pdf")
+            {
+                var stream = await objectResp.Content.ReadAsStreamAsync(ct);
+                return Results.Stream(stream, contentType);
+            }
+
+            var rawBytes = await objectResp.Content.ReadAsByteArrayAsync(ct);
+            if (rawBytes.Length > 200_000)
+            {
+                var (compressed, compressedType, _) = CompressReceiptImage(new MemoryStream(rawBytes), Path.GetExtension(storagePath));
+                return Results.File(compressed, compressedType);
+            }
+            return Results.File(rawBytes, contentType);
         }).RequireAuthorization("Authenticated");
 
         app.MapPost("/api/tournaments/{id}/check-in", async (
@@ -5782,6 +5978,46 @@ public static class TournamentEndpoints
             ".pdf" => "application/pdf",
             _ => "application/octet-stream",
         };
+    }
+
+    private static (byte[] Bytes, string ContentType, string Extension) CompressReceiptImage(
+        Stream source, string originalExt)
+    {
+        const int maxDimension = 1200;
+        const int jpegQuality = 75;
+
+        using var codec = SkiaSharp.SKCodec.Create(source);
+        if (codec is null)
+        {
+            source.Position = 0;
+            using var ms = new MemoryStream();
+            source.CopyTo(ms);
+            return (ms.ToArray(), "application/octet-stream", originalExt);
+        }
+
+        var info = codec.Info;
+        using var bitmap = SkiaSharp.SKBitmap.Decode(codec);
+        if (bitmap is null)
+        {
+            source.Position = 0;
+            using var ms = new MemoryStream();
+            source.CopyTo(ms);
+            return (ms.ToArray(), "application/octet-stream", originalExt);
+        }
+
+        var w = info.Width;
+        var h = info.Height;
+        if (w > maxDimension || h > maxDimension)
+        {
+            var ratio = Math.Min((float)maxDimension / w, (float)maxDimension / h);
+            w = (int)(w * ratio);
+            h = (int)(h * ratio);
+        }
+
+        using var resized = bitmap.Resize(new SkiaSharp.SKImageInfo(w, h), SkiaSharp.SKSamplingOptions.Default);
+        using var image = SkiaSharp.SKImage.FromBitmap(resized ?? bitmap);
+        using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Jpeg, jpegQuality);
+        return (data.ToArray(), "image/jpeg", ".jpg");
     }
 
     // ── disputes/resolve helpers ─────────────────────────────────────────────
