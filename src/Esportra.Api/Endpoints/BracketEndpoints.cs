@@ -59,6 +59,7 @@ public static class BracketEndpoints
             if (swissErr is not null) return swissErr;
 
             var effectiveBracketSize = await ResolveSEDECapacityAsync(req, teams, req.BracketSize, conn);
+            effectiveBracketSize = await CapBracketSizeAtMaxTeamsAsync(req, effectiveBracketSize, conn);
             effectiveBracketSize = await ResolveRRGroupCountAsync(req, effectiveBracketSize, conn);
 
             var (effectiveBoMode, boErr) = ValidateBoModeConfig(req);
@@ -1469,6 +1470,17 @@ public static class BracketEndpoints
                 "SELECT capacity FROM tournament_stages WHERE id = @stageId", new { stageId = capStageId });
             if (cap is > 0) return cap;
         }
+        return bracketSize;
+    }
+
+    private static async Task<int?> CapBracketSizeAtMaxTeamsAsync(
+        GenerateBracketRequest req, int? bracketSize, System.Data.IDbConnection conn)
+    {
+        if (bracketSize is null) return bracketSize;
+        var maxTeams = await conn.ExecuteScalarAsync<int?>(
+            "SELECT max_teams FROM tournaments WHERE id = @tournamentId", new { tournamentId = req.TournamentId });
+        if (maxTeams is > 0 && bracketSize > maxTeams)
+            return maxTeams;
         return bracketSize;
     }
 
