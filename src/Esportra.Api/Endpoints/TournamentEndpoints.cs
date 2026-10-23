@@ -1281,7 +1281,7 @@ public static class TournamentEndpoints
                             userId = (Guid)meta.organizer_id,
                             title = "Withdrawal Request",
                             message = $"{(string)(meta.participant_name ?? "A participant")} has requested a withdrawal and refund for {(string)meta.tournament_name}.",
-                            link = $"/tournaments/{(string)meta.slug}",
+                            link = $"/organizer/tournament/{(string)meta.slug}?tab=payments",
                             data = $"{{\"tournament_id\":\"{id}\"}}"
                         });
                 }
