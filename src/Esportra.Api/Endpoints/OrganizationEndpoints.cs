@@ -1337,7 +1337,6 @@ public static class OrganizationEndpoints
                 .Replace("\"", "");
             slug = System.Text.RegularExpressions.Regex.Replace(slug, "[^a-z0-9-]", "");
 
-            conn.Open();
             using var tx = conn.BeginTransaction();
 
             var org = await conn.QuerySingleAsync<dynamic>(
