@@ -1983,7 +1983,24 @@ public static class TournamentEndpoints
                 """,
                 new { id, userId = userCtx.UserIdGuid, teamIds = userTeamIds });
 
-            // 5. Get user's captain teams for registration options
+            // 5. When no active registration, check for a cancelled one that has refund proof
+            dynamic? cancelledRefund = null;
+            if (registration is null)
+            {
+                cancelledRefund = await conn.QuerySingleOrDefaultAsync<dynamic>(
+                    """
+                    SELECT id, status, refund_processed_at
+                    FROM tournament_participants
+                    WHERE tournament_id = @id
+                      AND user_id = @userId
+                      AND status = 'cancelled'
+                      AND refund_processed_at IS NOT NULL
+                    LIMIT 1
+                    """,
+                    new { id, userId = userCtx.UserIdGuid });
+            }
+
+            // 6. Get user's captain teams for registration options
             var captainTeams = await conn.QueryAsync<dynamic>(
                 $"""
                 SELECT t.id, t.name, t.logo_url
@@ -2004,6 +2021,7 @@ public static class TournamentEndpoints
                 userBan = userBan is not null ? new { banReason = (string)userBan.ban_reason } : null,
                 teamBan = teamBan is not null ? new { banReason = (string)teamBan.ban_reason, teamId = ((Guid)teamBan.team_id).ToString() } : null,
                 registration,
+                cancelledRefund,
                 captainTeams,
                 userTeamIds = userTeamIds.Select(g => g.ToString()),
             });
