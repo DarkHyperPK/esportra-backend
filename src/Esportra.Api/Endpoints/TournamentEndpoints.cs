@@ -954,6 +954,7 @@ public static class TournamentEndpoints
             try
             {
                 await MockTeamCleanup.DeleteForTournamentAsync(conn, tx, id, ct);
+                await conn.ExecuteAsync("DELETE FROM event_licenses WHERE tournament_id = @id", new { id }, tx);
                 await conn.ExecuteAsync("DELETE FROM tournaments WHERE id = @id", new { id }, tx);
                 tx.Commit();
             }

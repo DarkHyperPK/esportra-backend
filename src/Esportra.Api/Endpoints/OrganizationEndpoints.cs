@@ -853,6 +853,10 @@ public static class OrganizationEndpoints
 
                     default:
                         await MockTeamCleanup.DeleteForTournamentsAsync(conn, tx, req.TournamentIds, ct);
+                        await conn.ExecuteAsync(
+                            "DELETE FROM event_licenses WHERE tournament_id = ANY(@ids)",
+                            new { ids = req.TournamentIds },
+                            tx);
                         affected = await conn.ExecuteAsync(
                             """
                             DELETE FROM tournaments
