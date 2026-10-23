@@ -1261,7 +1261,7 @@ public static class TournamentEndpoints
                 // Notify organizer
                 var meta = await conn.QuerySingleOrDefaultAsync<dynamic>(
                     """
-                    SELECT t.organizer_id, t.name AS tournament_name,
+                    SELECT t.organizer_id, t.name AS tournament_name, t.slug,
                            COALESCE(tp.team_name, pr.username) AS participant_name
                     FROM tournament_participants tp
                     JOIN tournaments t ON t.id = tp.tournament_id
@@ -1273,14 +1273,15 @@ public static class TournamentEndpoints
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO notifications (user_id, type, title, message, data)
-                        VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                        INSERT INTO notifications (user_id, type, title, message, link, data)
+                        VALUES (@userId, 'tournament_announcement', @title, @message, @link, @data::jsonb)
                         """,
                         new
                         {
                             userId = (Guid)meta.organizer_id,
                             title = "Withdrawal Request",
                             message = $"{(string)(meta.participant_name ?? "A participant")} has requested a withdrawal and refund for {(string)meta.tournament_name}.",
+                            link = $"/tournaments/{(string)meta.slug}",
                             data = $"{{\"tournament_id\":\"{id}\"}}"
                         });
                 }
@@ -1405,18 +1406,19 @@ public static class TournamentEndpoints
             var participantUserId = (Guid?)participant.user_id;
             if (participantUserId.HasValue)
             {
-                var tournName = await conn.QuerySingleOrDefaultAsync<string>(
-                    "SELECT name FROM tournaments WHERE id = @id", new { id });
+                var tournMeta = await conn.QuerySingleOrDefaultAsync<(string name, string slug)>(
+                    "SELECT name, slug FROM tournaments WHERE id = @id", new { id });
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                    INSERT INTO notifications (user_id, type, title, message, link, data)
+                    VALUES (@userId, 'tournament_announcement', @title, @message, @link, @data::jsonb)
                     """,
                     new
                     {
                         userId = participantUserId.Value,
                         title = "Refund Processed",
-                        message = $"Your refund for {tournName ?? "the tournament"} has been processed. The organizer has uploaded proof of the refund.",
+                        message = $"Your refund for {tournMeta.name ?? "the tournament"} has been processed. The organizer has uploaded proof of the refund.",
+                        link = $"/tournaments/{tournMeta.slug}",
                         data = $"{{\"tournament_id\":\"{id}\"}}"
                     });
             }
@@ -1458,7 +1460,7 @@ public static class TournamentEndpoints
             // Notify participant their withdrawal was denied
             var denyMeta = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                SELECT tp.user_id, t.name AS tournament_name
+                SELECT tp.user_id, t.name AS tournament_name, t.slug
                 FROM tournament_participants tp
                 JOIN tournaments t ON t.id = tp.tournament_id
                 WHERE tp.id = @participantId
@@ -1469,14 +1471,15 @@ public static class TournamentEndpoints
                 var reason = string.IsNullOrWhiteSpace(denyReq?.Reason) ? "" : $" Reason: {denyReq.Reason}";
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO notifications (user_id, type, title, message, data)
-                    VALUES (@userId, 'tournament_announcement', @title, @message, @data::jsonb)
+                    INSERT INTO notifications (user_id, type, title, message, link, data)
+                    VALUES (@userId, 'tournament_announcement', @title, @message, @link, @data::jsonb)
                     """,
                     new
                     {
                         userId = (Guid)denyMeta.user_id,
                         title = "Withdrawal Request Denied",
                         message = $"Your withdrawal request for {(string)denyMeta.tournament_name} was denied. You remain registered.{reason}",
+                        link = $"/tournaments/{(string)denyMeta.slug}",
                         data = $"{{\"tournament_id\":\"{id}\"}}"
                     });
             }
