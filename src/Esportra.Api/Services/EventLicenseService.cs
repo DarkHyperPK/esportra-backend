@@ -1,3 +1,4 @@
+using System.Data;
 using Dapper;
 using Esportra.Contracts.Database;
 using Esportra.Core.Licensing;
@@ -35,6 +36,8 @@ public class EventLicenseService(
         Guid userId,
         Guid organizationId,
         int maxTeams,
+        IDbConnection? existingConn = null,
+        IDbTransaction? existingTx = null,
         CancellationToken ct = default)
     {
         if (maxTeams > 32)
@@ -42,9 +45,10 @@ public class EventLicenseService(
 
         var tier = ResolveBracketTier(maxTeams);
 
+        var ownConn = existingConn is null;
+        var conn = existingConn ?? db.CreateConnection();
         try
         {
-            using var conn = db.CreateConnection();
             var license = await conn.QuerySingleAsync<EventLicense>(
                 """
                 INSERT INTO event_licenses
@@ -65,13 +69,18 @@ public class EventLicenseService(
                     status          AS Status,
                     created_at      AS CreatedAt
                 """,
-                new { tournamentId, userId, organizationId, tier, maxTeams });
+                new { tournamentId, userId, organizationId, tier, maxTeams },
+                existingTx);
 
             return LicenseResult<EventLicense>.Ok(license);
         }
         catch (Npgsql.PostgresException ex) when (ex.Message.Contains("quota_exhausted"))
         {
             return LicenseResult<EventLicense>.Err("quota_exhausted");
+        }
+        finally
+        {
+            if (ownConn) conn.Dispose();
         }
     }
 

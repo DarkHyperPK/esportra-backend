@@ -729,7 +729,7 @@ public static class TournamentEndpoints
                 // The quota trigger fires on INSERT; on quota_exhausted we roll back the whole transaction.
                 // organizationId was verified non-null by the earlier organizer gate; use .Value safely.
                 var licenseResult = await licenseService.ReserveNewAsync(
-                    tournamentId, userCtx.UserIdGuid, organizationId!.Value, req.MaxTeams, ct);
+                    tournamentId, userCtx.UserIdGuid, organizationId!.Value, req.MaxTeams, conn, tx, ct);
                 if (!licenseResult.IsOk)
                 {
                     tx.Rollback();

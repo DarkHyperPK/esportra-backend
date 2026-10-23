@@ -41,7 +41,7 @@ public sealed class EventLicenseEndpointTests
 
         var body = await response.Content.ReadFromJsonAsync<QuotaResponse>();
         body.Should().NotBeNull();
-        body!.Limit.Should().Be(2);
+        body!.MonthlyLimit.Should().Be(2);
         body.UsedThisMonth.Should().BeGreaterThanOrEqualTo(0);
         body.ResetsAt.Should().NotBeNullOrEmpty();
     }
@@ -109,4 +109,4 @@ public sealed class EventLicenseEndpointTests
 
 // ── Response shape ────────────────────────────────────────────────────────────
 
-file sealed record QuotaResponse(int UsedThisMonth, int Limit, string? ResetsAt);
+file sealed record QuotaResponse(int UsedThisMonth, int MonthlyLimit, string? ResetsAt, bool IsOrganizerPro);
