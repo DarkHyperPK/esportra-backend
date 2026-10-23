@@ -1826,7 +1826,7 @@ public static class TournamentEndpoints
                   AND status = 'cancelled'
                   AND refund_processed_at IS NOT NULL
                 """,
-                new { id, userId = userCtx.UserId });
+                new { id, userId = userCtx.UserIdGuid });
 
             if (string.IsNullOrWhiteSpace(proofRef))
                 return Results.NotFound(new { error = "No refund proof available for your registration." });
