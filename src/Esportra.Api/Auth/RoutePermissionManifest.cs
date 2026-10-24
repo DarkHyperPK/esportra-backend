@@ -29,6 +29,9 @@ public static class RoutePermissionManifest
 
         // Public partner application and sponsor showcase
         P("POST", "/api/partners/apply"),
+        P("POST", "/api/pro-event-requests"),
+        P("POST", "/api/pro-event-requests/{id}/proof"),
+        P("GET", "/api/pro-event-requests/{id}"),
         P("GET",  "/api/partners/public"),
         P("GET",  "/api/sponsors/active"),
 
@@ -193,6 +196,14 @@ public static class RoutePermissionManifest
         // Steam / linked accounts
         A("GET",  "/api/accounts/{*}"),
         A("DELETE","/api/accounts/{*}"),
+
+        // Competitive (Phase 1–6: profiles, lfg, availability, recruitment, tryouts, scrims, practice, scouting)
+        A("*",    "/api/competitive/{*}"),
+        A("*",    "/api/recruitment/{*}"),
+        A("*",    "/api/tryouts/{*}"),
+        A("*",    "/api/scrims/{*}"),
+        A("*",    "/api/practice/{*}"),
+        A("*",    "/api/scouting/{*}"),
 
         // Content reporting
         A("POST", "/api/report-content"),

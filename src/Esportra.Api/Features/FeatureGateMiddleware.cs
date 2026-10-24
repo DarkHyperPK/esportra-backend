@@ -26,6 +26,12 @@ public sealed class FeatureGateMiddleware(
         ("sponsor-ads", new Regex(@"^/api/sponsor-analytics/events$|^/api/sponsors/active$", RegexOptions.Compiled)),
         ("broadcasts", new Regex(@"^/api/notifications/broadcasts|^/api/admin/broadcasts/[^/]+/send$", RegexOptions.Compiled)),
         ("ghost-mode", new Regex(@"^/api/admin/ghost", RegexOptions.Compiled)),
+        // PROJ-065: Competitive Phase 1 — off by default (beta). lfg is nested under competitive/
+        // so competitive_profiles check also covers lfg endpoints; add explicit lfg rule for clarity.
+        ("competitive_profiles", new Regex(@"^/api/competitive/profiles", RegexOptions.Compiled)),
+        ("lfg", new Regex(@"^/api/competitive/(lfg|availability)", RegexOptions.Compiled)),
+        // PROJ-066: Competitive Phase 2 — recruitment off by default.
+        ("recruitment", new Regex(@"^/api/recruitment/", RegexOptions.Compiled)),
     ];
 
     private readonly ConcurrentDictionary<string, (bool Enabled, DateTime ExpiresAt)> _cache = new();
