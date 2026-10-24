@@ -725,6 +725,7 @@ app.MapRecruitmentEndpoints();
 app.MapTryoutEndpoints();
 app.MapScrimEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
+app.MapScoutingEndpoints();
 app.MapTournamentEndpoints();
 app.MapTournamentTemplateEndpoints();
 app.MapTournamentInvitationEndpoints();

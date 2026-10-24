@@ -36,6 +36,8 @@ public sealed class FeatureGateMiddleware(
         ("tryouts", new Regex(@"^/api/tryouts/", RegexOptions.Compiled)),
         // PROJ-068: Competitive Phase 4 — scrims and practice off by default.
         ("scrims", new Regex(@"^/api/(scrims|practice)/", RegexOptions.Compiled)),
+        // Phase 6: Scouting — shortlists and career notes off by default.
+        ("scouting", new Regex(@"^/api/scouting/", RegexOptions.Compiled)),
     ];
 
     private readonly ConcurrentDictionary<string, (bool Enabled, DateTime ExpiresAt)> _cache = new();
