@@ -37,6 +37,7 @@ public static class TeamEndpoints
             string? owner_id,
             string? game,
             string? q,
+            bool include_archived = false,
             int limit = 50,
             int offset = 0,
             IDbConnectionFactory db = null!,
@@ -82,11 +83,12 @@ public static class TeamEndpoints
                   AND (@game IS NULL OR EXISTS (
                       SELECT 1 FROM team_rosters tr
                       WHERE tr.team_id = t.id AND LOWER(tr.game) = LOWER(@game)))
+                  AND (t.is_archived IS NOT TRUE OR @includeArchived)
                   AND {TeamKindSql.RealTeamWhere}
                 ORDER BY t.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
-                new { ownerGuid, game, q, limit, offset });
+                new { ownerGuid, game, q, includeArchived = include_archived, limit, offset });
             return Results.Ok(teams);
         });
 
@@ -466,9 +468,11 @@ public static class TeamEndpoints
             return updated is null ? Results.NotFound() : Results.Ok(updated);
         }).RequireAuthorization("Authenticated");
 
-        // ── DELETE /api/teams/{id} — disband (cascade in a transaction) ───────
+        // ── DELETE /api/teams/{id} — soft-archive (default) or hard-delete (?force=true admin only) ───
         app.MapDelete("/api/teams/{id}", async (
             Guid id,
+            bool force,
+            string? reason,
             HttpContext ctx,
             IDbConnectionFactory db,
             CancellationToken ct) =>
@@ -477,21 +481,60 @@ public static class TeamEndpoints
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
+
+            if (force)
+            {
+                // Hard-delete: admin only; preserves the original cascade behavior
+                if (!StaffAuthHelper.IsPlatformAdmin(userCtx))
+                    return Results.Forbid();
+
+                using var tx = conn.BeginTransaction();
+                try
+                {
+                    await conn.ExecuteAsync("DELETE FROM team_invitations WHERE team_id = @id", new { id }, tx);
+                    await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id", new { id }, tx);
+                    await conn.ExecuteAsync("DELETE FROM tournament_participants WHERE team_id = @id", new { id }, tx);
+                    await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id", new { id }, tx);
+                    tx.Commit();
+                }
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
+
+                return Results.Ok(new { success = true });
+            }
+
+            // Soft-archive path: preserves tournament_participants history
             await AssertOwner(conn, id, userCtx.UserIdGuid);
 
-            using var tx = conn.BeginTransaction();
+            using var softTx = conn.BeginTransaction();
             try
             {
-                // Cascade: invitations → members → tournament registrations → team
-                await conn.ExecuteAsync("DELETE FROM team_invitations WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM team_members WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM tournament_participants WHERE team_id = @id", new { id }, tx);
-                await conn.ExecuteAsync("DELETE FROM teams WHERE id = @id", new { id }, tx);
-                tx.Commit();
+                // Write membership history for all active members before archiving
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.team_membership_history (team_id, user_id, role, joined_at, left_at, left_reason)
+                    SELECT team_id, user_id, role, joined_at, NOW(), 'team_archived'
+                    FROM public.team_members
+                    WHERE team_id = @id AND is_active = TRUE
+                    """,
+                    new { id }, softTx);
+
+                // Cancel pending invitations
+                await conn.ExecuteAsync("DELETE FROM team_invitations WHERE team_id = @id", new { id }, softTx);
+
+                // Soft-archive
+                await conn.ExecuteAsync(
+                    "UPDATE teams SET is_archived = TRUE, archived_at = NOW(), archived_reason = @archiveReason WHERE id = @id",
+                    new { id, archiveReason = reason ?? "disbanded" }, softTx);
+
+                softTx.Commit();
             }
             catch
             {
-                tx.Rollback();
+                softTx.Rollback();
                 throw;
             }
 
@@ -531,6 +574,16 @@ public static class TeamEndpoints
                     "SELECT name FROM teams WHERE id = @id", new { id });
                 leaverName = await conn.QuerySingleOrDefaultAsync<string?>(
                     "SELECT username FROM profiles WHERE id = @userId", new { userId = userCtx.UserIdGuid });
+
+                // Write membership history before the row is removed
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.team_membership_history (team_id, user_id, role, joined_at, left_at, left_reason)
+                    SELECT team_id, user_id, role, joined_at, NOW(), 'left'
+                    FROM public.team_members
+                    WHERE team_id = @teamId AND user_id = @userId
+                    """,
+                    new { teamId = id, userId = userCtx.UserIdGuid }, tx);
 
                 await conn.ExecuteAsync(
                     "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
@@ -620,6 +673,16 @@ public static class TeamEndpoints
                     """,
                     new { id, userId }, tx);
 
+                // Write membership history before the row is removed
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.team_membership_history (team_id, user_id, role, joined_at, left_at, left_reason)
+                    SELECT team_id, user_id, role, joined_at, NOW(), 'removed'
+                    FROM public.team_members
+                    WHERE team_id = @teamId AND user_id = @userId
+                    """,
+                    new { teamId = id, userId }, tx);
+
                 var affected = await conn.ExecuteAsync(
                     "DELETE FROM team_members WHERE team_id = @id AND user_id = @userId",
                     new { id, userId }, tx);
@@ -667,7 +730,7 @@ public static class TeamEndpoints
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/teams/{id}/transfer-captain ─────────────────────────────
-        // Atomic: demote old captain → promote new → transfer team.owner_id → update registrations
+        // Atomic: demote old captain → promote new → update captain_id → update registrations
         app.MapPost("/api/teams/{id}/transfer-captain", async (
             Guid id,
             [FromBody] TransferCaptainRequest req,
@@ -714,14 +777,14 @@ public static class TeamEndpoints
                     return Results.BadRequest(new { error = "New captain is not a team member." });
                 }
 
-                // Step 3: transfer ownership
+                // Step 3: record the new captain on the team row (owner_id is unchanged; use /transfer-ownership for that)
                 await conn.ExecuteAsync(
-                    "UPDATE teams SET owner_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
+                    "UPDATE teams SET captain_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
-                // Step 4: update tournament registrations (non-critical)
+                // Step 4: update active tournament registrations only (non-critical)
                 await conn.ExecuteAsync(
-                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id",
+                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('completed', 'disqualified', 'cancelled')",
                     new { id, newCaptainId = newCaptainIdGuid }, tx);
 
                 // Notify atomically with the promotion.
@@ -762,6 +825,37 @@ public static class TeamEndpoints
             return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
+        // ── POST /api/teams/{id}/transfer-ownership ───────────────────────────
+        // Transfers legal ownership (owner_id) independently of captaincy.
+        app.MapPost("/api/teams/{id}/transfer-ownership", async (
+            Guid id,
+            [FromBody] TransferOwnershipRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+
+            using var conn = db.CreateConnection();
+            await AssertOwner(conn, id, userCtx.UserIdGuid);
+
+            var newOwnerIdGuid = Guid.Parse(req.NewOwnerId);
+
+            // New owner must be an active team member
+            var isActiveMember = await conn.QuerySingleOrDefaultAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
+                new { teamId = id, userId = newOwnerIdGuid });
+            if (!isActiveMember)
+                return Results.BadRequest(new { error = "New owner must be an active team member." });
+
+            await conn.ExecuteAsync(
+                "UPDATE teams SET owner_id = @newOwnerId, updated_at = NOW() WHERE id = @id",
+                new { id, newOwnerId = newOwnerIdGuid });
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization("Authenticated");
+
         // ── PUT /api/teams/{id}/members/{userId}/role ─────────────────────────
         app.MapPut("/api/teams/{id}/members/{userId}/role", async (
             Guid id,
@@ -774,7 +868,7 @@ public static class TeamEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
-            var allowedRoles = new HashSet<string> { "member", "substitute", "coach" };
+            var allowedRoles = new HashSet<string> { "member", "substitute", "coach", "manager" };
             if (!allowedRoles.Contains(req.Role))
                 return Results.BadRequest(new { error = $"Invalid role. Allowed: {string.Join(", ", allowedRoles)}" });
 
@@ -1183,11 +1277,11 @@ public static class TeamEndpoints
             var members = await conn.QueryAsync<dynamic>(
                 """
                 SELECT tm.user_id, tm.role, p.username, p.email, p.avatar_url, p.card_image_url,
-                       ra.puuid AS riot_puuid, ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
+                       pra.riot_puuid AS riot_puuid, pra.game_name AS riot_game_name, pra.tag_line AS riot_tag_line,
                        vs.kd, vs.win_rate, vs.hs_percent, vs.latest_match_id
                 FROM team_members tm
                 JOIN profiles p ON p.id = tm.user_id
-                LEFT JOIN riot_accounts ra ON ra.user_id = tm.user_id
+                LEFT JOIN player_riot_accounts pra ON pra.user_id = tm.user_id
                 LEFT JOIN leaderboard vs ON vs.user_id = tm.user_id AND vs.game = 'valorant'
                 WHERE tm.team_id = @id AND tm.is_active = true
                 ORDER BY tm.display_order, tm.role, p.username
@@ -2088,6 +2182,8 @@ public sealed record UpdateTeamRequest(
     bool RemoveBanner = false);
 
 public sealed record TransferCaptainRequest(string NewCaptainId);
+
+public sealed record TransferOwnershipRequest(string NewOwnerId);
 
 public sealed record ChangeRoleRequest(string Role);
 

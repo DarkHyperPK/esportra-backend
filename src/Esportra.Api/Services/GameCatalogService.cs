@@ -1225,6 +1225,45 @@ public sealed partial class GameCatalogService(
     private sealed record TeamCatalogRow(Guid Id, string Name, string? Game, string? GameFormat, Guid OwnerId);
     private sealed record RosterCatalogRow(Guid Id, Guid TeamId, string? Game, string? Format, int TeamSize);
     private sealed record RosterMemberCatalogRow(Guid UserId, string? RosterRole, bool IsStarter, string? TeamMemberRole);
+
+    public async Task<IEnumerable<GameRole>> GetGameRolesAsync(string gameSlug, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT role_key AS RoleKey, display_name AS DisplayName, description AS Description, sort_order AS SortOrder
+            FROM public.game_catalog_game_roles gcgr
+            INNER JOIN public.game_catalog_versions gcv ON gcv.id = gcgr.version_id
+            WHERE gcgr.game_slug = @gameSlug AND gcv.is_active = TRUE
+            ORDER BY gcgr.sort_order
+            """;
+        using var conn = db.CreateConnection();
+        return await conn.QueryAsync<GameRole>(sql, new { gameSlug });
+    }
+
+    public async Task<IEnumerable<RankTier>> GetRankTiersAsync(string gameSlug, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT tier_key AS TierKey, display_name AS DisplayName, sort_order AS SortOrder, division_count AS DivisionCount
+            FROM public.game_catalog_rank_tiers gcrt
+            INNER JOIN public.game_catalog_versions gcv ON gcv.id = gcrt.version_id
+            WHERE gcrt.game_slug = @gameSlug AND gcv.is_active = TRUE
+            ORDER BY gcrt.sort_order
+            """;
+        using var conn = db.CreateConnection();
+        return await conn.QueryAsync<RankTier>(sql, new { gameSlug });
+    }
+
+    public async Task<IEnumerable<GameRegion>> GetRegionsAsync(string gameSlug, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT region_key AS RegionKey, display_name AS DisplayName, server_ids AS ServerIds
+            FROM public.game_catalog_regions gcr
+            INNER JOIN public.game_catalog_versions gcv ON gcv.id = gcr.version_id
+            WHERE gcr.game_slug = @gameSlug AND gcv.is_active = TRUE
+            ORDER BY gcr.display_name
+            """;
+        using var conn = db.CreateConnection();
+        return await conn.QueryAsync<GameRegion>(sql, new { gameSlug });
+    }
 }
 
 public sealed class GameCatalogValidationException(string message) : Exception(message);
@@ -1290,3 +1329,9 @@ public sealed class GameCatalogVersionSummary
     public Guid? CreatedBy { get; set; }
     public Guid? PublishedBy { get; set; }
 }
+
+public sealed record GameRole(string RoleKey, string DisplayName, string? Description, int SortOrder);
+
+public sealed record RankTier(string TierKey, string DisplayName, int SortOrder, int DivisionCount);
+
+public sealed record GameRegion(string RegionKey, string DisplayName, string[] ServerIds);

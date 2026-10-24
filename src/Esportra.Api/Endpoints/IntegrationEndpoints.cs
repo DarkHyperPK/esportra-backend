@@ -167,6 +167,19 @@ public static class IntegrationEndpoints
                     name_checked_at = now()
                 """, new { userId = userGuid, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
 
+            // Dual-write to player_riot_accounts for competitive feature compatibility
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.player_riot_accounts (user_id, riot_puuid, game_name, tag_line, region)
+                VALUES (@userId, @riotPuuid, @gameName, @tagLine, @region)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    riot_puuid = EXCLUDED.riot_puuid,
+                    game_name  = EXCLUDED.game_name,
+                    tag_line   = EXCLUDED.tag_line,
+                    region     = EXCLUDED.region
+                """,
+                new { userId = userGuid, riotPuuid = puuid, gameName, tagLine, region = (string?)null });
+
             // Sync profiles.riot_tag (reject if already linked to another account)
             var riotTag = $"{gameName}#{tagLine}";
             var existingOwner = await conn.QuerySingleOrDefaultAsync<Guid?>(

@@ -3573,13 +3573,13 @@ public static class AdminEndpoints
                     new { id, newCaptainId }, tx);
                 if (affected == 0) { tx.Rollback(); return Results.BadRequest(new { error = "User is not a team member." }); }
 
-                // Transfer ownership
+                // Update captain_id (owner_id is unchanged — ownership requires explicit transfer-ownership)
                 await conn.ExecuteAsync(
-                    "UPDATE teams SET owner_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
+                    "UPDATE teams SET captain_id = @newCaptainId, updated_at = NOW() WHERE id = @id",
                     new { id, newCaptainId }, tx);
 
                 await conn.ExecuteAsync(
-                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id",
+                    "UPDATE tournament_participants SET team_captain_id = @newCaptainId WHERE team_id = @id AND status NOT IN ('completed', 'disqualified', 'cancelled')",
                     new { id, newCaptainId }, tx);
 
                 // Notify atomically with the promotion — an admin acted, so BOTH the
