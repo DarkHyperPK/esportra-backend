@@ -199,10 +199,16 @@ public static class ScrimEndpoints
             """,
             new
             {
-                id, modeKey = req.ModeKey, regionKey = req.RegionKey,
-                minRankKey = req.MinRankKey, maxRankKey = req.MaxRankKey,
-                preferredDays = req.PreferredDays, preferredTimeStart = req.PreferredTimeStart,
-                preferredTimeEnd = req.PreferredTimeEnd, timezone = req.Timezone, notes = req.Notes,
+                id,
+                modeKey = req.ModeKey,
+                regionKey = req.RegionKey,
+                minRankKey = req.MinRankKey,
+                maxRankKey = req.MaxRankKey,
+                preferredDays = req.PreferredDays,
+                preferredTimeStart = req.PreferredTimeStart,
+                preferredTimeEnd = req.PreferredTimeEnd,
+                timezone = req.Timezone,
+                notes = req.Notes,
             });
 
         return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -723,9 +729,13 @@ public static class ScrimEndpoints
             """,
             new
             {
-                teamId = req.TeamId, gameSlug = req.GameSlug ?? "", title = req.Title,
-                scheduledAt = req.ScheduledAt, durationMinutes = req.DurationMinutes,
-                notes = req.Notes, createdBy = userCtx.UserIdGuid,
+                teamId = req.TeamId,
+                gameSlug = req.GameSlug ?? "",
+                title = req.Title,
+                scheduledAt = req.ScheduledAt,
+                durationMinutes = req.DurationMinutes,
+                notes = req.Notes,
+                createdBy = userCtx.UserIdGuid,
             });
 
         return Results.Created($"/api/practice/sessions/{row.id}", row);
