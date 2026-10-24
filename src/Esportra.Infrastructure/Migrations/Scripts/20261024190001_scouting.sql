@@ -163,6 +163,21 @@ END $$;
 
 -- ── Feature flag ───────────────────────────────────────────────────────────────
 
-INSERT INTO public.feature_flags (key, is_enabled, description)
-VALUES ('scouting', FALSE, 'Scouting shortlists and career notes')
-ON CONFLICT (key) DO NOTHING;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'feature_flags'
+    ) THEN
+        INSERT INTO public.feature_flags (key, name, description, flag_type, default_value, is_enabled)
+        VALUES (
+            'scouting',
+            'Scouting',
+            'Scouting shortlists and career notes',
+            'boolean',
+            'false'::jsonb,
+            FALSE
+        )
+        ON CONFLICT (key) DO NOTHING;
+    END IF;
+END $$;
