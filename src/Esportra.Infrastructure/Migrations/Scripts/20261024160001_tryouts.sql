@@ -103,20 +103,6 @@ CREATE POLICY tryout_sessions_staff
         )
     );
 
--- Invited participants can read sessions they are invited to.
-DROP POLICY IF EXISTS tryout_sessions_participant ON public.tryout_sessions;
-CREATE POLICY tryout_sessions_participant
-    ON public.tryout_sessions
-    FOR SELECT
-    TO authenticated
-    USING (
-        EXISTS (
-            SELECT 1 FROM public.tryout_participants tp
-            WHERE tp.session_id = tryout_sessions.id
-              AND tp.user_id = auth.uid()
-        )
-    );
-
 -- Service role: unrestricted.
 DROP POLICY IF EXISTS tryout_sessions_service ON public.tryout_sessions;
 CREATE POLICY tryout_sessions_service
@@ -155,6 +141,21 @@ CREATE INDEX IF NOT EXISTS idx_tryout_participants_user
     ON public.tryout_participants (user_id);
 
 ALTER TABLE public.tryout_participants ENABLE ROW LEVEL SECURITY;
+
+-- Invited participants can read sessions they are invited to.
+-- (Defined here, after tryout_participants exists, because the USING clause references it.)
+DROP POLICY IF EXISTS tryout_sessions_participant ON public.tryout_sessions;
+CREATE POLICY tryout_sessions_participant
+    ON public.tryout_sessions
+    FOR SELECT
+    TO authenticated
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.tryout_participants tp
+            WHERE tp.session_id = tryout_sessions.id
+              AND tp.user_id = auth.uid()
+        )
+    );
 
 -- Team staff can manage participants.
 DROP POLICY IF EXISTS tryout_participants_staff ON public.tryout_participants;
