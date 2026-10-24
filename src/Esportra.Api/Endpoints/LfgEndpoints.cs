@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 
@@ -130,7 +131,7 @@ public static class LfgEndpoints
         var where = string.Join(" AND ", conditions);
         using var conn = db.CreateConnection();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<LfgListingRow>(
             $"""
             SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
@@ -221,7 +222,7 @@ public static class LfgEndpoints
         if (expiresAt <= DateTimeOffset.UtcNow)
             return Results.BadRequest(new { error = "expires_at must be in the future." });
 
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             INSERT INTO public.lfg_listings
                 (user_id, game_slug, intent, mode_key, region_key, preferred_servers,
@@ -268,7 +269,7 @@ public static class LfgEndpoints
         offset = Math.Max(offset, 0);
 
         using var conn = db.CreateConnection();
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<LfgListingRow>(
             """
             SELECT id, game_slug, intent, mode_key, region_key, preferred_servers,
                    min_rank_sort_order, max_rank_sort_order, preferred_roles, languages,
@@ -299,7 +300,7 @@ public static class LfgEndpoints
             return Results.BadRequest(new { error = "expires_at must be in the future." });
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             UPDATE public.lfg_listings SET
                 mode_key             = COALESCE(@modeKey, mode_key),
@@ -361,7 +362,7 @@ public static class LfgEndpoints
 
         // Atomic publish: the UPDATE only fires if the user has < 3 published listings,
         // preventing the TOCTOU race between the limit check and the status transition.
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             UPDATE public.lfg_listings
             SET status = 'published'::lfg_listing_status, updated_at = now()
@@ -399,7 +400,7 @@ public static class LfgEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             UPDATE public.lfg_listings
             SET status = 'paused'::lfg_listing_status, updated_at = now()
@@ -423,7 +424,7 @@ public static class LfgEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             UPDATE public.lfg_listings
             SET status = 'closed'::lfg_listing_status, updated_at = now()
@@ -471,7 +472,7 @@ public static class LfgEndpoints
         if (alreadyInterested)
             return Results.Conflict(new { error = "ALREADY_INTERESTED" });
 
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
             """
             INSERT INTO public.lfg_interests (listing_id, from_user_id, to_user_id, status, message)
             VALUES (@listingId, @fromUserId, @toUserId, 'expressed'::lfg_interest_status, @message)
@@ -524,7 +525,7 @@ public static class LfgEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
             """
             UPDATE public.lfg_interests
             SET status = 'accepted'::lfg_interest_status, updated_at = now()
@@ -549,7 +550,7 @@ public static class LfgEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
             """
             UPDATE public.lfg_interests
             SET status = 'declined'::lfg_interest_status, updated_at = now()

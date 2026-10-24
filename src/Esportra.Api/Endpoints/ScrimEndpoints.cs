@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 
@@ -104,7 +105,7 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
         if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<ScrimListingRow>(
             """
             INSERT INTO public.scrim_listings
                 (team_id, game_slug, mode_key, region_key, min_rank_key, max_rank_key,
@@ -129,7 +130,7 @@ public static class ScrimEndpoints
                 notes = req.Notes,
             });
 
-        return Results.Created($"/api/scrims/listings/{row.id}", row);
+        return Results.Created($"/api/scrims/listings/{row.Id}", row);
     }
 
     // ── GET /api/scrims/listings ───────────────────────────────────────────────
@@ -152,7 +153,7 @@ public static class ScrimEndpoints
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScrimListingRow>(
             """
             SELECT sl.*, t.name AS team_name
             FROM public.scrim_listings sl JOIN public.teams t ON t.id = sl.team_id
@@ -182,7 +183,7 @@ public static class ScrimEndpoints
         if (teamId is null) return Results.NotFound();
         if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<ScrimListingRow>(
             """
             UPDATE public.scrim_listings
             SET mode_key             = COALESCE(@modeKey, mode_key),
@@ -238,7 +239,7 @@ public static class ScrimEndpoints
         offset = Math.Max(offset, 0);
 
         using var conn = db.CreateConnection();
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScrimListingRow>(
             """
             SELECT sl.*, t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag
             FROM public.scrim_listings sl JOIN public.teams t ON t.id = sl.team_id
@@ -268,15 +269,15 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        var listing = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
         if (listing is null) return Results.NotFound();
-        if ((string)listing.status != "open")
+        if (listing.Status != "open")
             return Results.BadRequest(new { error = "Listing is not open." });
 
         if (!await IsTeamStaffAsync(conn, req.OfferingTeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<ScrimOfferRow>(
             """
             INSERT INTO public.scrim_offers
                 (listing_id, offering_team_id, proposed_at, proposed_duration_minutes, notes)
@@ -298,7 +299,7 @@ public static class ScrimEndpoints
             SELECT tm.user_id FROM public.team_members tm
             WHERE tm.team_id = @teamId AND tm.role IN ('captain', 'manager') AND tm.is_active = TRUE
             """,
-            new { teamId = (Guid)listing.team_id });
+            new { teamId = listing.TeamId });
 
         var offerTeamName = await conn.ExecuteScalarAsync<string?>(
             "SELECT name FROM public.teams WHERE id = @id", new { id = req.OfferingTeamId });
@@ -314,7 +315,7 @@ public static class ScrimEndpoints
                 new { userId = staffId, message = $"{offerTeamName ?? "A team"} sent a scrim offer." });
         }
 
-        return Results.Created($"/api/scrims/offers/{(Guid)row.id}", row);
+        return Results.Created($"/api/scrims/offers/{row.Id}", row);
     }
 
     // ── GET /api/scrims/listings/{id}/offers ───────────────────────────────────
@@ -334,7 +335,7 @@ public static class ScrimEndpoints
         if (teamId is null) return Results.NotFound();
         if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
             SELECT so.*, t.name AS offering_team_name, t.logo_url AS offering_team_logo
             FROM public.scrim_offers so JOIN public.teams t ON t.id = so.offering_team_id
@@ -361,7 +362,7 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
             SELECT so.*, sl.game_slug AS listing_game_slug, t.name AS listing_team_name
             FROM public.scrim_offers so
@@ -392,7 +393,7 @@ public static class ScrimEndpoints
         try
         {
             // Fetch offer + listing team first so authorization is checked before any mutation.
-            var offerRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            var offerRow = await conn.QuerySingleOrDefaultAsync<ScrimOfferForAccept>(
                 """
                 SELECT so.id, so.listing_id, so.offering_team_id,
                        so.proposed_at, so.proposed_duration_minutes, so.status,
@@ -403,10 +404,10 @@ public static class ScrimEndpoints
                 """,
                 new { id }, tx);
 
-            if (offerRow is null || (string)offerRow.status != "pending")
+            if (offerRow is null || offerRow.Status != "pending")
                 return Results.BadRequest(new { error = "Offer not found or already processed." });
 
-            if (!await IsTeamStaffAsync(conn, (Guid)offerRow.listing_team_id, userCtx.UserIdGuid))
+            if (!await IsTeamStaffAsync(conn, offerRow.ListingTeamId, userCtx.UserIdGuid))
             {
                 tx.Rollback();
                 return Results.Forbid();
@@ -426,7 +427,7 @@ public static class ScrimEndpoints
                 return Results.BadRequest(new { error = "Offer not found or already processed." });
 
             // Create scrim session.
-            var session = await conn.QuerySingleAsync<dynamic>(
+            var session = await conn.QuerySingleAsync<ScrimSessionRow>(
                 """
                 INSERT INTO public.scrim_sessions
                     (team1_id, team2_id, game_slug, scheduled_at, duration_minutes, status)
@@ -437,10 +438,10 @@ public static class ScrimEndpoints
                 """,
                 new
                 {
-                    team2Id = (Guid)offerRow.offering_team_id,
-                    listingId = (Guid)offerRow.listing_id,
-                    scheduledAt = (DateTimeOffset)offerRow.proposed_at,
-                    durationMinutes = offerRow.proposed_duration_minutes,
+                    team2Id = offerRow.OfferingTeamId,
+                    listingId = offerRow.ListingId,
+                    scheduledAt = offerRow.ProposedAt ?? DateTimeOffset.UtcNow,
+                    durationMinutes = offerRow.ProposedDurationMinutes,
                 }, tx);
 
             tx.Commit();
@@ -451,10 +452,10 @@ public static class ScrimEndpoints
                 SELECT user_id FROM public.team_members
                 WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
                 """,
-                new { teamId = (Guid)offerRow.offering_team_id });
+                new { teamId = offerRow.OfferingTeamId });
 
             var listingTeamName = await conn.ExecuteScalarAsync<string?>(
-                "SELECT name FROM public.teams WHERE id = @id", new { id = (Guid)offerRow.listing_team_id });
+                "SELECT name FROM public.teams WHERE id = @id", new { id = offerRow.ListingTeamId });
 
             foreach (var staffId in staffIds)
             {
@@ -505,7 +506,7 @@ public static class ScrimEndpoints
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScrimSessionRow>(
             """
             SELECT ss.*,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
@@ -533,7 +534,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
             """
             SELECT ss.*,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
@@ -581,17 +582,17 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         using var conn = db.CreateConnection();
-        var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
-        var isParty = req.ReportingTeamId == (Guid)session.team1_id || req.ReportingTeamId == (Guid)session.team2_id;
+        var isParty = req.ReportingTeamId == session.Team1Id || req.ReportingTeamId == session.Team2Id;
         if (!isParty) return Results.BadRequest(new { error = "Reporting team is not a party to this session." });
         if (!await IsTeamStaffAsync(conn, req.ReportingTeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
         try
         {
-            var report = await conn.QuerySingleAsync<dynamic>(
+            var report = await conn.QuerySingleAsync<ScrimResultReportRow>(
                 """
                 INSERT INTO public.scrim_result_reports
                     (session_id, reporting_team_id, team1_score, team2_score, notes, screenshots_urls)
@@ -614,7 +615,7 @@ public static class ScrimEndpoints
                 });
 
             // Update session flags and scores.
-            var isTeam1 = req.ReportingTeamId == (Guid)session.team1_id;
+            var isTeam1 = req.ReportingTeamId == session.Team1Id;
             var flagCol = isTeam1 ? "result_reported_by_team1 = TRUE" : "result_reported_by_team2 = TRUE";
             await conn.ExecuteAsync(
                 $"""
@@ -644,7 +645,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
@@ -658,10 +659,10 @@ public static class ScrimEndpoints
                   AND tm.is_active = TRUE
             )
             """,
-            new { t1 = (Guid)session.team1_id, t2 = (Guid)session.team2_id, userId = userCtx.UserIdGuid });
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
         if (!isStaff) return Results.Forbid();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScrimResultReportRow>(
             """
             SELECT srr.*, t.name AS reporting_team_name
             FROM public.scrim_result_reports srr
@@ -689,15 +690,15 @@ public static class ScrimEndpoints
         if (req.Reason.Length > 1000) return Results.BadRequest(new { error = "reason max 1000 chars." });
 
         using var conn = db.CreateConnection();
-        var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
-        var isParty = req.RaisedByTeamId == (Guid)session.team1_id || req.RaisedByTeamId == (Guid)session.team2_id;
+        var isParty = req.RaisedByTeamId == session.Team1Id || req.RaisedByTeamId == session.Team2Id;
         if (!isParty) return Results.BadRequest(new { error = "Team is not a party to this session." });
         if (!await IsTeamStaffAsync(conn, req.RaisedByTeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var dispute = await conn.QuerySingleAsync<dynamic>(
+        var dispute = await conn.QuerySingleAsync<ScrimDisputeRow>(
             """
             INSERT INTO public.scrim_disputes (session_id, raised_by_team_id, reason)
             VALUES (@sessionId, @raisedByTeamId, @reason)
@@ -731,7 +732,7 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
         if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<PracticeSessionRow>(
             """
             INSERT INTO public.practice_sessions
                 (team_id, game_slug, title, scheduled_at, duration_minutes, notes, created_by)
@@ -749,7 +750,7 @@ public static class ScrimEndpoints
                 createdBy = userCtx.UserIdGuid,
             });
 
-        return Results.Created($"/api/practice/sessions/{row.id}", row);
+        return Results.Created($"/api/practice/sessions/{row.Id}", row);
     }
 
     private static async Task<IResult> GetTeamPracticeAsync(
@@ -773,7 +774,7 @@ public static class ScrimEndpoints
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<PracticeSessionRow>(
             """
             SELECT ps.*, t.name AS team_name
             FROM public.practice_sessions ps JOIN public.teams t ON t.id = ps.team_id
@@ -791,7 +792,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<PracticeSessionRow>(
             """
             SELECT ps.*, t.name AS team_name
             FROM public.practice_sessions ps JOIN public.teams t ON t.id = ps.team_id
@@ -820,7 +821,7 @@ public static class ScrimEndpoints
         if (teamId is null) return Results.NotFound();
         if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<PracticeSessionRow>(
             """
             UPDATE public.practice_sessions
             SET title            = COALESCE(@title, title),
@@ -854,7 +855,7 @@ public static class ScrimEndpoints
             new { teamId = teamId.Value, userId = userCtx.UserIdGuid });
         if (!isMember) return Results.Forbid();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<PracticeAttendanceRow>(
             """
             SELECT pa.*, pr.username, pr.avatar_seed
             FROM public.practice_attendance pa JOIN public.profiles pr ON pr.id = pa.user_id
@@ -910,7 +911,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<PracticeAttendanceRow>(
             """
             UPDATE public.practice_attendance
             SET status = @status::practice_attendance_status
@@ -931,14 +932,14 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, (Guid)row.team_id, userCtx.UserIdGuid)) return Results.Forbid();
-        if (!from.Contains((string)row.status))
-            return Results.BadRequest(new { error = $"Cannot transition from '{(string)row.status}' to '{target}'." });
+        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!from.Contains(row.Status))
+            return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<ScrimListingRow>(
             "UPDATE public.scrim_listings SET status = @target::scrim_listing_status, updated_at = now() WHERE id = @id RETURNING *",
             new { id, target });
         return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -951,7 +952,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
 
@@ -965,13 +966,13 @@ public static class ScrimEndpoints
                   AND tm.is_active = TRUE
             )
             """,
-            new { t1 = (Guid)row.team1_id, t2 = (Guid)row.team2_id, userId = userCtx.UserIdGuid });
+            new { t1 = row.Team1Id, t2 = row.Team2Id, userId = userCtx.UserIdGuid });
         if (!isStaff) return Results.Forbid();
 
-        if (!from.Contains((string)row.status))
-            return Results.BadRequest(new { error = $"Cannot transition from '{(string)row.status}' to '{target}'." });
+        if (!from.Contains(row.Status))
+            return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
             "UPDATE public.scrim_sessions SET status = @target::scrim_session_status, updated_at = now() WHERE id = @id RETURNING *",
             new { id, target });
         return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -984,14 +985,14 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<PracticeSessionRef>(
             "SELECT team_id, status FROM public.practice_sessions WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
-        if (!await IsTeamStaffAsync(conn, (Guid)row.team_id, userCtx.UserIdGuid)) return Results.Forbid();
-        if (!from.Contains((string)row.status))
-            return Results.BadRequest(new { error = $"Cannot transition from '{(string)row.status}' to '{target}'." });
+        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!from.Contains(row.Status))
+            return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<PracticeSessionRow>(
             "UPDATE public.practice_sessions SET status = @target::practice_session_status WHERE id = @id RETURNING *",
             new { id, target });
         return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -1004,7 +1005,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var offer = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var offer = await conn.QuerySingleOrDefaultAsync<ScrimOfferRef>(
             """
             SELECT so.listing_id, so.offering_team_id, sl.team_id AS listing_team_id
             FROM public.scrim_offers so JOIN public.scrim_listings sl ON sl.id = so.listing_id
@@ -1013,10 +1014,10 @@ public static class ScrimEndpoints
             new { id });
         if (offer is null) return Results.NotFound();
 
-        var checkTeamId = requiresListingTeam ? (Guid)offer.listing_team_id : (Guid)offer.offering_team_id;
+        var checkTeamId = requiresListingTeam ? offer.ListingTeamId : offer.OfferingTeamId;
         if (!await IsTeamStaffAsync(conn, checkTeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<ScrimOfferRow>(
             "UPDATE public.scrim_offers SET status = @target::scrim_offer_status, updated_at = now() WHERE id = @id RETURNING *",
             new { id, target });
         return updated is null ? Results.NotFound() : Results.Ok(updated);
@@ -1034,6 +1035,18 @@ public static class ScrimEndpoints
             """,
             new { teamId, userId });
     }
+
+    // ── Private auth records ───────────────────────────────────────────────────
+
+    private sealed record ScrimListingRef(Guid TeamId, string Status);
+    private sealed record ScrimSessionRef(Guid Team1Id, Guid Team2Id, string Status);
+    private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
+    private sealed record ScrimOfferForAccept(
+        Guid Id, Guid ListingId, Guid OfferingTeamId,
+        DateTimeOffset? ProposedAt, int? ProposedDurationMinutes,
+        string Status, Guid ListingTeamId);
+    private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
+    private sealed record PracticeSessionRef(Guid TeamId, string Status);
 }
 
 // ── Request DTOs ───────────────────────────────────────────────────────────────

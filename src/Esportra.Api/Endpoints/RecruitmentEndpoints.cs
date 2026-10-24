@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 
@@ -79,7 +80,7 @@ public static class RecruitmentEndpoints
         var isStaff = await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<RecruitmentOpeningRow>(
             """
             INSERT INTO public.recruitment_openings
                 (team_id, game_slug, title, description, requirements,
@@ -105,7 +106,7 @@ public static class RecruitmentEndpoints
                 createdBy = userCtx.UserIdGuid,
             });
 
-        return Results.Created($"/api/recruitment/openings/{row.id}", row);
+        return Results.Created($"/api/recruitment/openings/{row.Id}", row);
     }
 
     // ── GET /api/recruitment/openings?team_id={id} ─────────────────────────────
@@ -131,7 +132,7 @@ public static class RecruitmentEndpoints
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<RecruitmentOpeningRow>(
             """
             SELECT ro.*, t.name AS team_name
             FROM public.recruitment_openings ro
@@ -164,11 +165,12 @@ public static class RecruitmentEndpoints
 
         using var conn = db.CreateConnection();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<RecruitmentOpeningRow>(
             """
             SELECT ro.id, ro.team_id, ro.game_slug, ro.title, ro.description,
                    ro.requirements, ro.positions_available, ro.positions_filled,
-                   ro.mode, ro.tournament_id, ro.expires_at, ro.created_at,
+                   ro.mode, ro.tournament_id, ro.status, ro.created_by,
+                   ro.expires_at, ro.created_at, ro.updated_at,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag
             FROM public.recruitment_openings ro
             JOIN public.teams t ON t.id = ro.team_id
@@ -196,7 +198,7 @@ public static class RecruitmentEndpoints
 
         using var conn = db.CreateConnection();
 
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<RecruitmentOpeningRow>(
             """
             SELECT ro.*, t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag
             FROM public.recruitment_openings ro
@@ -234,17 +236,16 @@ public static class RecruitmentEndpoints
 
         using var conn = db.CreateConnection();
 
-        var opening = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var opening = await conn.QuerySingleOrDefaultAsync<OpeningRef>(
             "SELECT team_id, status FROM public.recruitment_openings WHERE id = @id",
             new { id });
 
         if (opening is null) return Results.NotFound();
 
-        var teamId = (Guid)opening.team_id;
-        var isStaff = await IsTeamStaffAsync(conn, teamId, userCtx.UserIdGuid);
+        var isStaff = await IsTeamStaffAsync(conn, opening.TeamId, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<RecruitmentOpeningRow>(
             """
             UPDATE public.recruitment_openings
             SET title               = COALESCE(@title, title),
@@ -314,7 +315,7 @@ public static class RecruitmentEndpoints
         using var conn = db.CreateConnection();
 
         // Opening must be open.
-        var opening = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var opening = await conn.QuerySingleOrDefaultAsync<OpeningApplyRef>(
             """
             SELECT id, team_id, status, positions_available, positions_filled
             FROM public.recruitment_openings WHERE id = @id
@@ -322,10 +323,10 @@ public static class RecruitmentEndpoints
             new { id });
 
         if (opening is null) return Results.NotFound();
-        if ((string)opening.status != "open")
+        if (opening.Status != "open")
             return Results.BadRequest(new { error = "Opening is not accepting applications." });
 
-        var teamId = (Guid)opening.team_id;
+        var teamId = opening.TeamId;
 
         // Must not be a member of the team already.
         var isMember = await conn.ExecuteScalarAsync<bool>(
@@ -341,10 +342,10 @@ public static class RecruitmentEndpoints
             return Results.BadRequest(new { error = "You are already a member of this team." });
 
         // Insert application (unique constraint handles duplicate guard).
-        dynamic? application;
+        RecruitmentApplicationRow application;
         try
         {
-            application = await conn.QuerySingleAsync<dynamic>(
+            application = await conn.QuerySingleAsync<RecruitmentApplicationRow>(
                 """
                 INSERT INTO public.recruitment_applications
                     (opening_id, applicant_user_id, status, cover_letter)
@@ -370,7 +371,7 @@ public static class RecruitmentEndpoints
                 (application_id, actor_user_id, event_type)
             VALUES (@applicationId, @actorUserId, 'applied')
             """,
-            new { applicationId = (Guid)application.id, actorUserId = userCtx.UserIdGuid });
+            new { applicationId = application.Id, actorUserId = userCtx.UserIdGuid });
 
         // Notify team staff.
         var staffIds = await conn.QueryAsync<Guid>(
@@ -405,11 +406,11 @@ public static class RecruitmentEndpoints
                 {
                     userId = staffId,
                     message = $"{applicantName ?? "A player"} applied to your opening on {teamName ?? "your team"}.",
-                    link = $"/teams/{teamId}/recruitment/{id}/applications/{(Guid)application.id}",
+                    link = $"/teams/{teamId}/recruitment/{id}/applications/{application.Id}",
                 });
         }
 
-        return Results.Created($"/api/recruitment/applications/{(Guid)application.id}", application);
+        return Results.Created($"/api/recruitment/applications/{application.Id}", application);
     }
 
     // ── GET /api/recruitment/openings/{id}/applications ───────────────────────
@@ -440,7 +441,7 @@ public static class RecruitmentEndpoints
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<RecruitmentApplicationRow>(
             """
             SELECT ra.*, pr.username AS applicant_username, pr.avatar_seed AS applicant_avatar_seed
             FROM public.recruitment_applications ra
@@ -471,7 +472,7 @@ public static class RecruitmentEndpoints
 
         using var conn = db.CreateConnection();
 
-        var application = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var application = await conn.QuerySingleOrDefaultAsync<ApplicationRef>(
             """
             SELECT ra.id, ra.opening_id, ra.applicant_user_id, ra.status,
                    ro.team_id
@@ -483,13 +484,13 @@ public static class RecruitmentEndpoints
 
         if (application is null) return Results.NotFound();
 
-        var isApplicant = userCtx.UserIdGuid == (Guid)application.applicant_user_id;
-        var isStaff = await IsTeamStaffAsync(conn, (Guid)application.team_id, userCtx.UserIdGuid);
+        var isApplicant = userCtx.UserIdGuid == application.ApplicantUserId;
+        var isStaff = await IsTeamStaffAsync(conn, application.TeamId, userCtx.UserIdGuid);
 
         if (!isApplicant && !isStaff) return Results.Forbid();
 
         var newStatus = req.Status.ToLower();
-        var currentStatus = (string)application.status;
+        var currentStatus = application.Status;
 
         // Validate transitions.
         if (isApplicant && !isStaff)
@@ -511,7 +512,7 @@ public static class RecruitmentEndpoints
                 return Results.BadRequest(new { error = $"Invalid status transition to '{newStatus}'." });
         }
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<RecruitmentApplicationRow>(
             """
             UPDATE public.recruitment_applications
             SET status = @newStatus::recruitment_application_status, updated_at = now()
@@ -540,7 +541,7 @@ public static class RecruitmentEndpoints
         // Notify applicant of status change (not for staff-internal states like archived).
         if (newStatus is "accepted" or "rejected" or "shortlisted" or "trial_invited" or "offer_extended")
         {
-            var applicantId = (Guid)application.applicant_user_id;
+            var applicantId = application.ApplicantUserId;
             var teamName = await conn.ExecuteScalarAsync<string?>(
                 """
                 SELECT t.name FROM public.teams t
@@ -588,7 +589,7 @@ public static class RecruitmentEndpoints
 
         using var conn = db.CreateConnection();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<RecruitmentApplicationRow>(
             """
             SELECT ra.*, ro.title AS opening_title, ro.game_slug,
                    t.name AS team_name, t.logo_url AS team_logo_url
@@ -619,19 +620,19 @@ public static class RecruitmentEndpoints
 
         using var conn = db.CreateConnection();
 
-        var opening = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var opening = await conn.QuerySingleOrDefaultAsync<OpeningRef>(
             "SELECT team_id, status FROM public.recruitment_openings WHERE id = @id",
             new { id });
 
         if (opening is null) return Results.NotFound();
 
-        var isStaff = await IsTeamStaffAsync(conn, (Guid)opening.team_id, userCtx.UserIdGuid);
+        var isStaff = await IsTeamStaffAsync(conn, opening.TeamId, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        if (!allowedFrom.Contains((string)opening.status))
-            return Results.BadRequest(new { error = $"Cannot transition from '{(string)opening.status}' to '{targetStatus}'." });
+        if (!allowedFrom.Contains(opening.Status))
+            return Results.BadRequest(new { error = $"Cannot transition from '{opening.Status}' to '{targetStatus}'." });
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<RecruitmentOpeningRow>(
             """
             UPDATE public.recruitment_openings
             SET status = @targetStatus::recruitment_opening_status, updated_at = now()
@@ -660,6 +661,12 @@ public static class RecruitmentEndpoints
             """,
             new { teamId, userId });
     }
+
+    // ── Private auth records ───────────────────────────────────────────────────
+
+    private sealed record OpeningRef(Guid TeamId, string Status);
+    private sealed record OpeningApplyRef(Guid Id, Guid TeamId, string Status, int? PositionsAvailable, int PositionsFilled);
+    private sealed record ApplicationRef(Guid Id, Guid OpeningId, Guid ApplicantUserId, string Status, Guid TeamId);
 }
 
 // ── Request DTOs ───────────────────────────────────────────────────────────────

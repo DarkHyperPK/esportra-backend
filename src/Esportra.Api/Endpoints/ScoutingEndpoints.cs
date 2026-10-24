@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 
@@ -62,10 +63,10 @@ public static class ScoutingEndpoints
 
         using var conn = db.CreateConnection();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<ScoutingShortlistRow>(
             """
-            SELECT s.id, s.name, s.description, s.game_slug, s.is_private,
-                   s.created_at, s.updated_at,
+            SELECT s.id, s.owner_user_id, s.name, s.description, s.game_slug,
+                   s.is_private, s.created_at, s.updated_at,
                    (SELECT COUNT(*) FROM public.scouting_shortlist_entries e
                     WHERE e.shortlist_id = s.id) AS entry_count
             FROM public.scouting_shortlists s
@@ -98,7 +99,7 @@ public static class ScoutingEndpoints
 
         using var conn = db.CreateConnection();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<ScoutingShortlistRow>(
             """
             INSERT INTO public.scouting_shortlists
                 (owner_user_id, name, description, game_slug, is_private)
@@ -113,7 +114,7 @@ public static class ScoutingEndpoints
                 gameSlug = req.GameSlug,
             });
 
-        return Results.Created($"/api/scouting/shortlists/{row.id}", row);
+        return Results.Created($"/api/scouting/shortlists/{row.Id}", row);
     }
 
     // ── GET /api/scouting/shortlists/{id} ──────────────────────────────────────
@@ -129,7 +130,7 @@ public static class ScoutingEndpoints
 
         using var conn = db.CreateConnection();
 
-        var shortlist = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var shortlist = await conn.QuerySingleOrDefaultAsync<ScoutingShortlistRow>(
             """
             SELECT * FROM public.scouting_shortlists
             WHERE id = @id AND owner_user_id = @ownerId
@@ -138,7 +139,7 @@ public static class ScoutingEndpoints
 
         if (shortlist is null) return Results.NotFound();
 
-        var entries = await conn.QueryAsync<dynamic>(
+        var entries = await conn.QueryAsync<ShortlistEntryRow>(
             """
             SELECT e.id, e.player_user_id, e.note, e.added_at,
                    p.username AS player_username, p.avatar_seed AS player_avatar_seed
@@ -171,7 +172,7 @@ public static class ScoutingEndpoints
 
         using var conn = db.CreateConnection();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<ScoutingShortlistRow>(
             """
             UPDATE public.scouting_shortlists
             SET name        = COALESCE(@name, name),
@@ -239,10 +240,10 @@ public static class ScoutingEndpoints
 
         if (!owns) return Results.NotFound();
 
-        dynamic entry;
+        ShortlistEntryRow entry;
         try
         {
-            entry = await conn.QuerySingleAsync<dynamic>(
+            entry = await conn.QuerySingleAsync<ShortlistEntryRow>(
                 """
                 INSERT INTO public.scouting_shortlist_entries
                     (shortlist_id, player_user_id, note)
@@ -256,7 +257,7 @@ public static class ScoutingEndpoints
             return Results.BadRequest(new { error = "Player is already on this shortlist." });
         }
 
-        return Results.Created($"/api/scouting/shortlists/{id}/entries/{(Guid)entry.id}", entry);
+        return Results.Created($"/api/scouting/shortlists/{id}/entries/{entry.Id}", entry);
     }
 
     // ── DELETE /api/scouting/shortlists/{id}/entries/{playerId} ───────────────
@@ -301,7 +302,7 @@ public static class ScoutingEndpoints
 
         using var conn = db.CreateConnection();
 
-        var notes = (await conn.QueryAsync<dynamic>(
+        var notes = (await conn.QueryAsync<ScoutingNoteRow>(
             """
             SELECT * FROM public.scouting_notes
             WHERE scout_user_id   = @scoutId
@@ -332,7 +333,7 @@ public static class ScoutingEndpoints
 
         using var conn = db.CreateConnection();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var noteId = await conn.QuerySingleAsync<Guid>(
             """
             INSERT INTO public.scouting_notes
                 (scout_user_id, subject_user_id, game_slug, content)
@@ -350,7 +351,7 @@ public static class ScoutingEndpoints
                 content = req.Content,
             });
 
-        return Results.Ok(row);
+        return Results.Ok(new { id = noteId });
     }
 
     // ── DELETE /api/scouting/notes/{subjectUserId} ─────────────────────────────

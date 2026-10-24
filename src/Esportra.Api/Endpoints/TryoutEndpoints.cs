@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Contracts.Auth;
+using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,6 +10,7 @@ namespace Esportra.Api.Endpoints;
 /// <summary>
 /// Tryout Sessions (PROJ-067 Phase 3).
 ///
+/// GET    /api/tryouts/my-invites                         — caller's tryout invitations
 /// POST   /api/tryouts/sessions                          — create session
 /// GET    /api/tryouts/sessions?team_id={id}             — team's sessions (staff)
 /// GET    /api/tryouts/sessions/{id}                     — session detail
@@ -26,6 +28,8 @@ public static class TryoutEndpoints
 {
     public static void MapTryoutEndpoints(this WebApplication app)
     {
+        app.MapGet("/api/tryouts/my-invites", GetMyInvitesAsync)
+            .RequireAuthorization("Authenticated");
         app.MapPost("/api/tryouts/sessions", CreateSessionAsync)
             .RequireAuthorization("Authenticated");
         app.MapGet("/api/tryouts/sessions", GetTeamSessionsAsync)
@@ -52,6 +56,47 @@ public static class TryoutEndpoints
             .RequireAuthorization("Authenticated");
     }
 
+    // ── GET /api/tryouts/my-invites ────────────────────────────────────────────
+
+    private static async Task<IResult> GetMyInvitesAsync(
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        [FromQuery] int limit = 20,
+        [FromQuery] DateTimeOffset? cursor = null,
+        CancellationToken ct = default)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        if (limit is < 1 or > 50) limit = 20;
+
+        using var conn = db.CreateConnection();
+
+        var rows = await conn.QueryAsync<TryoutInviteRow>(
+            """
+            SELECT
+                ts.id          AS session_id,
+                tp.id          AS participant_id,
+                tp.status      AS participant_status,
+                ts.title,
+                ts.game_slug,
+                ts.scheduled_at,
+                t.name         AS team_name,
+                t.logo_url     AS team_logo_url,
+                ts.status      AS session_status
+            FROM public.tryout_participants tp
+            JOIN public.tryout_sessions ts ON ts.id = tp.session_id
+            JOIN public.teams t ON t.id = ts.team_id
+            WHERE tp.user_id = @callerId
+              AND (@cursor IS NULL OR ts.scheduled_at < @cursor)
+            ORDER BY ts.scheduled_at DESC NULLS LAST
+            LIMIT @limit
+            """,
+            new { callerId = userCtx.UserIdGuid, cursor, limit });
+
+        return Results.Ok(rows);
+    }
+
     // ── POST /api/tryouts/sessions ─────────────────────────────────────────────
 
     private static async Task<IResult> CreateSessionAsync(
@@ -72,7 +117,7 @@ public static class TryoutEndpoints
         var isStaff = await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<TryoutSessionRow>(
             """
             INSERT INTO public.tryout_sessions
                 (team_id, game_slug, title, description, scheduled_at,
@@ -96,7 +141,7 @@ public static class TryoutEndpoints
                 createdBy = userCtx.UserIdGuid,
             });
 
-        return Results.Created($"/api/tryouts/sessions/{row.id}", row);
+        return Results.Created($"/api/tryouts/sessions/{row.Id}", row);
     }
 
     // ── GET /api/tryouts/sessions?team_id={id} ─────────────────────────────────
@@ -122,7 +167,7 @@ public static class TryoutEndpoints
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<TryoutSessionRow>(
             """
             SELECT ts.*, t.name AS team_name,
                    COUNT(tp.id) AS participant_count
@@ -153,7 +198,7 @@ public static class TryoutEndpoints
 
         using var conn = db.CreateConnection();
 
-        var row = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var row = await conn.QuerySingleOrDefaultAsync<TryoutSessionRow>(
             """
             SELECT ts.*, t.name AS team_name, t.logo_url AS team_logo_url
             FROM public.tryout_sessions ts
@@ -201,7 +246,7 @@ public static class TryoutEndpoints
         var isStaff = await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<TryoutSessionRow>(
             """
             UPDATE public.tryout_sessions
             SET title            = COALESCE(@title, title),
@@ -256,20 +301,20 @@ public static class TryoutEndpoints
 
         using var conn = db.CreateConnection();
 
-        var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var session = await conn.QuerySingleOrDefaultAsync<TryoutSessionRef>(
             "SELECT team_id, status FROM public.tryout_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
-        var isStaff = await IsTeamStaffAsync(conn, (Guid)session.team_id, userCtx.UserIdGuid);
+        var isStaff = await IsTeamStaffAsync(conn, session.TeamId, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        if ((string)session.status is "completed" or "cancelled")
+        if (session.Status is "completed" or "cancelled")
             return Results.BadRequest(new { error = "Cannot invite to a completed or cancelled session." });
 
-        dynamic? participant;
+        TryoutParticipantRow participant;
         try
         {
-            participant = await conn.QuerySingleAsync<dynamic>(
+            participant = await conn.QuerySingleAsync<TryoutParticipantRow>(
                 """
                 INSERT INTO public.tryout_participants
                     (session_id, user_id, invited_by, status)
@@ -327,7 +372,7 @@ public static class TryoutEndpoints
 
         using var conn = db.CreateConnection();
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<TryoutParticipantRow>(
             """
             UPDATE public.tryout_participants
             SET status = @status::tryout_participant_status,
@@ -364,7 +409,7 @@ public static class TryoutEndpoints
         var isStaff = await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<TryoutParticipantRow>(
             """
             SELECT tp.*, pr.username, pr.avatar_seed
             FROM public.tryout_participants tp
@@ -400,7 +445,7 @@ public static class TryoutEndpoints
         var isStaff = await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var row = await conn.QuerySingleAsync<dynamic>(
+        var row = await conn.QuerySingleAsync<TryoutEvaluationRow>(
             """
             INSERT INTO public.tryout_evaluations
                 (session_id, evaluatee_user_id, evaluator_user_id,
@@ -465,7 +510,7 @@ public static class TryoutEndpoints
         var isStaff = await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        var rows = await conn.QueryAsync<dynamic>(
+        var rows = await conn.QueryAsync<TryoutEvaluationRow>(
             """
             SELECT te.*,
                    ep.username AS evaluatee_username,
@@ -496,17 +541,17 @@ public static class TryoutEndpoints
 
         using var conn = db.CreateConnection();
 
-        var session = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var session = await conn.QuerySingleOrDefaultAsync<TryoutSessionRef>(
             "SELECT team_id, status FROM public.tryout_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
-        var isStaff = await IsTeamStaffAsync(conn, (Guid)session.team_id, userCtx.UserIdGuid);
+        var isStaff = await IsTeamStaffAsync(conn, session.TeamId, userCtx.UserIdGuid);
         if (!isStaff) return Results.Forbid();
 
-        if (!allowedFrom.Contains((string)session.status))
-            return Results.BadRequest(new { error = $"Cannot transition from '{(string)session.status}' to '{targetStatus}'." });
+        if (!allowedFrom.Contains(session.Status))
+            return Results.BadRequest(new { error = $"Cannot transition from '{session.Status}' to '{targetStatus}'." });
 
-        var updated = await conn.QuerySingleOrDefaultAsync<dynamic>(
+        var updated = await conn.QuerySingleOrDefaultAsync<TryoutSessionRow>(
             """
             UPDATE public.tryout_sessions
             SET status = @targetStatus::tryout_session_status, updated_at = now()
@@ -535,6 +580,10 @@ public static class TryoutEndpoints
             """,
             new { teamId, userId });
     }
+
+    // ── Private auth records ───────────────────────────────────────────────────
+
+    private sealed record TryoutSessionRef(Guid TeamId, string Status);
 }
 
 // ── Request DTOs ───────────────────────────────────────────────────────────────
