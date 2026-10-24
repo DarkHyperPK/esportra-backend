@@ -32,6 +32,8 @@ public sealed class FeatureGateMiddleware(
         ("lfg", new Regex(@"^/api/competitive/(lfg|availability)", RegexOptions.Compiled)),
         // PROJ-066: Competitive Phase 2 — recruitment off by default.
         ("recruitment", new Regex(@"^/api/recruitment/", RegexOptions.Compiled)),
+        // PROJ-067: Competitive Phase 3 — tryouts off by default.
+        ("tryouts", new Regex(@"^/api/tryouts/", RegexOptions.Compiled)),
     ];
 
     private readonly ConcurrentDictionary<string, (bool Enabled, DateTime ExpiresAt)> _cache = new();

@@ -720,6 +720,7 @@ app.MapCompetitiveProfileEndpoints();
 app.MapAvailabilityEndpoints();
 app.MapLfgEndpoints();
 app.MapRecruitmentEndpoints();
+app.MapTryoutEndpoints();
 app.MapTournamentEndpoints();
 app.MapTournamentTemplateEndpoints();
 app.MapTournamentInvitationEndpoints();
