@@ -571,6 +571,8 @@ using (var scope = app.Services.CreateScope())
         "lfg-expiry", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RecruitmentExpiryJob>(
         "recruitment-expiry", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ScrimOfferExpiryJob>(
+        "scrim-offer-expiry", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
 
     backgroundJobs.Enqueue<Esportra.Api.ScheduledJobs.LeaderboardRefreshJob>(
         j => j.ExecuteAsync(CancellationToken.None));
@@ -721,6 +723,7 @@ app.MapAvailabilityEndpoints();
 app.MapLfgEndpoints();
 app.MapRecruitmentEndpoints();
 app.MapTryoutEndpoints();
+app.MapScrimEndpoints();
 app.MapTournamentEndpoints();
 app.MapTournamentTemplateEndpoints();
 app.MapTournamentInvitationEndpoints();
