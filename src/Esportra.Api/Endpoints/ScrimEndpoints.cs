@@ -391,28 +391,39 @@ public static class ScrimEndpoints
 
         try
         {
-            // Atomic: UPDATE status = 'accepted' WHERE status = 'pending' (prevents double-accept).
-            var offer = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            // Fetch offer + listing team first so authorization is checked before any mutation.
+            var offerRow = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
-                UPDATE public.scrim_offers
-                SET status = 'accepted', updated_at = now()
-                WHERE id = @id AND status = 'pending'
-                RETURNING listing_id, offering_team_id, proposed_at, proposed_duration_minutes
+                SELECT so.id, so.listing_id, so.offering_team_id,
+                       so.proposed_at, so.proposed_duration_minutes, so.status,
+                       sl.team_id AS listing_team_id
+                FROM public.scrim_offers so
+                JOIN public.scrim_listings sl ON sl.id = so.listing_id
+                WHERE so.id = @id
                 """,
                 new { id }, tx);
 
-            if (offer is null)
+            if (offerRow is null || (string)offerRow.status != "pending")
                 return Results.BadRequest(new { error = "Offer not found or already processed." });
 
-            var listingTeamId = await conn.ExecuteScalarAsync<Guid?>(
-                "SELECT team_id FROM public.scrim_listings WHERE id = @listingId",
-                new { listingId = (Guid)offer.listing_id }, tx);
-
-            if (!await IsTeamStaffAsync(conn, listingTeamId!.Value, userCtx.UserIdGuid))
+            if (!await IsTeamStaffAsync(conn, (Guid)offerRow.listing_team_id, userCtx.UserIdGuid))
             {
                 tx.Rollback();
                 return Results.Forbid();
             }
+
+            // Optimistic update — prevents double-accept under concurrent requests.
+            var accepted = await conn.ExecuteScalarAsync<Guid?>(
+                """
+                UPDATE public.scrim_offers
+                SET status = 'accepted', updated_at = now()
+                WHERE id = @id AND status = 'pending'
+                RETURNING id
+                """,
+                new { id }, tx);
+
+            if (accepted is null)
+                return Results.BadRequest(new { error = "Offer not found or already processed." });
 
             // Create scrim session.
             var session = await conn.QuerySingleAsync<dynamic>(
@@ -426,24 +437,24 @@ public static class ScrimEndpoints
                 """,
                 new
                 {
-                    team2Id = (Guid)offer.offering_team_id,
-                    listingId = (Guid)offer.listing_id,
-                    scheduledAt = (DateTimeOffset)offer.proposed_at,
-                    durationMinutes = offer.proposed_duration_minutes,
+                    team2Id = (Guid)offerRow.offering_team_id,
+                    listingId = (Guid)offerRow.listing_id,
+                    scheduledAt = (DateTimeOffset)offerRow.proposed_at,
+                    durationMinutes = offerRow.proposed_duration_minutes,
                 }, tx);
 
             tx.Commit();
 
-            // Notify offering team staff.
+            // Notify offering team staff (after commit — outbox pattern).
             var staffIds = await conn.QueryAsync<Guid>(
                 """
                 SELECT user_id FROM public.team_members
                 WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
                 """,
-                new { teamId = (Guid)offer.offering_team_id });
+                new { teamId = (Guid)offerRow.offering_team_id });
 
             var listingTeamName = await conn.ExecuteScalarAsync<string?>(
-                "SELECT name FROM public.teams WHERE id = @id", new { id = listingTeamId.Value });
+                "SELECT name FROM public.teams WHERE id = @id", new { id = (Guid)offerRow.listing_team_id });
 
             foreach (var staffId in staffIds)
             {

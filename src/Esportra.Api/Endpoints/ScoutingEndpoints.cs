@@ -49,12 +49,16 @@ public static class ScoutingEndpoints
     // ── GET /api/scouting/shortlists ───────────────────────────────────────────
 
     private static async Task<IResult> GetShortlistsAsync(
+        [FromQuery] int page,
         HttpContext ctx,
         IDbConnectionFactory db,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
+
+        page = Math.Max(page == 0 ? 1 : page, 1);
+        var offset = (page - 1) * 100;
 
         using var conn = db.CreateConnection();
 
@@ -67,8 +71,9 @@ public static class ScoutingEndpoints
             FROM public.scouting_shortlists s
             WHERE s.owner_user_id = @ownerId
             ORDER BY s.created_at DESC
+            LIMIT 100 OFFSET @offset
             """,
-            new { ownerId = userCtx.UserIdGuid });
+            new { ownerId = userCtx.UserIdGuid, offset });
 
         return Results.Ok(rows);
     }

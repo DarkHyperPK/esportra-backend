@@ -32,6 +32,7 @@ public static class CompetitiveIntegrationEndpoints
 
     private static async Task<IResult> GetEligibilityAsync(
         Guid tournamentId,
+        [FromQuery] int page,
         HttpContext ctx,
         IDbConnectionFactory db,
         CancellationToken ct)
@@ -53,6 +54,9 @@ public static class CompetitiveIntegrationEndpoints
             new { tournamentId, userId = userCtx.UserIdGuid, isPlatformAdmin = StaffAuthHelper.IsPlatformAdmin(userCtx) });
 
         if (!isOrganizer) return Results.Forbid();
+
+        page = Math.Max(page == 0 ? 1 : page, 1);
+        var offset = (page - 1) * 100;
 
         // Fetch tournament settings (max_teams, min roster size from game config if any).
         var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(
@@ -82,8 +86,9 @@ public static class CompetitiveIntegrationEndpoints
             WHERE tp.tournament_id = @tournamentId
               AND tp.status NOT IN ('disqualified', 'cancelled')
             ORDER BY t.name
+            LIMIT 100 OFFSET @offset
             """,
-            new { tournamentId, game = (string?)tournament.game ?? "" });
+            new { tournamentId, game = (string?)tournament.game ?? "", offset });
 
         var minSize = (int?)tournament.min_team_size ?? 2;
 
