@@ -152,16 +152,16 @@ public static class RecruitmentEndpoints
     private static async Task<IResult> DiscoverOpeningsAsync(
         [FromQuery] string? game,
         [FromQuery] string? mode,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
+        [FromQuery] int? limit,
+        [FromQuery] int? offset,
         IDbConnectionFactory db,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(game))
             return Results.BadRequest(new { error = "game query parameter is required." });
 
-        limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 50);
-        offset = Math.Max(offset, 0);
+        var actualLimit = Math.Clamp(limit is null or 0 ? 20 : limit.Value, 1, 50);
+        var actualOffset = Math.Max(offset ?? 0, 0);
 
         using var conn = db.CreateConnection();
 
@@ -178,9 +178,9 @@ public static class RecruitmentEndpoints
               AND ro.game_slug = @game
               AND (@mode IS NULL OR ro.mode::text = @mode)
             ORDER BY ro.created_at DESC
-            LIMIT @limit OFFSET @offset
+            LIMIT @actualLimit OFFSET @actualOffset
             """,
-            new { game, mode, limit, offset });
+            new { game, mode, actualLimit, actualOffset });
 
         return Results.Ok(rows);
     }

@@ -70,6 +70,48 @@ public static class FeatureCatalog
         "Platform",
         []);
 
+    public static readonly FeatureMeta CompetitiveProfiles = new(
+        "competitive_profiles",
+        "Competitive Profiles",
+        "Per-game competitive identity: rank, roles, stats, bio. Off hides profile setup and blocks /api/competitive/profile routes.",
+        "Competitive",
+        []);
+
+    public static readonly FeatureMeta Lfg = new(
+        "lfg",
+        "Looking for Group",
+        "LFG listing board — post and browse looking-for-group cards by game. Off hides the board and blocks /api/competitive/lfg routes.",
+        "Competitive",
+        []);
+
+    public static readonly FeatureMeta Recruitment = new(
+        "recruitment",
+        "Team Recruitment",
+        "Team recruitment openings and applications. Off hides recruitment surfaces and blocks /api/recruitment routes.",
+        "Competitive",
+        []);
+
+    public static readonly FeatureMeta Tryouts = new(
+        "tryouts",
+        "Team Tryouts",
+        "Structured tryout sessions with invitations and evaluations. Off blocks /api/competitive/tryouts routes.",
+        "Competitive",
+        []);
+
+    public static readonly FeatureMeta Scrims = new(
+        "scrims",
+        "Scrim Finder",
+        "Team-vs-team scrim listings and match scheduling. Off hides the scrim board and blocks /api/competitive/scrims routes.",
+        "Competitive",
+        []);
+
+    public static readonly FeatureMeta Scouting = new(
+        "scouting",
+        "Scouting & Shortlists",
+        "Player scouting shortlists and notes for team managers. Off blocks /api/competitive/scouting routes.",
+        "Competitive",
+        []);
+
     public static readonly IReadOnlyList<FeatureMeta> All =
     [
         NavV2,
@@ -80,6 +122,12 @@ public static class FeatureCatalog
         SponsorAds,
         Broadcasts,
         GhostMode,
+        CompetitiveProfiles,
+        Lfg,
+        Recruitment,
+        Tryouts,
+        Scrims,
+        Scouting,
     ];
 
     public static FeatureMeta? Find(string key) =>
