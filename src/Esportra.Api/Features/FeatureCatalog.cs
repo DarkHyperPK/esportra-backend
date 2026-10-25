@@ -63,8 +63,16 @@ public static class FeatureCatalog
         "Security",
         ["/admin/security/ghost"]);
 
+    public static readonly FeatureMeta NavV2 = new(
+        "nav_v2",
+        "Sidebar Navigation",
+        "New persistent sidebar navigation shell (nav_v2). Replaces the top bar on desktop. Off falls back to the legacy top bar. Default on.",
+        "Platform",
+        []);
+
     public static readonly IReadOnlyList<FeatureMeta> All =
     [
+        NavV2,
         BattleRoyale,
         TournamentRegistration,
         TeamInvites,
