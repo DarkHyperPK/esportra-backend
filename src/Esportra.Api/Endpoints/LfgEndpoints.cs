@@ -76,11 +76,11 @@ public static class LfgEndpoints
         [FromQuery] string? preferred_roles,
         [FromQuery] int? min_rank,
         [FromQuery] int? max_rank,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
         HttpContext ctx,
         IDbConnectionFactory db,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] int limit = 20,
+        [FromQuery] int offset = 0)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -292,11 +292,11 @@ public static class LfgEndpoints
     // ── GET /api/competitive/lfg/mine ─────────────────────────────────────────
 
     private static async Task<IResult> GetMineAsync(
-        [FromQuery] int limit,
-        [FromQuery] int offset,
         HttpContext ctx,
         IDbConnectionFactory db,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] int limit = 50,
+        [FromQuery] int offset = 0)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();

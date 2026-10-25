@@ -140,8 +140,7 @@ public sealed record CatalogGameRoleRow(
     string? IconUrl = null);
 
 public sealed record CatalogRegionRow(
-    Guid Id, string GameSlug, string RegionKey, string DisplayName,
-    string[]? ServerIds = null);
+    Guid Id, string GameSlug, string RegionKey, string DisplayName);
 
 // ── Scouting ─────────────────────────────────────────────────────────────────────
 
