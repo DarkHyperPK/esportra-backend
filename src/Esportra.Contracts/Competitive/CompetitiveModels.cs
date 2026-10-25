@@ -98,20 +98,38 @@ public sealed record TryoutInviteRow(
 
 // ── LFG ─────────────────────────────────────────────────────────────────────────
 
-public sealed record LfgListingRow(
-    Guid Id, string GameSlug, string Intent,
-    string? ModeKey, string? RegionKey,
-    string[]? PreferredServers, int? MinRankSortOrder, int? MaxRankSortOrder,
-    string[]? PreferredRoles, string[]? Languages,
-    string? Description, DateTimeOffset? ExpiresAt, string Status,
-    DateTime CreatedAt, DateTime UpdatedAt,
-    Guid UserId = default,
-    string? Username = null, string? AvatarSeed = null,
-    string? RegionDisplayName = null,
-    string? MinRankDisplayName = null,
-    string? MinRankIconUrl = null,
-    string? MaxRankDisplayName = null,
-    string? MaxRankIconUrl = null);
+/// <summary>
+/// Non-positional record so Dapper uses property injection, which invokes
+/// custom TypeHandlers (StringArrayTypeHandler) for string[]? columns.
+/// Constructor injection uses GetFieldType() which returns typeof(Array) for
+/// Npgsql text[] and cannot match string[]? constructor parameters.
+/// </summary>
+public sealed record LfgListingRow
+{
+    public Guid Id { get; init; }
+    public string GameSlug { get; init; } = null!;
+    public string Intent { get; init; } = null!;
+    public string? ModeKey { get; init; }
+    public string? RegionKey { get; init; }
+    public string[]? PreferredServers { get; init; }
+    public int? MinRankSortOrder { get; init; }
+    public int? MaxRankSortOrder { get; init; }
+    public string[]? PreferredRoles { get; init; }
+    public string[]? Languages { get; init; }
+    public string? Description { get; init; }
+    public DateTimeOffset? ExpiresAt { get; init; }
+    public string Status { get; init; } = null!;
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+    public Guid UserId { get; init; }
+    public string? Username { get; init; }
+    public string? AvatarSeed { get; init; }
+    public string? RegionDisplayName { get; init; }
+    public string? MinRankDisplayName { get; init; }
+    public string? MinRankIconUrl { get; init; }
+    public string? MaxRankDisplayName { get; init; }
+    public string? MaxRankIconUrl { get; init; }
+}
 
 public sealed record LfgInterestRow(
     Guid Id, Guid ListingId, Guid FromUserId, Guid ToUserId,
@@ -120,14 +138,26 @@ public sealed record LfgInterestRow(
 /// <summary>
 /// Enriched interests row for GET /api/competitive/lfg/{id}/interests.
 /// Joins profiles, player_game_profiles, game_catalog_rank_tiers, game_catalog_regions.
+/// Non-positional record so Dapper uses property injection for string[]? PreferredRoles.
 /// </summary>
-public sealed record LfgInterestEnrichedRow(
-    Guid Id, Guid ListingId, Guid FromUserId, string Status, string? Message, DateTime CreatedAt,
-    string? Username = null, string? AvatarSeed = null,
-    string? RankTierKey = null, string? RankSource = null,
-    string[]? PreferredRoles = null, string? RegionKey = null,
-    string? RankTierDisplayName = null, string? RankTierIconUrl = null,
-    string? RegionDisplayName = null);
+public sealed record LfgInterestEnrichedRow
+{
+    public Guid Id { get; init; }
+    public Guid ListingId { get; init; }
+    public Guid FromUserId { get; init; }
+    public string Status { get; init; } = null!;
+    public string? Message { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public string? Username { get; init; }
+    public string? AvatarSeed { get; init; }
+    public string? RankTierKey { get; init; }
+    public string? RankSource { get; init; }
+    public string[]? PreferredRoles { get; init; }
+    public string? RegionKey { get; init; }
+    public string? RankTierDisplayName { get; init; }
+    public string? RankTierIconUrl { get; init; }
+    public string? RegionDisplayName { get; init; }
+}
 
 // ── Catalog ───────────────────────────────────────────────────────────────────────
 

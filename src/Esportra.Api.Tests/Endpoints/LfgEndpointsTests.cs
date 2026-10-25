@@ -252,7 +252,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
         rows.ValueKind.Should().Be(JsonValueKind.Array);
         rows.GetArrayLength().Should().BeGreaterThanOrEqualTo(1);
-        rows[0].GetProperty("from_user_id").GetGuid().Should().Be(interestUserId);
+        rows[0].GetProperty("fromUserId").GetGuid().Should().Be(interestUserId);
     }
 
     // ── LFG publish: paused → published ──────────────────────────────────────
