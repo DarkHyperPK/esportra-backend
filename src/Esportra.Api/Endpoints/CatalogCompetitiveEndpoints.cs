@@ -91,7 +91,7 @@ public static class CatalogCompetitiveEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT id, game_slug, region_key, display_name, server_ids
+            SELECT id, game_slug, region_key, display_name
             FROM public.game_catalog_regions
             WHERE game_slug = @game
               AND version_id = (SELECT id FROM active_v)

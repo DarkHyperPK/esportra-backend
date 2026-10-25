@@ -57,6 +57,18 @@ public sealed class DbSeeder(string connectionString)
             new { userId, role });
     }
 
+    /// <summary>Enables or disables a platform feature flag for tests. Idempotent.</summary>
+    public async Task SeedFeatureFlagAsync(string key, bool enabled = true)
+    {
+        await using var conn = OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.feature_flags (key, name, is_enabled, created_at, updated_at)
+            VALUES (@key, @key, @enabled, NOW(), NOW())
+            ON CONFLICT (key) DO UPDATE SET is_enabled = @enabled, updated_at = NOW()
+            """,
+            new { key, enabled });
+    }
+
     /// <summary>Seeds a tournament row and returns its ID.</summary>
     public async Task<Guid> SeedTournamentAsync(
         Guid organizerId,

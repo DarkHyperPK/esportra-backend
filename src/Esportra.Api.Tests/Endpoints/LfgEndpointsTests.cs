@@ -9,8 +9,12 @@ using Xunit;
 namespace Esportra.Api.Tests.Endpoints;
 
 [Collection(IntegrationCollection.Name)]
-public sealed class LfgEndpointsTests(ApiFactory factory)
+public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
 {
+    // Enable the lfg feature flag so FeatureGateMiddleware does not block tests.
+    public async Task InitializeAsync() => await factory.Seeder.SeedFeatureFlagAsync("lfg", enabled: true);
+    public Task DisposeAsync() => Task.CompletedTask;
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private HttpClient Anon() => factory.CreateClient();
@@ -306,13 +310,16 @@ public sealed class LfgEndpointsTests(ApiFactory factory)
     }
 
     [Fact]
-    public async Task Discovery_IncludesNullExpiresAt()
+    public async Task Discovery_IncludesFarFutureExpiry()
     {
         var (ownerId, _) = await User();
         var (_, viewerClient) = await User();
 
-        // Seed a listing with null expires_at (never expires)
+        // Seed a listing with a far-future expires_at (effectively never expires).
+        // expires_at is NOT NULL in the schema; the endpoint also handles IS NULL for
+        // future flexibility but the column constraint applies here.
         var id = Guid.NewGuid();
+        var farFuture = DateTimeOffset.UtcNow.AddYears(100);
         await using var conn = factory.Seeder.OpenConnection();
         await conn.ExecuteAsync(
             """
@@ -322,15 +329,15 @@ public sealed class LfgEndpointsTests(ApiFactory factory)
             VALUES
                 (@id, @userId, 'valorant', 'duo'::lfg_intent, 'published'::lfg_listing_status,
                  ARRAY[]::text[], ARRAY[]::text[], ARRAY[]::text[],
-                 NULL, NOW(), NOW())
+                 @farFuture, NOW(), NOW())
             """,
-            new { id, userId = ownerId });
+            new { id, userId = ownerId, farFuture });
 
         var response = await viewerClient.GetAsync("/api/competitive/lfg?game=valorant&limit=50");
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
         var ids = rows.EnumerateArray().Select(r => r.GetProperty("id").GetGuid()).ToList();
-        ids.Should().Contain(id, "listing with null expires_at must appear in discovery");
+        ids.Should().Contain(id, "listing with far-future expires_at must appear in discovery");
     }
 
     // ── Authorization: unauthenticated requests ───────────────────────────────
