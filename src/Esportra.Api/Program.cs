@@ -466,6 +466,7 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.PublicVetoOverlayUsageSche
 // ── Background services (infrastructure only) ────────────────────────────────
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
+builder.Services.AddHostedService<ValorantRoleIconSeedService>();
 builder.Services.AddScoped<Esportra.Core.Broadcast.IBroadcastEnrollmentRepository, BroadcastEnrollmentRepository>();
 builder.Services.AddHostedService<BroadcastEnrollmentJob>();
 
@@ -719,6 +720,7 @@ app.MapScoreboardOcrEndpoints();
 app.MapScoreboardOcrDebugEndpoints();
 app.MapTeamEndpoints();
 app.MapCompetitiveProfileEndpoints();
+app.MapCatalogCompetitiveEndpoints();
 app.MapAvailabilityEndpoints();
 app.MapLfgEndpoints();
 app.MapRecruitmentEndpoints();

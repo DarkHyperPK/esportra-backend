@@ -106,11 +106,42 @@ public sealed record LfgListingRow(
     string? Description, DateTimeOffset? ExpiresAt, string Status,
     DateTime CreatedAt, DateTime UpdatedAt,
     Guid UserId = default,
-    string? Username = null, string? AvatarSeed = null);
+    string? Username = null, string? AvatarSeed = null,
+    string? RegionDisplayName = null,
+    string? MinRankDisplayName = null,
+    string? MinRankIconUrl = null,
+    string? MaxRankDisplayName = null,
+    string? MaxRankIconUrl = null);
 
 public sealed record LfgInterestRow(
     Guid Id, Guid ListingId, Guid FromUserId, Guid ToUserId,
     string Status, string? Message, DateTime CreatedAt, DateTime UpdatedAt);
+
+/// <summary>
+/// Enriched interests row for GET /api/competitive/lfg/{id}/interests.
+/// Joins profiles, player_game_profiles, game_catalog_rank_tiers, game_catalog_regions.
+/// </summary>
+public sealed record LfgInterestEnrichedRow(
+    Guid Id, Guid ListingId, Guid FromUserId, string Status, string? Message, DateTime CreatedAt,
+    string? Username = null, string? AvatarSeed = null,
+    string? RankTierKey = null, string? RankSource = null,
+    string[]? PreferredRoles = null, string? RegionKey = null,
+    string? RankTierDisplayName = null, string? RankTierIconUrl = null,
+    string? RegionDisplayName = null);
+
+// ── Catalog ───────────────────────────────────────────────────────────────────────
+
+public sealed record CatalogRankTierRow(
+    Guid Id, string GameSlug, string TierKey, string DisplayName, int SortOrder, int DivisionCount,
+    string? IconUrl = null);
+
+public sealed record CatalogGameRoleRow(
+    Guid Id, string GameSlug, string RoleKey, string DisplayName, int SortOrder,
+    string? IconUrl = null);
+
+public sealed record CatalogRegionRow(
+    Guid Id, string GameSlug, string RegionKey, string DisplayName,
+    string[]? ServerIds = null);
 
 // ── Scouting ─────────────────────────────────────────────────────────────────────
 

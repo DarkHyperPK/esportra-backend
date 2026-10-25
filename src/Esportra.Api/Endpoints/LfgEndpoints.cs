@@ -8,14 +8,16 @@ using Microsoft.AspNetCore.Mvc;
 namespace Esportra.Api.Endpoints;
 
 /// <summary>
-/// LFG (Looking For Group) listings and interest flow (PROJ-065 Phase 1).
-/// GET    /api/competitive/lfg                                — discovery
+/// LFG (Looking For Group) listings and interest flow (PROJ-065 Phase 1, PROJ-075 T3/T4/T5).
+/// GET    /api/competitive/lfg                                — discovery (enriched)
 /// POST   /api/competitive/lfg                               — create listing
-/// GET    /api/competitive/lfg/mine                          — own listings
+/// GET    /api/competitive/lfg/mine                          — own listings (enriched)
+/// GET    /api/competitive/lfg/{id}                          — listing detail (NEW)
 /// PUT    /api/competitive/lfg/{id}                          — partial update
-/// POST   /api/competitive/lfg/{id}/publish
+/// POST   /api/competitive/lfg/{id}/publish                  — publishes draft OR paused
 /// POST   /api/competitive/lfg/{id}/pause
 /// POST   /api/competitive/lfg/{id}/close
+/// GET    /api/competitive/lfg/{id}/interests                — interests for a listing (NEW)
 /// POST   /api/competitive/lfg/{id}/interest                 — express interest
 /// DELETE /api/competitive/lfg/{id}/interest                 — withdraw interest
 /// POST   /api/competitive/lfg/interests/{interestId}/accept
@@ -43,6 +45,14 @@ public static class LfgEndpoints
             .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg", CreateListingAsync)
             .RequireAuthorization("Authenticated");
+
+        // Parameterized routes: register {id}/interests before {id} so the static
+        // "interests" segment wins over any potential guid collision.
+        app.MapGet("/api/competitive/lfg/{id}/interests", GetListingInterestsAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapGet("/api/competitive/lfg/{id}", GetListingAsync)
+            .RequireAuthorization("Authenticated");
+
         app.MapPut("/api/competitive/lfg/{id}", UpdateListingAsync)
             .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg/{id}/publish", PublishListingAsync)
@@ -86,6 +96,7 @@ public static class LfgEndpoints
             "l.game_slug = @game",
             "l.status = 'published'",
             "l.user_id != @callerId",
+            "(l.expires_at > now() OR l.expires_at IS NULL)",
         };
         var p = new DynamicParameters();
         p.Add("game", game);
@@ -95,6 +106,8 @@ public static class LfgEndpoints
 
         if (!string.IsNullOrWhiteSpace(intent))
         {
+            if (!ValidIntents.Contains(intent))
+                return Results.BadRequest(new { error = $"Invalid intent. Allowed: {string.Join(", ", ValidIntents)}." });
             conditions.Add("l.intent = @intent::lfg_intent");
             p.Add("intent", intent);
         }
@@ -133,13 +146,33 @@ public static class LfgEndpoints
 
         var rows = await conn.QueryAsync<LfgListingRow>(
             $"""
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
             SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.languages,
                    l.description, l.expires_at, l.status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed
+                   pr.username, pr.avatar_seed,
+                   reg.display_name AS region_display_name,
+                   min_rt.display_name AS min_rank_display_name,
+                   min_rt.icon_url    AS min_rank_icon_url,
+                   max_rt.display_name AS max_rank_display_name,
+                   max_rt.icon_url    AS max_rank_icon_url
             FROM public.lfg_listings l
             JOIN public.profiles pr ON pr.id = l.user_id
+            LEFT JOIN public.game_catalog_regions reg
+                ON reg.region_key = l.region_key
+               AND reg.game_slug = l.game_slug
+               AND reg.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers min_rt
+                ON min_rt.sort_order = l.min_rank_sort_order
+               AND min_rt.game_slug = l.game_slug
+               AND min_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers max_rt
+                ON max_rt.sort_order = l.max_rank_sort_order
+               AND max_rt.game_slug = l.game_slug
+               AND max_rt.version_id = (SELECT id FROM active_v)
             WHERE {where}
             ORDER BY l.created_at DESC
             LIMIT @limit OFFSET @offset
@@ -165,6 +198,9 @@ public static class LfgEndpoints
 
         if (!ValidIntents.Contains(req.Intent ?? ""))
             return Results.BadRequest(new { error = $"Invalid intent. Allowed: {string.Join(", ", ValidIntents)}." });
+
+        if (req.Description is { Length: > 280 })
+            return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
         using var conn = db.CreateConnection();
 
@@ -271,17 +307,147 @@ public static class LfgEndpoints
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<LfgListingRow>(
             """
-            SELECT id, game_slug, intent, mode_key, region_key, preferred_servers,
-                   min_rank_sort_order, max_rank_sort_order, preferred_roles, languages,
-                   description, expires_at, status, created_at, updated_at
-            FROM public.lfg_listings
-            WHERE user_id = @userId
-            ORDER BY created_at DESC
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
+            SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
+                   l.region_key, l.preferred_servers, l.min_rank_sort_order,
+                   l.max_rank_sort_order, l.preferred_roles, l.languages,
+                   l.description, l.expires_at, l.status, l.created_at, l.updated_at,
+                   pr.username, pr.avatar_seed,
+                   reg.display_name AS region_display_name,
+                   min_rt.display_name AS min_rank_display_name,
+                   min_rt.icon_url    AS min_rank_icon_url,
+                   max_rt.display_name AS max_rank_display_name,
+                   max_rt.icon_url    AS max_rank_icon_url
+            FROM public.lfg_listings l
+            JOIN public.profiles pr ON pr.id = l.user_id
+            LEFT JOIN public.game_catalog_regions reg
+                ON reg.region_key = l.region_key
+               AND reg.game_slug = l.game_slug
+               AND reg.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers min_rt
+                ON min_rt.sort_order = l.min_rank_sort_order
+               AND min_rt.game_slug = l.game_slug
+               AND min_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers max_rt
+                ON max_rt.sort_order = l.max_rank_sort_order
+               AND max_rt.game_slug = l.game_slug
+               AND max_rt.version_id = (SELECT id FROM active_v)
+            WHERE l.user_id = @userId
+            ORDER BY l.created_at DESC
             LIMIT @limit OFFSET @offset
             """,
             new { userId = userCtx.UserIdGuid, limit, offset });
 
         return Results.Ok(rows);
+    }
+
+    // ── GET /api/competitive/lfg/{id} ────────────────────────────────────────
+
+    private static async Task<IResult> GetListingAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
+            """
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
+            SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
+                   l.region_key, l.preferred_servers, l.min_rank_sort_order,
+                   l.max_rank_sort_order, l.preferred_roles, l.languages,
+                   l.description, l.expires_at, l.status, l.created_at, l.updated_at,
+                   pr.username, pr.avatar_seed,
+                   reg.display_name AS region_display_name,
+                   min_rt.display_name AS min_rank_display_name,
+                   min_rt.icon_url    AS min_rank_icon_url,
+                   max_rt.display_name AS max_rank_display_name,
+                   max_rt.icon_url    AS max_rank_icon_url
+            FROM public.lfg_listings l
+            JOIN public.profiles pr ON pr.id = l.user_id
+            LEFT JOIN public.game_catalog_regions reg
+                ON reg.region_key = l.region_key
+               AND reg.game_slug = l.game_slug
+               AND reg.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers min_rt
+                ON min_rt.sort_order = l.min_rank_sort_order
+               AND min_rt.game_slug = l.game_slug
+               AND min_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers max_rt
+                ON max_rt.sort_order = l.max_rank_sort_order
+               AND max_rt.game_slug = l.game_slug
+               AND max_rt.version_id = (SELECT id FROM active_v)
+            WHERE l.id = @id
+            """,
+            new { id });
+
+        if (row is null) return Results.NotFound();
+
+        // Non-owners may only see published listings.
+        var isOwner = row.UserId == userCtx.UserIdGuid;
+        if (!isOwner && row.Status != "published") return Results.NotFound();
+
+        return Results.Ok(row);
+    }
+
+    // ── GET /api/competitive/lfg/{id}/interests ───────────────────────────────
+
+    private static async Task<IResult> GetListingInterestsAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        // Verify listing exists and caller owns it.
+        var listing = await conn.QuerySingleOrDefaultAsync<(Guid UserId, string GameSlug)>(
+            "SELECT user_id, game_slug FROM public.lfg_listings WHERE id = @id",
+            new { id });
+
+        if (listing == default) return Results.NotFound();
+        if (listing.UserId != userCtx.UserIdGuid) return Results.Forbid();
+
+        var interests = await conn.QueryAsync<LfgInterestEnrichedRow>(
+            """
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
+            SELECT i.id, i.listing_id, i.from_user_id, i.status, i.message, i.created_at,
+                   pr.username, pr.avatar_seed,
+                   pgp.rank_tier_key, pgp.rank_source, pgp.preferred_roles, pgp.region_key,
+                   grt.display_name AS rank_tier_display_name,
+                   grt.icon_url     AS rank_tier_icon_url,
+                   reg.display_name AS region_display_name
+            FROM public.lfg_interests i
+            JOIN public.profiles pr ON pr.id = i.from_user_id
+            LEFT JOIN public.player_game_profiles pgp
+                ON pgp.user_id = i.from_user_id
+               AND pgp.game_slug = @gameSlug
+            LEFT JOIN public.game_catalog_rank_tiers grt
+                ON grt.tier_key = pgp.rank_tier_key
+               AND grt.game_slug = @gameSlug
+               AND grt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_regions reg
+                ON reg.region_key = pgp.region_key
+               AND reg.game_slug = @gameSlug
+               AND reg.version_id = (SELECT id FROM active_v)
+            WHERE i.listing_id = @listingId
+            ORDER BY i.created_at DESC
+            """,
+            new { listingId = id, gameSlug = listing.GameSlug });
+
+        return Results.Ok(interests);
     }
 
     // ── PUT /api/competitive/lfg/{id} ─────────────────────────────────────────
@@ -298,6 +464,9 @@ public static class LfgEndpoints
 
         if (req.ExpiresAt.HasValue && req.ExpiresAt.Value <= DateTimeOffset.UtcNow)
             return Results.BadRequest(new { error = "expires_at must be in the future." });
+
+        if (req.Description is { Length: > 280 })
+            return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
         using var conn = db.CreateConnection();
         var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
@@ -356,7 +525,7 @@ public static class LfgEndpoints
             new { id, userId = userCtx.UserIdGuid });
 
         if (listing.Status is null) return Results.NotFound();
-        if (listing.Status != "draft") return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
+        if (listing.Status is not ("draft" or "paused")) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
         if (listing.ExpiresAt <= DateTimeOffset.UtcNow)
             return Results.BadRequest(new { error = "expires_at must be in the future." });
 
@@ -383,6 +552,7 @@ public static class LfgEndpoints
                 new { userId = userCtx.UserIdGuid });
             if (capCount >= 3)
                 return Results.Json(new { error = "LISTING_LIMIT_REACHED" }, statusCode: 429);
+            return Results.Problem("Could not publish listing. Please try again.");
         }
 
         return Results.Ok(row);
