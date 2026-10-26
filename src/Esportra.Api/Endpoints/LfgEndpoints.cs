@@ -42,6 +42,8 @@ public static class LfgEndpoints
         app.MapPost("/api/competitive/lfg/interests/{interestId}/decline", DeclineInterestAsync)
             .RequireAuthorization("Authenticated");
 
+        app.MapGet("/api/competitive/game-stats/me", GetMyGameStatsAsync)
+            .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/game-stats/sync", SyncRiotStatsAsync)
             .RequireAuthorization("Authenticated");
 
@@ -265,11 +267,12 @@ public static class LfgEndpoints
         var listingLimit = await conn.ExecuteScalarAsync<int>(
             """
             SELECT COUNT(*)::int FROM public.lfg_listings
-            WHERE user_id = @userId AND game_slug = @game AND status = 'published'
+            WHERE user_id = @userId AND game_slug = @game
+              AND status IN ('draft', 'published', 'paused')
             """,
             new { userId = userCtx.UserIdGuid, game = req.GameSlug });
         if (listingLimit >= 3)
-            return Results.Json(new { error = "LISTING_LIMIT_REACHED" }, statusCode: 429);
+            return Results.BadRequest(new { error = "LISTING_LIMIT_REACHED", max = 3 });
 
         var duplicate = await conn.ExecuteScalarAsync<bool>(
             """
@@ -869,6 +872,75 @@ public static class LfgEndpoints
         return row is null ? Results.NotFound() : Results.Ok(row);
     }
 
+    // ── GET /api/competitive/game-stats/me ───────────────────────────────────
+    // Returns the calling user's Riot link status + synced Valorant stats.
+    // Always returns 200 so the frontend can gate on riot_linked / sync_status.
+
+    private static async Task<IResult> GetMyGameStatsAsync(
+        [FromQuery] string? game,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        if (string.IsNullOrWhiteSpace(game))
+            return Results.BadRequest(new { error = "game query parameter is required." });
+
+        using var conn = db.CreateConnection();
+
+        var row = await conn.QuerySingleOrDefaultAsync<GameStatsRaw>(
+            """
+            SELECT
+                (ra.puuid IS NOT NULL)      AS riot_linked,
+                ra.game_name               AS riot_game_name,
+                ra.tag_line                AS riot_tag_line,
+                pgs.sync_status            AS sync_status,
+                pgs.synced_at              AS synced_at,
+                pgs.competitive_tier       AS competitive_tier,
+                pgs.competitive_tier_name  AS competitive_tier_name,
+                pgs.win_count              AS win_count,
+                pgs.loss_count             AS loss_count,
+                pgs.win_rate               AS win_rate,
+                pgs.kd_ratio               AS kd_ratio,
+                pgs.matches_analyzed       AS matches_analyzed,
+                pgs.popular_agents::text   AS popular_agents
+            FROM (VALUES (@userId::uuid)) AS u(uid)
+            LEFT JOIN public.riot_accounts ra ON ra.user_id = u.uid
+            LEFT JOIN public.player_game_stats pgs
+                ON pgs.user_id = u.uid AND pgs.game_slug = @game
+            """,
+            new { userId = userCtx.UserIdGuid, game });
+
+        if (row is null)
+            return Results.Ok(new { riot_linked = false });
+
+        System.Text.Json.JsonElement? parsedAgents = null;
+        if (!string.IsNullOrEmpty(row.PopularAgents))
+        {
+            try { parsedAgents = System.Text.Json.JsonDocument.Parse(row.PopularAgents).RootElement; }
+            catch { /* malformed JSONB — leave null */ }
+        }
+
+        return Results.Ok(new
+        {
+            riot_linked = row.RiotLinked,
+            riot_game_name = row.RiotGameName,
+            riot_tag_line = row.RiotTagLine,
+            sync_status = row.SyncStatus,
+            synced_at = row.SyncedAt,
+            competitive_tier = row.CompetitiveTier,
+            competitive_tier_name = row.CompetitiveTierName,
+            win_count = row.WinCount,
+            loss_count = row.LossCount,
+            win_rate = row.WinRate,
+            kd_ratio = row.KdRatio,
+            matches_analyzed = row.MatchesAnalyzed,
+            popular_agents = (object?)parsedAgents,
+        });
+    }
+
     // ── POST /api/competitive/game-stats/sync ────────────────────────────────
 
     private static async Task<IResult> SyncRiotStatsAsync(
@@ -933,3 +1005,19 @@ public sealed record UpdateLfgListingRequest(
 
 public sealed record ExpressInterestRequest(
     [property: JsonPropertyName("message")] string? Message = null);
+
+// Internal DTO for GetMyGameStatsAsync — Dapper maps nullable columns to null.
+file sealed record GameStatsRaw(
+    bool RiotLinked,
+    string? RiotGameName,
+    string? RiotTagLine,
+    string? SyncStatus,
+    DateTimeOffset? SyncedAt,
+    int? CompetitiveTier,
+    string? CompetitiveTierName,
+    int? WinCount,
+    int? LossCount,
+    double? WinRate,
+    double? KdRatio,
+    int? MatchesAnalyzed,
+    string? PopularAgents);
