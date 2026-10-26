@@ -56,6 +56,7 @@ public static class ScrimEndpoints
         app.MapGet("/api/scrims/listings", GetTeamListingsAsync).RequireAuthorization("Authenticated");
         app.MapPut("/api/scrims/listings/{id:guid}", UpdateListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/pause", PauseListingAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/listings/{id:guid}/reopen", ReopenListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/close", CloseListingAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/discover", DiscoverAsync).RequireAuthorization("Authenticated");
 
@@ -218,6 +219,9 @@ public static class ScrimEndpoints
     private static Task<IResult> PauseListingAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
         => TransitionListingAsync(id, ctx, db, "paused", ["open"]);
 
+    private static Task<IResult> ReopenListingAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
+        => TransitionListingAsync(id, ctx, db, "open", ["paused"]);
+
     private static Task<IResult> CloseListingAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
         => TransitionListingAsync(id, ctx, db, "closed", ["open", "paused"]);
 
@@ -227,16 +231,16 @@ public static class ScrimEndpoints
         [FromQuery] string? game,
         [FromQuery] string? mode_key,
         [FromQuery] string? region_key,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
+        [FromQuery] int? limit,
+        [FromQuery] int? offset,
         IDbConnectionFactory db,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(game))
             return Results.BadRequest(new { error = "game query parameter is required." });
 
-        limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 50);
-        offset = Math.Max(offset, 0);
+        var actualLimit = Math.Clamp(limit is null or 0 ? 20 : limit.Value, 1, 50);
+        var actualOffset = Math.Max(offset ?? 0, 0);
 
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<ScrimListingRow>(
@@ -246,9 +250,9 @@ public static class ScrimEndpoints
             WHERE sl.status = 'open' AND sl.game_slug = @game
               AND (@modeKey IS NULL OR sl.mode_key = @modeKey)
               AND (@regionKey IS NULL OR sl.region_key = @regionKey)
-            ORDER BY sl.created_at DESC LIMIT @limit OFFSET @offset
+            ORDER BY sl.created_at DESC LIMIT @actualLimit OFFSET @actualOffset
             """,
-            new { game, modeKey = mode_key, regionKey = region_key, limit, offset });
+            new { game, modeKey = mode_key, regionKey = region_key, actualLimit, actualOffset });
 
         return Results.Ok(rows);
     }
