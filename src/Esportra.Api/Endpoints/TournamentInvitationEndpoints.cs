@@ -412,6 +412,10 @@ public static class TournamentInvitationEndpoints
                 """,
                 new { inviteId }, tx);
 
+            await conn.ExecuteAsync(
+                "DELETE FROM public.notifications WHERE type = 'tournament_invite' AND (data->>'invite_id')::uuid = @inviteId",
+                new { inviteId }, tx);
+
             tx.Commit();
 
             await audit.LogCustomAsync(
