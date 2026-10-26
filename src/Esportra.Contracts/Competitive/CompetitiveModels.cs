@@ -51,14 +51,27 @@ public sealed record PracticeAttendanceRow(
 
 // ── Recruitment ─────────────────────────────────────────────────────────────────
 
-public sealed record RecruitmentOpeningRow(
-    Guid Id, Guid TeamId, string GameSlug, string Title,
-    string? Description, string[]? Requirements,
-    int? PositionsAvailable, int PositionsFilled,
-    string Mode, Guid? TournamentId, string Status,
-    Guid CreatedBy, DateTimeOffset? ExpiresAt,
-    DateTime CreatedAt, DateTime UpdatedAt,
-    string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null);
+public sealed record RecruitmentOpeningRow
+{
+    public Guid Id { get; init; }
+    public Guid TeamId { get; init; }
+    public string GameSlug { get; init; } = null!;
+    public string Title { get; init; } = null!;
+    public string? Description { get; init; }
+    public string[]? Requirements { get; init; }
+    public int? PositionsAvailable { get; init; }
+    public int PositionsFilled { get; init; }
+    public string Mode { get; init; } = null!;
+    public Guid? TournamentId { get; init; }
+    public string Status { get; init; } = null!;
+    public Guid CreatedBy { get; init; }
+    public DateTimeOffset? ExpiresAt { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+    public string? TeamName { get; init; }
+    public string? TeamLogoUrl { get; init; }
+    public string? TeamTag { get; init; }
+}
 
 public sealed record RecruitmentApplicationRow(
     Guid Id, Guid OpeningId, Guid ApplicantUserId, string Status,

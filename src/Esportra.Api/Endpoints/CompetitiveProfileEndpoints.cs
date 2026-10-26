@@ -75,10 +75,10 @@ public static class CompetitiveProfileEndpoints
         [FromQuery] string? preferred_roles,
         [FromQuery] int? min_rank,
         [FromQuery] int? max_rank,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
         IDbConnectionFactory db,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] int limit = 0,
+        [FromQuery] int offset = 0)
     {
         if (string.IsNullOrWhiteSpace(game))
             return Results.BadRequest(new { error = "game query parameter is required." });
