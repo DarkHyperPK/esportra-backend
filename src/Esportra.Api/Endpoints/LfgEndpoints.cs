@@ -27,8 +27,7 @@ public static class LfgEndpoints
 {
     private static readonly HashSet<string> ValidIntents =
     [
-        "duo", "group", "teammates", "looking_for_team",
-        "looking_for_player", "competitive_roster", "casual",
+        "looking_for_team", "looking_for_player", "competitive_roster",
     ];
 
     public static void MapLfgEndpoints(this WebApplication app)
@@ -258,14 +257,29 @@ public static class LfgEndpoints
         if (expiresAt <= DateTimeOffset.UtcNow)
             return Results.BadRequest(new { error = "expires_at must be in the future." });
 
+        // For LFP listings, validate the caller is a member or owner of the team.
+        if (req.TeamId.HasValue)
+        {
+            var isMember = await conn.ExecuteScalarAsync<bool>(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM public.team_members
+                    WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
+                )
+                """,
+                new { teamId = req.TeamId.Value, userId = userCtx.UserIdGuid });
+            if (!isMember)
+                return Results.Forbid();
+        }
+
         var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             INSERT INTO public.lfg_listings
-                (user_id, game_slug, intent, mode_key, region_key, preferred_servers,
+                (user_id, team_id, game_slug, intent, mode_key, region_key, preferred_servers,
                  min_rank_sort_order, max_rank_sort_order, preferred_roles, languages,
                  description, expires_at, status)
             VALUES
-                (@userId, @gameSlug, @intent::lfg_intent, @modeKey, @regionKey,
+                (@userId, @teamId, @gameSlug, @intent::lfg_intent, @modeKey, @regionKey,
                  @preferredServers, @minRank, @maxRank, @preferredRoles, @languages,
                  @description, @expiresAt, 'draft'::lfg_listing_status)
             RETURNING *
@@ -273,6 +287,7 @@ public static class LfgEndpoints
             new
             {
                 userId = userCtx.UserIdGuid,
+                teamId = req.TeamId,
                 gameSlug = req.GameSlug,
                 intent = req.Intent,
                 modeKey = req.ModeKey,
@@ -695,6 +710,7 @@ public static class LfgEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+
         var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
             """
             UPDATE public.lfg_interests
@@ -705,7 +721,46 @@ public static class LfgEndpoints
             """,
             new { id = interestId, userId = userCtx.UserIdGuid });
 
-        return row is null ? Results.NotFound() : Results.Ok(row);
+        if (row is null) return Results.NotFound();
+
+        // Find or create a direct conversation between the two parties.
+        var existingConvId = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            """
+            SELECT c.id FROM public.conversations c
+            INNER JOIN public.conversation_participants cp1
+                ON cp1.conversation_id = c.id AND cp1.user_id = @userId AND cp1.is_active = TRUE
+            INNER JOIN public.conversation_participants cp2
+                ON cp2.conversation_id = c.id AND cp2.user_id = @otherId AND cp2.is_active = TRUE
+            WHERE c.type = 'direct'
+            LIMIT 1
+            """,
+            new { userId = userCtx.UserIdGuid, otherId = row.FromUserId });
+
+        Guid conversationId;
+        if (existingConvId.HasValue)
+        {
+            conversationId = existingConvId.Value;
+        }
+        else
+        {
+            conversationId = await conn.QuerySingleAsync<Guid>(
+                """
+                INSERT INTO public.conversations (type, created_by)
+                VALUES ('direct', @createdBy)
+                RETURNING id
+                """,
+                new { createdBy = userCtx.UserIdGuid });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.conversation_participants (conversation_id, user_id)
+                VALUES (@convId, @userId), (@convId, @otherId)
+                ON CONFLICT DO NOTHING
+                """,
+                new { convId = conversationId, userId = userCtx.UserIdGuid, otherId = row.FromUserId });
+        }
+
+        return Results.Ok(new { interest = row, conversation_id = conversationId });
     }
 
     // ── POST /api/competitive/lfg/interests/{interestId}/decline ─────────────
@@ -739,6 +794,7 @@ public static class LfgEndpoints
 public sealed record CreateLfgListingRequest(
     [property: JsonPropertyName("game_slug")] string GameSlug,
     [property: JsonPropertyName("intent")] string Intent,
+    [property: JsonPropertyName("team_id")] Guid? TeamId = null,
     [property: JsonPropertyName("mode_key")] string? ModeKey = null,
     [property: JsonPropertyName("region_key")] string? RegionKey = null,
     [property: JsonPropertyName("preferred_servers")] string[]? PreferredServers = null,

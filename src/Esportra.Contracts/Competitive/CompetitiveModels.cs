@@ -107,6 +107,7 @@ public sealed record TryoutInviteRow(
 public sealed record LfgListingRow
 {
     public Guid Id { get; init; }
+    public Guid? TeamId { get; init; }
     public string GameSlug { get; init; } = null!;
     public string Intent { get; init; } = null!;
     public string? ModeKey { get; init; }
