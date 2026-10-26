@@ -148,10 +148,10 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
+            SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.languages,
-                   l.description, l.expires_at, l.status, l.created_at, l.updated_at,
+                   l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
@@ -325,10 +325,10 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
+            SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.languages,
-                   l.description, l.expires_at, l.status, l.created_at, l.updated_at,
+                   l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
@@ -375,10 +375,10 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT l.id, l.user_id, l.game_slug, l.intent, l.mode_key,
+            SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.languages,
-                   l.description, l.expires_at, l.status, l.created_at, l.updated_at,
+                   l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
@@ -438,7 +438,7 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT i.id, i.listing_id, i.from_user_id, i.status, i.message, i.created_at,
+            SELECT i.id, i.listing_id, i.from_user_id, i.status::text AS status, i.message, i.created_at,
                    pr.username, pr.avatar_seed,
                    pgp.rank_tier_key, pgp.rank_source, pgp.preferred_roles, pgp.region_key,
                    grt.display_name AS rank_tier_display_name,
@@ -536,7 +536,7 @@ public static class LfgEndpoints
         using var conn = db.CreateConnection();
 
         var listing = await conn.QuerySingleOrDefaultAsync<(string? Status, DateTimeOffset ExpiresAt)>(
-            "SELECT status, expires_at FROM public.lfg_listings WHERE id = @id AND user_id = @userId",
+            "SELECT status::text AS status, expires_at FROM public.lfg_listings WHERE id = @id AND user_id = @userId",
             new { id, userId = userCtx.UserIdGuid });
 
         if (listing.Status is null) return Results.NotFound();
@@ -555,7 +555,10 @@ public static class LfgEndpoints
                   SELECT COUNT(*) FROM public.lfg_listings
                   WHERE user_id = @userId AND status = 'published'
               ) < 3
-            RETURNING *
+            RETURNING id, team_id, user_id, game_slug, intent::text AS intent, mode_key,
+                      region_key, preferred_servers, min_rank_sort_order, max_rank_sort_order,
+                      preferred_roles, languages, description, expires_at,
+                      status::text AS status, created_at, updated_at
             """,
             new { id, userId = userCtx.UserIdGuid });
 
@@ -590,7 +593,10 @@ public static class LfgEndpoints
             UPDATE public.lfg_listings
             SET status = 'paused'::lfg_listing_status, updated_at = now()
             WHERE id = @id AND user_id = @userId AND status = 'published'
-            RETURNING *
+            RETURNING id, team_id, user_id, game_slug, intent::text AS intent, mode_key,
+                      region_key, preferred_servers, min_rank_sort_order, max_rank_sort_order,
+                      preferred_roles, languages, description, expires_at,
+                      status::text AS status, created_at, updated_at
             """,
             new { id, userId = userCtx.UserIdGuid });
 
@@ -614,7 +620,10 @@ public static class LfgEndpoints
             UPDATE public.lfg_listings
             SET status = 'closed'::lfg_listing_status, updated_at = now()
             WHERE id = @id AND user_id = @userId
-            RETURNING *
+            RETURNING id, team_id, user_id, game_slug, intent::text AS intent, mode_key,
+                      region_key, preferred_servers, min_rank_sort_order, max_rank_sort_order,
+                      preferred_roles, languages, description, expires_at,
+                      status::text AS status, created_at, updated_at
             """,
             new { id, userId = userCtx.UserIdGuid });
 
@@ -636,7 +645,7 @@ public static class LfgEndpoints
         using var conn = db.CreateConnection();
 
         var listing = await conn.QuerySingleOrDefaultAsync<(Guid UserId, string? Status)>(
-            "SELECT user_id, status FROM public.lfg_listings WHERE id = @id",
+            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id",
             new { id });
 
         if (listing.Status is null || listing.Status != "published")
