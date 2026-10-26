@@ -1,8 +1,10 @@
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Esportra.Api.Endpoints;
@@ -38,6 +40,9 @@ public static class LfgEndpoints
         app.MapPost("/api/competitive/lfg/interests/{interestId}/accept", AcceptInterestAsync)
             .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg/interests/{interestId}/decline", DeclineInterestAsync)
+            .RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/competitive/game-stats/sync", SyncRiotStatsAsync)
             .RequireAuthorization("Authenticated");
 
         app.MapGet("/api/competitive/lfg", DiscoverAsync)
@@ -105,10 +110,22 @@ public static class LfgEndpoints
 
         if (!string.IsNullOrWhiteSpace(intent))
         {
-            if (!ValidIntents.Contains(intent))
-                return Results.BadRequest(new { error = $"Invalid intent. Allowed: {string.Join(", ", ValidIntents)}." });
-            conditions.Add("l.intent = @intent::lfg_intent");
-            p.Add("intent", intent);
+            var intents = intent.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var i in intents)
+            {
+                if (!ValidIntents.Contains(i))
+                    return Results.BadRequest(new { error = $"Invalid intent '{i}'. Allowed: {string.Join(", ", ValidIntents)}." });
+            }
+            if (intents.Length == 1)
+            {
+                conditions.Add("l.intent = @intent::lfg_intent");
+                p.Add("intent", intents[0]);
+            }
+            else
+            {
+                conditions.Add("l.intent::text = ANY(@intents)");
+                p.Add("intents", intents);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(region_key))
@@ -150,16 +167,31 @@ public static class LfgEndpoints
             )
             SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
-                   l.max_rank_sort_order, l.preferred_roles, l.languages,
+                   l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
                    max_rt.display_name AS max_rank_display_name,
-                   max_rt.icon_url    AS max_rank_icon_url
+                   max_rt.icon_url    AS max_rank_icon_url,
+                   pgs.competitive_tier, pgs.competitive_tier_name,
+                   pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   pgs.popular_agents::text AS popular_agents,
+                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                   ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
+                   t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
+                   (SELECT COUNT(*)::int FROM public.team_members tm
+                    WHERE tm.team_id = l.team_id AND tm.is_active = TRUE) AS team_member_count,
+                   (SELECT COUNT(*)::int FROM public.team_members tm2
+                    JOIN public.riot_accounts ra2 ON ra2.user_id = tm2.user_id
+                    WHERE tm2.team_id = l.team_id AND tm2.is_active = TRUE) AS team_verified_count
             FROM public.lfg_listings l
             JOIN public.profiles pr ON pr.id = l.user_id
+            LEFT JOIN public.player_game_stats pgs
+                ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+            LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
+            LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.game_catalog_regions reg
                 ON reg.region_key = l.region_key
                AND reg.game_slug = l.game_slug
@@ -257,18 +289,22 @@ public static class LfgEndpoints
         if (expiresAt <= DateTimeOffset.UtcNow)
             return Results.BadRequest(new { error = "expires_at must be in the future." });
 
-        // For LFP listings, validate the caller is a member or owner of the team.
+        var isTeamIntent = req.Intent is "looking_for_player" or "competitive_roster";
+        if (isTeamIntent && !req.TeamId.HasValue)
+            return Results.BadRequest(new { error = "team_id is required for team listings." });
+
         if (req.TeamId.HasValue)
         {
-            var isMember = await conn.ExecuteScalarAsync<bool>(
+            var isStaff = await conn.ExecuteScalarAsync<bool>(
                 """
                 SELECT EXISTS(
                     SELECT 1 FROM public.team_members
                     WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
+                      AND role IN ('captain', 'manager')
                 )
                 """,
                 new { teamId = req.TeamId.Value, userId = userCtx.UserIdGuid });
-            if (!isMember)
+            if (!isStaff)
                 return Results.Forbid();
         }
 
@@ -276,13 +312,16 @@ public static class LfgEndpoints
             """
             INSERT INTO public.lfg_listings
                 (user_id, team_id, game_slug, intent, mode_key, region_key, preferred_servers,
-                 min_rank_sort_order, max_rank_sort_order, preferred_roles, languages,
-                 description, expires_at, status)
+                 min_rank_sort_order, max_rank_sort_order, preferred_roles, preferred_agents,
+                 languages, description, expires_at, status)
             VALUES
                 (@userId, @teamId, @gameSlug, @intent::lfg_intent, @modeKey, @regionKey,
-                 @preferredServers, @minRank, @maxRank, @preferredRoles, @languages,
-                 @description, @expiresAt, 'draft'::lfg_listing_status)
-            RETURNING *
+                 @preferredServers, @minRank, @maxRank, @preferredRoles, @preferredAgents,
+                 @languages, @description, @expiresAt, 'draft'::lfg_listing_status)
+            RETURNING id, team_id, user_id, game_slug, intent::text AS intent, mode_key,
+                      region_key, preferred_servers, min_rank_sort_order, max_rank_sort_order,
+                      preferred_roles, preferred_agents, languages, description, expires_at,
+                      status::text AS status, created_at, updated_at
             """,
             new
             {
@@ -296,6 +335,7 @@ public static class LfgEndpoints
                 minRank = req.MinRankSortOrder,
                 maxRank = req.MaxRankSortOrder,
                 preferredRoles = req.PreferredRoles ?? Array.Empty<string>(),
+                preferredAgents = req.PreferredAgents ?? Array.Empty<string>(),
                 languages = req.Languages ?? Array.Empty<string>(),
                 description = req.Description,
                 expiresAt,
@@ -327,16 +367,31 @@ public static class LfgEndpoints
             )
             SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
-                   l.max_rank_sort_order, l.preferred_roles, l.languages,
+                   l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
                    max_rt.display_name AS max_rank_display_name,
-                   max_rt.icon_url    AS max_rank_icon_url
+                   max_rt.icon_url    AS max_rank_icon_url,
+                   pgs.competitive_tier, pgs.competitive_tier_name,
+                   pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   pgs.popular_agents::text AS popular_agents,
+                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                   ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
+                   t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
+                   (SELECT COUNT(*)::int FROM public.team_members tm
+                    WHERE tm.team_id = l.team_id AND tm.is_active = TRUE) AS team_member_count,
+                   (SELECT COUNT(*)::int FROM public.team_members tm2
+                    JOIN public.riot_accounts ra2 ON ra2.user_id = tm2.user_id
+                    WHERE tm2.team_id = l.team_id AND tm2.is_active = TRUE) AS team_verified_count
             FROM public.lfg_listings l
             JOIN public.profiles pr ON pr.id = l.user_id
+            LEFT JOIN public.player_game_stats pgs
+                ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+            LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
+            LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.game_catalog_regions reg
                 ON reg.region_key = l.region_key
                AND reg.game_slug = l.game_slug
@@ -377,16 +432,31 @@ public static class LfgEndpoints
             )
             SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
-                   l.max_rank_sort_order, l.preferred_roles, l.languages,
+                   l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
                    max_rt.display_name AS max_rank_display_name,
-                   max_rt.icon_url    AS max_rank_icon_url
+                   max_rt.icon_url    AS max_rank_icon_url,
+                   pgs.competitive_tier, pgs.competitive_tier_name,
+                   pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   pgs.popular_agents::text AS popular_agents,
+                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                   ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
+                   t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
+                   (SELECT COUNT(*)::int FROM public.team_members tm
+                    WHERE tm.team_id = l.team_id AND tm.is_active = TRUE) AS team_member_count,
+                   (SELECT COUNT(*)::int FROM public.team_members tm2
+                    JOIN public.riot_accounts ra2 ON ra2.user_id = tm2.user_id
+                    WHERE tm2.team_id = l.team_id AND tm2.is_active = TRUE) AS team_verified_count
             FROM public.lfg_listings l
             JOIN public.profiles pr ON pr.id = l.user_id
+            LEFT JOIN public.player_game_stats pgs
+                ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+            LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
+            LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.game_catalog_regions reg
                 ON reg.region_key = l.region_key
                AND reg.game_slug = l.game_slug
@@ -493,6 +563,7 @@ public static class LfgEndpoints
                 min_rank_sort_order  = COALESCE(@minRank, min_rank_sort_order),
                 max_rank_sort_order  = COALESCE(@maxRank, max_rank_sort_order),
                 preferred_roles      = COALESCE(@preferredRoles, preferred_roles),
+                preferred_agents     = COALESCE(@preferredAgents, preferred_agents),
                 languages            = COALESCE(@languages, languages),
                 description          = COALESCE(@description, description),
                 expires_at           = COALESCE(@expiresAt, expires_at),
@@ -511,6 +582,7 @@ public static class LfgEndpoints
                 minRank = req.MinRankSortOrder,
                 maxRank = req.MaxRankSortOrder,
                 preferredRoles = req.PreferredRoles,
+                preferredAgents = req.PreferredAgents,
                 languages = req.Languages,
                 description = req.Description,
                 expiresAt = req.ExpiresAt,
@@ -796,6 +868,38 @@ public static class LfgEndpoints
 
         return row is null ? Results.NotFound() : Results.Ok(row);
     }
+
+    // ── POST /api/competitive/game-stats/sync ────────────────────────────────
+
+    private static async Task<IResult> SyncRiotStatsAsync(
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        IBackgroundJobClient backgroundJobs,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        var hasPuuid = await conn.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM public.riot_accounts WHERE user_id = @userId)",
+            new { userId = userCtx.UserIdGuid });
+        if (!hasPuuid)
+            return Results.BadRequest(new { error = "NO_LINKED_RIOT_ACCOUNT" });
+
+        var lastSync = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+            "SELECT synced_at FROM public.player_game_stats WHERE user_id = @userId AND game_slug = 'valorant'",
+            new { userId = userCtx.UserIdGuid });
+
+        if (lastSync.HasValue && (DateTimeOffset.UtcNow - lastSync.Value).TotalMinutes < 5)
+            return Results.Ok(new { status = "fresh", synced_at = lastSync.Value });
+
+        backgroundJobs.Enqueue<ValorantStatsSyncService>(
+            s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
+
+        return Results.Ok(new { status = "queued" });
+    }
 }
 
 // ── Request DTOs ───────────────────────────────────────────────────────────────
@@ -810,6 +914,7 @@ public sealed record CreateLfgListingRequest(
     [property: JsonPropertyName("min_rank_sort_order")] int? MinRankSortOrder = null,
     [property: JsonPropertyName("max_rank_sort_order")] int? MaxRankSortOrder = null,
     [property: JsonPropertyName("preferred_roles")] string[]? PreferredRoles = null,
+    [property: JsonPropertyName("preferred_agents")] string[]? PreferredAgents = null,
     [property: JsonPropertyName("languages")] string[]? Languages = null,
     [property: JsonPropertyName("description")] string? Description = null,
     [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt = null);
@@ -821,6 +926,7 @@ public sealed record UpdateLfgListingRequest(
     [property: JsonPropertyName("min_rank_sort_order")] int? MinRankSortOrder = null,
     [property: JsonPropertyName("max_rank_sort_order")] int? MaxRankSortOrder = null,
     [property: JsonPropertyName("preferred_roles")] string[]? PreferredRoles = null,
+    [property: JsonPropertyName("preferred_agents")] string[]? PreferredAgents = null,
     [property: JsonPropertyName("languages")] string[]? Languages = null,
     [property: JsonPropertyName("description")] string? Description = null,
     [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt = null);

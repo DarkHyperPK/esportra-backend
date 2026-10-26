@@ -374,6 +374,8 @@ builder.Services.AddScoped<Esportra.Api.Services.IRiotMatchLookup, Esportra.Api.
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScoreboardRiotCheckJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IScoreboardRiotCheckTrigger, Esportra.Api.ScheduledJobs.ScoreboardRiotCheckTrigger>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>();
+builder.Services.AddScoped<Esportra.Api.Services.ValorantStatsSyncService>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ValorantStatsSyncJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IReportAutoAcceptScheduler, Esportra.Api.ScheduledJobs.ReportAutoAcceptScheduler>();
 
 // ── Data Protection (OAuth state encryption) ─────────────────────────────────
@@ -571,6 +573,8 @@ using (var scope = app.Services.CreateScope())
         "stale-template-rules", j => j.ExecuteAsync(CancellationToken.None), "0 3 * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.LfgExpiryJob>(
         "lfg-expiry", j => j.ExecuteAsync(CancellationToken.None), "*/15 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ValorantStatsSyncJob>(
+        "valorant-stats-sync", j => j.ExecuteAsync(CancellationToken.None), "*/30 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.RecruitmentExpiryJob>(
         "recruitment-expiry", j => j.ExecuteAsync(CancellationToken.None), "0 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ScrimOfferExpiryJob>(

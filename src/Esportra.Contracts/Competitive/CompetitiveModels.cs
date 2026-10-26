@@ -129,6 +129,7 @@ public sealed record LfgListingRow
     public int? MinRankSortOrder { get; init; }
     public int? MaxRankSortOrder { get; init; }
     public string[]? PreferredRoles { get; init; }
+    public string[]? PreferredAgents { get; init; }
     public string[]? Languages { get; init; }
     public string? Description { get; init; }
     public DateTimeOffset? ExpiresAt { get; init; }
@@ -143,6 +144,25 @@ public sealed record LfgListingRow
     public string? MinRankIconUrl { get; init; }
     public string? MaxRankDisplayName { get; init; }
     public string? MaxRankIconUrl { get; init; }
+    // Riot stats enrichment
+    public int? CompetitiveTier { get; init; }
+    public string? CompetitiveTierName { get; init; }
+    public int? WinCount { get; init; }
+    public int? LossCount { get; init; }
+    public decimal? WinRate { get; init; }
+    public decimal? KdRatio { get; init; }
+    public string? PopularAgents { get; init; }
+    public int? MatchesAnalyzed { get; init; }
+    public DateTimeOffset? RiotSyncedAt { get; init; }
+    // Riot identity
+    public string? RiotGameName { get; init; }
+    public string? RiotTagLine { get; init; }
+    // Team enrichment (for LFP listings)
+    public string? TeamName { get; init; }
+    public string? TeamLogoUrl { get; init; }
+    public string? TeamTag { get; init; }
+    public int? TeamMemberCount { get; init; }
+    public int? TeamVerifiedCount { get; init; }
 }
 
 public sealed record LfgInterestRow(
