@@ -30,6 +30,7 @@ public static class LfgExperienceEndpoints
                    l.status::text AS listing_status, l.expires_at, l.user_id AS listing_owner_id,
                    COALESCE(t.name, owner_profile.username) AS listing_name,
                    p.username AS counterpart_username, p.avatar_seed AS counterpart_avatar_seed,
+                   p.avatar_url AS counterpart_avatar_url, p.avatar_style AS counterpart_avatar_style,
                    COALESCE(i.conversation_id, prior.id) AS conversation_id
             FROM public.lfg_interests i
             JOIN public.lfg_listings l ON l.id = i.listing_id
@@ -67,7 +68,7 @@ public static class LfgExperienceEndpoints
                 l.status::text AS status, l.mode_key, l.region_key, l.preferred_servers,
                 l.min_rank_sort_order, l.max_rank_sort_order, l.preferred_roles, l.preferred_agents,
                 l.languages, l.description, l.expires_at, l.created_at, l.updated_at,
-                p.username, p.avatar_seed, p.avatar_url AS profile_avatar_url, p.avatar_style,
+                p.username, p.avatar_seed, p.avatar_url AS profile_avatar_url, p.banner_url AS profile_banner_url, p.avatar_style,
                 t.name AS team_name, t.tag AS team_tag, t.logo_url AS team_logo_url,
                 reg.display_name AS region_display_name, min_rt.display_name AS min_rank_display_name,
                 min_rt.icon_url AS min_rank_icon_url, max_rt.display_name AS max_rank_display_name,
@@ -191,5 +192,7 @@ public sealed record LfgInboxRow
     public string? ListingName { get; init; }
     public string? CounterpartUsername { get; init; }
     public string? CounterpartAvatarSeed { get; init; }
+    public string? CounterpartAvatarUrl { get; init; }
+    public string? CounterpartAvatarStyle { get; init; }
     public Guid? ConversationId { get; init; }
 }

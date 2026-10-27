@@ -41,6 +41,7 @@ public static class MessagingEndpoints
                 SELECT c.*,
                     (SELECT COUNT(*) FROM messages m
                      WHERE m.conversation_id = c.id
+                       AND m.sender_id <> @userId
                        AND m.created_at > COALESCE(
                            (SELECT last_read_at FROM conversation_participants cp2
                             WHERE cp2.conversation_id = c.id AND cp2.user_id = @userId), '1970-01-01'
@@ -131,11 +132,10 @@ public static class MessagingEndpoints
                     'id', p.id, 'username', p.username,
                     'full_name', p.full_name, 'avatar_url', p.avatar_url
                 ) AS sender
-                FROM messages m
+                FROM (SELECT * FROM messages WHERE conversation_id = @id
+                      ORDER BY created_at DESC, id DESC LIMIT @limit OFFSET @offset) m
                 LEFT JOIN profiles p ON p.id = m.sender_id
-                WHERE m.conversation_id = @id
-                ORDER BY m.created_at ASC
-                LIMIT @limit OFFSET @offset
+                ORDER BY m.created_at ASC, m.id ASC
                 """,
                 new { id, limit, offset });
 
@@ -214,6 +214,9 @@ public static class MessagingEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (string.IsNullOrWhiteSpace(req.Content) || req.Content.Length > 5000)
+                return Results.BadRequest(new { error = "Message must contain between 1 and 5000 characters." });
+
             using var conn = db.CreateConnection();
             var sender = await conn.QuerySingleOrDefaultAsync<ConversationSenderDto>(
                 """
@@ -277,11 +280,11 @@ public static class MessagingEndpoints
 
             using var conn = db.CreateConnection();
 
-            await conn.ExecuteAsync(
-                "UPDATE conversation_participants SET last_read_at = NOW() WHERE conversation_id = @id AND user_id = @userId",
+            var updated = await conn.ExecuteAsync(
+                "UPDATE conversation_participants SET last_read_at = NOW() WHERE conversation_id = @id AND user_id = @userId AND is_active = TRUE",
                 new { id, userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { success = true });
+            return updated == 0 ? Results.Forbid() : Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/conversations/{id}/join ────────────────────────────────

@@ -1940,10 +1940,10 @@ public static class TeamEndpoints
         app.MapGet("/api/teams/my-captain-teams", async (
             HttpContext ctx,
             string? game,
-            int limit,
-            int offset,
             IDbConnectionFactory db,
-            CancellationToken ct) =>
+            CancellationToken ct,
+            int limit = 50,
+            int offset = 0) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();

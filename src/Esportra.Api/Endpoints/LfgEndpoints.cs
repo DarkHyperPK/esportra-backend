@@ -4,6 +4,7 @@ using Esportra.Api.Services;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
+using Esportra.Core.Tournaments;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 
@@ -27,6 +28,10 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class LfgEndpoints
 {
+    private static bool ValidPreferredAgents(string[]? agents) => agents is null ||
+        (agents.Length <= 5 && agents.All(agent => Guid.TryParse(agent, out _)) &&
+         agents.Distinct(StringComparer.OrdinalIgnoreCase).Count() == agents.Length);
+
     private static readonly HashSet<string> ValidIntents =
     [
         "looking_for_team", "looking_for_player", "competitive_roster",
@@ -204,7 +209,7 @@ public static class LfgEndpoints
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.banner_url AS profile_banner_url, pr.avatar_style,
                    EXISTS (SELECT 1 FROM public.lfg_saved_listings s WHERE s.listing_id = l.id AND s.user_id = @callerId) AS is_saved,
                    vi.id AS viewer_interest_id, vi.status::text AS viewer_interest_status,
                    COALESCE(vi.conversation_id, (SELECT c.id FROM public.conversations c
@@ -278,6 +283,9 @@ public static class LfgEndpoints
         if (req.Description is { Length: > 280 })
             return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
+        if (string.Equals(req.GameSlug, "valorant", StringComparison.OrdinalIgnoreCase) && !ValidPreferredAgents(req.PreferredAgents))
+            return Results.BadRequest(new { error = "Choose up to five distinct agents." });
+
         if (req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
             return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
 
@@ -345,11 +353,13 @@ public static class LfgEndpoints
         if (req.TeamId.HasValue)
         {
             var isStaff = await conn.ExecuteScalarAsync<bool>(
-                """
+                $"""
                 SELECT EXISTS(
-                    SELECT 1 FROM public.team_members
-                    WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
-                      AND role IN ('captain', 'manager')
+                    SELECT 1 FROM public.teams t
+                    WHERE t.id = @teamId AND {TeamKindSql.RealTeamWhere} AND (t.owner_id = @userId OR EXISTS (
+                        SELECT 1 FROM public.team_members tm
+                        WHERE tm.team_id = t.id AND tm.user_id = @userId AND tm.is_active = TRUE
+                          AND tm.role IN ('captain', 'manager')))
                 )
                 """,
                 new { teamId = req.TeamId.Value, userId = userCtx.UserIdGuid });
@@ -418,7 +428,7 @@ public static class LfgEndpoints
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.banner_url AS profile_banner_url, pr.avatar_style,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
@@ -483,7 +493,7 @@ public static class LfgEndpoints
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.banner_url AS profile_banner_url, pr.avatar_style,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
@@ -632,6 +642,8 @@ public static class LfgEndpoints
             "SELECT game_slug FROM public.lfg_listings WHERE id = @id AND user_id = @userId AND status IN ('draft', 'published', 'paused')",
             new { id, userId = userCtx.UserIdGuid });
         if (gameSlug is null) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
+        if (string.Equals(gameSlug, "valorant", StringComparison.OrdinalIgnoreCase) && !ValidPreferredAgents(req.PreferredAgents))
+            return Results.BadRequest(new { error = "Choose up to five distinct agents." });
         if (req.PreferredRoles is { Length: > 0 })
         {
             var validRoles = (await conn.QueryAsync<string>(

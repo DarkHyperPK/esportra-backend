@@ -144,6 +144,7 @@ public sealed record LfgListingRow
     public string? Username { get; init; }
     public string? AvatarSeed { get; init; }
     public string? ProfileAvatarUrl { get; init; }
+    public string? ProfileBannerUrl { get; init; }
     public string? AvatarStyle { get; init; }
     public string? RegionDisplayName { get; init; }
     public string? MinRankDisplayName { get; init; }

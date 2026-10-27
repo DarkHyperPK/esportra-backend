@@ -76,13 +76,50 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
     // ── Catalog: GET /api/catalog/rank-tiers ─────────────────────────────────
 
     [Fact]
+    public async Task CaptainTeams_DefaultsMissingOffset_AndReturnsOwnedTeam()
+    {
+        var (owner, client) = await User();
+        var teamId = await factory.Seeder.SeedTeamAsync(owner);
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("DELETE FROM public.team_members WHERE team_id = @teamId AND user_id = @owner", new { teamId, owner });
+        var response = await client.GetAsync("/api/teams/my-captain-teams?limit=50");
+        response.EnsureSuccessStatusCode();
+        var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+        rows.EnumerateArray().Any(row => row.GetProperty("id").GetGuid() == teamId).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ValorantListing_RejectsMoreThanFiveOrDuplicateAgents()
+    {
+        var (_, client) = await User();
+        var agents = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid().ToString()).ToArray();
+        var tooMany = await client.PostAsJsonAsync("/api/competitive/lfg", new { game_slug = "valorant", intent = "looking_for_team", preferred_agents = agents });
+        tooMany.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var duplicate = await client.PostAsJsonAsync("/api/competitive/lfg", new { game_slug = "valorant", intent = "looking_for_team", preferred_agents = new[] { agents[0], agents[0] } });
+        duplicate.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task ValorantListing_Update_PersistsFiveAgents()
+    {
+        var (owner, client) = await User();
+        var listingId = await SeedListingAsync(owner, "valorant", status: "draft");
+        var agents = Enumerable.Range(0, 5).Select(_ => Guid.NewGuid().ToString()).ToArray();
+        var response = await client.PutAsJsonAsync($"/api/competitive/lfg/{listingId}", new { preferred_agents = agents });
+        response.EnsureSuccessStatusCode();
+        await using var conn = factory.Seeder.OpenConnection();
+        var stored = await conn.QuerySingleAsync<string[]>("SELECT preferred_agents FROM public.lfg_listings WHERE id = @listingId", new { listingId });
+        stored.Should().Equal(agents);
+    }
+
+    [Fact]
     public async Task ListingAndInterests_ReturnProfileAvatarFields()
     {
         var (owner, ownerClient) = await User();
         var (sender, senderClient) = await User();
         await using var conn = factory.Seeder.OpenConnection();
-        await conn.ExecuteAsync("UPDATE public.profiles SET avatar_url = @url, avatar_style = @style WHERE id IN (@owner, @sender)",
-            new { url = "https://example.com/avatar.png", style = "critters", owner, sender });
+        await conn.ExecuteAsync("UPDATE public.profiles SET avatar_url = @url, banner_url = @banner, avatar_style = @style WHERE id IN (@owner, @sender)",
+            new { url = "https://example.com/avatar.png", banner = "https://example.com/banner.png", style = "critters", owner, sender });
         var listingId = await SeedListingAsync(owner, "valorant");
         await SeedInterestAsync(listingId, sender, owner);
 
@@ -90,7 +127,15 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         detailResponse.EnsureSuccessStatusCode();
         var detail = await detailResponse.Content.ReadFromJsonAsync<JsonElement>();
         detail.GetProperty("profileAvatarUrl").GetString().Should().Be("https://example.com/avatar.png");
+        detail.GetProperty("profileBannerUrl").GetString().Should().Be("https://example.com/banner.png");
         detail.GetProperty("avatarStyle").GetString().Should().Be("critters");
+        var discovery = await (await senderClient.GetAsync("/api/competitive/lfg?game=valorant&limit=50")).Content.ReadFromJsonAsync<JsonElement>();
+        discovery.EnumerateArray().Single(row => row.GetProperty("id").GetGuid() == listingId).GetProperty("profileBannerUrl").GetString().Should().Be("https://example.com/banner.png");
+        var mine = await (await ownerClient.GetAsync("/api/competitive/lfg/mine")).Content.ReadFromJsonAsync<JsonElement>();
+        mine.EnumerateArray().Single(row => row.GetProperty("id").GetGuid() == listingId).GetProperty("profileBannerUrl").GetString().Should().Be("https://example.com/banner.png");
+        (await senderClient.PutAsJsonAsync($"/api/competitive/lfg/{listingId}/saved", new { })).EnsureSuccessStatusCode();
+        var saved = await (await senderClient.GetAsync("/api/competitive/lfg/saved?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        saved.EnumerateArray().Single(row => row.GetProperty("id").GetGuid() == listingId).GetProperty("profileBannerUrl").GetString().Should().Be("https://example.com/banner.png");
         var interestsResponse = await ownerClient.GetAsync($"/api/competitive/lfg/{listingId}/interests");
         interestsResponse.EnsureSuccessStatusCode();
         var interests = await interestsResponse.Content.ReadFromJsonAsync<JsonElement>();
