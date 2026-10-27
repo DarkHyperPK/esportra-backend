@@ -399,7 +399,6 @@ public sealed class ValorantStatsSyncService(
         var top = agentStats.Values
             .OrderByDescending(a => a.GamesPlayed)
             .ThenByDescending(a => a.Wins)
-            .Take(5)
             .Select(a =>
             {
                 var (name, iconUrl) = agentMap.TryGetValue(a.CharacterId, out var info)
