@@ -266,20 +266,28 @@ public static class AvatarPoolEndpoints
 
             using var conn = db.CreateConnection();
             var inserted = 0;
+            var skippedInvalid = 0;
+            var skippedDuplicate = 0;
 
             foreach (var item in items)
             {
-                if (string.IsNullOrWhiteSpace(item.Style) || string.IsNullOrWhiteSpace(item.Seed)) continue;
-                inserted += await conn.ExecuteAsync(
+                if (string.IsNullOrWhiteSpace(item.Style) || string.IsNullOrWhiteSpace(item.Seed))
+                {
+                    skippedInvalid++;
+                    continue;
+                }
+                var rows = await conn.ExecuteAsync(
                     """
                     INSERT INTO avatar_pool (style, seed)
                     VALUES (@style, @seed)
                     ON CONFLICT ON CONSTRAINT avatar_pool_style_seed_unique DO NOTHING
                     """,
                     new { style = item.Style.Trim(), seed = item.Seed.Trim() });
+                if (rows > 0) inserted++;
+                else skippedDuplicate++;
             }
 
-            return Results.Ok(new { inserted, total = items.Count });
+            return Results.Ok(new { inserted, skipped_duplicate = skippedDuplicate, skipped_invalid = skippedInvalid, total = items.Count });
         }).RequireAuthorization("Authenticated");
     }
 }
