@@ -86,12 +86,16 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         var listingId = await SeedListingAsync(owner, "valorant");
         await SeedInterestAsync(listingId, sender, owner);
 
-        var detail = await (await senderClient.GetAsync($"/api/competitive/lfg/{listingId}")).Content.ReadFromJsonAsync<JsonElement>();
-        detail.GetProperty("profile_avatar_url").GetString().Should().Be("https://example.com/avatar.png");
-        detail.GetProperty("avatar_style").GetString().Should().Be("critters");
-        var interests = await (await ownerClient.GetAsync($"/api/competitive/lfg/{listingId}/interests")).Content.ReadFromJsonAsync<JsonElement>();
-        interests[0].GetProperty("profile_avatar_url").GetString().Should().Be("https://example.com/avatar.png");
-        interests[0].GetProperty("avatar_style").GetString().Should().Be("critters");
+        var detailResponse = await senderClient.GetAsync($"/api/competitive/lfg/{listingId}");
+        detailResponse.EnsureSuccessStatusCode();
+        var detail = await detailResponse.Content.ReadFromJsonAsync<JsonElement>();
+        detail.GetProperty("profileAvatarUrl").GetString().Should().Be("https://example.com/avatar.png");
+        detail.GetProperty("avatarStyle").GetString().Should().Be("critters");
+        var interestsResponse = await ownerClient.GetAsync($"/api/competitive/lfg/{listingId}/interests");
+        interestsResponse.EnsureSuccessStatusCode();
+        var interests = await interestsResponse.Content.ReadFromJsonAsync<JsonElement>();
+        interests[0].GetProperty("profileAvatarUrl").GetString().Should().Be("https://example.com/avatar.png");
+        interests[0].GetProperty("avatarStyle").GetString().Should().Be("critters");
     }
 
     [Fact]
@@ -471,9 +475,9 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         var response = await client.GetAsync($"/api/competitive/lfg/{listing}");
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        body.GetProperty("is_saved").GetBoolean().Should().BeTrue();
-        body.GetProperty("viewer_interest_id").GetGuid().Should().Be(interest);
-        body.GetProperty("viewer_interest_status").GetString().Should().Be("expressed");
+        body.GetProperty("isSaved").GetBoolean().Should().BeTrue();
+        body.GetProperty("viewerInterestId").GetGuid().Should().Be(interest);
+        body.GetProperty("viewerInterestStatus").GetString().Should().Be("expressed");
     }
 
     [Fact]

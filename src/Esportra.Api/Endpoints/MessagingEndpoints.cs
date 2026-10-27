@@ -217,7 +217,7 @@ public static class MessagingEndpoints
             using var conn = db.CreateConnection();
             var sender = await conn.QuerySingleOrDefaultAsync<ConversationSenderDto>(
                 """
-                SELECT id AS Id, username AS Username, full_name AS FullName, avatar_url AS AvatarUrl
+                SELECT id::text AS Id, username AS Username, full_name AS FullName, avatar_url AS AvatarUrl
                 FROM profiles WHERE id = @userId
                 """,
                 new { userId = userCtx.UserIdGuid });
