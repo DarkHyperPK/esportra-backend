@@ -222,11 +222,34 @@ public static class AvatarPoolEndpoints
             });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/admin/avatars/pool/seeds ─────────────────────────────────
+        // Admin: return all existing seeds for a style so the generator can avoid duplicates.
+        app.MapGet("/api/admin/avatars/pool/seeds", async (
+            HttpContext ctx,
+            [FromQuery] string style,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            var userCtx = ctx.Items["UserContext"] as UserContext;
+            if (userCtx is null) return Results.Unauthorized();
+            if (!StaffAuthHelper.IsPlatformAdmin(userCtx)) return Results.Forbid();
+            if (string.IsNullOrWhiteSpace(style)) return Results.BadRequest(new { error = "style is required." });
+
+            using var conn = db.CreateConnection();
+            var seeds = await conn.QueryAsync<string>(
+                "SELECT seed FROM avatar_pool WHERE style = @style",
+                new { style });
+
+            return Results.Ok(new { seeds });
+        }).RequireAuthorization("Authenticated");
+
         // ── DELETE /api/admin/avatars/pool/{id} ───────────────────────────────
-        // Admin: remove an unclaimed pool item. Refuses if currently claimed.
+        // Admin: remove a pool item. Unclaimed items deleted immediately.
+        // Claimed items require ?force=true — also clears the user's avatar profile fields.
         app.MapDelete("/api/admin/avatars/pool/{id:guid}", async (
             Guid id,
             HttpContext ctx,
+            [FromQuery] bool force,
             IDbConnectionFactory db,
             CancellationToken ct) =>
         {
@@ -241,8 +264,15 @@ public static class AvatarPoolEndpoints
                 new { id });
 
             if (item is null) return Results.NotFound(new { error = "Item not found." });
+            if (item.claimed_by is not null && !force)
+                return Results.Conflict(new { error = "Cannot delete a claimed avatar. Pass ?force=true to force-remove it (this also clears the user's avatar)." });
+
             if (item.claimed_by is not null)
-                return Results.Conflict(new { error = "Cannot delete a claimed avatar. The user must release it first." });
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE profiles SET avatar_seed = NULL, avatar_style = NULL, updated_at = now() WHERE id = @claimedBy",
+                    new { claimedBy = (Guid)item.claimed_by });
+            }
 
             await conn.ExecuteAsync("DELETE FROM avatar_pool WHERE id = @id", new { id });
             return Results.Ok(new { deleted = true });
