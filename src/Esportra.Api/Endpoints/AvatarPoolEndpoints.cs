@@ -322,5 +322,5 @@ public static class AvatarPoolEndpoints
     }
 }
 
-public sealed record ClaimAvatarRequest([property: System.Text.Json.Serialization.JsonPropertyName("item_id")] Guid ItemId);
+public sealed record ClaimAvatarRequest(Guid ItemId);
 public sealed record AvatarPoolItemInput(string Style, string Seed);
