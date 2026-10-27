@@ -1960,9 +1960,11 @@ public static class TeamEndpoints
                   ON tm.team_id = t.id AND tm.user_id = @userId AND tm.is_active = TRUE
                 WHERE (t.owner_id = @userId OR (tm.user_id = @userId AND tm.role = 'captain'))
                   AND {TeamKindSql.RealTeamWhere}
-                  AND (@game IS NULL OR EXISTS (
-                      SELECT 1 FROM team_rosters tr
-                      WHERE tr.team_id = t.id AND LOWER(tr.game) = LOWER(@game)))
+                  AND (@game IS NULL
+                      OR LOWER(COALESCE(t.game, '')) = LOWER(@game)
+                      OR EXISTS (
+                          SELECT 1 FROM team_rosters tr
+                          WHERE tr.team_id = t.id AND LOWER(tr.game) = LOWER(@game)))
                 ORDER BY t.name ASC
                 LIMIT @pageLimit OFFSET @pageOffset
                 """, new { userId = userCtx.UserIdGuid, game, pageLimit, pageOffset });
