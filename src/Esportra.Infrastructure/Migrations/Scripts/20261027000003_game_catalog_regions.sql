@@ -6,8 +6,7 @@ DECLARE
 BEGIN
     SELECT id INTO v_version_id
     FROM public.game_catalog_versions
-    WHERE game_slug = 'valorant' AND is_active = TRUE
-    ORDER BY created_at DESC
+    WHERE is_active = TRUE
     LIMIT 1;
 
     IF v_version_id IS NULL THEN
