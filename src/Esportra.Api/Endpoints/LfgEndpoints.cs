@@ -906,7 +906,7 @@ public static class LfgEndpoints
                 pgs.kd_ratio               AS kd_ratio,
                 pgs.matches_analyzed       AS matches_analyzed,
                 pgs.popular_agents::text   AS popular_agents
-            FROM (VALUES (@userId::uuid)) AS u(uid)
+            FROM (SELECT @userId::uuid AS uid) AS u
             LEFT JOIN public.riot_accounts ra ON ra.user_id = u.uid
             LEFT JOIN public.player_game_stats pgs
                 ON pgs.user_id = u.uid AND pgs.game_slug = @game

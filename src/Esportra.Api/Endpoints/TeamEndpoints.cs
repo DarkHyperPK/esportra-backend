@@ -1281,8 +1281,7 @@ public static class TeamEndpoints
                        vs.kd, vs.win_rate, vs.hs_percent, vs.latest_match_id,
                        (SELECT COUNT(*)::int
                         FROM public.tournament_participants tp
-                        JOIN public.tournament_registrations tr ON tr.id = tp.registration_id
-                        WHERE tr.user_id = tm.user_id) AS tournament_count
+                        WHERE tp.user_id = tm.user_id) AS tournament_count
                 FROM team_members tm
                 JOIN profiles p ON p.id = tm.user_id
                 LEFT JOIN player_riot_accounts pra ON pra.user_id = tm.user_id
@@ -2217,7 +2216,9 @@ public sealed record TeamBatchRequest(List<string> Ids);
 
 public sealed record ReorderMembersRequest(List<MemberOrderItem> Order);
 
-public sealed record MemberOrderItem(string UserId, int DisplayOrder);
+public sealed record MemberOrderItem(
+    [property: System.Text.Json.Serialization.JsonPropertyName("user_id")] string UserId,
+    [property: System.Text.Json.Serialization.JsonPropertyName("display_order")] int DisplayOrder);
 
 internal static class TeamSlug
 {
