@@ -143,6 +143,8 @@ public sealed record LfgListingRow
     public Guid UserId { get; init; }
     public string? Username { get; init; }
     public string? AvatarSeed { get; init; }
+    public string? ProfileAvatarUrl { get; init; }
+    public string? AvatarStyle { get; init; }
     public string? RegionDisplayName { get; init; }
     public string? MinRankDisplayName { get; init; }
     public string? MinRankIconUrl { get; init; }
@@ -188,6 +190,8 @@ public sealed record LfgInterestEnrichedRow
     public DateTime CreatedAt { get; init; }
     public string? Username { get; init; }
     public string? AvatarSeed { get; init; }
+    public string? ProfileAvatarUrl { get; init; }
+    public string? AvatarStyle { get; init; }
     public string? RankTierKey { get; init; }
     public string? RankSource { get; init; }
     public string[]? PreferredRoles { get; init; }

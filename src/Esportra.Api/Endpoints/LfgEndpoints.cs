@@ -204,7 +204,7 @@ public static class LfgEndpoints
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
                    EXISTS (SELECT 1 FROM public.lfg_saved_listings s WHERE s.listing_id = l.id AND s.user_id = @callerId) AS is_saved,
                    vi.id AS viewer_interest_id, vi.status::text AS viewer_interest_status,
                    COALESCE(vi.conversation_id, (SELECT c.id FROM public.conversations c
@@ -418,7 +418,7 @@ public static class LfgEndpoints
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
@@ -483,7 +483,7 @@ public static class LfgEndpoints
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
-                   pr.username, pr.avatar_seed,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
@@ -580,7 +580,7 @@ public static class LfgEndpoints
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
             SELECT i.id, i.listing_id, i.from_user_id, i.status::text AS status, i.message, i.created_at,
-                   pr.username, pr.avatar_seed,
+                   pr.username, pr.avatar_seed, pr.avatar_url AS profile_avatar_url, pr.avatar_style,
                    pgp.rank_tier_key, pgp.rank_source, pgp.preferred_roles, pgp.region_key,
                    grt.display_name AS rank_tier_display_name,
                    grt.icon_url     AS rank_tier_icon_url,

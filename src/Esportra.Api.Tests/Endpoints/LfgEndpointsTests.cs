@@ -76,6 +76,25 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
     // ── Catalog: GET /api/catalog/rank-tiers ─────────────────────────────────
 
     [Fact]
+    public async Task ListingAndInterests_ReturnProfileAvatarFields()
+    {
+        var (owner, ownerClient) = await User();
+        var (sender, senderClient) = await User();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE public.profiles SET avatar_url = @url, avatar_style = @style WHERE id IN (@owner, @sender)",
+            new { url = "https://example.com/avatar.png", style = "critters", owner, sender });
+        var listingId = await SeedListingAsync(owner, "valorant");
+        await SeedInterestAsync(listingId, sender, owner);
+
+        var detail = await (await senderClient.GetAsync($"/api/competitive/lfg/{listingId}")).Content.ReadFromJsonAsync<JsonElement>();
+        detail.GetProperty("profile_avatar_url").GetString().Should().Be("https://example.com/avatar.png");
+        detail.GetProperty("avatar_style").GetString().Should().Be("critters");
+        var interests = await (await ownerClient.GetAsync($"/api/competitive/lfg/{listingId}/interests")).Content.ReadFromJsonAsync<JsonElement>();
+        interests[0].GetProperty("profile_avatar_url").GetString().Should().Be("https://example.com/avatar.png");
+        interests[0].GetProperty("avatar_style").GetString().Should().Be("critters");
+    }
+
+    [Fact]
     public async Task GetRankTiers_RequiresGameParam()
     {
         var response = await Anon().GetAsync("/api/catalog/rank-tiers");
