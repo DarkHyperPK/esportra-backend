@@ -85,13 +85,21 @@ public sealed class ValorantStatsSyncService(
                 """,
                     new { userId });
 
-                var actReset = existing?.LastActId != act.ActId || existing.AggregationVersion < 1;
+                var actReset = existing?.LastActId != act.ActId;
+                // Version upgrades advance the counter in the UPDATE without wiping totals —
+                // rebuilding from Riot history cannot guarantee completeness.
                 var lastMatchId = actReset ? null : existing?.LastMatchId;
+                var rebuilding = false;
 
                 if (lastMatchId is not null && !MatchlistContains(listBody, lastMatchId))
                 {
-                    await MarkError(conn, userId, "Previous match is missing from match history; stats require a rebuild.");
-                    return;
+                    // Cursor match rotated out of Riot's history window — rebuild from available matches
+                    logger.LogWarning(
+                        "ValorantStatsSync: cursor {MatchId} missing for user {UserId} — rebuilding act from available history",
+                        lastMatchId, userId);
+                    actReset = true;
+                    lastMatchId = null;
+                    rebuilding = true;
                 }
 
                 var matchIds = ParseCompetitiveMatchIds(listBody, lastMatchId, actReset, act.StartTime);
@@ -224,7 +232,7 @@ public sealed class ValorantStatsSyncService(
                         lastMatchId = newestMatchId,
                         reset = actReset,
                         actId = act.ActId,
-                        status = rateLimited ? "partial" : "complete",
+                        status = rateLimited || rebuilding ? "partial" : "complete",
                     });
 
                 logger.LogInformation(
@@ -394,19 +402,22 @@ public sealed class ValorantStatsSyncService(
                         data.ValueKind != JsonValueKind.Array)
                         return FallbackAct();
 
+                    var now = DateTimeOffset.UtcNow;
                     foreach (var season in data.EnumerateArray())
                     {
                         var type = season.TryGetProperty("type", out var t) ? t.GetString() : null;
-                        if (!string.Equals(type, "act", StringComparison.OrdinalIgnoreCase)) continue;
-
-                        var isActive = season.TryGetProperty("isActive", out var ia) && ia.GetBoolean();
-                        if (!isActive) continue;
+                        // valorant-api.com returns "EAresSeasonType::Act"; there is no isActive field
+                        if (type is null || !type.EndsWith("::Act", StringComparison.OrdinalIgnoreCase)) continue;
 
                         var uuid = season.TryGetProperty("uuid", out var u) ? u.GetString() : null;
-                        var startTime = season.TryGetProperty("startTime", out var st) ? st.GetString() : null;
+                        var startTimeStr = season.TryGetProperty("startTime", out var st) ? st.GetString() : null;
+                        var endTimeStr = season.TryGetProperty("endTime", out var et) ? et.GetString() : null;
 
-                        if (uuid is null || startTime is null) continue;
-                        if (DateTimeOffset.TryParse(startTime, out var actStart))
+                        if (uuid is null || startTimeStr is null || endTimeStr is null) continue;
+                        if (!DateTimeOffset.TryParse(startTimeStr, out var actStart)) continue;
+                        if (!DateTimeOffset.TryParse(endTimeStr, out var actEnd)) continue;
+
+                        if (actStart <= now && now < actEnd)
                             return new ActInfo(uuid, actStart);
                     }
                 }
