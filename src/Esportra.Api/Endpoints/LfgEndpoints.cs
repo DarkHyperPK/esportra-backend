@@ -61,6 +61,8 @@ public static class LfgEndpoints
 
         app.MapPut("/api/competitive/lfg/{id}", UpdateListingAsync)
             .RequireAuthorization("Authenticated");
+        app.MapDelete("/api/competitive/lfg/{id}", DeleteListingAsync)
+            .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg/{id}/publish", PublishListingAsync)
             .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg/{id}/pause", PauseListingAsync)
@@ -678,6 +680,25 @@ public static class LfgEndpoints
         return row is null ? Results.NotFound() : Results.Ok(row);
     }
 
+    // ── DELETE /api/competitive/lfg/{id} ─────────────────────────────────────
+
+    private static async Task<IResult> DeleteListingAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        var deleted = await conn.ExecuteAsync(
+            "DELETE FROM public.lfg_listings WHERE id = @id AND user_id = @userId",
+            new { id, userId = userCtx.UserIdGuid });
+
+        return deleted == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+    }
+
     // ── POST /api/competitive/lfg/{id}/close ──────────────────────────────────
 
     private static async Task<IResult> CloseListingAsync(
@@ -754,6 +775,41 @@ public static class LfgEndpoints
                 toUserId = listing.UserId,
                 message = req?.Message,
             });
+
+        if (row is not null)
+        {
+            var fromUsername = await conn.QuerySingleOrDefaultAsync<string>(
+                "SELECT username FROM public.profiles WHERE id = @userId",
+                new { userId = userCtx.UserIdGuid });
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
+                VALUES (
+                    @toUserId,
+                    'lfg_interest_received',
+                    @title,
+                    @message,
+                    @link,
+                    jsonb_build_object(
+                        'interest_id', @interestId::text,
+                        'listing_id',  @listingId::text,
+                        'from_username', @fromUsername
+                    ),
+                    FALSE
+                )
+                """,
+                new
+                {
+                    toUserId = listing.UserId,
+                    title = $"{fromUsername ?? "Someone"} is interested in your listing",
+                    message = req?.Message ?? "They want to connect.",
+                    link = $"/competitive/lfg/{id}",
+                    interestId = row.Id,
+                    listingId = id,
+                    fromUsername = fromUsername ?? "",
+                });
+        }
 
         return Results.Ok(row);
     }
