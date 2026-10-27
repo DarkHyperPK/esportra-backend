@@ -4,6 +4,7 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Tests.Infrastructure;
 using FluentAssertions;
+using Npgsql;
 using Xunit;
 
 namespace Esportra.Api.Tests.Endpoints;
@@ -354,5 +355,159 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
     {
         var response = await Anon().GetAsync($"/api/competitive/lfg/{Guid.NewGuid()}/interests");
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task SavedListings_ArePrivateAndIdempotent_AndHideExpiredListings()
+    {
+        var (owner, _) = await User();
+        var (_, saver) = await User();
+        var (_, stranger) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        (await saver.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await saver.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var saved = await (await saver.GetAsync("/api/competitive/lfg/saved?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        saved.EnumerateArray().Count(x => x.GetProperty("id").GetGuid() == listing).Should().Be(1);
+        var other = await (await stranger.GetAsync("/api/competitive/lfg/saved?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        other.EnumerateArray().Should().NotContain(x => x.GetProperty("id").GetGuid() == listing);
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET expires_at = now() - interval '1 hour' WHERE id = @listing", new { listing });
+        var hidden = await (await saver.GetAsync("/api/competitive/lfg/saved?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        hidden.EnumerateArray().Should().NotContain(x => x.GetProperty("id").GetGuid() == listing);
+        (await saver.DeleteAsync($"/api/competitive/lfg/{listing}/saved")).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await saver.DeleteAsync($"/api/competitive/lfg/{listing}/saved")).StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task InterestInbox_OnlyShowsCallerRequests_AndPaginates()
+    {
+        var (owner, receiver) = await User();
+        var (sender, senderClient) = await User();
+        var (_, stranger) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        var received = await (await receiver.GetAsync("/api/competitive/lfg/interests/mine?direction=received&limit=1")).Content.ReadFromJsonAsync<JsonElement>();
+        received.EnumerateArray().Should().Contain(x => x.GetProperty("id").GetGuid() == interest);
+        var sent = await (await senderClient.GetAsync("/api/competitive/lfg/interests/mine?direction=sent&game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        sent.EnumerateArray().Should().Contain(x => x.GetProperty("id").GetGuid() == interest);
+        var other = await (await stranger.GetAsync("/api/competitive/lfg/interests/mine?direction=sent")).Content.ReadFromJsonAsync<JsonElement>();
+        other.EnumerateArray().Should().NotContain(x => x.GetProperty("id").GetGuid() == interest);
+        var beyond = await (await receiver.GetAsync("/api/competitive/lfg/interests/mine?direction=received&limit=1&offset=1")).Content.ReadFromJsonAsync<JsonElement>();
+        beyond.GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AcceptInterest_ConcurrentRetries_ReturnSameConversation()
+    {
+        var (owner, receiver) = await User();
+        var (sender, _) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        var responses = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => receiver.PostAsync($"/api/competitive/lfg/interests/{interest}/accept", null)));
+        responses.Should().OnlyContain(response => response.StatusCode == HttpStatusCode.OK);
+        var bodies = await Task.WhenAll(responses.Select(response => response.Content.ReadFromJsonAsync<JsonElement>()));
+        bodies[0].GetProperty("conversation_id").GetGuid().Should().Be(bodies[1].GetProperty("conversation_id").GetGuid());
+        await using var conn = factory.Seeder.OpenConnection();
+        var notifications = await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM public.notifications WHERE user_id = @sender AND type::text = 'lfg_interest_accepted' AND data->>'interest_id' = @interestId", new { sender, interestId = interest.ToString() });
+        notifications.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AcceptInterest_RejectsOtherUsers_AndDoesNotReuseConversationWithThirdParty()
+    {
+        var (owner, receiver) = await User();
+        var (sender, senderClient) = await User();
+        var (third, _) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        (await senderClient.PostAsync($"/api/competitive/lfg/interests/{interest}/accept", null)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var unsafeConversation = Guid.NewGuid();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("INSERT INTO public.conversations (id, type, created_by) VALUES (@id, 'direct', @owner)", new { id = unsafeConversation, owner });
+        await conn.ExecuteAsync("INSERT INTO public.conversation_participants (conversation_id, user_id) VALUES (@id, @owner), (@id, @sender), (@id, @third)", new { id = unsafeConversation, owner, sender, third });
+        var accepted = await receiver.PostAsync($"/api/competitive/lfg/interests/{interest}/accept", null);
+        accepted.EnsureSuccessStatusCode();
+        var body = await accepted.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("conversation_id").GetGuid().Should().NotBe(unsafeConversation);
+    }
+
+    [Fact]
+    public async Task ExpressInterest_ExpiredListing_ReturnsNotFound()
+    {
+        var (owner, _) = await User();
+        var (_, sender) = await User();
+        var listing = await SeedListingAsync(owner, "valorant", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        var response = await sender.PostAsJsonAsync($"/api/competitive/lfg/{listing}/interest", new { message = "Hello" });
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task ViewerState_RestoresSavedAndInterestStatus()
+    {
+        var (owner, _) = await User();
+        var (sender, client) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        (await client.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).EnsureSuccessStatusCode();
+        var response = await client.GetAsync($"/api/competitive/lfg/{listing}");
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("is_saved").GetBoolean().Should().BeTrue();
+        body.GetProperty("viewer_interest_id").GetGuid().Should().Be(interest);
+        body.GetProperty("viewer_interest_status").GetString().Should().Be("expressed");
+    }
+
+    [Fact]
+    public async Task SavedListings_Rls_DeniesAnotherUsersRowsAndForgedInsert()
+    {
+        var (owner, _) = await User();
+        var (saver, client) = await User();
+        var (other, _) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        (await client.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).EnsureSuccessStatusCode();
+        await using var conn = factory.Seeder.OpenConnection();
+        await using var tx = await conn.BeginTransactionAsync();
+        await conn.ExecuteAsync("GRANT USAGE ON SCHEMA auth TO authenticated; GRANT SELECT ON public.lfg_listings TO authenticated", transaction: tx);
+        await conn.ExecuteAsync("SET LOCAL ROLE authenticated", transaction: tx);
+        await conn.ExecuteAsync("SELECT set_config('request.jwt.claim.sub', @id, true)", new { id = other.ToString() }, tx);
+        var count = await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM public.lfg_saved_listings WHERE user_id = @saver", new { saver }, tx);
+        count.Should().Be(0);
+        Func<Task> forge = () => conn.ExecuteAsync("INSERT INTO public.lfg_saved_listings (user_id, listing_id) VALUES (@saver, @listing)", new { saver, listing }, tx);
+        var failure = await forge.Should().ThrowAsync<PostgresException>();
+        failure.Which.SqlState.Should().Be("42501");
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task Discovery_FiltersAcrossFullResultSet()
+    {
+        var (owner, _) = await User();
+        var (_, viewer) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET description = 'distinct search phrase', preferred_roles = ARRAY['duelist'], preferred_servers = ARRAY['bahrain'], languages = ARRAY['en'] WHERE id = @listing", new { listing });
+        var response = await viewer.GetAsync("/api/competitive/lfg?game=valorant&q=distinct%20search&preferred_roles=duelist&server=bahrain&language=en");
+        response.EnsureSuccessStatusCode();
+        var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+        rows.EnumerateArray().Should().Contain(x => x.GetProperty("id").GetGuid() == listing);
+        var noMatch = await (await viewer.GetAsync("/api/competitive/lfg?game=valorant&q=distinct%20search&server=other")).Content.ReadFromJsonAsync<JsonElement>();
+        noMatch.EnumerateArray().Should().NotContain(x => x.GetProperty("id").GetGuid() == listing);
+    }
+
+    [Fact]
+    public async Task AuthenticatedDatabaseRole_CannotBypassLfgMutationEndpoints()
+    {
+        await using var conn = factory.Seeder.OpenConnection();
+        var allowed = await conn.QuerySingleAsync<(bool ListingInsert, bool ListingUpdate, bool InterestInsert, bool InterestUpdate)>(
+            """
+            SELECT has_table_privilege('authenticated', 'public.lfg_listings', 'INSERT') AS listing_insert,
+                   has_table_privilege('authenticated', 'public.lfg_listings', 'UPDATE') AS listing_update,
+                   has_table_privilege('authenticated', 'public.lfg_interests', 'INSERT') AS interest_insert,
+                   has_table_privilege('authenticated', 'public.lfg_interests', 'UPDATE') AS interest_update
+            """);
+        allowed.ListingInsert.Should().BeFalse();
+        allowed.ListingUpdate.Should().BeFalse();
+        allowed.InterestInsert.Should().BeFalse();
+        allowed.InterestUpdate.Should().BeFalse();
     }
 }

@@ -1,4 +1,5 @@
 using Dapper;
+using System.Data;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
@@ -14,6 +15,14 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class MessagingEndpoints
 {
+    private static async Task<string[]> ActiveParticipantsAsync(IDbConnection conn, Guid conversationId)
+    {
+        var users = await conn.QueryAsync<Guid>(
+            "SELECT user_id FROM public.conversation_participants WHERE conversation_id = @conversationId AND is_active = TRUE",
+            new { conversationId });
+        return users.Select(id => id.ToString()).ToArray();
+    }
+
     public static void MapMessagingEndpoints(this WebApplication app)
     {
         // ── GET /api/conversations ───────────────────────────────────────────
@@ -112,7 +121,7 @@ public static class MessagingEndpoints
 
             // Verify caller is a participant of this conversation
             var isMember = await conn.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS(SELECT 1 FROM conversation_participants WHERE conversation_id = @id AND user_id = @userId)",
+                "SELECT EXISTS(SELECT 1 FROM conversation_participants WHERE conversation_id = @id AND user_id = @userId AND is_active = TRUE)",
                 new { id, userId = userCtx.UserIdGuid });
             if (!isMember) return Results.Forbid();
 
@@ -143,6 +152,11 @@ public static class MessagingEndpoints
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
+            if (req.Type is not ("direct" or "group") || (req.ParticipantIds ?? []).Any(id => !Guid.TryParse(id, out _)))
+                return Results.BadRequest(new { error = "Invalid conversation participants." });
+            if (req.Type == "direct" && (req.ParticipantIds is not { Length: 1 } || Guid.Parse(req.ParticipantIds[0]) == userCtx.UserIdGuid))
+                return Results.BadRequest(new { error = "A direct conversation requires one other participant." });
+
             using var conn = db.CreateConnection();
 
             // For direct messages, check existing
@@ -153,7 +167,9 @@ public static class MessagingEndpoints
                     SELECT c.id FROM conversations c
                     INNER JOIN conversation_participants cp1 ON cp1.conversation_id = c.id AND cp1.user_id = @userId AND cp1.is_active = TRUE
                     INNER JOIN conversation_participants cp2 ON cp2.conversation_id = c.id AND cp2.user_id = @otherId AND cp2.is_active = TRUE
-                    WHERE c.type = 'direct'
+                    WHERE c.type = 'direct' AND NOT EXISTS (
+                        SELECT 1 FROM conversation_participants extra WHERE extra.conversation_id = c.id
+                        AND extra.user_id NOT IN (@userId, @otherId))
                     LIMIT 1
                     """,
                     new { userId = userCtx.UserIdGuid, otherId = Guid.Parse(req.ParticipantIds[0]) });
@@ -206,10 +222,12 @@ public static class MessagingEndpoints
                 """,
                 new { userId = userCtx.UserIdGuid });
 
-            var message = await conn.QuerySingleAsync<dynamic>(
+            var message = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 INSERT INTO messages (conversation_id, sender_id, content, message_type, attachments)
-                VALUES (@convId, @senderId, @content, @messageType, @attachments::jsonb)
+                SELECT @convId, @senderId, @content, @messageType, @attachments::jsonb
+                WHERE EXISTS (SELECT 1 FROM conversation_participants
+                    WHERE conversation_id = @convId AND user_id = @senderId AND is_active = TRUE)
                 RETURNING id, conversation_id, sender_id, content, message_type, attachments, is_edited, created_at
                 """,
                 new
@@ -220,6 +238,8 @@ public static class MessagingEndpoints
                     messageType = req.MessageType ?? "text",
                     attachments = req.Attachments ?? "{}",
                 });
+
+            if (message is null) return Results.Forbid();
 
             // Touch conversation updated_at
             await conn.ExecuteAsync(
@@ -237,8 +257,9 @@ public static class MessagingEndpoints
                 CreatedAt: (DateTime)message.created_at,
                 Sender: sender);
 
+            var recipients = await ActiveParticipantsAsync(conn, id);
             await conversationHub.Clients
-                .Group(ConversationHub.ConversationGroup(id.ToString()))
+                .Users(recipients)
                 .SendAsync(ConversationHubEvents.MessageReceived, messageDto, ct);
 
             return Results.Created($"/api/conversations/{id}/messages/{message.id}", message);
@@ -275,15 +296,11 @@ public static class MessagingEndpoints
 
             using var conn = db.CreateConnection();
 
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO conversation_participants (conversation_id, user_id)
-                VALUES (@id, @userId)
-                ON CONFLICT (conversation_id, user_id) DO UPDATE SET is_active = TRUE
-                """,
+            var updated = await conn.ExecuteAsync(
+                "UPDATE conversation_participants SET is_active = TRUE WHERE conversation_id = @id AND user_id = @userId",
                 new { id, userId = userCtx.UserIdGuid });
 
-            return Results.Ok(new { success = true });
+            return updated == 0 ? Results.NotFound() : Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/conversations/{id}/leave ───────────────────────────────
@@ -323,6 +340,8 @@ public static class MessagingEndpoints
                 "SELECT sender_id, conversation_id FROM messages WHERE id = @id", new { id });
             if (msg is null) return Results.NotFound();
             if ((Guid)msg.sender_id != userCtx.UserIdGuid) return Results.Forbid();
+            var recipients = await ActiveParticipantsAsync(conn, (Guid)msg.conversation_id);
+            if (!recipients.Contains(userCtx.UserIdGuid.ToString())) return Results.Forbid();
 
             var updated = await conn.QuerySingleAsync<dynamic>(
                 """
@@ -335,7 +354,7 @@ public static class MessagingEndpoints
 
             // Broadcast edit to SignalR group
             await conversationHub.Clients
-                .Group(ConversationHub.ConversationGroup(msg.conversation_id.ToString()))
+                .Users(recipients)
                 .SendAsync(ConversationHubEvents.MessageEdited, new
                 {
                     id = updated.id.ToString(),
@@ -364,12 +383,14 @@ public static class MessagingEndpoints
                 "SELECT sender_id, conversation_id FROM messages WHERE id = @id", new { id });
             if (msg is null) return Results.NotFound();
             if ((Guid)msg.sender_id != userCtx.UserIdGuid) return Results.Forbid();
+            var recipients = await ActiveParticipantsAsync(conn, (Guid)msg.conversation_id);
+            if (!recipients.Contains(userCtx.UserIdGuid.ToString())) return Results.Forbid();
 
             await conn.ExecuteAsync("DELETE FROM messages WHERE id = @id", new { id });
 
             // Broadcast delete to SignalR group
             await conversationHub.Clients
-                .Group(ConversationHub.ConversationGroup(msg.conversation_id.ToString()))
+                .Users(recipients)
                 .SendAsync(ConversationHubEvents.MessageDeleted, new { id }, ct);
 
             return Results.Ok(new { success = true });

@@ -119,6 +119,10 @@ public sealed record TryoutInviteRow(
 /// </summary>
 public sealed record LfgListingRow
 {
+    public bool IsSaved { get; init; }
+    public Guid? ViewerInterestId { get; init; }
+    public string? ViewerInterestStatus { get; init; }
+    public Guid? ViewerConversationId { get; init; }
     public Guid Id { get; init; }
     public Guid? TeamId { get; init; }
     public string GameSlug { get; init; } = null!;
@@ -204,7 +208,7 @@ public sealed record CatalogGameRoleRow(
     string? IconUrl = null);
 
 public sealed record CatalogRegionRow(
-    Guid Id, string GameSlug, string RegionKey, string DisplayName);
+    Guid Id, string GameSlug, string RegionKey, string DisplayName, string[]? ServerIds = null);
 
 // ── Scouting ─────────────────────────────────────────────────────────────────────
 

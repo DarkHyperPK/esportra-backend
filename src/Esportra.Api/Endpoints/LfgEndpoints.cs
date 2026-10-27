@@ -37,7 +37,15 @@ public static class LfgEndpoints
         // Static segments registered before parameterized to make intent explicit.
         app.MapGet("/api/competitive/lfg/mine", GetMineAsync)
             .RequireAuthorization("Authenticated");
-        app.MapPost("/api/competitive/lfg/interests/{interestId}/accept", AcceptInterestAsync)
+        app.MapGet("/api/competitive/lfg/interests/mine", LfgExperienceEndpoints.GetInterestsAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapGet("/api/competitive/lfg/saved", LfgExperienceEndpoints.GetSavedAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapPut("/api/competitive/lfg/{id:guid}/saved", LfgExperienceEndpoints.SaveAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapDelete("/api/competitive/lfg/{id:guid}/saved", LfgExperienceEndpoints.UnsaveAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapPost("/api/competitive/lfg/interests/{interestId}/accept", LfgExperienceEndpoints.AcceptAsync)
             .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/lfg/interests/{interestId}/decline", DeclineInterestAsync)
             .RequireAuthorization("Authenticated");
@@ -82,6 +90,10 @@ public static class LfgEndpoints
         [FromQuery] string? intent,
         [FromQuery] string? region_key,
         [FromQuery] string? preferred_roles,
+        [FromQuery] string? q,
+        [FromQuery] string? language,
+        [FromQuery] string? server,
+        [FromQuery] bool? saved_only,
         [FromQuery] int? min_rank,
         [FromQuery] int? max_rank,
         HttpContext ctx,
@@ -111,6 +123,25 @@ public static class LfgEndpoints
         p.Add("callerId", userCtx.UserIdGuid);
         p.Add("limit", limit);
         p.Add("offset", offset);
+
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            if (q.Length > 100) return Results.BadRequest(new { error = "Search is too long." });
+            conditions.Add("(pr.username ILIKE @search OR t.name ILIKE @search OR l.description ILIKE @search)");
+            p.Add("search", $"%{q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%");
+        }
+        if (!string.IsNullOrWhiteSpace(language))
+        {
+            conditions.Add("@language = ANY(l.languages)");
+            p.Add("language", language);
+        }
+        if (!string.IsNullOrWhiteSpace(server))
+        {
+            conditions.Add("@server = ANY(l.preferred_servers)");
+            p.Add("server", server);
+        }
+        if (saved_only == true)
+            conditions.Add("EXISTS (SELECT 1 FROM public.lfg_saved_listings s WHERE s.listing_id = l.id AND s.user_id = @callerId)");
 
         if (!string.IsNullOrWhiteSpace(intent))
         {
@@ -169,11 +200,20 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
+            SELECT l.id, l.user_id, l.team_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
                    pr.username, pr.avatar_seed,
+                   EXISTS (SELECT 1 FROM public.lfg_saved_listings s WHERE s.listing_id = l.id AND s.user_id = @callerId) AS is_saved,
+                   vi.id AS viewer_interest_id, vi.status::text AS viewer_interest_status,
+                   COALESCE(vi.conversation_id, (SELECT c.id FROM public.conversations c
+                     JOIN public.conversation_participants a ON a.conversation_id = c.id AND a.user_id = vi.from_user_id AND a.is_active
+                     JOIN public.conversation_participants b ON b.conversation_id = c.id AND b.user_id = vi.to_user_id AND b.is_active
+                     WHERE c.type = 'direct' AND vi.status = 'accepted'
+                       AND NOT EXISTS (SELECT 1 FROM public.conversation_participants extra
+                         WHERE extra.conversation_id = c.id AND extra.user_id NOT IN (vi.from_user_id, vi.to_user_id))
+                     ORDER BY c.created_at, c.id LIMIT 1)) AS viewer_conversation_id,
                    reg.display_name AS region_display_name,
                    min_rt.display_name AS min_rank_display_name,
                    min_rt.icon_url    AS min_rank_icon_url,
@@ -196,6 +236,7 @@ public static class LfgEndpoints
                 ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
             LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
             LEFT JOIN public.teams t ON t.id = l.team_id
+            LEFT JOIN public.lfg_interests vi ON vi.listing_id = l.id AND vi.from_user_id = @callerId
             LEFT JOIN public.game_catalog_regions reg
                 ON reg.region_key = l.region_key
                AND reg.game_slug = l.game_slug
@@ -236,6 +277,9 @@ public static class LfgEndpoints
 
         if (req.Description is { Length: > 280 })
             return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
+
+        if (req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
+            return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
 
         using var conn = db.CreateConnection();
 
@@ -370,7 +414,7 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
+            SELECT l.id, l.user_id, l.team_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
@@ -435,7 +479,7 @@ public static class LfgEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT l.id, l.user_id, l.game_slug, l.intent::text AS intent, l.mode_key,
+            SELECT l.id, l.user_id, l.team_id, l.game_slug, l.intent::text AS intent, l.mode_key,
                    l.region_key, l.preferred_servers, l.min_rank_sort_order,
                    l.max_rank_sort_order, l.preferred_roles, l.preferred_agents, l.languages,
                    l.description, l.expires_at, l.status::text AS status, l.created_at, l.updated_at,
@@ -482,7 +526,29 @@ public static class LfgEndpoints
 
         // Non-owners may only see published listings.
         var isOwner = row.UserId == userCtx.UserIdGuid;
-        if (!isOwner && row.Status != "published") return Results.NotFound();
+        if (!isOwner && (row.Status != "published" || row.ExpiresAt <= DateTimeOffset.UtcNow)) return Results.NotFound();
+
+        var viewer = await conn.QuerySingleOrDefaultAsync<LfgViewerState>(
+            """
+            SELECT EXISTS (SELECT 1 FROM public.lfg_saved_listings s WHERE s.user_id = @userId AND s.listing_id = @id) AS is_saved,
+                   i.id AS viewer_interest_id, i.status::text AS viewer_interest_status,
+                   COALESCE(i.conversation_id, (SELECT c.id FROM public.conversations c
+                     JOIN public.conversation_participants a ON a.conversation_id = c.id AND a.user_id = i.from_user_id AND a.is_active
+                     JOIN public.conversation_participants b ON b.conversation_id = c.id AND b.user_id = i.to_user_id AND b.is_active
+                     WHERE c.type = 'direct' AND i.status = 'accepted'
+                       AND NOT EXISTS (SELECT 1 FROM public.conversation_participants extra
+                         WHERE extra.conversation_id = c.id AND extra.user_id NOT IN (i.from_user_id, i.to_user_id))
+                     ORDER BY c.created_at, c.id LIMIT 1)) AS viewer_conversation_id
+            FROM (SELECT 1) x LEFT JOIN public.lfg_interests i
+              ON i.listing_id = @id AND i.from_user_id = @userId
+            """, new { id, userId = userCtx.UserIdGuid });
+        row = row with
+        {
+            IsSaved = viewer?.IsSaved ?? false,
+            ViewerInterestId = viewer?.ViewerInterestId,
+            ViewerInterestStatus = viewer?.ViewerInterestStatus,
+            ViewerConversationId = viewer?.ViewerConversationId
+        };
 
         return Results.Ok(row);
     }
@@ -558,23 +624,38 @@ public static class LfgEndpoints
         if (req.Description is { Length: > 280 })
             return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
+        if (req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
+            return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
+
         using var conn = db.CreateConnection();
+        var gameSlug = await conn.QuerySingleOrDefaultAsync<string>(
+            "SELECT game_slug FROM public.lfg_listings WHERE id = @id AND user_id = @userId AND status IN ('draft', 'published', 'paused')",
+            new { id, userId = userCtx.UserIdGuid });
+        if (gameSlug is null) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
+        if (req.PreferredRoles is { Length: > 0 })
+        {
+            var validRoles = (await conn.QueryAsync<string>(
+                "SELECT r.role_key FROM public.game_catalog_game_roles r JOIN public.game_catalog_versions v ON v.id = r.version_id WHERE v.is_active AND r.game_slug = @gameSlug",
+                new { gameSlug })).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (req.PreferredRoles.Any(role => !validRoles.Contains(role)))
+                return Results.BadRequest(new { error = "Unknown role for this game." });
+        }
         var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
             """
             UPDATE public.lfg_listings SET
-                mode_key             = COALESCE(@modeKey, mode_key),
-                region_key           = COALESCE(@regionKey, region_key),
+                mode_key             = CASE WHEN @clearMode THEN NULL ELSE COALESCE(@modeKey, mode_key) END,
+                region_key           = CASE WHEN @clearRegion THEN NULL ELSE COALESCE(@regionKey, region_key) END,
                 preferred_servers    = COALESCE(@preferredServers, preferred_servers),
-                min_rank_sort_order  = COALESCE(@minRank, min_rank_sort_order),
-                max_rank_sort_order  = COALESCE(@maxRank, max_rank_sort_order),
+                min_rank_sort_order  = CASE WHEN @clearMinRank THEN NULL ELSE COALESCE(@minRank, min_rank_sort_order) END,
+                max_rank_sort_order  = CASE WHEN @clearMaxRank THEN NULL ELSE COALESCE(@maxRank, max_rank_sort_order) END,
                 preferred_roles      = COALESCE(@preferredRoles, preferred_roles),
                 preferred_agents     = COALESCE(@preferredAgents, preferred_agents),
                 languages            = COALESCE(@languages, languages),
-                description          = COALESCE(@description, description),
+                description          = CASE WHEN @clearDescription THEN NULL ELSE COALESCE(@description, description) END,
                 expires_at           = COALESCE(@expiresAt, expires_at),
                 updated_at           = now()
             WHERE id = @id AND user_id = @userId
-              AND status IN ('draft', 'published')
+              AND status IN ('draft', 'published', 'paused')
             RETURNING *
             """,
             new
@@ -591,6 +672,11 @@ public static class LfgEndpoints
                 languages = req.Languages,
                 description = req.Description,
                 expiresAt = req.ExpiresAt,
+                clearMode = req.ClearMode,
+                clearRegion = req.ClearRegion,
+                clearMinRank = req.ClearMinRank,
+                clearMaxRank = req.ClearMaxRank,
+                clearDescription = req.ClearDescription,
             });
 
         if (row is null)
@@ -740,8 +826,9 @@ public static class LfgEndpoints
 
         using var conn = db.CreateConnection();
 
+        if (req?.Message is { Length: > 500 }) return Results.BadRequest(new { error = "message must be 500 characters or fewer." });
         var listing = await conn.QuerySingleOrDefaultAsync<(Guid UserId, string? Status)>(
-            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id",
+            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id AND (expires_at IS NULL OR expires_at > now())",
             new { id });
 
         if (listing.Status is null || listing.Status != "published")
@@ -765,7 +852,10 @@ public static class LfgEndpoints
         var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
             """
             INSERT INTO public.lfg_interests (listing_id, from_user_id, to_user_id, status, message)
-            VALUES (@listingId, @fromUserId, @toUserId, 'expressed'::lfg_interest_status, @message)
+            SELECT id, @fromUserId, user_id, 'expressed'::lfg_interest_status, @message
+            FROM public.lfg_listings WHERE id = @listingId AND status = 'published'
+              AND (expires_at IS NULL OR expires_at > now())
+            ON CONFLICT (listing_id, from_user_id) DO NOTHING
             RETURNING *
             """,
             new
@@ -776,6 +866,7 @@ public static class LfgEndpoints
                 message = req?.Message,
             });
 
+        if (row is null) return Results.Conflict(new { error = "ALREADY_INTERESTED_OR_UNAVAILABLE" });
         if (row is not null)
         {
             var fromUsername = await conn.QuerySingleOrDefaultAsync<string>(
@@ -836,71 +927,6 @@ public static class LfgEndpoints
             new { listingId = id, userId = userCtx.UserIdGuid });
 
         return updated == 0 ? Results.NotFound() : Results.Ok(new { success = true });
-    }
-
-    // ── POST /api/competitive/lfg/interests/{interestId}/accept ──────────────
-
-    private static async Task<IResult> AcceptInterestAsync(
-        Guid interestId,
-        HttpContext ctx,
-        IDbConnectionFactory db,
-        CancellationToken ct)
-    {
-        var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null) return Results.Unauthorized();
-
-        using var conn = db.CreateConnection();
-
-        var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
-            """
-            UPDATE public.lfg_interests
-            SET status = 'accepted'::lfg_interest_status, updated_at = now()
-            WHERE id = @id AND to_user_id = @userId
-              AND status = 'expressed'
-            RETURNING *
-            """,
-            new { id = interestId, userId = userCtx.UserIdGuid });
-
-        if (row is null) return Results.NotFound();
-
-        // Find or create a direct conversation between the two parties.
-        var existingConvId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-            """
-            SELECT c.id FROM public.conversations c
-            INNER JOIN public.conversation_participants cp1
-                ON cp1.conversation_id = c.id AND cp1.user_id = @userId AND cp1.is_active = TRUE
-            INNER JOIN public.conversation_participants cp2
-                ON cp2.conversation_id = c.id AND cp2.user_id = @otherId AND cp2.is_active = TRUE
-            WHERE c.type = 'direct'
-            LIMIT 1
-            """,
-            new { userId = userCtx.UserIdGuid, otherId = row.FromUserId });
-
-        Guid conversationId;
-        if (existingConvId.HasValue)
-        {
-            conversationId = existingConvId.Value;
-        }
-        else
-        {
-            conversationId = await conn.QuerySingleAsync<Guid>(
-                """
-                INSERT INTO public.conversations (type, created_by)
-                VALUES ('direct', @createdBy)
-                RETURNING id
-                """,
-                new { createdBy = userCtx.UserIdGuid });
-
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO public.conversation_participants (conversation_id, user_id)
-                VALUES (@convId, @userId), (@convId, @otherId)
-                ON CONFLICT DO NOTHING
-                """,
-                new { convId = conversationId, userId = userCtx.UserIdGuid, otherId = row.FromUserId });
-        }
-
-        return Results.Ok(new { interest = row, conversation_id = conversationId });
     }
 
     // ── POST /api/competitive/lfg/interests/{interestId}/decline ─────────────
@@ -1057,10 +1083,17 @@ public sealed record UpdateLfgListingRequest(
     [property: JsonPropertyName("preferred_agents")] string[]? PreferredAgents = null,
     [property: JsonPropertyName("languages")] string[]? Languages = null,
     [property: JsonPropertyName("description")] string? Description = null,
-    [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt = null);
+    [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt = null,
+    [property: JsonPropertyName("clear_mode")] bool ClearMode = false,
+    [property: JsonPropertyName("clear_region")] bool ClearRegion = false,
+    [property: JsonPropertyName("clear_min_rank")] bool ClearMinRank = false,
+    [property: JsonPropertyName("clear_max_rank")] bool ClearMaxRank = false,
+    [property: JsonPropertyName("clear_description")] bool ClearDescription = false);
 
 public sealed record ExpressInterestRequest(
     [property: JsonPropertyName("message")] string? Message = null);
+
+file sealed record LfgViewerState(bool IsSaved, Guid? ViewerInterestId, string? ViewerInterestStatus, Guid? ViewerConversationId);
 
 // Internal DTO for GetMyGameStatsAsync — Dapper maps nullable columns to null.
 file sealed record GameStatsRaw(

@@ -71,27 +71,33 @@ public sealed class ConversationHub : Hub
     {
         var userId = Context.UserIdentifier;
         if (userId is null) return;
+        if (!await IsConversationParticipantAsync(userId, conversationId)) return;
+
+        using var conn = _db.CreateConnection();
+        var recipients = (await conn.QueryAsync<Guid>(
+            "SELECT user_id FROM public.conversation_participants WHERE conversation_id = @conversationId AND user_id <> @userId AND is_active = TRUE",
+            new { conversationId = Guid.Parse(conversationId), userId = Guid.Parse(userId) }))
+            .Select(id => id.ToString()).ToArray();
 
         // Cache username to avoid DB hit on every keystroke
         if (Context.Items.TryGetValue("username", out var cached))
         {
             var un = cached as string ?? "Unknown";
-            await Clients.OthersInGroup(ConversationGroup(conversationId))
+            await Clients.Users(recipients)
                 .SendAsync(
                     isTyping ? ConversationHubEvents.TypingStart : ConversationHubEvents.TypingStop,
-                    new { userId, username = un });
+                    new { userId, username = un, conversationId });
             return;
         }
 
-        using var conn = _db.CreateConnection();
         var username = await conn.QuerySingleOrDefaultAsync<string>(
             "SELECT username FROM profiles WHERE id = @Id", new { Id = Guid.Parse(userId) });
         Context.Items["username"] = username ?? "Unknown";
 
-        await Clients.OthersInGroup(ConversationGroup(conversationId))
+        await Clients.Users(recipients)
             .SendAsync(
                 isTyping ? ConversationHubEvents.TypingStart : ConversationHubEvents.TypingStop,
-                new { userId, username = username ?? "Unknown" });
+                new { userId, username = username ?? "Unknown", conversationId });
     }
 
     // ── Group name helper ─────────────────────────────────────────────────────
@@ -102,6 +108,7 @@ public sealed class ConversationHub : Hub
 
     private async Task<bool> IsConversationParticipantAsync(string userId, string conversationId)
     {
+        if (!Guid.TryParse(userId, out var parsedUserId) || !Guid.TryParse(conversationId, out var parsedConversationId)) return false;
         using var conn = _db.CreateConnection();
         var isParticipant = await conn.QuerySingleOrDefaultAsync<bool>(
             """
@@ -112,7 +119,7 @@ public sealed class ConversationHub : Hub
                   AND is_active = TRUE
             )
             """,
-            new { conversationId = Guid.Parse(conversationId), userId = Guid.Parse(userId) });
+            new { conversationId = parsedConversationId, userId = parsedUserId });
         return isParticipant;
     }
 }
