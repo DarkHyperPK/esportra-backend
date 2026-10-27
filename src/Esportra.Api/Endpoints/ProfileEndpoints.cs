@@ -82,6 +82,24 @@ public static class ProfileEndpoints
             // Normalize empty tag fields to null (DB has unique partial index on non-empty values)
             NormalizeTagFields(valid, tagFields);
 
+            // Normalize empty avatar_seed to NULL — the partial unique index covers IS NOT NULL rows,
+            // so an empty string would collide across users sharing the same avatar_style.
+            if (valid.TryGetValue("avatar_seed", out var seedVal) && seedVal is string sv && string.IsNullOrWhiteSpace(sv))
+                valid["avatar_seed"] = null;
+
+            // When switching to a photo upload (avatar_url set, avatar_seed absent or null),
+            // null both avatar pool fields BEFORE the UPDATE to avoid unique-index conflicts,
+            // then release the pool claim below.
+            var isPhotoSwitch =
+                valid.TryGetValue("avatar_url", out var newUrl) && !string.IsNullOrWhiteSpace(newUrl as string) &&
+                (!valid.TryGetValue("avatar_seed", out var seedCheck) || seedCheck is null);
+
+            if (isPhotoSwitch)
+            {
+                valid["avatar_seed"] = null;
+                valid["avatar_style"] = null;
+            }
+
             if (valid.Count == 0)
                 return Results.BadRequest(new { error = "No valid fields to update." });
 
@@ -106,12 +124,6 @@ public static class ProfileEndpoints
             if (updateError is not null) return updateError;
 
             if (row is null) return Results.NotFound();
-
-            // If the user switched to a photo upload (avatar_url set, avatar_seed cleared),
-            // release any pool claim so they can claim a different avatar in future.
-            var isPhotoSwitch =
-                valid.TryGetValue("avatar_url", out var newUrl) && !string.IsNullOrWhiteSpace(newUrl as string) &&
-                valid.TryGetValue("avatar_seed", out var newSeed) && string.IsNullOrWhiteSpace(newSeed as string);
 
             if (isPhotoSwitch)
             {

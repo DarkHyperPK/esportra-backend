@@ -111,10 +111,22 @@ public static class AvatarPoolEndpoints
             if (claimed is null)
                 return Results.Conflict(new { error = "This avatar was just claimed by someone else." });
 
-            // Denormalise onto profile so the existing avatar_url computation keeps working
-            await conn.ExecuteAsync(
-                "UPDATE profiles SET avatar_seed = @seed, avatar_style = @style, avatar_url = NULL, updated_at = now() WHERE id = @userId",
-                new { userId = userCtx.UserIdGuid, seed = (string)claimed.seed, style = (string)claimed.style });
+            // Denormalise onto profile — runs in the same connection, not in a transaction,
+            // but the pool claim above already serialized ownership.
+            try
+            {
+                await conn.ExecuteAsync(
+                    "UPDATE profiles SET avatar_seed = @seed, avatar_style = @style, avatar_url = NULL, updated_at = now() WHERE id = @userId",
+                    new { userId = userCtx.UserIdGuid, seed = (string)claimed.seed, style = (string)claimed.style });
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+            {
+                // Stale profile data conflict: roll back the pool claim so the item is available again.
+                await conn.ExecuteAsync(
+                    "UPDATE avatar_pool SET claimed_by = NULL, claimed_at = NULL WHERE id = @itemId",
+                    new { itemId = req.ItemId });
+                return Results.Conflict(new { error = "This avatar is already claimed by another user." });
+            }
 
             return Results.Ok(new { claimed });
         }).RequireAuthorization("Authenticated");
