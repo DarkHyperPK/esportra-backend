@@ -84,14 +84,21 @@ public static class ProfileEndpoints
 
             // Normalize empty avatar_seed to NULL — the partial unique index covers IS NOT NULL rows,
             // so an empty string would collide across users sharing the same avatar_style.
-            if (valid.TryGetValue("avatar_seed", out var seedVal) && seedVal is string sv && string.IsNullOrWhiteSpace(sv))
-                valid["avatar_seed"] = null;
+            // Values from JSON deserialization arrive as JsonElement, not string, so check both.
+            if (valid.TryGetValue("avatar_seed", out var seedVal))
+            {
+                var seedStr = seedVal is JsonElement sj ? sj.GetString() : seedVal as string;
+                if (string.IsNullOrWhiteSpace(seedStr))
+                    valid["avatar_seed"] = null;
+            }
 
             // When switching to a photo upload (avatar_url set, avatar_seed absent or null),
             // null both avatar pool fields BEFORE the UPDATE to avoid unique-index conflicts,
             // then release the pool claim below.
+            valid.TryGetValue("avatar_url", out var avatarUrlVal);
+            var avatarUrlStr = avatarUrlVal is JsonElement uj ? uj.GetString() : avatarUrlVal as string;
             var isPhotoSwitch =
-                valid.TryGetValue("avatar_url", out var newUrl) && !string.IsNullOrWhiteSpace(newUrl as string) &&
+                !string.IsNullOrWhiteSpace(avatarUrlStr) &&
                 (!valid.TryGetValue("avatar_seed", out var seedCheck) || seedCheck is null);
 
             if (isPhotoSwitch)

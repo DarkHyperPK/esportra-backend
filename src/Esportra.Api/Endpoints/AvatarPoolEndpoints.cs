@@ -90,20 +90,21 @@ public static class AvatarPoolEndpoints
 
             using var conn = db.CreateConnection();
 
-            // Check user doesn't already own one
-            var existing = await conn.QuerySingleOrDefaultAsync<Guid?>(
+            // Check user doesn't already own a DIFFERENT item
+            var ownedItemId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT id FROM avatar_pool WHERE claimed_by = @userId LIMIT 1",
                 new { userId = userCtx.UserIdGuid });
 
-            if (existing is not null)
+            if (ownedItemId is not null && ownedItemId.Value != req.ItemId)
                 return Results.Conflict(new { error = "You already own an avatar. Release it before claiming a new one." });
 
-            // Claim atomically — only succeeds if item is unclaimed
+            // Claim atomically — succeeds if unclaimed, or if already owned by this user
+            // (recovers from broken sessions where profile-write failed but pool was already claimed)
             var claimed = await conn.QuerySingleOrDefaultAsync<dynamic>(
                 """
                 UPDATE avatar_pool
-                SET claimed_by = @userId, claimed_at = now()
-                WHERE id = @itemId AND claimed_by IS NULL
+                SET claimed_by = @userId, claimed_at = COALESCE(claimed_at, now())
+                WHERE id = @itemId AND (claimed_by IS NULL OR claimed_by = @userId)
                 RETURNING id, style, seed, claimed_at
                 """,
                 new { userId = userCtx.UserIdGuid, itemId = req.ItemId });
