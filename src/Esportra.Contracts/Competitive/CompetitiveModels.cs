@@ -152,6 +152,7 @@ public sealed record LfgListingRow
     public string? MaxRankDisplayName { get; init; }
     public string? MaxRankIconUrl { get; init; }
     // Riot stats enrichment
+    public string? PlayerCardId { get; init; }
     public int? CompetitiveTier { get; init; }
     public string? CompetitiveTierName { get; init; }
     public int? WinCount { get; init; }
@@ -159,6 +160,7 @@ public sealed record LfgListingRow
     public decimal? WinRate { get; init; }
     public decimal? KdRatio { get; init; }
     public string? PopularAgents { get; init; }
+    public string? StatsSyncStatus { get; init; }
     public int? MatchesAnalyzed { get; init; }
     public DateTimeOffset? RiotSyncedAt { get; init; }
     // Riot identity

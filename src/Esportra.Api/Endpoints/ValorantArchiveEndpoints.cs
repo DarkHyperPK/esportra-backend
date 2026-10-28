@@ -41,9 +41,9 @@ internal static class ValorantArchiveEndpoints
             JOIN public.riot_accounts ra ON ra.user_id = a.user_id AND ra.puuid = a.provider_player_id
             LEFT JOIN public.valorant_player_matches m ON m.user_id = a.user_id
               AND m.provider_player_id = a.provider_player_id AND m.act_id = a.act_id
-            WHERE a.user_id = @userId
+            WHERE a.user_id = @userId AND a.is_current
             GROUP BY a.user_id, a.provider_player_id, a.act_id, a.is_current, a.starts_at, a.sync_status
-            ORDER BY a.starts_at DESC LIMIT 2
+            ORDER BY a.starts_at DESC LIMIT 1
             """, new { userId });
         return rows.Select(row => (object)new
         {
@@ -67,7 +67,7 @@ internal static class ValorantArchiveEndpoints
         [FromQuery] string? act, [FromQuery] int limit = 20, [FromQuery] int offset = 0)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
-        if (act is not (null or "current" or "previous")) return Results.BadRequest(new { error = "Unknown act." });
+        if (act is not (null or "current")) return Results.BadRequest(new { error = "Unknown act." });
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<MatchRow>("""
             SELECT m.match_id, m.act_id, m.started_at, m.queue_id, m.agent_id, m.won,
@@ -76,13 +76,12 @@ internal static class ValorantArchiveEndpoints
             JOIN public.riot_accounts ra ON ra.user_id = m.user_id AND ra.puuid = m.provider_player_id
             WHERE m.user_id = @userId AND m.act_id = (
               SELECT a.act_id FROM public.valorant_act_syncs a
-              WHERE a.user_id = @userId AND a.provider_player_id = ra.puuid
-              ORDER BY a.starts_at DESC LIMIT 1 OFFSET @actOffset)
+              WHERE a.user_id = @userId AND a.provider_player_id = ra.puuid AND a.is_current
+              ORDER BY a.starts_at DESC LIMIT 1)
             ORDER BY m.started_at DESC, m.match_id DESC LIMIT @limit OFFSET @offset
             """, new
         {
             userId = user.UserIdGuid,
-            actOffset = act == "previous" ? 1 : 0,
             limit = Math.Clamp(limit, 1, 50),
             offset = Math.Max(offset, 0)
         });

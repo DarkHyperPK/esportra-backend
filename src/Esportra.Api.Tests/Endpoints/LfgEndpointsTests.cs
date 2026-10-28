@@ -4,6 +4,13 @@ using System.Text.Json;
 using Dapper;
 using Esportra.Api.Tests.Infrastructure;
 using FluentAssertions;
+using Hangfire;
+using Hangfire.Common;
+using Hangfire.States;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using NSubstitute;
 using Npgsql;
 using Xunit;
 
@@ -71,6 +78,172 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
             """,
             new { id, listingId, fromUserId, toUserId });
         return id;
+    }
+
+    [Fact]
+    public async Task CurrentRank_AppearsInOwnStatsDiscoverySavedAndDetails()
+    {
+        var (owner, ownerClient) = await User();
+        var (_, viewer) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            UPDATE public.lfg_listings SET intent = 'looking_for_team' WHERE id = @listing;
+            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@owner, 'peak-test', 'Player', 'TAG');
+            INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id,
+                competitive_tier, competitive_tier_name, player_card_id)
+            VALUES (@owner, 'valorant', 'peak-test', 10, 'Silver 2', 'c86953ca-4c94-c0f7-fd91-c19e03ff2b9f');
+            """, new { owner, listing });
+        var own = await (await ownerClient.GetAsync("/api/competitive/game-stats/me?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        own.GetProperty("competitive_tier").GetInt32().Should().Be(10);
+        (await viewer.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).EnsureSuccessStatusCode();
+        foreach (var path in new[] { "/api/competitive/lfg?game=valorant", "/api/competitive/lfg/saved?game=valorant" })
+        {
+            var rows = await (await viewer.GetAsync(path)).Content.ReadFromJsonAsync<JsonElement>();
+            var row = rows.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == listing);
+            row.GetProperty("competitiveTier").GetInt32().Should().Be(10);
+            row.GetProperty("playerCardId").GetString().Should().Be("c86953ca-4c94-c0f7-fd91-c19e03ff2b9f");
+        }
+        var detail = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+        detail.GetProperty("competitiveTier").GetInt32().Should().Be(10);
+        detail.TryGetProperty("peakCompetitiveTier", out _).Should().BeFalse();
+        var mine = await (await ownerClient.GetAsync("/api/competitive/lfg/mine")).Content.ReadFromJsonAsync<JsonElement>();
+        mine.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == listing).GetProperty("competitiveTier").GetInt32().Should().Be(10);
+    }
+
+    [Fact]
+    public async Task PlayerListing_IgnoresRecruitmentRankRequirementsAndClearsLegacyValues()
+    {
+        var (owner, client) = await User();
+        var create = await client.PostAsJsonAsync("/api/competitive/lfg", new { game_slug = "valorant", intent = "looking_for_team", min_rank_sort_order = 4 });
+        create.EnsureSuccessStatusCode();
+        var listing = await SeedListingAsync(owner, "valorant", status: "draft");
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET intent = 'looking_for_team', min_rank_sort_order = 4, max_rank_sort_order = 7 WHERE id = @listing", new { listing });
+        var invalid = await client.PutAsJsonAsync($"/api/competitive/lfg/{listing}", new { max_rank_sort_order = 10 });
+        invalid.EnsureSuccessStatusCode();
+        (await client.PutAsJsonAsync($"/api/competitive/lfg/{listing}", new { description = "Updated" })).EnsureSuccessStatusCode();
+        var minimum = await conn.ExecuteScalarAsync<int?>("SELECT min_rank_sort_order FROM public.lfg_listings WHERE id = @listing", new { listing });
+        minimum.Should().BeNull();
+        var maximum = await conn.ExecuteScalarAsync<int?>("SELECT max_rank_sort_order FROM public.lfg_listings WHERE id = @listing", new { listing });
+        maximum.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Discovery_RanksUsePlayerStatsForLftAndRequirementsForLfp()
+    {
+        var (owner, _) = await User();
+        var (_, viewer) = await User();
+        var player = await SeedListingAsync(owner, "valorant");
+        var team = await SeedListingAsync(owner, "valorant");
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            UPDATE public.lfg_listings SET intent = 'looking_for_team', min_rank_sort_order = 20, max_rank_sort_order = 22 WHERE id = @player;
+            UPDATE public.lfg_listings SET intent = 'looking_for_player', min_rank_sort_order = 3, max_rank_sort_order = 5 WHERE id = @team;
+            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@owner, 'rank-test', 'Player', 'TAG');
+            INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, competitive_tier)
+                VALUES (@owner, 'valorant', 'rank-test', 7);
+            """, new { owner, player, team });
+        var response = await viewer.GetAsync("/api/competitive/lfg?game=valorant&min_rank=3&max_rank=5");
+        response.EnsureSuccessStatusCode();
+        var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+        rows.EnumerateArray().Should().Contain(row => row.GetProperty("id").GetGuid() == player);
+        rows.EnumerateArray().Should().Contain(row => row.GetProperty("id").GetGuid() == team);
+        await conn.ExecuteAsync("UPDATE public.player_game_stats SET competitive_tier = 12 WHERE user_id = @owner AND game_slug = 'valorant'", new { owner });
+        var after = await (await viewer.GetAsync("/api/competitive/lfg?game=valorant&min_rank=3&max_rank=5")).Content.ReadFromJsonAsync<JsonElement>();
+        after.EnumerateArray().Should().NotContain(row => row.GetProperty("id").GetGuid() == player);
+        after.EnumerateArray().Should().Contain(row => row.GetProperty("id").GetGuid() == team);
+    }
+
+    [Fact]
+    public async Task StaffRoles_CanBeEditedAndFilteredWithoutAcceptingUnknownRoles()
+    {
+        var (owner, client) = await User();
+        var (_, viewer) = await User();
+        var listing = await SeedListingAsync(owner, "valorant", status: "draft");
+        var response = await client.PutAsJsonAsync($"/api/competitive/lfg/{listing}",
+            new { preferred_roles = new[] { "Coach", "MANAGER" } });
+        response.EnsureSuccessStatusCode();
+        await using var conn = factory.Seeder.OpenConnection();
+        var roles = await conn.QuerySingleAsync<string[]>("SELECT preferred_roles FROM public.lfg_listings WHERE id = @listing", new { listing });
+        roles.Should().Equal("coach", "manager");
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET status = 'published' WHERE id = @listing", new { listing });
+        var filtered = await (await viewer.GetAsync("/api/competitive/lfg?game=valorant&preferred_roles=coach")).Content.ReadFromJsonAsync<JsonElement>();
+        filtered.EnumerateArray().Should().Contain(item => item.GetProperty("id").GetGuid() == listing);
+        var invalid = await client.PutAsJsonAsync($"/api/competitive/lfg/{listing}", new { preferred_roles = new[] { "invented" } });
+        invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task GameStats_QueuesAndReturnsPending_ThenReturnsAgentStats()
+    {
+        var (user, _) = await User();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@user, @puuid, 'Player', 'TAG')",
+            new { user, puuid = Guid.NewGuid().ToString() });
+        var jobs = Substitute.For<IBackgroundJobClient>();
+        jobs.Create(Arg.Any<Job>(), Arg.Any<IState>()).Returns("job");
+        await using var app = factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IBackgroundJobClient>();
+            services.AddSingleton(jobs);
+        }));
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("Authorization", TestAuthHelper.BearerHeader(user));
+        var first = await client.GetAsync("/api/competitive/game-stats/me?game=valorant");
+        first.EnsureSuccessStatusCode();
+        var pending = await first.Content.ReadFromJsonAsync<JsonElement>();
+        pending.GetProperty("sync_status").GetString().Should().Be("pending");
+        await conn.ExecuteAsync("""
+            UPDATE public.player_game_stats SET sync_status = 'complete',
+              popular_agents = '[{"agent_id":"jett","games_played":2,"wins":1,"kills":10,"deaths":5,"kd_ratio":2}]'::jsonb
+            WHERE user_id = @user AND game_slug = 'valorant'
+            """, new { user });
+        var completed = await (await client.GetAsync("/api/competitive/game-stats/me?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        completed.GetProperty("sync_status").GetString().Should().Be("complete");
+        completed.GetProperty("popular_agents")[0].GetProperty("games_played").GetInt32().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Roster_UsesListingGameAndRespectsMemberStatsVisibility()
+    {
+        var (owner, _) = await User();
+        var (member, _) = await User();
+        var (_, viewer) = await User();
+        var teamId = await factory.Seeder.SeedTeamAsync(owner);
+        var listingId = await SeedListingAsync(owner, "valorant");
+        var rosterId = Guid.NewGuid();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            UPDATE public.lfg_listings SET team_id = @teamId, intent = 'looking_for_player' WHERE id = @listingId;
+            INSERT INTO public.team_members (team_id, user_id, role) VALUES (@teamId, @member, 'member');
+            INSERT INTO public.team_rosters (id, team_id, name, game, team_size)
+                VALUES (@rosterId, @teamId, 'Valorant', 'valorant', 5),
+                       (gen_random_uuid(), @teamId, 'Other game', 'cs2', 5);
+            INSERT INTO public.team_roster_members (roster_id, user_id) VALUES (@rosterId, @owner), (@rosterId, @member);
+            INSERT INTO public.player_game_profiles (user_id, game_slug, profile_visible) VALUES (@member, 'valorant', true);
+            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line)
+                VALUES (@owner, 'private', 'Owner', 'TAG'), (@member, 'public', 'Member', 'TAG');
+            INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, kd_ratio, win_rate)
+                VALUES (@owner, 'valorant', 'private', 1.11, 44), (@member, 'valorant', 'public', 1.50, 60);
+            """, new { teamId, listingId, rosterId, owner, member });
+        var response = await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster");
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        result.GetProperty("status").GetString().Should().Be("available");
+        var members = result.GetProperty("members").EnumerateArray().ToArray();
+        members.Should().HaveCount(2);
+        var hidden = members.Single(item => item.GetProperty("userId").GetGuid() == owner);
+        hidden.GetProperty("kdRatio").ValueKind.Should().Be(JsonValueKind.Null);
+        var visible = members.Single(item => item.GetProperty("userId").GetGuid() == member);
+        visible.GetProperty("kdRatio").GetDecimal().Should().Be(1.50m);
+        visible.TryGetProperty("email", out _).Should().BeFalse();
+        visible.TryGetProperty("riotPuuid", out _).Should().BeFalse();
+        await conn.ExecuteAsync("INSERT INTO public.team_rosters (team_id, name, game, team_size) VALUES (@teamId, 'Duplicate', 'VALORANT', 5)", new { teamId });
+        var duplicate = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
+        duplicate.GetProperty("status").GetString().Should().Be("ambiguous");
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET status = 'paused' WHERE id = @listingId", new { listingId });
+        (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     // ── Catalog: GET /api/catalog/rank-tiers ─────────────────────────────────

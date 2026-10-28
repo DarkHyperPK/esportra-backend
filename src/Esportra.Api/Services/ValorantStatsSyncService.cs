@@ -36,14 +36,26 @@ public sealed class ValorantStatsSyncService(
                 return;
             }
 
-            await conn.ExecuteAsync(
-                """
-            INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
-            VALUES (@userId, 'valorant', @puuid, 'syncing')
-            ON CONFLICT (user_id, game_slug) DO UPDATE SET
-                sync_status = 'syncing', updated_at = now()
-            """,
-                new { userId, puuid = account.Puuid });
+            using (var tx = conn.BeginTransaction())
+            {
+                await conn.ExecuteAsync("""
+                    INSERT INTO public.valorant_aggregate_snapshots (user_id, provider_player_id, act_id, snapshot)
+                    SELECT user_id, provider_player_id, COALESCE(last_act_id, ''), to_jsonb(pgs)
+                    FROM public.player_game_stats pgs
+                    WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id <> @puuid
+                    ON CONFLICT (user_id, provider_player_id, act_id) DO NOTHING
+                    """, new { userId, puuid = account.Puuid }, tx);
+                await conn.ExecuteAsync("""
+                    DELETE FROM public.player_game_stats
+                    WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id <> @puuid
+                    """, new { userId, puuid = account.Puuid }, tx);
+                await conn.ExecuteAsync("""
+                    INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
+                    VALUES (@userId, 'valorant', @puuid, 'syncing')
+                    ON CONFLICT (user_id, game_slug) DO UPDATE SET sync_status = 'syncing', updated_at = now()
+                    """, new { userId, puuid = account.Puuid }, tx);
+                tx.Commit();
+            }
 
             try
             {
@@ -52,6 +64,28 @@ public sealed class ValorantStatsSyncService(
                 {
                     await MarkError(conn, userId, "Current Valorant act is unavailable; try again later.");
                     return;
+                }
+                using (var tx = conn.BeginTransaction())
+                {
+                    await conn.ExecuteAsync("""
+                        INSERT INTO public.valorant_aggregate_snapshots (user_id, provider_player_id, act_id, snapshot)
+                        SELECT user_id, provider_player_id, last_act_id, to_jsonb(pgs)
+                        FROM public.player_game_stats pgs
+                        WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id = @puuid
+                          AND last_act_id IS NOT NULL AND last_act_id <> @actId
+                        ON CONFLICT (user_id, provider_player_id, act_id) DO NOTHING
+                        """, new { userId, puuid = account.Puuid, actId = act.ActId }, tx);
+                    await conn.ExecuteAsync("""
+                        UPDATE public.player_game_stats SET competitive_tier = NULL, competitive_tier_name = NULL,
+                            win_count = 0, loss_count = 0, total_kills = 0, total_deaths = 0, total_assists = 0,
+                            matches_analyzed = 0, total_score = 0, popular_agents = '[]'::jsonb,
+                            win_rate = NULL, kd_ratio = NULL, avg_score = NULL, total_headshots = 0,
+                            total_shots = 0, headshot_data_complete = true, hs_pct = NULL,
+                            last_match_id = NULL, last_act_id = @actId, aggregation_version = 4
+                        WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id = @puuid
+                          AND last_act_id IS NOT NULL AND last_act_id <> @actId
+                        """, new { userId, puuid = account.Puuid, actId = act.ActId }, tx);
+                    tx.Commit();
                 }
                 var shard = await RiotShards.ResolveAsync(riot, cache, account.Puuid, account.Region, ct);
                 var (listStatus, listBody) = await riot.ProxyAsync(
@@ -74,8 +108,6 @@ public sealed class ValorantStatsSyncService(
                 }
 
                 var acts = new List<ValorantMatchArchive.Act> { new(act.ActId, act.StartTime, true) };
-                if (act.PreviousActId is not null && act.PreviousStartTime.HasValue)
-                    acts.Add(new(act.PreviousActId, act.PreviousStartTime.Value, false));
                 var archiveComplete = false;
                 try { archiveComplete = await ValorantMatchArchive.SyncAsync(conn, riot, userId, account.Puuid, shard, listBody, acts, ct); }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -87,7 +119,7 @@ public sealed class ValorantStatsSyncService(
                        win_count, loss_count, total_kills, total_deaths,
                        total_assists, matches_analyzed, total_score, popular_agents::text AS popular_agents,
                        aggregation_version, sync_status,
-                       total_headshots, total_shots
+                       total_headshots, total_shots, headshot_data_complete
                 FROM public.player_game_stats
                 WHERE user_id = @userId AND game_slug = 'valorant'
                 """,
@@ -95,9 +127,26 @@ public sealed class ValorantStatsSyncService(
 
                 var actReset = existing?.LastActId != act.ActId;
                 var coversActStart = HistoryCoversActStart(listBody, act.StartTime);
-                var versionRebuild = !actReset && existing is { AggregationVersion: < 3 } && coversActStart;
-                if (versionRebuild) actReset = true;
-                var version = existing is { AggregationVersion: < 3 } && !coversActStart ? existing.AggregationVersion : 3;
+                // Rebuild legacy aggregates only when the current archive covers the old cursor and totals.
+                var archivedCount = await conn.ExecuteScalarAsync<int>("""
+                    SELECT count(*)::int FROM public.valorant_player_matches
+                    WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = @actId
+                      AND queue_id = 'competitive' AND match_data_version >= 1
+                    """, new { userId, puuid = account.Puuid, actId = act.ActId });
+                var versionRebuild = !actReset && existing is { AggregationVersion: < 4 } && coversActStart && archiveComplete
+                    && archivedCount >= existing.MatchesAnalyzed && (existing.LastMatchId is null || MatchlistContains(listBody, existing.LastMatchId));
+                if (versionRebuild)
+                {
+                    await conn.ExecuteAsync("""
+                        INSERT INTO public.valorant_aggregate_snapshots (user_id, provider_player_id, act_id, snapshot)
+                        SELECT user_id, provider_player_id, last_act_id, to_jsonb(pgs)
+                        FROM public.player_game_stats pgs
+                        WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id = @puuid
+                        ON CONFLICT (user_id, provider_player_id, act_id) DO NOTHING
+                        """, new { userId, puuid = account.Puuid });
+                    actReset = true;
+                }
+                var version = actReset || existing is null || existing.MatchesAnalyzed == 0 ? 4 : existing.AggregationVersion;
                 var lastMatchId = actReset ? null : existing?.LastMatchId;
                 var cursorGap = lastMatchId is not null && !MatchlistContains(listBody, lastMatchId);
                 List<string> matchIds;
@@ -126,12 +175,6 @@ public sealed class ValorantStatsSyncService(
                     matchIds = ParseCompetitiveMatchIds(listBody, lastMatchId, actReset, act.StartTime);
                 if (matchIds.Count == 0)
                 {
-                    if (actReset && existing?.MatchesAnalyzed > 0 && !coversActStart)
-                    {
-                        await conn.ExecuteAsync("UPDATE public.player_game_stats SET sync_status = 'partial', sync_error = @error, updated_at = now() WHERE user_id = @userId AND game_slug = 'valorant'",
-                            new { userId, error = "Match history is incomplete; previous stats were preserved." });
-                        return;
-                    }
                     await conn.ExecuteAsync(
                         """
                     UPDATE public.player_game_stats SET
@@ -151,8 +194,12 @@ public sealed class ValorantStatsSyncService(
                         avg_score = CASE WHEN @reset THEN NULL ELSE avg_score END,
                         total_headshots = CASE WHEN @reset THEN 0 ELSE total_headshots END,
                         total_shots = CASE WHEN @reset THEN 0 ELSE total_shots END,
+                        headshot_data_complete = CASE WHEN @reset THEN false ELSE headshot_data_complete END,
                         hs_pct = CASE WHEN @reset THEN NULL ELSE hs_pct END,
-                        player_card_id = CASE WHEN @reset THEN NULL ELSE player_card_id END,
+                        player_card_id = COALESCE((SELECT vm.player_card_id FROM public.valorant_player_matches vm
+                            WHERE vm.user_id = @userId AND vm.provider_player_id = @puuid AND vm.act_id = @actId
+                              AND vm.queue_id = 'competitive' AND vm.player_card_id IS NOT NULL
+                            ORDER BY vm.started_at DESC LIMIT 1), player_card_id),
                         last_match_id = CASE WHEN @reset THEN NULL ELSE last_match_id END,
                         aggregation_version = @version, sync_status = @status, synced_at = now(), updated_at = now(), last_act_id = @actId
                     WHERE user_id = @userId AND game_slug = 'valorant'
@@ -160,6 +207,7 @@ public sealed class ValorantStatsSyncService(
                         new
                         {
                             userId,
+                            puuid = account.Puuid,
                             actId = act.ActId,
                             reset = actReset,
                             version,
@@ -181,6 +229,8 @@ public sealed class ValorantStatsSyncService(
                         TotalScore = existing?.TotalScore ?? 0,
                         TotalHeadshots = existing?.TotalHeadshots ?? 0,
                         TotalShots = existing?.TotalShots ?? 0,
+                        HeadshotDataComplete = existing is null || existing.MatchesAnalyzed == 0 ||
+                            (existing.HeadshotDataComplete && existing.AggregationVersion >= 4),
                     };
 
                 if (!actReset && existing is not null) RestoreAgentStats(existing.PopularAgents, stats.AgentStats);
@@ -188,7 +238,7 @@ public sealed class ValorantStatsSyncService(
                 var archived = (await conn.QueryAsync<ValorantMatchArchive.Match>("""
                     SELECT match_id AS id, act_id, started_at, queue_id, agent_id, won,
                            kills, deaths, assists, score, competitive_tier AS tier,
-                           headshots, shots
+                           headshots, shots, headshot_data_complete, player_card_id, match_data_version
                     FROM public.valorant_player_matches
                     WHERE user_id = @userId AND provider_player_id = @puuid AND match_id = ANY(@ids)
                     """, new { userId, puuid = account.Puuid, ids = matchIds.ToArray() }))
@@ -203,10 +253,11 @@ public sealed class ValorantStatsSyncService(
 
                     if (archived.TryGetValue(matchId, out var stored) &&
                         string.Equals(stored.QueueId, "competitive", StringComparison.OrdinalIgnoreCase) &&
-                        stored.Shots > 0)
+                        stored.MatchDataVersion >= 1)
                     {
                         AccumulatePlayer(stats, stored.AgentId, stored.Kills, stored.Deaths, stored.Assists,
-                            stored.Score, stored.Tier ?? 0, stored.Won, stored.Headshots, stored.Shots, null);
+                            stored.Score, stored.Tier ?? 0, stored.Won, stored.Headshots, stored.Shots,
+                            stored.PlayerCardId, stored.HeadshotDataComplete == true);
                         newestMatchId = matchId;
                         continue;
                     }
@@ -245,7 +296,7 @@ public sealed class ValorantStatsSyncService(
                 var winRate = stats.TotalMatches > 0 ? Math.Round(100.0m * stats.Wins / stats.TotalMatches, 2) : (decimal?)null;
                 var kdRatio = stats.Deaths > 0 ? Math.Round((decimal)stats.Kills / stats.Deaths, 2) : (decimal?)null;
                 var avgScore = stats.TotalMatches > 0 ? stats.TotalScore / stats.TotalMatches : (int?)null;
-                var hsPct = stats.TotalShots > 0 ? Math.Round(100.0m * stats.TotalHeadshots / stats.TotalShots, 2) : (decimal?)null;
+                var hsPct = stats.HeadshotDataComplete && stats.TotalShots > 0 ? Math.Round(100.0m * stats.TotalHeadshots / stats.TotalShots, 2) : (decimal?)null;
 
                 var tierName = stats.LatestCompetitiveTier > 0
                     ? await ResolveTierName(conn, stats.LatestCompetitiveTier)
@@ -269,6 +320,7 @@ public sealed class ValorantStatsSyncService(
                     total_score           = @totalScore,
                     total_headshots       = @totalHeadshots,
                     total_shots           = @totalShots,
+                    headshot_data_complete = @headshotDataComplete,
                     hs_pct                = @hsPct,
                     player_card_id        = CASE WHEN @playerCard IS NOT NULL THEN @playerCard ELSE player_card_id END,
                     last_match_id         = CASE WHEN @reset THEN @lastMatchId ELSE COALESCE(@lastMatchId, last_match_id) END,
@@ -298,6 +350,7 @@ public sealed class ValorantStatsSyncService(
                         totalScore = stats.TotalScore,
                         totalHeadshots = stats.TotalHeadshots,
                         totalShots = stats.TotalShots,
+                        headshotDataComplete = stats.HeadshotDataComplete,
                         hsPct,
                         playerCard = stats.LatestPlayerCard,
                         lastMatchId = newestMatchId,
@@ -356,6 +409,7 @@ public sealed class ValorantStatsSyncService(
                 Assists = item.TryGetProperty("assists", out var a) && a.TryGetInt32(out var av) ? av : 0,
                 Headshots = item.TryGetProperty("headshots", out var hs) && hs.TryGetInt32(out var hsv) ? hsv : 0,
                 Shots = item.TryGetProperty("shots", out var sh) && sh.TryGetInt32(out var shv) ? shv : 0,
+                HeadshotDataComplete = item.TryGetProperty("headshot_data_complete", out var complete) && complete.ValueKind == JsonValueKind.True,
             };
         }
     }
@@ -419,12 +473,12 @@ public sealed class ValorantStatsSyncService(
             var tier = player.TryGetProperty("competitiveTier", out var ct) && ct.TryGetInt32(out var tierVal)
                 ? tierVal : 0;
 
-            var (headshots, shots) = ValorantMatchArchive.ExtractHeadshots(root, puuid);
+            var (headshots, shots, headshotDataComplete) = ValorantMatchArchive.ExtractHeadshotData(root, puuid);
 
             var hasWinner = teamWins.Values.Any(won => won);
             bool? result = hasWinner && teamWins.TryGetValue(playerTeamId, out var won) ? won : null;
             AccumulatePlayer(stats, characterId, kills, deaths, assists, score, tier, result,
-                headshots, shots, playerCard);
+                headshots, shots, playerCard, headshotDataComplete);
 
             return true;
         }
@@ -433,7 +487,7 @@ public sealed class ValorantStatsSyncService(
 
     private static void AccumulatePlayer(AggregatedStats stats, string? characterId, int kills,
         int deaths, int assists, int score, int tier, bool? won,
-        int headshots, int shots, string? playerCard)
+        int headshots, int shots, string? playerCard, bool headshotDataComplete)
     {
         stats.TotalMatches++;
         stats.Kills += kills;
@@ -442,6 +496,7 @@ public sealed class ValorantStatsSyncService(
         stats.TotalScore += score;
         stats.TotalHeadshots += headshots;
         stats.TotalShots += shots;
+        stats.HeadshotDataComplete &= headshotDataComplete;
         if (won == true) stats.Wins++; else if (won == false) stats.Losses++;
         if (tier >= 3) stats.LatestCompetitiveTier = tier;
         if (!string.IsNullOrEmpty(playerCard)) stats.LatestPlayerCard = playerCard;
@@ -457,6 +512,7 @@ public sealed class ValorantStatsSyncService(
         agentStat.Assists += assists;
         agentStat.Headshots += headshots;
         agentStat.Shots += shots;
+        agentStat.HeadshotDataComplete &= headshotDataComplete;
         if (won == true) agentStat.Wins++;
     }
 
@@ -521,8 +577,7 @@ public sealed class ValorantStatsSyncService(
         }
         var current = acts.Where(a => a.Start <= now && now < a.End).OrderByDescending(a => a.Start).FirstOrDefault();
         if (current.Id is null) return null;
-        var previous = acts.Where(a => a.Start < current.Start).OrderByDescending(a => a.Start).FirstOrDefault();
-        return new ActInfo(current.Id, current.Start, previous.Id, previous.Id is null ? null : previous.Start);
+        return new ActInfo(current.Id, current.Start);
     }
 
     private async Task<Dictionary<string, (string Name, string IconUrl)>> GetAgentMapAsync(CancellationToken ct)
@@ -578,7 +633,7 @@ public sealed class ValorantStatsSyncService(
                     ? info
                     : (a.CharacterId, "");
                 var agentKd = a.Deaths > 0 ? Math.Round((decimal)a.Kills / a.Deaths, 2) : (decimal?)null;
-                var agentHsPct = a.Shots > 0 ? Math.Round(100.0m * a.Headshots / a.Shots, 2) : (decimal?)null;
+                var agentHsPct = a.HeadshotDataComplete && a.Shots > 0 ? Math.Round(100.0m * a.Headshots / a.Shots, 2) : (decimal?)null;
                 return new
                 {
                     agent_id = a.CharacterId,
@@ -591,6 +646,7 @@ public sealed class ValorantStatsSyncService(
                     assists = a.Assists,
                     headshots = a.Headshots,
                     shots = a.Shots,
+                    headshot_data_complete = a.HeadshotDataComplete,
                     kd_ratio = agentKd,
                     hs_pct = agentHsPct,
                 };
@@ -611,14 +667,14 @@ public sealed class ValorantStatsSyncService(
             new { userId, error });
     }
 
-    private sealed record ActInfo(string ActId, DateTimeOffset StartTime, string? PreviousActId = null, DateTimeOffset? PreviousStartTime = null);
+    private sealed record ActInfo(string ActId, DateTimeOffset StartTime);
 
     private sealed record ExistingPgsStats(
         string? LastMatchId, string? LastActId,
         int WinCount, int LossCount,
         int TotalKills, int TotalDeaths, int TotalAssists,
         int MatchesAnalyzed, int TotalScore, string? PopularAgents, int AggregationVersion, string? SyncStatus,
-        int TotalHeadshots, int TotalShots);
+        int TotalHeadshots, int TotalShots, bool HeadshotDataComplete);
 
     private sealed class AggregatedStats
     {
@@ -631,6 +687,7 @@ public sealed class ValorantStatsSyncService(
         public int TotalScore;
         public int TotalHeadshots;
         public int TotalShots;
+        public bool HeadshotDataComplete = true;
         public int LatestCompetitiveTier;
         public string? LatestPlayerCard;
         public Dictionary<string, AgentStat> AgentStats = new(StringComparer.OrdinalIgnoreCase);
@@ -646,5 +703,6 @@ public sealed class ValorantStatsSyncService(
         public int Assists;
         public int Headshots;
         public int Shots;
+        public bool HeadshotDataComplete = true;
     }
 }

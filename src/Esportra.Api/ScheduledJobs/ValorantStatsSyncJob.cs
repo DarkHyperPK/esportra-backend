@@ -17,36 +17,27 @@ public sealed class ValorantStatsSyncJob(
     {
         using var conn = db.CreateConnection();
 
-        var userIds = (await conn.QueryAsync<Guid>(
-            """
-            SELECT DISTINCT ra.user_id
-            FROM public.riot_accounts ra
-            WHERE EXISTS (
-                SELECT 1 FROM public.lfg_listings l
-                WHERE l.user_id = ra.user_id AND l.status = 'published'
-            ) OR EXISTS (
-                SELECT 1 FROM public.player_game_profiles pgp
-                WHERE pgp.user_id = ra.user_id AND pgp.profile_visible = TRUE
-            )
-            ORDER BY ra.user_id
-            LIMIT @batchSize
-            """,
-            new { batchSize = BatchSize * 3 })).ToList();
-
-        if (userIds.Count == 0) return;
-
+        // Apply the limit after selecting stale accounts. Limiting by user id first
+        // permanently starves accounts outside the first page of eligible users.
         var stale = (await conn.QueryAsync<Guid>(
             """
-            SELECT u.user_id
-            FROM unnest(@userIds) AS u(user_id)
+            SELECT ra.user_id
+            FROM public.riot_accounts ra
             LEFT JOIN public.player_game_stats pgs
-                ON pgs.user_id = u.user_id AND pgs.game_slug = 'valorant'
-            WHERE pgs.synced_at IS NULL
-               OR pgs.synced_at < now() - INTERVAL '1 hour'
-            ORDER BY COALESCE(pgs.synced_at, '1970-01-01'::timestamptz) ASC
+                ON pgs.user_id = ra.user_id AND pgs.game_slug = 'valorant'
+            WHERE (EXISTS (
+                SELECT 1 FROM public.lfg_listings l
+                WHERE l.user_id = ra.user_id AND l.game_slug = 'valorant' AND l.status = 'published'
+            ) OR EXISTS (
+                SELECT 1 FROM public.player_game_profiles pgp
+                WHERE pgp.user_id = ra.user_id AND pgp.game_slug = 'valorant' AND pgp.profile_visible = TRUE
+            ))
+              AND (pgs.synced_at IS NULL OR pgs.synced_at < now() - INTERVAL '1 hour' OR pgs.sync_status IN ('error', 'pending', 'syncing'))
+              AND (pgs.updated_at IS NULL OR pgs.updated_at < now() - INTERVAL '10 minutes')
+            ORDER BY COALESCE(pgs.updated_at, '1970-01-01'::timestamptz), ra.user_id
             LIMIT @batchSize
             """,
-            new { userIds = userIds.ToArray(), batchSize = BatchSize })).ToList();
+            new { batchSize = BatchSize })).ToList();
 
         if (stale.Count == 0) return;
 

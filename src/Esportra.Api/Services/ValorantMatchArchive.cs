@@ -24,12 +24,17 @@ internal static class ValorantMatchArchive
         public int? Tier { get; init; }
         public int Headshots { get; init; }
         public int Shots { get; init; }
+        public bool? HeadshotDataComplete { get; init; }
+        public string? PlayerCardId { get; init; }
+        public int MatchDataVersion { get; init; }
     }
 
     internal static async Task<bool> SyncAsync(IDbConnection conn, RiotApiClient riot, Guid userId,
         string puuid, string shard, string matchlist, IReadOnlyList<Act> acts, CancellationToken ct)
     {
-        if (acts.Count == 0) return false;
+        var current = acts.SingleOrDefault(act => act.IsCurrent);
+        if (current is null) return false;
+        acts = [current];
         foreach (var act in acts)
             await conn.ExecuteAsync("""
                 INSERT INTO public.valorant_act_syncs (user_id, provider_player_id, act_id, starts_at, is_current, sync_status)
@@ -49,15 +54,16 @@ internal static class ValorantMatchArchive
                    CASE WHEN item.start_ms >= 0 THEN to_timestamp(item.start_ms::double precision / 1000) ELSE NULL END
             FROM unnest(@ids::text[], @starts::bigint[]) AS item(id, start_ms)
             WHERE NOT EXISTS (SELECT 1 FROM public.valorant_player_matches m
-              WHERE m.user_id = @userId AND m.provider_player_id = @puuid AND m.match_id = item.id)
+              WHERE m.user_id = @userId AND m.provider_player_id = @puuid AND m.match_id = item.id AND m.match_data_version >= 1)
             ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
                 match_started_at = COALESCE(EXCLUDED.match_started_at, valorant_match_backlog.match_started_at)
             """, new { userId, puuid, ids = candidates.Select(c => c.Id).ToArray(), starts = candidates.Select(c => c.StartMillis).ToArray() });
         var pending = await conn.QueryAsync<string>("""
             SELECT match_id FROM public.valorant_match_backlog
             WHERE user_id = @userId AND provider_player_id = @puuid
+              AND (match_started_at IS NULL OR match_started_at >= @start)
             ORDER BY match_started_at DESC NULLS LAST, discovered_at, match_id
-            """, new { userId, puuid });
+            """, new { userId, puuid, start = current.Start.UtcDateTime });
         var complete = true;
         foreach (var id in pending)
         {
@@ -76,12 +82,16 @@ internal static class ValorantMatchArchive
                 await conn.ExecuteAsync("""
                     INSERT INTO public.valorant_player_matches
                         (user_id, provider_player_id, match_id, act_id, started_at, queue_id, agent_id, won,
-                         kills, deaths, assists, score, competitive_tier, headshots, shots)
+                         kills, deaths, assists, score, competitive_tier, headshots, shots,
+                         headshot_data_complete, player_card_id, match_data_version)
                     VALUES (@userId, @puuid, @id, @actId, @startedAt, @queueId, @agentId, @won,
-                            @kills, @deaths, @assists, @score, @tier, @headshots, @shots)
+                            @kills, @deaths, @assists, @score, @tier, @headshots, @shots,
+                            @headshotDataComplete, @playerCardId, 1)
                     ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
-                        headshots = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.headshots ELSE valorant_player_matches.headshots END,
-                        shots     = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.shots     ELSE valorant_player_matches.shots     END
+                        headshots = EXCLUDED.headshots, shots = EXCLUDED.shots,
+                        headshot_data_complete = EXCLUDED.headshot_data_complete,
+                        player_card_id = COALESCE(EXCLUDED.player_card_id, valorant_player_matches.player_card_id),
+                        match_data_version = 1
                     """, new
                 {
                     userId,
@@ -98,7 +108,9 @@ internal static class ValorantMatchArchive
                     match.Score,
                     match.Tier,
                     match.Headshots,
-                    match.Shots
+                    match.Shots,
+                    match.HeadshotDataComplete,
+                    match.PlayerCardId
                 });
                 await RemovePendingAsync(conn, userId, puuid, id);
             }
@@ -109,7 +121,7 @@ internal static class ValorantMatchArchive
             UPDATE public.valorant_act_syncs SET sync_status = @status, updated_at = now()
             WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = ANY(@ids)
             """, new { userId, puuid, ids = acts.Select(a => a.Id).ToArray(), status = complete ? "available" : "partial" });
-        return complete && acts.Count == 2;
+        return complete;
     }
 
     private static Task<int> RemovePendingAsync(IDbConnection conn, Guid userId, string puuid, string id) =>
@@ -158,7 +170,7 @@ internal static class ValorantMatchArchive
         bool? won = anyWinner && team.ValueKind != JsonValueKind.Undefined && team.TryGetProperty("won", out var result)
             && result.ValueKind is JsonValueKind.True or JsonValueKind.False ? result.GetBoolean() : null;
 
-        var (headshots, shots) = ExtractHeadshots(root, puuid);
+        var (headshots, shots, complete) = ExtractHeadshotData(root, puuid);
 
         return new Match
         {
@@ -174,35 +186,49 @@ internal static class ValorantMatchArchive
             Score = stats.GetProperty("score").GetInt32(),
             Tier = player.TryGetProperty("competitiveTier", out var tier) && tier.TryGetInt32(out var value) && value >= 3 ? value : null,
             Headshots = headshots,
-            Shots = shots
+            Shots = shots,
+            HeadshotDataComplete = complete,
+            PlayerCardId = player.TryGetProperty("playerCard", out var card) && card.ValueKind == JsonValueKind.String ? card.GetString() : null,
+            MatchDataVersion = 1
         };
     }
 
     internal static (int Headshots, int Shots) ExtractHeadshots(JsonElement root, string puuid)
     {
+        var (headshots, shots, _) = ExtractHeadshotData(root, puuid);
+        return (headshots, shots);
+    }
+
+    internal static (int Headshots, int Shots, bool Complete) ExtractHeadshotData(JsonElement root, string puuid)
+    {
         var headshots = 0;
         var shots = 0;
         if (!root.TryGetProperty("roundResults", out var rounds) || rounds.ValueKind != JsonValueKind.Array)
-            return (0, 0);
+            return (0, 0, false);
+        var complete = rounds.GetArrayLength() > 0;
         foreach (var round in rounds.EnumerateArray())
         {
-            if (!round.TryGetProperty("playerStats", out var pStats) || pStats.ValueKind != JsonValueKind.Array) continue;
+            if (!round.TryGetProperty("playerStats", out var pStats) || pStats.ValueKind != JsonValueKind.Array) { complete = false; continue; }
+            var foundPlayer = false;
             foreach (var prs in pStats.EnumerateArray())
             {
                 if (!prs.TryGetProperty("puuid", out var pid) ||
                     !string.Equals(pid.GetString(), puuid, StringComparison.Ordinal)) continue;
-                if (!prs.TryGetProperty("damage", out var dmgs) || dmgs.ValueKind != JsonValueKind.Array) break;
+                foundPlayer = true;
+                if (!prs.TryGetProperty("damage", out var dmgs) || dmgs.ValueKind != JsonValueKind.Array) { complete = false; break; }
                 foreach (var dmg in dmgs.EnumerateArray())
                 {
-                    var hs = dmg.TryGetProperty("headshots", out var h) && h.TryGetInt32(out var hv) ? hv : 0;
-                    var bs = dmg.TryGetProperty("bodyshots", out var b) && b.TryGetInt32(out var bv) ? bv : 0;
-                    var ls = dmg.TryGetProperty("legshots", out var l) && l.TryGetInt32(out var lv) ? lv : 0;
+                    if (!dmg.TryGetProperty("headshots", out var h) || h.ValueKind != JsonValueKind.Number || !h.TryGetInt32(out var hs) ||
+                        !dmg.TryGetProperty("bodyshots", out var b) || b.ValueKind != JsonValueKind.Number || !b.TryGetInt32(out var bs) ||
+                        !dmg.TryGetProperty("legshots", out var l) || l.ValueKind != JsonValueKind.Number || !l.TryGetInt32(out var ls))
+                    { complete = false; continue; }
                     headshots += hs;
                     shots += hs + bs + ls;
                 }
                 break;
             }
+            if (!foundPlayer) complete = false;
         }
-        return (headshots, shots);
+        return (headshots, shots, complete);
     }
 }

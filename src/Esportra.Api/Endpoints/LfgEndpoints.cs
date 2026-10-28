@@ -230,8 +230,8 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
-                   pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
@@ -243,6 +243,7 @@ public static class LfgEndpoints
             JOIN public.profiles pr ON pr.id = l.user_id
             LEFT JOIN public.player_game_stats pgs
                 ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+               AND (l.game_slug <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id AND linked.puuid = pgs.provider_player_id))
             LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
             LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.lfg_interests vi ON vi.listing_id = l.id AND vi.from_user_id = @callerId
@@ -284,16 +285,13 @@ public static class LfgEndpoints
         if (!ValidIntents.Contains(req.Intent ?? ""))
             return Results.BadRequest(new { error = $"Invalid intent. Allowed: {string.Join(", ", ValidIntents)}." });
 
-        if (req.Intent == "looking_for_team" && (req.MinRankSortOrder.HasValue || req.MaxRankSortOrder.HasValue))
-            return Results.BadRequest(new { error = "Rank requirements belong to team recruitment listings." });
-
         if (req.Description is { Length: > 280 })
             return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
         if (string.Equals(req.GameSlug, "valorant", StringComparison.OrdinalIgnoreCase) && !ValidPreferredAgents(req.PreferredAgents))
             return Results.BadRequest(new { error = "Choose up to five distinct agents." });
 
-        if (req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
+        if (req.Intent != "looking_for_team" && req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
             return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
 
         using var conn = db.CreateConnection();
@@ -399,8 +397,8 @@ public static class LfgEndpoints
                 modeKey = req.ModeKey,
                 regionKey = req.RegionKey,
                 preferredServers = req.PreferredServers ?? Array.Empty<string>(),
-                minRank = req.MinRankSortOrder,
-                maxRank = req.MaxRankSortOrder,
+                minRank = req.Intent == "looking_for_team" ? null : req.MinRankSortOrder,
+                maxRank = req.Intent == "looking_for_team" ? null : req.MaxRankSortOrder,
                 preferredRoles = NormalizeStaffRoles(req.PreferredRoles) ?? Array.Empty<string>(),
                 preferredAgents = req.PreferredAgents ?? Array.Empty<string>(),
                 languages = req.Languages ?? Array.Empty<string>(),
@@ -444,8 +442,8 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
-                   pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
@@ -457,6 +455,7 @@ public static class LfgEndpoints
             JOIN public.profiles pr ON pr.id = l.user_id
             LEFT JOIN public.player_game_stats pgs
                 ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+               AND (l.game_slug <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id AND linked.puuid = pgs.provider_player_id))
             LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
             LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.game_catalog_regions reg
@@ -509,8 +508,8 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
-                   pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
@@ -522,6 +521,7 @@ public static class LfgEndpoints
             JOIN public.profiles pr ON pr.id = l.user_id
             LEFT JOIN public.player_game_stats pgs
                 ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+               AND (l.game_slug <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id AND linked.puuid = pgs.provider_player_id))
             LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
             LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.game_catalog_regions reg
@@ -642,9 +642,6 @@ public static class LfgEndpoints
         if (req.Description is { Length: > 280 })
             return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
-        if (req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
-            return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
-
         using var conn = db.CreateConnection();
         var editable = await conn.QuerySingleOrDefaultAsync<EditableLfgListing>(
             "SELECT game_slug, intent::text AS intent FROM public.lfg_listings WHERE id = @id AND user_id = @userId AND status IN ('draft', 'published', 'paused')",
@@ -652,8 +649,8 @@ public static class LfgEndpoints
         if (editable is null) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
         var gameSlug = editable.GameSlug;
         var isPlayer = editable.Intent == "looking_for_team";
-        if (isPlayer && (req.MinRankSortOrder.HasValue || req.MaxRankSortOrder.HasValue))
-            return Results.BadRequest(new { error = "Rank requirements belong to team recruitment listings." });
+        if (!isPlayer && req.MinRankSortOrder.HasValue && req.MaxRankSortOrder.HasValue && req.MinRankSortOrder > req.MaxRankSortOrder)
+            return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
         if (string.Equals(gameSlug, "valorant", StringComparison.OrdinalIgnoreCase) && !ValidPreferredAgents(req.PreferredAgents))
             return Results.BadRequest(new { error = "Choose up to five distinct agents." });
         if (req.PreferredRoles is { Length: > 0 })
@@ -690,8 +687,8 @@ public static class LfgEndpoints
                 modeKey = req.ModeKey,
                 regionKey = req.RegionKey,
                 preferredServers = req.PreferredServers,
-                minRank = req.MinRankSortOrder,
-                maxRank = req.MaxRankSortOrder,
+                minRank = isPlayer ? null : req.MinRankSortOrder,
+                maxRank = isPlayer ? null : req.MaxRankSortOrder,
                 preferredRoles = NormalizeStaffRoles(req.PreferredRoles),
                 preferredAgents = req.PreferredAgents,
                 languages = req.Languages,
@@ -1015,13 +1012,14 @@ public static class LfgEndpoints
                 pgs.win_rate               AS win_rate,
                 pgs.kd_ratio               AS kd_ratio,
                 pgs.matches_analyzed       AS matches_analyzed,
-                pgs.popular_agents::text   AS popular_agents,
-                pgs.hs_pct                 AS hs_pct,
+                (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text   AS popular_agents,
+                CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct ELSE NULL END AS hs_pct,
                 pgs.player_card_id         AS player_card_id
             FROM (SELECT @userId::uuid AS uid) AS u
             LEFT JOIN public.riot_accounts ra ON ra.user_id = u.uid
             LEFT JOIN public.player_game_stats pgs
                 ON pgs.user_id = u.uid AND pgs.game_slug = @game
+               AND (lower(@game) <> 'valorant' OR pgs.provider_player_id = ra.puuid)
             """,
             new { userId = userCtx.UserIdGuid, game });
 
@@ -1053,6 +1051,8 @@ public static class LfgEndpoints
                     ON CONFLICT (user_id, game_slug) DO UPDATE SET
                         sync_status = 'pending', updated_at = now()
                     WHERE player_game_stats.updated_at <= now() - interval '10 minutes'
+                       OR (player_game_stats.provider_player_id IS DISTINCT FROM @puuid
+                           AND player_game_stats.sync_status NOT IN ('pending', 'syncing'))
                     """,
                     new { userId = userCtx.UserIdGuid, puuid = row.RiotPuuid ?? "" });
 

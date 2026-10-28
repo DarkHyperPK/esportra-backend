@@ -120,6 +120,19 @@ public sealed class ValorantAgentAggregationTests
     }
 
     [Fact]
+    public void HeadshotExtraction_DistinguishesMissingDataFromZeroHits()
+    {
+        using var missing = JsonDocument.Parse("""{"roundResults":[]}""");
+        using var zero = JsonDocument.Parse("""{"roundResults":[{"playerStats":[{"puuid":"player","damage":[{"headshots":0,"bodyshots":3,"legshots":0}]}]}]}""");
+        var unknown = ValorantMatchArchive.ExtractHeadshotData(missing.RootElement, "player");
+        var known = ValorantMatchArchive.ExtractHeadshotData(zero.RootElement, "player");
+        unknown.Complete.Should().BeFalse();
+        known.Complete.Should().BeTrue();
+        known.Headshots.Should().Be(0);
+        known.Shots.Should().Be(3);
+    }
+
+    [Fact]
     public void RestoreAgentStats_RoundTripsNewFields()
     {
         var service = typeof(ValorantStatsSyncService);

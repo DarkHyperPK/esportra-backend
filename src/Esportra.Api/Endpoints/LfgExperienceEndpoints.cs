@@ -45,6 +45,7 @@ public static class LfgExperienceEndpoints
             JOIN public.team_members tm ON tm.team_id = @teamId AND tm.user_id = rm.user_id AND tm.is_active = true
             JOIN public.profiles p ON p.id = rm.user_id
             LEFT JOIN public.player_game_stats stats ON stats.user_id = rm.user_id AND stats.game_slug = @game
+              AND (@game <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = rm.user_id AND linked.puuid = stats.provider_player_id))
             CROSS JOIN LATERAL (SELECT rm.user_id = @userId OR EXISTS (
                 SELECT 1 FROM public.player_game_profiles pgp
                 WHERE pgp.user_id = rm.user_id AND pgp.game_slug = @game AND pgp.profile_visible = true
@@ -120,8 +121,8 @@ public static class LfgExperienceEndpoints
                 reg.display_name AS region_display_name, min_rt.display_name AS min_rank_display_name,
                 min_rt.icon_url AS min_rank_icon_url, max_rt.display_name AS max_rank_display_name,
                 max_rt.icon_url AS max_rank_icon_url, pgs.competitive_tier, pgs.competitive_tier_name,
-                pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
+                pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                 ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                 (SELECT count(*)::int FROM public.team_members tm WHERE tm.team_id = l.team_id AND tm.is_active) AS team_member_count,
                 true AS is_saved, vi.id AS viewer_interest_id, vi.status::text AS viewer_interest_status,
@@ -136,6 +137,7 @@ public static class LfgExperienceEndpoints
             JOIN public.profiles p ON p.id = l.user_id LEFT JOIN public.teams t ON t.id = l.team_id
             LEFT JOIN public.lfg_interests vi ON vi.listing_id = l.id AND vi.from_user_id = @userId
             LEFT JOIN public.player_game_stats pgs ON pgs.user_id = l.user_id AND pgs.game_slug = l.game_slug
+              AND (l.game_slug <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id AND linked.puuid = pgs.provider_player_id))
             LEFT JOIN public.riot_accounts ra ON ra.user_id = l.user_id
             LEFT JOIN public.game_catalog_regions reg ON reg.region_key = l.region_key AND reg.game_slug = l.game_slug AND reg.version_id = (SELECT id FROM active_v)
             LEFT JOIN public.game_catalog_rank_tiers min_rt ON min_rt.sort_order = l.min_rank_sort_order AND min_rt.game_slug = l.game_slug AND min_rt.version_id = (SELECT id FROM active_v)
