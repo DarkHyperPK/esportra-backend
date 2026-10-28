@@ -15,7 +15,6 @@ public sealed class ValorantStatsSyncService(
 {
     private const string ValorantAgentsUrl = "https://valorant-api.com/v1/agents?isPlayableCharacter=true";
     private const string ValorantSeasonsUrl = "https://valorant-api.com/v1/seasons";
-    private const int MaxMatchesPerAct = 500; // safety cap — a single act rarely exceeds 200 ranked games
 
     public async Task SyncForUserAsync(Guid userId, CancellationToken ct)
     {
@@ -74,45 +73,71 @@ public sealed class ValorantStatsSyncService(
                     return;
                 }
 
+                var acts = new List<ValorantMatchArchive.Act> { new(act.ActId, act.StartTime, true) };
+                if (act.PreviousActId is not null && act.PreviousStartTime.HasValue)
+                    acts.Add(new(act.PreviousActId, act.PreviousStartTime.Value, false));
+                var archiveComplete = false;
+                try { archiveComplete = await ValorantMatchArchive.SyncAsync(conn, riot, userId, account.Puuid, shard, listBody, acts, ct); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                { logger.LogWarning(ex, "Valorant match archive could not complete for user {UserId}", userId); }
+
                 var existing = await conn.QuerySingleOrDefaultAsync<ExistingPgsStats?>(
                     """
                 SELECT last_match_id, last_act_id,
                        win_count, loss_count, total_kills, total_deaths,
                        total_assists, matches_analyzed, total_score, popular_agents::text AS popular_agents,
-                       aggregation_version
+                       aggregation_version, sync_status,
+                       total_headshots, total_shots, total_performance_sum
                 FROM public.player_game_stats
                 WHERE user_id = @userId AND game_slug = 'valorant'
                 """,
                     new { userId });
 
                 var actReset = existing?.LastActId != act.ActId;
-                // Version upgrades advance the counter in the UPDATE without wiping totals —
-                // rebuilding from Riot history cannot guarantee completeness.
+                var coversActStart = HistoryCoversActStart(listBody, act.StartTime);
+                var versionRebuild = !actReset && existing is { AggregationVersion: < 3 } && coversActStart;
+                if (versionRebuild) actReset = true;
+                var version = existing is { AggregationVersion: < 3 } && !coversActStart ? existing.AggregationVersion : 3;
                 var lastMatchId = actReset ? null : existing?.LastMatchId;
-                var rebuilding = false;
-
-                if (lastMatchId is not null && !MatchlistContains(listBody, lastMatchId))
+                var cursorGap = lastMatchId is not null && !MatchlistContains(listBody, lastMatchId);
+                List<string> matchIds;
+                if (cursorGap)
                 {
-                    // Cursor match rotated out of Riot's history window — rebuild from available matches
-                    logger.LogWarning(
-                        "ValorantStatsSync: cursor {MatchId} missing for user {UserId} — rebuilding act from available history",
-                        lastMatchId, userId);
-                    actReset = true;
-                    lastMatchId = null;
-                    rebuilding = true;
+                    var cursorTime = await conn.QuerySingleOrDefaultAsync<DateTime?>("""
+                        SELECT started_at FROM public.valorant_player_matches
+                        WHERE user_id = @userId AND provider_player_id = @puuid
+                          AND match_id = @lastMatchId AND act_id = @actId
+                        """, new { userId, puuid = account.Puuid, lastMatchId, actId = act.ActId });
+                    if (cursorTime is null)
+                    {
+                        logger.LogWarning("ValorantStatsSync: missing cursor for user {UserId}; preserving previous totals", userId);
+                        await conn.ExecuteAsync("UPDATE public.player_game_stats SET sync_status = 'partial', sync_error = @error, updated_at = now() WHERE user_id = @userId AND game_slug = 'valorant'",
+                            new { userId, error = "Match history is incomplete; previous stats were preserved." });
+                        return;
+                    }
+                    matchIds = (await conn.QueryAsync<string>("""
+                        SELECT match_id FROM public.valorant_player_matches
+                        WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = @actId
+                          AND queue_id = 'competitive' AND started_at > @cursorTime
+                        ORDER BY started_at DESC, match_id DESC
+                        """, new { userId, puuid = account.Puuid, actId = act.ActId, cursorTime })).ToList();
                 }
-
-                var matchIds = ParseCompetitiveMatchIds(listBody, lastMatchId, actReset, act.StartTime);
-                if (matchIds.Count == MaxMatchesPerAct)
-                {
-                    await MarkError(conn, userId, "Too many new matches to sync safely; stats require a rebuild.");
-                    return;
-                }
+                else
+                    matchIds = ParseCompetitiveMatchIds(listBody, lastMatchId, actReset, act.StartTime);
                 if (matchIds.Count == 0)
                 {
+                    if (actReset && existing?.MatchesAnalyzed > 0 && !coversActStart)
+                    {
+                        await conn.ExecuteAsync("UPDATE public.player_game_stats SET sync_status = 'partial', sync_error = @error, updated_at = now() WHERE user_id = @userId AND game_slug = 'valorant'",
+                            new { userId, error = "Match history is incomplete; previous stats were preserved." });
+                        return;
+                    }
                     await conn.ExecuteAsync(
                         """
                     UPDATE public.player_game_stats SET
+                        competitive_tier = CASE WHEN @reset THEN NULL ELSE competitive_tier END,
+                        competitive_tier_name = CASE WHEN @reset THEN NULL ELSE competitive_tier_name END,
+                        sync_error = NULL,
                         win_count = CASE WHEN @reset THEN 0 ELSE win_count END,
                         loss_count = CASE WHEN @reset THEN 0 ELSE loss_count END,
                         total_kills = CASE WHEN @reset THEN 0 ELSE total_kills END,
@@ -124,11 +149,24 @@ public sealed class ValorantStatsSyncService(
                         win_rate = CASE WHEN @reset THEN NULL ELSE win_rate END,
                         kd_ratio = CASE WHEN @reset THEN NULL ELSE kd_ratio END,
                         avg_score = CASE WHEN @reset THEN NULL ELSE avg_score END,
+                        total_headshots = CASE WHEN @reset THEN 0 ELSE total_headshots END,
+                        total_shots = CASE WHEN @reset THEN 0 ELSE total_shots END,
+                        total_performance_sum = CASE WHEN @reset THEN 0 ELSE total_performance_sum END,
+                        hs_pct = CASE WHEN @reset THEN NULL ELSE hs_pct END,
+                        avg_performance = CASE WHEN @reset THEN NULL ELSE avg_performance END,
+                        player_card_id = CASE WHEN @reset THEN NULL ELSE player_card_id END,
                         last_match_id = CASE WHEN @reset THEN NULL ELSE last_match_id END,
-                        aggregation_version = 1, sync_status = 'complete', synced_at = now(), updated_at = now(), last_act_id = @actId
+                        aggregation_version = @version, sync_status = @status, synced_at = now(), updated_at = now(), last_act_id = @actId
                     WHERE user_id = @userId AND game_slug = 'valorant'
                     """,
-                        new { userId, actId = act.ActId, reset = actReset });
+                        new
+                        {
+                            userId,
+                            actId = act.ActId,
+                            reset = actReset,
+                            version,
+                            status = coversActStart && archiveComplete && !cursorGap ? "complete" : "partial"
+                        });
                     return;
                 }
 
@@ -143,9 +181,21 @@ public sealed class ValorantStatsSyncService(
                         Deaths = existing?.TotalDeaths ?? 0,
                         Assists = existing?.TotalAssists ?? 0,
                         TotalScore = existing?.TotalScore ?? 0,
+                        TotalHeadshots = existing?.TotalHeadshots ?? 0,
+                        TotalShots = existing?.TotalShots ?? 0,
+                        TotalPerformance = (double)(existing?.TotalPerformanceSum ?? 0),
                     };
 
                 if (!actReset && existing is not null) RestoreAgentStats(existing.PopularAgents, stats.AgentStats);
+
+                var archived = (await conn.QueryAsync<ValorantMatchArchive.Match>("""
+                    SELECT match_id AS id, act_id, started_at, queue_id, agent_id, won,
+                           kills, deaths, assists, score, competitive_tier AS tier,
+                           headshots, shots, performance
+                    FROM public.valorant_player_matches
+                    WHERE user_id = @userId AND provider_player_id = @puuid AND match_id = ANY(@ids)
+                    """, new { userId, puuid = account.Puuid, ids = matchIds.ToArray() }))
+                    .ToDictionary(match => match.Id, StringComparer.OrdinalIgnoreCase);
 
                 string? newestMatchId = null;
                 var rateLimited = false;
@@ -153,6 +203,17 @@ public sealed class ValorantStatsSyncService(
                 foreach (var matchId in matchIds.AsEnumerable().Reverse())
                 {
                     ct.ThrowIfCancellationRequested();
+
+                    if (archived.TryGetValue(matchId, out var stored) &&
+                        string.Equals(stored.QueueId, "competitive", StringComparison.OrdinalIgnoreCase) &&
+                        stored.Shots > 0)
+                    {
+                        AccumulatePlayer(stats, stored.AgentId, stored.Kills, stored.Deaths, stored.Assists,
+                            stored.Score, stored.Tier ?? 0, stored.Won, stored.Headshots, stored.Shots,
+                            (double)stored.Performance, null);
+                        newestMatchId = matchId;
+                        continue;
+                    }
 
                     var (detailStatus, detailBody) = await riot.ProxyAsync(
                         shard, $"/val/match/v1/matches/{Uri.EscapeDataString(matchId)}", ct);
@@ -178,11 +239,18 @@ public sealed class ValorantStatsSyncService(
                     }
                 }
 
+                if ((actReset && rateLimited && newestMatchId is null) || (versionRebuild && rateLimited))
+                {
+                    await MarkError(conn, userId, "Match details are temporarily unavailable; previous stats were preserved.");
+                    return;
+                }
                 var agentMap = await GetAgentMapAsync(ct);
                 var popularAgents = BuildPopularAgentsJson(stats.AgentStats, agentMap);
                 var winRate = stats.TotalMatches > 0 ? Math.Round(100.0m * stats.Wins / stats.TotalMatches, 2) : (decimal?)null;
                 var kdRatio = stats.Deaths > 0 ? Math.Round((decimal)stats.Kills / stats.Deaths, 2) : (decimal?)null;
                 var avgScore = stats.TotalMatches > 0 ? stats.TotalScore / stats.TotalMatches : (int?)null;
+                var hsPct = stats.TotalShots > 0 ? Math.Round(100.0m * stats.TotalHeadshots / stats.TotalShots, 2) : (decimal?)null;
+                var avgPerformance = stats.TotalMatches > 0 ? Math.Round((decimal)(stats.TotalPerformance / stats.TotalMatches), 2) : (decimal?)null;
 
                 var tierName = stats.LatestCompetitiveTier > 0
                     ? await ResolveTierName(conn, stats.LatestCompetitiveTier)
@@ -191,8 +259,8 @@ public sealed class ValorantStatsSyncService(
                 await conn.ExecuteAsync(
                     """
                 UPDATE public.player_game_stats SET
-                    competitive_tier      = COALESCE(@tier, competitive_tier),
-                    competitive_tier_name = COALESCE(@tierName, competitive_tier_name),
+                    competitive_tier      = CASE WHEN @reset THEN @tier ELSE COALESCE(@tier, competitive_tier) END,
+                    competitive_tier_name = CASE WHEN @reset THEN @tierName ELSE COALESCE(@tierName, competitive_tier_name) END,
                     win_count             = @wins,
                     loss_count            = @losses,
                     total_kills           = @kills,
@@ -204,9 +272,15 @@ public sealed class ValorantStatsSyncService(
                     kd_ratio              = @kdRatio,
                     avg_score             = @avgScore,
                     total_score           = @totalScore,
+                    total_headshots       = @totalHeadshots,
+                    total_shots           = @totalShots,
+                    total_performance_sum = @totalPerformanceSum,
+                    hs_pct                = @hsPct,
+                    avg_performance       = @avgPerformance,
+                    player_card_id        = CASE WHEN @playerCard IS NOT NULL THEN @playerCard ELSE player_card_id END,
                     last_match_id         = CASE WHEN @reset THEN @lastMatchId ELSE COALESCE(@lastMatchId, last_match_id) END,
                     last_act_id           = @actId,
-                    aggregation_version   = 1,
+                    aggregation_version   = @version,
                     synced_at             = now(),
                     sync_status           = @status,
                     sync_error            = NULL,
@@ -229,15 +303,22 @@ public sealed class ValorantStatsSyncService(
                         kdRatio,
                         avgScore,
                         totalScore = stats.TotalScore,
+                        totalHeadshots = stats.TotalHeadshots,
+                        totalShots = stats.TotalShots,
+                        totalPerformanceSum = (decimal)stats.TotalPerformance,
+                        hsPct,
+                        avgPerformance,
+                        playerCard = stats.LatestPlayerCard,
                         lastMatchId = newestMatchId,
                         reset = actReset,
+                        version,
                         actId = act.ActId,
-                        status = rateLimited || rebuilding ? "partial" : "complete",
+                        status = rateLimited || !coversActStart || !archiveComplete || cursorGap ? "partial" : "complete",
                     });
 
                 logger.LogInformation(
-                    "ValorantStatsSync: synced {New} new matches (act total {Total}) for user {UserId} — tier {Tier}, {WinRate}% WR, act {ActId}",
-                    matchIds.Count, stats.TotalMatches, userId, stats.LatestCompetitiveTier, winRate, act.ActId);
+                    "ValorantStatsSync: synced {New} new matches (act total {Total}) for user {UserId} — tier {Tier}, {WinRate}% WR, {HsPct}% HS, act {ActId}",
+                    matchIds.Count, stats.TotalMatches, userId, stats.LatestCompetitiveTier, winRate, hsPct, act.ActId);
             }
             catch (Exception ex)
             {
@@ -258,6 +339,14 @@ public sealed class ValorantStatsSyncService(
             history.EnumerateArray().Any(entry => entry.TryGetProperty("matchId", out var id) && id.GetString() == matchId);
     }
 
+    private static bool HistoryCoversActStart(string json, DateTimeOffset actStart)
+    {
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty("history", out var history) && history.ValueKind == JsonValueKind.Array &&
+            history.EnumerateArray().Any(entry => entry.TryGetProperty("gameStartTimeMillis", out var time) &&
+                time.TryGetInt64(out var value) && value < actStart.ToUnixTimeMilliseconds());
+    }
+
     private static void RestoreAgentStats(string? json, Dictionary<string, AgentStat> target)
     {
         if (string.IsNullOrWhiteSpace(json)) return;
@@ -272,7 +361,11 @@ public sealed class ValorantStatsSyncService(
                 GamesPlayed = item.GetProperty("games_played").GetInt32(),
                 Wins = item.GetProperty("wins").GetInt32(),
                 Kills = item.GetProperty("kills").GetInt32(),
-                Deaths = item.GetProperty("deaths").GetInt32()
+                Deaths = item.GetProperty("deaths").GetInt32(),
+                Assists = item.TryGetProperty("assists", out var a) && a.TryGetInt32(out var av) ? av : 0,
+                Headshots = item.TryGetProperty("headshots", out var hs) && hs.TryGetInt32(out var hsv) ? hsv : 0,
+                Shots = item.TryGetProperty("shots", out var sh) && sh.TryGetInt32(out var shv) ? shv : 0,
+                TotalPerformance = item.TryGetProperty("total_performance", out var tp) && tp.TryGetDouble(out var tpv) ? tpv : 0.0,
             };
         }
     }
@@ -286,26 +379,20 @@ public sealed class ValorantStatsSyncService(
 
         var actStartMs = actStart.ToUnixTimeMilliseconds();
         var ids = new List<string>();
-
-        foreach (var entry in history.EnumerateArray())
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var entries = history.EnumerateArray()
+            .Where(entry => entry.TryGetProperty("gameStartTimeMillis", out var time) &&
+                            time.ValueKind == JsonValueKind.Number && time.TryGetInt64(out _))
+            .OrderByDescending(entry => entry.GetProperty("gameStartTimeMillis").GetInt64());
+        foreach (var entry in entries)
         {
-            if (ids.Count >= MaxMatchesPerAct) break;
-
             var matchId = entry.TryGetProperty("matchId", out var mid) ? mid.GetString() : null;
-            if (matchId is null) continue;
-
-            // Incremental: stop when we reach the last already-processed match
+            if (string.IsNullOrWhiteSpace(matchId) || !seen.Add(matchId)) continue;
             if (!actReset && matchId == lastKnownMatchId) break;
-
+            var startMs = entry.GetProperty("gameStartTimeMillis").GetInt64();
+            if (startMs < actStartMs) break;
             var queueId = entry.TryGetProperty("queueId", out var q) ? q.GetString() : null;
-            if (!string.Equals(queueId, "competitive", StringComparison.OrdinalIgnoreCase)) continue;
-
-            // Stop once we go before the current act's start (matchlist is newest-first)
-            if (entry.TryGetProperty("gameStartTimeMillis", out var gst) &&
-                gst.TryGetInt64(out var startMs) && startMs < actStartMs)
-                break;
-
-            ids.Add(matchId);
+            if (string.Equals(queueId, "competitive", StringComparison.OrdinalIgnoreCase)) ids.Add(matchId);
         }
 
         return ids;
@@ -336,39 +423,55 @@ public sealed class ValorantStatsSyncService(
             var deaths = playerStats.GetProperty("deaths").GetInt32();
             var assists = playerStats.GetProperty("assists").GetInt32();
             var score = playerStats.GetProperty("score").GetInt32();
+            var performance = playerStats.TryGetProperty("performance", out var perf) && perf.TryGetDouble(out var perfVal)
+                ? perfVal : 0.0;
             var characterId = player.GetProperty("characterId").GetString() ?? "";
             var playerTeamId = player.TryGetProperty("teamId", out var tid) ? tid.GetString() ?? "" : "";
+            var playerCard = player.TryGetProperty("playerCard", out var pc) ? pc.GetString() : null;
             var tier = player.TryGetProperty("competitiveTier", out var ct) && ct.TryGetInt32(out var tierVal)
                 ? tierVal : 0;
 
-            var won = teamWins.TryGetValue(playerTeamId, out var w) && w;
+            var (headshots, shots) = ValorantMatchArchive.ExtractHeadshots(root, puuid);
 
-            stats.TotalMatches++;
-            stats.Kills += kills;
-            stats.Deaths += deaths;
-            stats.Assists += assists;
-            stats.TotalScore += score;
-            if (won) stats.Wins++; else stats.Losses++;
-            // Matches are processed oldest-first; the latest available tier wins.
-            if (tier > 0)
-                stats.LatestCompetitiveTier = tier;
-
-            if (!string.IsNullOrEmpty(characterId))
-            {
-                if (!stats.AgentStats.TryGetValue(characterId, out var agentStat))
-                {
-                    agentStat = new AgentStat { CharacterId = characterId };
-                    stats.AgentStats[characterId] = agentStat;
-                }
-                agentStat.GamesPlayed++;
-                agentStat.Kills += kills;
-                agentStat.Deaths += deaths;
-                if (won) agentStat.Wins++;
-            }
+            var hasWinner = teamWins.Values.Any(won => won);
+            bool? result = hasWinner && teamWins.TryGetValue(playerTeamId, out var won) ? won : null;
+            AccumulatePlayer(stats, characterId, kills, deaths, assists, score, tier, result,
+                headshots, shots, performance, playerCard);
 
             return true;
         }
         return false;
+    }
+
+    private static void AccumulatePlayer(AggregatedStats stats, string? characterId, int kills,
+        int deaths, int assists, int score, int tier, bool? won,
+        int headshots, int shots, double performance, string? playerCard)
+    {
+        stats.TotalMatches++;
+        stats.Kills += kills;
+        stats.Deaths += deaths;
+        stats.Assists += assists;
+        stats.TotalScore += score;
+        stats.TotalHeadshots += headshots;
+        stats.TotalShots += shots;
+        stats.TotalPerformance += performance;
+        if (won == true) stats.Wins++; else if (won == false) stats.Losses++;
+        if (tier >= 3) stats.LatestCompetitiveTier = tier;
+        if (!string.IsNullOrEmpty(playerCard)) stats.LatestPlayerCard = playerCard;
+        if (string.IsNullOrEmpty(characterId)) return;
+        if (!stats.AgentStats.TryGetValue(characterId, out var agentStat))
+        {
+            agentStat = new AgentStat { CharacterId = characterId };
+            stats.AgentStats[characterId] = agentStat;
+        }
+        agentStat.GamesPlayed++;
+        agentStat.Kills += kills;
+        agentStat.Deaths += deaths;
+        agentStat.Assists += assists;
+        agentStat.Headshots += headshots;
+        agentStat.Shots += shots;
+        agentStat.TotalPerformance += performance;
+        if (won == true) agentStat.Wins++;
     }
 
     private static async Task<string?> ResolveTierName(System.Data.IDbConnection conn, int competitiveTier)
@@ -376,8 +479,9 @@ public sealed class ValorantStatsSyncService(
         var sortOrder = competitiveTier - 3;
         return await conn.QuerySingleOrDefaultAsync<string?>(
             """
-            SELECT display_name FROM public.game_catalog_rank_tiers
-            WHERE game_slug = 'valorant' AND sort_order = @sortOrder
+            SELECT r.display_name FROM public.game_catalog_rank_tiers r
+            JOIN public.game_catalog_versions v ON v.id = r.version_id AND v.is_active
+            WHERE r.game_slug = 'valorant' AND r.sort_order = @sortOrder
             LIMIT 1
             """,
             new { sortOrder });
@@ -385,53 +489,54 @@ public sealed class ValorantStatsSyncService(
 
     private async Task<ActInfo> GetCurrentActAsync(CancellationToken ct)
     {
-        return await cache.GetOrCreateAsync(
-            "valorant:current-act",
-            async _ =>
-            {
-                try
+        try
+        {
+            return await cache.GetOrCreateAsync(
+                "valorant:current-act:v2",
+                async _ =>
                 {
                     var client = httpFactory.CreateClient();
                     using var resp = await client.GetAsync(ValorantSeasonsUrl, ct);
-                    if (!resp.IsSuccessStatusCode) return FallbackAct();
-
+                    resp.EnsureSuccessStatusCode();
                     var stream = await resp.Content.ReadAsStreamAsync(ct);
                     using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+                    if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                        throw new JsonException("Season data is unavailable.");
+                    return FindCurrentAct(data, DateTimeOffset.UtcNow)
+                        ?? throw new InvalidOperationException("No active Valorant act found.");
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromHours(1) },
+                cancellationToken: ct) ?? new ActInfo("unknown", DateTimeOffset.UtcNow.AddMonths(-2));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "ValorantStatsSync: could not fetch season data");
+            return new ActInfo("unknown", DateTimeOffset.UtcNow.AddMonths(-2));
+        }
+    }
 
-                    if (!doc.RootElement.TryGetProperty("data", out var data) ||
-                        data.ValueKind != JsonValueKind.Array)
-                        return FallbackAct();
-
-                    var now = DateTimeOffset.UtcNow;
-                    foreach (var season in data.EnumerateArray())
-                    {
-                        var type = season.TryGetProperty("type", out var t) ? t.GetString() : null;
-                        // valorant-api.com returns "EAresSeasonType::Act"; there is no isActive field
-                        if (type is null || !type.EndsWith("::Act", StringComparison.OrdinalIgnoreCase)) continue;
-
-                        var uuid = season.TryGetProperty("uuid", out var u) ? u.GetString() : null;
-                        var startTimeStr = season.TryGetProperty("startTime", out var st) ? st.GetString() : null;
-                        var endTimeStr = season.TryGetProperty("endTime", out var et) ? et.GetString() : null;
-
-                        if (uuid is null || startTimeStr is null || endTimeStr is null) continue;
-                        if (!DateTimeOffset.TryParse(startTimeStr, out var actStart)) continue;
-                        if (!DateTimeOffset.TryParse(endTimeStr, out var actEnd)) continue;
-
-                        if (actStart <= now && now < actEnd)
-                            return new ActInfo(uuid, actStart);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "ValorantStatsSync: could not fetch season data, using fallback");
-                }
-
-                return FallbackAct();
-            },
-            new HybridCacheEntryOptions { Expiration = TimeSpan.FromHours(24) },
-            cancellationToken: ct) ?? FallbackAct();
-
-        static ActInfo FallbackAct() => new("unknown", DateTimeOffset.UtcNow.AddMonths(-2));
+    private static ActInfo? FindCurrentAct(JsonElement data, DateTimeOffset now)
+    {
+        var acts = new List<(string Id, DateTimeOffset Start, DateTimeOffset End)>();
+        foreach (var season in data.EnumerateArray())
+        {
+            var type = season.TryGetProperty("type", out var t) ? t.GetString() : null;
+            if (type is null || !type.EndsWith("::Act", StringComparison.OrdinalIgnoreCase)) continue;
+            var uuid = season.TryGetProperty("uuid", out var u) ? u.GetString() : null;
+            var start = season.TryGetProperty("startTime", out var st) ? st.GetString() : null;
+            var end = season.TryGetProperty("endTime", out var et) ? et.GetString() : null;
+            if (uuid is not null && DateTimeOffset.TryParse(start, out var actStart) &&
+                DateTimeOffset.TryParse(end, out var actEnd) && actStart < actEnd)
+                acts.Add((uuid, actStart, actEnd));
+        }
+        var current = acts.Where(a => a.Start <= now && now < a.End).OrderByDescending(a => a.Start).FirstOrDefault();
+        if (current.Id is null) return null;
+        var previous = acts.Where(a => a.Start < current.Start).OrderByDescending(a => a.Start).FirstOrDefault();
+        return new ActInfo(current.Id, current.Start, previous.Id, previous.Id is null ? null : previous.Start);
     }
 
     private async Task<Dictionary<string, (string Name, string IconUrl)>> GetAgentMapAsync(CancellationToken ct)
@@ -487,6 +592,8 @@ public sealed class ValorantStatsSyncService(
                     ? info
                     : (a.CharacterId, "");
                 var agentKd = a.Deaths > 0 ? Math.Round((decimal)a.Kills / a.Deaths, 2) : (decimal?)null;
+                var agentHsPct = a.Shots > 0 ? Math.Round(100.0m * a.Headshots / a.Shots, 2) : (decimal?)null;
+                var agentAvgPerf = a.GamesPlayed > 0 ? Math.Round((decimal)(a.TotalPerformance / a.GamesPlayed), 2) : (decimal?)null;
                 return new
                 {
                     agent_id = a.CharacterId,
@@ -496,7 +603,13 @@ public sealed class ValorantStatsSyncService(
                     wins = a.Wins,
                     kills = a.Kills,
                     deaths = a.Deaths,
+                    assists = a.Assists,
+                    headshots = a.Headshots,
+                    shots = a.Shots,
+                    total_performance = a.TotalPerformance,
                     kd_ratio = agentKd,
+                    hs_pct = agentHsPct,
+                    avg_performance = agentAvgPerf,
                 };
             })
             .ToList();
@@ -515,13 +628,14 @@ public sealed class ValorantStatsSyncService(
             new { userId, error });
     }
 
-    private sealed record ActInfo(string ActId, DateTimeOffset StartTime);
+    private sealed record ActInfo(string ActId, DateTimeOffset StartTime, string? PreviousActId = null, DateTimeOffset? PreviousStartTime = null);
 
     private sealed record ExistingPgsStats(
         string? LastMatchId, string? LastActId,
         int WinCount, int LossCount,
         int TotalKills, int TotalDeaths, int TotalAssists,
-        int MatchesAnalyzed, int TotalScore, string? PopularAgents, int AggregationVersion);
+        int MatchesAnalyzed, int TotalScore, string? PopularAgents, int AggregationVersion, string? SyncStatus,
+        int TotalHeadshots, int TotalShots, decimal TotalPerformanceSum);
 
     private sealed class AggregatedStats
     {
@@ -532,7 +646,11 @@ public sealed class ValorantStatsSyncService(
         public int Deaths;
         public int Assists;
         public int TotalScore;
+        public int TotalHeadshots;
+        public int TotalShots;
+        public double TotalPerformance;
         public int LatestCompetitiveTier;
+        public string? LatestPlayerCard;
         public Dictionary<string, AgentStat> AgentStats = new(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -543,5 +661,9 @@ public sealed class ValorantStatsSyncService(
         public int Wins;
         public int Kills;
         public int Deaths;
+        public int Assists;
+        public int Headshots;
+        public int Shots;
+        public double TotalPerformance;
     }
 }
