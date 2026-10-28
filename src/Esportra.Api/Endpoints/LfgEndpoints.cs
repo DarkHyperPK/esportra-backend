@@ -989,10 +989,12 @@ public static class LfgEndpoints
             """
             SELECT
                 (ra.puuid IS NOT NULL)      AS riot_linked,
+                ra.puuid                    AS riot_puuid,
                 ra.game_name               AS riot_game_name,
                 ra.tag_line                AS riot_tag_line,
                 pgs.sync_status            AS sync_status,
                 pgs.synced_at              AS synced_at,
+                pgs.updated_at             AS updated_at,
                 pgs.competitive_tier       AS competitive_tier,
                 pgs.competitive_tier_name  AS competitive_tier_name,
                 pgs.win_count              AS win_count,
@@ -1011,14 +1013,32 @@ public static class LfgEndpoints
         if (row is null)
             return Results.Ok(new { riot_linked = false });
 
-        // Auto-sync: if Riot is linked but stats are missing or stale (>1h), enqueue background sync
+        // Auto-sync: if Riot is linked but stats are missing or stale (>1h), enqueue background sync.
+        // Cooldown via updated_at prevents re-enqueue storms after failed syncs (sync_error path
+        // keeps synced_at old) — a fresh attempt at most every 10 minutes per user.
         if (row.RiotLinked && string.Equals(game, "valorant", StringComparison.OrdinalIgnoreCase))
         {
-            var stale = row.SyncedAt is null
-                || (DateTimeOffset.UtcNow - row.SyncedAt.Value).TotalHours >= 1
-                || row.SyncStatus is "error" or null;
-            if (stale)
+            var now = DateTimeOffset.UtcNow;
+            var lastSyncedAt = GameStatsRaw.ToDto(row.SyncedAt);
+            var lastUpdatedAt = GameStatsRaw.ToDto(row.UpdatedAt);
+            var syncAgeHours = lastSyncedAt is null ? double.MaxValue : (now - lastSyncedAt.Value).TotalHours;
+            var lastTouchAgeMinutes = lastUpdatedAt is null
+                ? double.MaxValue
+                : (now - lastUpdatedAt.Value).TotalMinutes;
+            var needsSync = syncAgeHours >= 1 || row.SyncStatus is "error" or "pending" or null;
+            if (needsSync && lastTouchAgeMinutes >= 10)
             {
+                // Stamp 'pending' synchronously so the caller (and its 5s poll) sees the sync
+                // kicking off immediately, instead of a stale null status.
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
+                    VALUES (@userId, 'valorant', @puuid, 'pending')
+                    ON CONFLICT (user_id, game_slug) DO UPDATE SET
+                        sync_status = 'pending', updated_at = now()
+                    """,
+                    new { userId = userCtx.UserIdGuid, puuid = row.RiotPuuid ?? "" });
+
                 backgroundJobs.Enqueue<ValorantStatsSyncService>(
                     s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
             }
@@ -1031,13 +1051,15 @@ public static class LfgEndpoints
             catch { /* malformed JSONB — leave null */ }
         }
 
+        var syncedAtDto = GameStatsRaw.ToDto(row.SyncedAt);
+
         return Results.Ok(new
         {
             riot_linked = row.RiotLinked,
             riot_game_name = row.RiotGameName,
             riot_tag_line = row.RiotTagLine,
             sync_status = row.SyncStatus,
-            synced_at = row.SyncedAt,
+            synced_at = syncedAtDto,
             competitive_tier = row.CompetitiveTier,
             competitive_tier_name = row.CompetitiveTierName,
             win_count = row.WinCount,
@@ -1068,9 +1090,10 @@ public static class LfgEndpoints
         if (!hasPuuid)
             return Results.BadRequest(new { error = "NO_LINKED_RIOT_ACCOUNT" });
 
-        var lastSync = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+        var lastSyncRaw = await conn.QuerySingleOrDefaultAsync<DateTime?>(
             "SELECT synced_at FROM public.player_game_stats WHERE user_id = @userId AND game_slug = 'valorant'",
             new { userId = userCtx.UserIdGuid });
+        var lastSync = GameStatsRaw.ToDto(lastSyncRaw);
 
         if (lastSync.HasValue && (DateTimeOffset.UtcNow - lastSync.Value).TotalMinutes < 5)
             return Results.Ok(new { status = "fresh", synced_at = lastSync.Value });
@@ -1122,17 +1145,42 @@ public sealed record ExpressInterestRequest(
 file sealed record LfgViewerState(bool IsSaved, Guid? ViewerInterestId, string? ViewerInterestStatus, Guid? ViewerConversationId);
 
 // Internal DTO for GetMyGameStatsAsync — Dapper maps nullable columns to null.
-file sealed record GameStatsRaw(
-    bool RiotLinked,
-    string? RiotGameName,
-    string? RiotTagLine,
-    string? SyncStatus,
-    DateTimeOffset? SyncedAt,
-    int? CompetitiveTier,
-    string? CompetitiveTierName,
-    int? WinCount,
-    int? LossCount,
-    decimal? WinRate,
-    decimal? KdRatio,
-    int? MatchesAnalyzed,
-    string? PopularAgents);
+// Internal DTO for GetMyGameStatsAsync — non-positional so Dapper maps by property
+// (positional primary constructors must exactly match reader column types or Dapper
+// throws "no matching constructor"). Timestamptz columns read as System.DateTime via
+// Npgsql, so DateTime? is the exact type; converted to DateTimeOffset via ToDto()
+// below for the serialized response.
+file sealed record GameStatsRaw
+{
+    public bool RiotLinked { get; init; }
+    public string? RiotPuuid { get; init; }
+    public string? RiotGameName { get; init; }
+    public string? RiotTagLine { get; init; }
+    public string? SyncStatus { get; init; }
+    public DateTime? SyncedAt { get; init; }
+    public DateTime? UpdatedAt { get; init; }
+    public int? CompetitiveTier { get; init; }
+    public string? CompetitiveTierName { get; init; }
+    public int? WinCount { get; init; }
+    public int? LossCount { get; init; }
+    public decimal? WinRate { get; init; }
+    public decimal? KdRatio { get; init; }
+    public int? MatchesAnalyzed { get; init; }
+    public string? PopularAgents { get; init; }
+
+    /// <summary>
+    /// Npgsql reads timestamptz as DateTime. Normalize to a DateTimeOffset without
+    /// shifting the instant, regardless of the Kind Npgsql attached to the value.
+    /// </summary>
+    public static DateTimeOffset? ToDto(DateTime? value)
+    {
+        if (value is null) return null;
+        var dt = value.Value;
+        return dt.Kind switch
+        {
+            DateTimeKind.Utc => new DateTimeOffset(dt, TimeSpan.Zero),
+            DateTimeKind.Local => new DateTimeOffset(dt),
+            _ => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc), TimeSpan.Zero),
+        };
+    }
+}
