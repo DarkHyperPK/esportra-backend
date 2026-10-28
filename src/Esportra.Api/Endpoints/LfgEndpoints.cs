@@ -980,7 +980,7 @@ public static class LfgEndpoints
     // Returns the calling user's Riot link status + synced Valorant stats.
     // Always returns 200 so the frontend can gate on riot_linked / sync_status.
 
-    private static async Task<IResult> GetMyGameStatsAsync(
+    internal static async Task<IResult> GetMyGameStatsAsync(
         [FromQuery] string? game,
         HttpContext ctx,
         IDbConnectionFactory db,

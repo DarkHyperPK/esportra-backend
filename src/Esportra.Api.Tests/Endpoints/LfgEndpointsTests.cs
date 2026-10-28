@@ -7,9 +7,11 @@ using FluentAssertions;
 using Hangfire;
 using Hangfire.Common;
 using Hangfire.States;
-using Microsoft.AspNetCore.Hosting;
+using Esportra.Api.Endpoints;
+using Esportra.Contracts.Auth;
+using Esportra.Contracts.Database;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using NSubstitute;
 using Npgsql;
 using Xunit;
@@ -183,23 +185,22 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
             new { user, puuid = Guid.NewGuid().ToString() });
         var jobs = Substitute.For<IBackgroundJobClient>();
         jobs.Create(Arg.Any<Job>(), Arg.Any<IState>()).Returns("job");
-        await using var app = factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
-        {
-            services.RemoveAll<IBackgroundJobClient>();
-            services.AddSingleton(jobs);
-        }));
-        var client = app.CreateClient();
-        client.DefaultRequestHeaders.Add("Authorization", TestAuthHelper.BearerHeader(user));
-        var first = await client.GetAsync("/api/competitive/game-stats/me?game=valorant");
-        first.EnsureSuccessStatusCode();
-        var pending = await first.Content.ReadFromJsonAsync<JsonElement>();
+        // Calling the handler with a fake job client avoids starting a second Hangfire host.
+        // Hangfire uses process-wide state, so disposing a second host can disrupt later tests.
+        var context = new DefaultHttpContext();
+        context.Items["UserContext"] = new UserContext { UserId = user.ToString() };
+        var db = factory.Services.GetRequiredService<IDbConnectionFactory>();
+        var first = await LfgEndpoints.GetMyGameStatsAsync("valorant", context, db, jobs, CancellationToken.None);
+        var pending = JsonSerializer.SerializeToElement(((IValueHttpResult)first).Value);
         pending.GetProperty("sync_status").GetString().Should().Be("pending");
+        jobs.Received(1).Create(Arg.Any<Job>(), Arg.Any<IState>());
         await conn.ExecuteAsync("""
             UPDATE public.player_game_stats SET sync_status = 'complete',
               popular_agents = '[{"agent_id":"jett","games_played":2,"wins":1,"kills":10,"deaths":5,"kd_ratio":2}]'::jsonb
             WHERE user_id = @user AND game_slug = 'valorant'
             """, new { user });
-        var completed = await (await client.GetAsync("/api/competitive/game-stats/me?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
+        var result = await LfgEndpoints.GetMyGameStatsAsync("valorant", context, db, jobs, CancellationToken.None);
+        var completed = JsonSerializer.SerializeToElement(((IValueHttpResult)result).Value);
         completed.GetProperty("sync_status").GetString().Should().Be("complete");
         completed.GetProperty("popular_agents")[0].GetProperty("games_played").GetInt32().Should().Be(2);
     }
@@ -239,6 +240,15 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         visible.GetProperty("kdRatio").GetDecimal().Should().Be(1.50m);
         visible.TryGetProperty("email", out _).Should().BeFalse();
         visible.TryGetProperty("riotPuuid", out _).Should().BeFalse();
+        var playerListing = await SeedListingAsync(owner, "valorant");
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET intent = 'looking_for_team' WHERE id = @playerListing", new { playerListing });
+        var optedIn = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
+        optedIn.GetProperty("members").EnumerateArray().Single(item => item.GetProperty("userId").GetGuid() == owner)
+            .GetProperty("kdRatio").GetDecimal().Should().Be(1.11m);
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET status = 'paused' WHERE id = @playerListing", new { playerListing });
+        var afterPause = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
+        afterPause.GetProperty("members").EnumerateArray().Single(item => item.GetProperty("userId").GetGuid() == owner)
+            .GetProperty("kdRatio").ValueKind.Should().Be(JsonValueKind.Null);
         await conn.ExecuteAsync("INSERT INTO public.team_rosters (team_id, name, game, team_size) VALUES (@teamId, 'Duplicate', 'VALORANT', 5)", new { teamId });
         var duplicate = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
         duplicate.GetProperty("status").GetString().Should().Be("ambiguous");

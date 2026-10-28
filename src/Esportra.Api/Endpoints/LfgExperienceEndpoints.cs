@@ -51,7 +51,7 @@ public static class LfgExperienceEndpoints
                 WHERE pgp.user_id = rm.user_id AND pgp.game_slug = @game AND pgp.profile_visible = true
             ) OR EXISTS (
                 SELECT 1 FROM public.lfg_listings own
-                WHERE own.user_id = rm.user_id AND own.game_slug = @game AND own.status = 'published'
+                WHERE own.user_id = rm.user_id AND own.game_slug = @game AND own.intent::text = 'looking_for_team' AND own.status = 'published'
                   AND (own.expires_at IS NULL OR own.expires_at > now())
             ) AS can_view) visible
             WHERE rm.roster_id = @rosterId AND rm.is_active = true
