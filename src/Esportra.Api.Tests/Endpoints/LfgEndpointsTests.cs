@@ -718,6 +718,90 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         await using var conn = factory.Seeder.OpenConnection();
         var notifications = await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM public.notifications WHERE user_id = @sender AND type::text = 'lfg_interest_accepted' AND data->>'interest_id' = @interestId", new { sender, interestId = interest.ToString() });
         notifications.Should().Be(1);
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM public.messages WHERE lfg_interest_id = @interest", new { interest })).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AcceptedConnection_PreservesListingAndIntroduction_InExistingInboxAfterDeletion()
+    {
+        var (owner, receiver) = await User();
+        var (sender, senderClient) = await User();
+        var (_, outsider) = await User();
+        var existing = await senderClient.PostAsJsonAsync("/api/conversations", new { type = "direct", participantIds = new[] { owner.ToString() } });
+        existing.EnsureSuccessStatusCode();
+        var conversation = (await existing.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("UPDATE public.lfg_listings SET description = 'Looking for a regular team' WHERE id = @listing", new { listing });
+        await conn.ExecuteAsync("UPDATE public.lfg_interests SET message = 'Happy to practice together' WHERE id = @interest", new { interest });
+        var accepted = await receiver.PostAsync($"/api/competitive/lfg/interests/{interest}/accept", null);
+        accepted.EnsureSuccessStatusCode();
+        (await accepted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("conversation_id").GetGuid().Should().Be(conversation);
+        await conn.ExecuteAsync("DELETE FROM public.lfg_listings WHERE id = @listing", new { listing });
+
+        foreach (var client in new[] { receiver, senderClient })
+        {
+            var response = await client.GetAsync($"/api/conversations/{conversation}/messages");
+            response.EnsureSuccessStatusCode();
+            var messages = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var reference = messages.EnumerateArray().Single();
+            reference.GetProperty("content").GetString().Should().Be("Happy to practice together");
+            reference.GetProperty("message_type").GetString().Should().Be("system");
+            using var attachments = JsonDocument.Parse(reference.GetProperty("attachments").GetString()!);
+            var snapshot = attachments.RootElement.GetProperty("lfg_listing");
+            snapshot.GetProperty("listing_id").GetGuid().Should().Be(listing);
+            snapshot.GetProperty("description").GetString().Should().Be("Looking for a regular team");
+            snapshot.GetRawText().Should().NotContain("puuid").And.NotContain("email");
+            var messageId = reference.GetProperty("id").GetGuid();
+            (await senderClient.PutAsJsonAsync($"/api/messages/{messageId}", new { content = "Changed" })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            (await senderClient.DeleteAsync($"/api/messages/{messageId}")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+        (await outsider.GetAsync($"/api/conversations/{conversation}/messages")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await senderClient.PostAsJsonAsync($"/api/conversations/{conversation}/messages", new { content = "Fake reference", messageType = "system" })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task AcceptedConnections_ToDifferentListings_AddReferencesWithoutReplacingTheConversation()
+    {
+        var (owner, receiver) = await User();
+        var (sender, senderClient) = await User();
+        var conversations = new List<Guid>();
+        for (var index = 0; index < 2; index++)
+        {
+            var listing = await SeedListingAsync(owner, "valorant");
+            var interest = await SeedInterestAsync(listing, sender, owner);
+            var accepted = await receiver.PostAsync($"/api/competitive/lfg/interests/{interest}/accept", null);
+            accepted.EnsureSuccessStatusCode();
+            conversations.Add((await accepted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("conversation_id").GetGuid());
+        }
+        conversations.Distinct().Should().ContainSingle();
+        var messages = await (await senderClient.GetAsync($"/api/conversations/{conversations[0]}/messages")).Content.ReadFromJsonAsync<JsonElement>();
+        messages.GetArrayLength().Should().Be(2);
+        (await senderClient.PostAsJsonAsync($"/api/conversations/{conversations[0]}/messages", new { content = "Let's get started" })).StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task ListingReferenceMigration_BackfillsLegacyAcceptance_AndReplaysWithoutDuplicates()
+    {
+        var (owner, receiver) = await User();
+        var (sender, _) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        var accepted = await receiver.PostAsync($"/api/competitive/lfg/interests/{interest}/accept", null);
+        accepted.EnsureSuccessStatusCode();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("DELETE FROM public.messages WHERE lfg_interest_id = @interest", new { interest });
+        var assembly = typeof(Esportra.Infrastructure.Migrations.MigrationRunner).Assembly;
+        var resource = assembly.GetManifestResourceNames().Single(name => name.EndsWith("20261029170000_lfg_conversation_references.sql", StringComparison.Ordinal));
+        using var stream = assembly.GetManifestResourceStream(resource)!;
+        using var reader = new StreamReader(stream);
+        var migration = await reader.ReadToEndAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+        await conn.ExecuteAsync(migration, transaction: tx);
+        await conn.ExecuteAsync(migration, transaction: tx);
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM public.messages WHERE lfg_interest_id = @interest", new { interest }, tx)).Should().Be(1);
+        await tx.RollbackAsync();
     }
 
     [Fact]

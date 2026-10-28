@@ -3,7 +3,9 @@ using System.Data;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
+using Esportra.Api.Hubs;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
@@ -172,7 +174,8 @@ public static class LfgExperienceEndpoints
         return Results.NoContent();
     }
 
-    public static async Task<IResult> AcceptAsync(Guid interestId, HttpContext ctx, IDbConnectionFactory db)
+    public static async Task<IResult> AcceptAsync(Guid interestId, HttpContext ctx, IDbConnectionFactory db,
+        IHubContext<ConversationHub> hub, ILoggerFactory loggerFactory)
     {
         var user = User(ctx);
         if (user is null) return Results.Unauthorized();
@@ -183,34 +186,28 @@ public static class LfgExperienceEndpoints
             "SELECT id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at FROM public.lfg_interests WHERE id = @interestId AND to_user_id = @userId FOR UPDATE",
             new { interestId, userId = user.UserIdGuid }, tx);
         if (row is null || row.Status is not ("expressed" or "accepted")) return Results.NotFound();
-        if (row.Status == "accepted")
-        {
-            var priorId = await conn.QuerySingleOrDefaultAsync<Guid?>(
-                "SELECT conversation_id FROM public.lfg_interests WHERE id = @interestId", new { interestId }, tx);
-            if (priorId.HasValue)
-            {
-                tx.Commit();
-                return Results.Ok(new { interest = row, conversation_id = priorId });
-            }
-        }
+        var acceptedConversation = row.Status == "accepted"
+            ? await conn.QuerySingleOrDefaultAsync<Guid?>("SELECT conversation_id FROM public.lfg_interests WHERE id = @interestId", new { interestId }, tx)
+            : null;
         var pair = new { userId = user.UserIdGuid, otherId = row.FromUserId };
         await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(LEAST(@userId::text, @otherId::text) || ':' || GREATEST(@userId::text, @otherId::text), 0))", pair, tx);
         var conversation = await conn.QuerySingleOrDefaultAsync<Guid?>(
             """
             SELECT c.id FROM public.conversations c
-            JOIN public.conversation_participants a ON a.conversation_id = c.id AND a.user_id = @userId AND a.is_active
-            JOIN public.conversation_participants b ON b.conversation_id = c.id AND b.user_id = @otherId AND b.is_active
+            JOIN public.conversation_participants a ON a.conversation_id = c.id AND a.user_id = @userId AND (a.is_active OR c.id = @acceptedConversation)
+            JOIN public.conversation_participants b ON b.conversation_id = c.id AND b.user_id = @otherId AND (b.is_active OR c.id = @acceptedConversation)
             WHERE c.type = 'direct' AND NOT EXISTS (SELECT 1 FROM public.conversation_participants extra
                 WHERE extra.conversation_id = c.id AND extra.user_id NOT IN (@userId, @otherId))
-            ORDER BY c.created_at, c.id LIMIT 1
-            """, pair, tx);
+            ORDER BY (c.id = (SELECT conversation_id FROM public.lfg_interests WHERE id = @interestId)) DESC NULLS LAST,
+                c.created_at, c.id LIMIT 1
+            """, new { pair.userId, pair.otherId, interestId, acceptedConversation }, tx);
         if (conversation is null)
         {
             conversation = await conn.QuerySingleAsync<Guid>("INSERT INTO public.conversations (type, created_by) VALUES ('direct', @userId) RETURNING id", pair, tx);
             await conn.ExecuteAsync("INSERT INTO public.conversation_participants (conversation_id, user_id) VALUES (@conversation, @userId), (@conversation, @otherId) ON CONFLICT DO NOTHING", new { conversation, pair.userId, pair.otherId }, tx);
         }
         var updated = await conn.QuerySingleAsync<LfgInterestRow>(
-            "UPDATE public.lfg_interests SET status = 'accepted', conversation_id = @conversation, updated_at = now() WHERE id = @interestId RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at",
+            "UPDATE public.lfg_interests SET status = 'accepted', conversation_id = @conversation, updated_at = CASE WHEN status = 'accepted' THEN updated_at ELSE now() END WHERE id = @interestId RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at",
             new { interestId, conversation }, tx);
         if (row.Status == "expressed")
             await conn.ExecuteAsync(
@@ -220,7 +217,24 @@ public static class LfgExperienceEndpoints
                     'A conversation is ready.', @link,
                     jsonb_build_object('interest_id', @interestId::text, 'conversation_id', @conversation::text), FALSE)
                 """, new { recipient = row.FromUserId, link = $"/inbox/{conversation}", interestId, conversation }, tx);
+        var reference = await LfgConversationReference.EnsureAsync(conn, tx, interestId, conversation.Value);
         tx.Commit();
+        if (reference is not null)
+        {
+            try
+            {
+                var recipients = (await conn.QueryAsync<Guid>("SELECT user_id FROM public.conversation_participants WHERE conversation_id = @conversation AND is_active", new { conversation }))
+                    .Select(id => id.ToString()).ToArray();
+                await hub.Clients.Users(recipients)
+                    .SendAsync(ConversationHubEvents.MessageReceived, reference);
+            }
+            catch (Exception ex)
+            {
+                // The durable reference remains available on reload. A transport
+                // failure must not report a committed acceptance as a failed write.
+                loggerFactory.CreateLogger(nameof(LfgExperienceEndpoints)).LogWarning(ex, "LFG conversation update could not be broadcast.");
+            }
+        }
         return Results.Ok(new { interest = updated, conversation_id = conversation });
     }
 }

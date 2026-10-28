@@ -128,4 +128,23 @@ public sealed class MessagingAccessTests(ApiFactory factory)
         failure.Which.SqlState.Should().Be("42501");
         await tx.RollbackAsync();
     }
+
+    [Theory]
+    [InlineData("system", false)]
+    [InlineData("text", true)]
+    public async Task DatabaseRole_CannotForgeListingReferences(string messageType, bool withInterest)
+    {
+        var (owner, _) = await User();
+        var (participant, _) = await User();
+        var conversation = await Conversation(owner, participant);
+        await using var conn = factory.Seeder.OpenConnection();
+        await using var tx = await conn.BeginTransactionAsync();
+        await conn.ExecuteAsync("GRANT USAGE ON SCHEMA auth TO authenticated; GRANT SELECT ON public.conversation_participants TO authenticated; GRANT INSERT ON public.messages TO authenticated", transaction: tx);
+        await conn.ExecuteAsync("SET LOCAL ROLE authenticated", transaction: tx);
+        await conn.ExecuteAsync("SELECT set_config('request.jwt.claim.sub', @id, true)", new { id = participant.ToString() }, tx);
+        Func<Task> forge = () => conn.ExecuteAsync("INSERT INTO public.messages (conversation_id, sender_id, content, message_type, lfg_interest_id) VALUES (@conversation, @participant, 'Fake listing', @messageType, @interest)",
+            new { conversation, participant, messageType, interest = withInterest ? (Guid?)Guid.NewGuid() : null }, tx);
+        (await forge.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("42501");
+        await tx.RollbackAsync();
+    }
 }

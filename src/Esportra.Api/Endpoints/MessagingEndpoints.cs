@@ -216,6 +216,8 @@ public static class MessagingEndpoints
 
             if (string.IsNullOrWhiteSpace(req.Content) || req.Content.Length > 5000)
                 return Results.BadRequest(new { error = "Message must contain between 1 and 5000 characters." });
+            if (req.MessageType is not (null or "text"))
+                return Results.BadRequest(new { error = "Only text messages can be sent." });
 
             using var conn = db.CreateConnection();
             var sender = await conn.QuerySingleOrDefaultAsync<ConversationSenderDto>(
@@ -340,9 +342,10 @@ public static class MessagingEndpoints
             using var conn = db.CreateConnection();
 
             var msg = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT sender_id, conversation_id FROM messages WHERE id = @id", new { id });
+                "SELECT sender_id, conversation_id, message_type FROM messages WHERE id = @id", new { id });
             if (msg is null) return Results.NotFound();
             if ((Guid)msg.sender_id != userCtx.UserIdGuid) return Results.Forbid();
+            if ((string)msg.message_type != "text") return Results.Forbid();
             var recipients = await ActiveParticipantsAsync(conn, (Guid)msg.conversation_id);
             if (!recipients.Contains(userCtx.UserIdGuid.ToString())) return Results.Forbid();
 
@@ -383,9 +386,10 @@ public static class MessagingEndpoints
             using var conn = db.CreateConnection();
 
             var msg = await conn.QuerySingleOrDefaultAsync<dynamic>(
-                "SELECT sender_id, conversation_id FROM messages WHERE id = @id", new { id });
+                "SELECT sender_id, conversation_id, message_type FROM messages WHERE id = @id", new { id });
             if (msg is null) return Results.NotFound();
             if ((Guid)msg.sender_id != userCtx.UserIdGuid) return Results.Forbid();
+            if ((string)msg.message_type != "text") return Results.Forbid();
             var recipients = await ActiveParticipantsAsync(conn, (Guid)msg.conversation_id);
             if (!recipients.Contains(userCtx.UserIdGuid.ToString())) return Results.Forbid();
 
