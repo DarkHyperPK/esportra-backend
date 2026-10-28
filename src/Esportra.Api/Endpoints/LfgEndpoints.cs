@@ -846,84 +846,54 @@ public static class LfgEndpoints
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
 
-        using var conn = db.CreateConnection();
-
         if (req?.Message is { Length: > 500 }) return Results.BadRequest(new { error = "message must be 500 characters or fewer." });
+        using var conn = db.CreateConnection();
+        if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+        using var tx = conn.BeginTransaction();
+        await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))",
+            new { key = $"lfg-interest:{id}:{userCtx.UserIdGuid}" }, tx);
         var listing = await conn.QuerySingleOrDefaultAsync<(Guid UserId, string? Status)>(
-            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id AND (expires_at IS NULL OR expires_at > now())",
-            new { id });
-
-        if (listing.Status is null || listing.Status != "published")
-            return Results.NotFound(new { error = "LISTING_NOT_PUBLISHED" });
-
-        if (listing.UserId == userCtx.UserIdGuid)
-            return Results.BadRequest(new { error = "OWN_LISTING" });
-
-        var alreadyInterested = await conn.ExecuteScalarAsync<bool>(
-            """
-            SELECT EXISTS(
-                SELECT 1 FROM public.lfg_interests
-                WHERE listing_id = @listingId AND from_user_id = @fromUserId
-            )
-            """,
-            new { listingId = id, fromUserId = userCtx.UserIdGuid });
-
-        if (alreadyInterested)
-            return Results.Conflict(new { error = "ALREADY_INTERESTED" });
-
-        var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>(
-            """
-            INSERT INTO public.lfg_interests (listing_id, from_user_id, to_user_id, status, message)
-            SELECT id, @fromUserId, user_id, 'expressed'::lfg_interest_status, @message
-            FROM public.lfg_listings WHERE id = @listingId AND status = 'published'
-              AND (expires_at IS NULL OR expires_at > now())
-            ON CONFLICT (listing_id, from_user_id) DO NOTHING
-            RETURNING *
-            """,
-            new
-            {
-                listingId = id,
-                fromUserId = userCtx.UserIdGuid,
-                toUserId = listing.UserId,
-                message = req?.Message,
-            });
-
-        if (row is null) return Results.Conflict(new { error = "ALREADY_INTERESTED_OR_UNAVAILABLE" });
-        if (row is not null)
+            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id AND (expires_at IS NULL OR expires_at > now()) FOR SHARE",
+            new { id }, tx);
+        if (listing.Status != "published") return Results.NotFound(new { error = "LISTING_NOT_PUBLISHED" });
+        if (listing.UserId == userCtx.UserIdGuid) return Results.BadRequest(new { error = "OWN_LISTING" });
+        var existing = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>("""
+            SELECT id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at
+            FROM public.lfg_interests WHERE listing_id = @id AND from_user_id = @userId FOR UPDATE
+            """, new { id, userId = userCtx.UserIdGuid }, tx);
+        if (existing is not null && existing.Status is not ("expressed" or "withdrawn"))
+            return Results.Conflict(new { error = "REQUEST_CLOSED" });
+        LfgInterestRow row;
+        if (existing is null)
+            row = await conn.QuerySingleAsync<LfgInterestRow>("""
+                INSERT INTO public.lfg_interests (listing_id, from_user_id, to_user_id, status, message)
+                VALUES (@id, @userId, @ownerId, 'expressed', @message)
+                RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at
+                """, new { id, userId = userCtx.UserIdGuid, ownerId = listing.UserId, message = req?.Message }, tx);
+        else if (existing.Status == "withdrawn")
         {
-            var fromUsername = await conn.QuerySingleOrDefaultAsync<string>(
-                "SELECT username FROM public.profiles WHERE id = @userId",
-                new { userId = userCtx.UserIdGuid });
-
-            await conn.ExecuteAsync(
-                """
-                INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
-                VALUES (
-                    @toUserId,
-                    'lfg_interest_received',
-                    @title,
-                    @message,
-                    @link,
-                    jsonb_build_object(
-                        'interest_id', @interestId::text,
-                        'listing_id',  @listingId::text,
-                        'from_username', @fromUsername
-                    ),
-                    FALSE
-                )
-                """,
-                new
-                {
-                    toUserId = listing.UserId,
-                    title = $"{fromUsername ?? "Someone"} is interested in your listing",
-                    message = req?.Message ?? "They want to connect.",
-                    link = $"/competitive/lfg/{id}",
-                    interestId = row.Id,
-                    listingId = id,
-                    fromUsername = fromUsername ?? "",
-                });
+            // A fresh ID makes stale notification actions unable to respond to the new request.
+            row = await conn.QuerySingleAsync<LfgInterestRow>("""
+                UPDATE public.lfg_interests SET id = gen_random_uuid(), status = 'expressed', message = @message,
+                    created_at = now(), updated_at = now(), conversation_id = NULL
+                WHERE id = @interestId
+                RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at
+                """, new { interestId = existing.Id, message = req?.Message }, tx);
         }
-
+        else row = existing;
+        var fromUsername = await conn.QuerySingleOrDefaultAsync<string>(
+            "SELECT username FROM public.profiles WHERE id = @userId", new { userId = userCtx.UserIdGuid }, tx);
+        // Repair requests created by older versions before their notification was sent.
+        await conn.ExecuteAsync("""
+            INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
+            SELECT @ownerId, 'lfg_interest_received', @title, @message, @link,
+                jsonb_build_object('interest_id', @interestId::text, 'listing_id', @listingId::text, 'from_username', @fromUsername), FALSE
+            WHERE NOT EXISTS (SELECT 1 FROM public.notifications WHERE user_id = @ownerId
+                AND type::text = 'lfg_interest_received' AND data->>'interest_id' = @interestId::text)
+            """, new { ownerId = listing.UserId, title = $"{fromUsername ?? "Someone"} is interested in your listing",
+                message = row.Message ?? "They want to connect.", link = $"/competitive/lfg/{id}",
+                interestId = row.Id, listingId = id, fromUsername = fromUsername ?? "" }, tx);
+        tx.Commit();
         return Results.Ok(row);
     }
 
@@ -939,16 +909,22 @@ public static class LfgEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        var updated = await conn.ExecuteAsync(
-            """
-            UPDATE public.lfg_interests
-            SET status = 'withdrawn'::lfg_interest_status, updated_at = now()
-            WHERE listing_id = @listingId AND from_user_id = @userId
-              AND status = 'expressed'
-            """,
-            new { listingId = id, userId = userCtx.UserIdGuid });
-
-        return updated == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+        if (conn.State != System.Data.ConnectionState.Open) conn.Open();
+        using var tx = conn.BeginTransaction();
+        await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))",
+            new { key = $"lfg-interest:{id}:{userCtx.UserIdGuid}" }, tx);
+        var row = await conn.QuerySingleOrDefaultAsync<LfgInterestRow>("""
+            UPDATE public.lfg_interests SET status = 'withdrawn', updated_at = now()
+            WHERE listing_id = @listingId AND from_user_id = @userId AND status = 'expressed'
+            RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at
+            """, new { listingId = id, userId = userCtx.UserIdGuid }, tx);
+        if (row is null) return Results.NotFound();
+        await conn.ExecuteAsync("""
+            UPDATE public.notifications SET data = data - 'interest_id', is_read = true
+            WHERE user_id = @ownerId AND type::text = 'lfg_interest_received' AND data->>'interest_id' = @interestId::text
+            """, new { ownerId = row.ToUserId, interestId = row.Id }, tx);
+        tx.Commit();
+        return Results.Ok(new { success = true });
     }
 
     // ── POST /api/competitive/lfg/interests/{interestId}/decline ─────────────
@@ -969,7 +945,7 @@ public static class LfgEndpoints
             SET status = 'declined'::lfg_interest_status, updated_at = now()
             WHERE id = @id AND to_user_id = @userId
               AND status = 'expressed'
-            RETURNING *
+            RETURNING id, listing_id, from_user_id, to_user_id, status::text AS status, message, created_at, updated_at
             """,
             new { id = interestId, userId = userCtx.UserIdGuid });
 

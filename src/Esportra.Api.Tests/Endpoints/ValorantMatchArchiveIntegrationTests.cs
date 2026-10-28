@@ -31,6 +31,12 @@ public sealed class ValorantMatchArchiveIntegrationTests(ApiFactory factory) : I
         var acts = new[] {
             new ValorantMatchArchive.Act("current", now.AddDays(-10), true),
         };
+        // A previously archived match may predate the player-card field.
+        await conn.ExecuteAsync("""
+            INSERT INTO public.valorant_player_matches
+                (user_id, provider_player_id, match_id, act_id, started_at, queue_id, kills, deaths, assists, score, match_data_version)
+            VALUES (@owner, @puuid, 'a-current', 'current', @started, 'competitive', 10, 5, 3, 500, 1)
+            """, new { owner, puuid, started = now.AddDays(-1).UtcDateTime });
         var handler = new MatchHandler(puuid, now);
         var riot = new RiotApiClient(new HttpClient(handler), new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Riot:ApiKey"] = "test-key" }).Build());
         var list = JsonSerializer.Serialize(new
@@ -52,6 +58,8 @@ public sealed class ValorantMatchArchiveIntegrationTests(ApiFactory factory) : I
         (await ValorantMatchArchive.SyncAsync(conn, riot, owner, puuid, "ap", currentOnly, acts, CancellationToken.None)).Should().BeTrue();
         (await conn.ExecuteScalarAsync<int>("SELECT count(*)::int FROM public.valorant_player_matches WHERE user_id = @owner", new { owner })).Should().Be(2);
         handler.CurrentRequests.Should().Be(1);
+        (await conn.ExecuteScalarAsync<string>("SELECT player_card_id FROM public.valorant_player_matches WHERE user_id = @owner AND match_id = 'a-current'", new { owner }))
+            .Should().Be("c86953ca-4c94-c0f7-fd91-c19e03ff2b9f");
         handler.PreviousRequests.Should().Be(2);
         await conn.ExecuteAsync("""
             INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
@@ -97,7 +105,7 @@ public sealed class ValorantMatchArchiveIntegrationTests(ApiFactory factory) : I
                     queueId = "competitive"
                 },
                 teams = new[] { new { teamId = "Blue", won = true }, new { teamId = "Red", won = false } },
-                players = new[] { new { puuid, teamId = "Blue", characterId = "agent", competitiveTier = 10,
+                players = new[] { new { puuid, teamId = "Blue", characterId = "agent", playerCard = "c86953ca-4c94-c0f7-fd91-c19e03ff2b9f", competitiveTier = 10,
                     stats = new { kills = 10, deaths = 5, assists = 3, score = 500 } } }
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(body) });

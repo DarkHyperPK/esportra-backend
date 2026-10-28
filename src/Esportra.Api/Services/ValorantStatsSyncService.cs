@@ -113,6 +113,20 @@ public sealed class ValorantStatsSyncService(
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 { logger.LogWarning(ex, "Valorant match archive could not complete for user {UserId}", userId); }
 
+                // Player cards are account cosmetics, so the latest match in any mode can supply one.
+                var archivePlayerCard = await conn.QuerySingleOrDefaultAsync<string>("""
+                    SELECT player_card_id FROM public.valorant_player_matches
+                    WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = @actId
+                      AND player_card_id IS NOT NULL AND player_card_id <> ''
+                    ORDER BY started_at DESC, match_id DESC LIMIT 1
+                    """, new { userId, puuid = account.Puuid, actId = act.ActId });
+                if (archivePlayerCard is not null)
+                    await conn.ExecuteAsync("""
+                        UPDATE public.player_game_stats SET player_card_id = @archivePlayerCard
+                        WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id = @puuid
+                          AND EXISTS (SELECT 1 FROM public.riot_accounts ra WHERE ra.user_id = @userId AND ra.puuid = @puuid)
+                        """, new { userId, puuid = account.Puuid, archivePlayerCard });
+
                 var existing = await conn.QuerySingleOrDefaultAsync<ExistingPgsStats?>(
                     """
                 SELECT last_match_id, last_act_id,
@@ -198,7 +212,7 @@ public sealed class ValorantStatsSyncService(
                         hs_pct = CASE WHEN @reset THEN NULL ELSE hs_pct END,
                         player_card_id = COALESCE((SELECT vm.player_card_id FROM public.valorant_player_matches vm
                             WHERE vm.user_id = @userId AND vm.provider_player_id = @puuid AND vm.act_id = @actId
-                              AND vm.queue_id = 'competitive' AND vm.player_card_id IS NOT NULL
+                              AND vm.player_card_id IS NOT NULL
                             ORDER BY vm.started_at DESC LIMIT 1), player_card_id),
                         last_match_id = CASE WHEN @reset THEN NULL ELSE last_match_id END,
                         aggregation_version = @version, sync_status = @status, synced_at = now(), updated_at = now(), last_act_id = @actId
@@ -352,7 +366,7 @@ public sealed class ValorantStatsSyncService(
                         totalShots = stats.TotalShots,
                         headshotDataComplete = stats.HeadshotDataComplete,
                         hsPct,
-                        playerCard = stats.LatestPlayerCard,
+                        playerCard = archivePlayerCard ?? stats.LatestPlayerCard,
                         lastMatchId = newestMatchId,
                         reset = actReset,
                         version,

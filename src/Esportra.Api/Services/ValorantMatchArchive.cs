@@ -48,16 +48,19 @@ internal static class ValorantMatchArchive
             """, new { userId, puuid, currentId = acts.Single(a => a.IsCurrent).Id });
 
         var candidates = CandidateEntries(matchlist, acts.Min(a => a.Start));
+        // Retry the newest cached match once if older syncs did not store its card.
+        var cardCandidate = candidates.OrderByDescending(candidate => candidate.StartMillis).FirstOrDefault().Id;
         await conn.ExecuteAsync("""
             INSERT INTO public.valorant_match_backlog (user_id, provider_player_id, match_id, match_started_at)
             SELECT @userId, @puuid, item.id,
                    CASE WHEN item.start_ms >= 0 THEN to_timestamp(item.start_ms::double precision / 1000) ELSE NULL END
             FROM unnest(@ids::text[], @starts::bigint[]) AS item(id, start_ms)
             WHERE NOT EXISTS (SELECT 1 FROM public.valorant_player_matches m
-              WHERE m.user_id = @userId AND m.provider_player_id = @puuid AND m.match_id = item.id AND m.match_data_version >= 1)
+              WHERE m.user_id = @userId AND m.provider_player_id = @puuid AND m.match_id = item.id AND m.match_data_version >= 1
+                AND (m.player_card_id IS NOT NULL OR m.match_data_version >= 2 OR item.id <> @cardCandidate))
             ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
                 match_started_at = COALESCE(EXCLUDED.match_started_at, valorant_match_backlog.match_started_at)
-            """, new { userId, puuid, ids = candidates.Select(c => c.Id).ToArray(), starts = candidates.Select(c => c.StartMillis).ToArray() });
+            """, new { userId, puuid, ids = candidates.Select(c => c.Id).ToArray(), starts = candidates.Select(c => c.StartMillis).ToArray(), cardCandidate });
         var pending = await conn.QueryAsync<string>("""
             SELECT match_id FROM public.valorant_match_backlog
             WHERE user_id = @userId AND provider_player_id = @puuid
@@ -86,12 +89,12 @@ internal static class ValorantMatchArchive
                          headshot_data_complete, player_card_id, match_data_version)
                     VALUES (@userId, @puuid, @id, @actId, @startedAt, @queueId, @agentId, @won,
                             @kills, @deaths, @assists, @score, @tier, @headshots, @shots,
-                            @headshotDataComplete, @playerCardId, 1)
+                            @headshotDataComplete, @playerCardId, 2)
                     ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
                         headshots = EXCLUDED.headshots, shots = EXCLUDED.shots,
                         headshot_data_complete = EXCLUDED.headshot_data_complete,
                         player_card_id = COALESCE(EXCLUDED.player_card_id, valorant_player_matches.player_card_id),
-                        match_data_version = 1
+                        match_data_version = 2
                     """, new
                 {
                     userId,
@@ -189,7 +192,7 @@ internal static class ValorantMatchArchive
             Shots = shots,
             HeadshotDataComplete = complete,
             PlayerCardId = player.TryGetProperty("playerCard", out var card) && card.ValueKind == JsonValueKind.String ? card.GetString() : null,
-            MatchDataVersion = 1
+            MatchDataVersion = 2
         };
     }
 

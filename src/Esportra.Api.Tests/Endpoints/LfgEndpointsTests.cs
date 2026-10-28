@@ -683,6 +683,48 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Interest_ExpressRetryWithdrawAndReinvite_PreservesPartiesAndRetiresOldActions()
+    {
+        var (owner, ownerClient) = await User();
+        var (sender, client) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var responses = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ =>
+            client.PostAsJsonAsync($"/api/competitive/lfg/{listing}/interest", new { message = "Hello" })));
+        foreach (var response in responses) response.EnsureSuccessStatusCode();
+        var first = (await responses[0].Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        (await responses[1].Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid().Should().Be(first);
+        await using var conn = factory.Seeder.OpenConnection();
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*)::int FROM public.notifications WHERE user_id = @owner AND data->>'interest_id' = @interest", new { owner, interest = first.ToString() })).Should().Be(1);
+        (await client.DeleteAsync($"/api/competitive/lfg/{listing}/interest")).EnsureSuccessStatusCode();
+        var again = await client.PostAsJsonAsync($"/api/competitive/lfg/{listing}/interest", new { message = "Again" });
+        again.EnsureSuccessStatusCode();
+        var second = (await again.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        second.Should().NotBe(first);
+        (await ownerClient.PostAsync($"/api/competitive/lfg/interests/{first}/accept", null)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*)::int FROM public.notifications WHERE user_id = @owner AND data->>'interest_id' = @interest", new { owner, interest = first.ToString() })).Should().Be(0);
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*)::int FROM public.notifications WHERE user_id = @owner AND data->>'interest_id' = @interest", new { owner, interest = second.ToString() })).Should().Be(1);
+        var detail = await (await client.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+        detail.GetProperty("viewerInterestId").GetGuid().Should().Be(second);
+        detail.GetProperty("viewerInterestStatus").GetString().Should().Be("expressed");
+        (await ownerClient.PostAsync($"/api/competitive/lfg/interests/{second}/decline", null)).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync($"/api/competitive/lfg/{listing}/interest", new { message = "Third" })).StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task Interest_RetryRepairsMissingNotificationForExistingRequest()
+    {
+        var (owner, _) = await User();
+        var (sender, client) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        var interest = await SeedInterestAsync(listing, sender, owner);
+        var response = await client.PostAsJsonAsync($"/api/competitive/lfg/{listing}/interest", new { message = "Retry" });
+        response.EnsureSuccessStatusCode();
+        (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid().Should().Be(interest);
+        await using var conn = factory.Seeder.OpenConnection();
+        (await conn.ExecuteScalarAsync<int>("SELECT count(*)::int FROM public.notifications WHERE user_id = @owner AND data->>'interest_id' = @interest", new { owner, interest = interest.ToString() })).Should().Be(1);
+    }
+
+    [Fact]
     public async Task ExpressInterest_ExpiredListing_ReturnsNotFound()
     {
         var (owner, _) = await User();

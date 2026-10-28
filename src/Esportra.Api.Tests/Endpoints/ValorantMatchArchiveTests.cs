@@ -58,13 +58,15 @@ public sealed class ValorantMatchArchiveTests
             {"matchInfo":{"matchId":"match-1","seasonId":"act-previous","gameStartMillis":1500,"queueId":"unrated"},
              "teams":[{"teamId":"Blue","won":false},{"teamId":"Red","won":false}],
              "players":[{"puuid":"other-private","teamId":"Red","characterId":"other-agent","stats":{"kills":99,"deaths":1,"assists":1,"score":1}},
-                        {"puuid":"owner-private","teamId":"Blue","characterId":"agent-a","competitiveTier":10,"stats":{"kills":12,"deaths":8,"assists":4,"score":900}}]}
+                        {"puuid":"owner-private","teamId":"Blue","characterId":"agent-a","playerCard":"c86953ca-4c94-c0f7-fd91-c19e03ff2b9f","competitiveTier":10,"stats":{"kills":12,"deaths":8,"assists":4,"score":900}}]}
             """;
         var match = ValorantMatchArchive.ParseMatch(json, "match-1", "owner-private");
         match.Should().NotBeNull();
         match!.ActId.Should().Be("act-previous");
         match.QueueId.Should().Be("unrated");
         match.AgentId.Should().Be("agent-a");
+        match.PlayerCardId.Should().Be("c86953ca-4c94-c0f7-fd91-c19e03ff2b9f");
+        match.MatchDataVersion.Should().Be(2);
         match.Kills.Should().Be(12);
         match.Won.Should().BeNull();
         JsonSerializer.Serialize(match).Should().NotContain("private");
