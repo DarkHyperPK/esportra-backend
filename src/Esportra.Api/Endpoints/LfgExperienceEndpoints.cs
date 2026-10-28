@@ -21,6 +21,7 @@ public static class LfgExperienceEndpoints
             """
             SELECT team_id, game_slug FROM public.lfg_listings
             WHERE id = @id AND team_id IS NOT NULL
+              AND (user_id = @userId OR lower(game_slug) <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = public.lfg_listings.user_id))
               AND intent::text IN ('looking_for_player', 'competitive_roster')
               AND (user_id = @userId OR (status = 'published' AND (expires_at IS NULL OR expires_at > now())))
             """, new { id, userId = user.UserIdGuid });
@@ -121,7 +122,7 @@ public static class LfgExperienceEndpoints
                 reg.display_name AS region_display_name, min_rt.display_name AS min_rank_display_name,
                 min_rt.icon_url AS min_rank_icon_url, max_rt.display_name AS max_rank_display_name,
                 max_rt.icon_url AS max_rank_icon_url, pgs.competitive_tier, pgs.competitive_tier_name,
-                pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct, (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                 pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                 ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                 (SELECT count(*)::int FROM public.team_members tm WHERE tm.team_id = l.team_id AND tm.is_active) AS team_member_count,
@@ -143,6 +144,7 @@ public static class LfgExperienceEndpoints
             LEFT JOIN public.game_catalog_rank_tiers min_rt ON min_rt.sort_order = l.min_rank_sort_order AND min_rt.game_slug = l.game_slug AND min_rt.version_id = (SELECT id FROM active_v)
             LEFT JOIN public.game_catalog_rank_tiers max_rt ON max_rt.sort_order = l.max_rank_sort_order AND max_rt.game_slug = l.game_slug AND max_rt.version_id = (SELECT id FROM active_v)
             WHERE s.user_id = @userId AND l.status = 'published'
+              AND (lower(l.game_slug) <> 'valorant' OR ra.user_id IS NOT NULL)
               AND (l.expires_at IS NULL OR l.expires_at > now()) AND (@game IS NULL OR l.game_slug = @game)
             ORDER BY s.created_at DESC, s.listing_id DESC LIMIT @limit OFFSET @offset
             """, new { userId = user.UserIdGuid, game, limit = Math.Clamp(limit, 1, 50), offset = Math.Max(offset, 0) });
@@ -155,7 +157,7 @@ public static class LfgExperienceEndpoints
         if (user is null) return Results.Unauthorized();
         using var conn = db.CreateConnection();
         var visible = await conn.ExecuteScalarAsync<bool>(
-            "SELECT EXISTS (SELECT 1 FROM public.lfg_listings WHERE id = @id AND status = 'published' AND (expires_at IS NULL OR expires_at > now()))", new { id });
+            "SELECT EXISTS (SELECT 1 FROM public.lfg_listings l WHERE id = @id AND status = 'published' AND (expires_at IS NULL OR expires_at > now()) AND (lower(l.game_slug) <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id)))", new { id });
         if (!visible) return Results.NotFound();
         await conn.ExecuteAsync("INSERT INTO public.lfg_saved_listings (user_id, listing_id) VALUES (@userId, @id) ON CONFLICT DO NOTHING", new { userId = user.UserIdGuid, id });
         return Results.NoContent();

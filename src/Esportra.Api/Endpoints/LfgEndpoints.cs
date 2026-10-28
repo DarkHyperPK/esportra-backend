@@ -125,6 +125,7 @@ public static class LfgEndpoints
             "l.game_slug = @game",
             "l.status = 'published'",
             "l.user_id != @callerId",
+            "(lower(l.game_slug) <> 'valorant' OR ra.user_id IS NOT NULL)",
             "(l.expires_at > now() OR l.expires_at IS NULL)",
         };
         var p = new DynamicParameters();
@@ -230,6 +231,7 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
@@ -295,6 +297,10 @@ public static class LfgEndpoints
             return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
 
         using var conn = db.CreateConnection();
+
+        if (string.Equals(req.GameSlug, "valorant", StringComparison.OrdinalIgnoreCase) &&
+            !await conn.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM public.riot_accounts WHERE user_id = @userId)", new { userId = userCtx.UserIdGuid }))
+            return Results.BadRequest(new { error = "NO_LINKED_RIOT_ACCOUNT" });
 
         var gameExists = await conn.ExecuteScalarAsync<bool>(
             """
@@ -442,6 +448,7 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
@@ -508,6 +515,7 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
+                   CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
@@ -536,9 +544,10 @@ public static class LfgEndpoints
                 ON max_rt.sort_order = l.max_rank_sort_order
                AND max_rt.game_slug = l.game_slug
                AND max_rt.version_id = (SELECT id FROM active_v)
-            WHERE l.id = @id
+            WHERE l.id = @id AND (l.user_id = @viewerId OR lower(l.game_slug) <> 'valorant'
+                OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id))
             """,
-            new { id });
+            new { id, viewerId = userCtx.UserIdGuid });
 
         if (row is null) return Results.NotFound();
 
@@ -720,11 +729,14 @@ public static class LfgEndpoints
 
         using var conn = db.CreateConnection();
 
-        var listing = await conn.QuerySingleOrDefaultAsync<(string? Status, DateTimeOffset ExpiresAt)>(
-            "SELECT status::text AS status, expires_at FROM public.lfg_listings WHERE id = @id AND user_id = @userId",
+        var listing = await conn.QuerySingleOrDefaultAsync<(string? Status, DateTimeOffset ExpiresAt, string GameSlug)>(
+            "SELECT status::text AS status, expires_at, game_slug FROM public.lfg_listings WHERE id = @id AND user_id = @userId",
             new { id, userId = userCtx.UserIdGuid });
 
         if (listing.Status is null) return Results.NotFound();
+        if (string.Equals(listing.GameSlug, "valorant", StringComparison.OrdinalIgnoreCase) &&
+            !await conn.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM public.riot_accounts WHERE user_id = @userId)", new { userId = userCtx.UserIdGuid }))
+            return Results.BadRequest(new { error = "NO_LINKED_RIOT_ACCOUNT" });
         if (listing.Status is not ("draft" or "paused")) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
         if (listing.ExpiresAt <= DateTimeOffset.UtcNow)
             return Results.BadRequest(new { error = "expires_at must be in the future." });
@@ -736,6 +748,7 @@ public static class LfgEndpoints
             UPDATE public.lfg_listings
             SET status = 'published'::lfg_listing_status, updated_at = now()
             WHERE id = @id AND user_id = @userId
+              AND (lower(game_slug) <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = @userId))
               AND (
                   SELECT COUNT(*) FROM public.lfg_listings
                   WHERE user_id = @userId AND status = 'published'
@@ -853,7 +866,7 @@ public static class LfgEndpoints
         await conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))",
             new { key = $"lfg-interest:{id}:{userCtx.UserIdGuid}" }, tx);
         var listing = await conn.QuerySingleOrDefaultAsync<(Guid UserId, string? Status)>(
-            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id AND (expires_at IS NULL OR expires_at > now()) FOR SHARE",
+            "SELECT user_id, status::text AS status FROM public.lfg_listings WHERE id = @id AND (expires_at IS NULL OR expires_at > now()) AND (lower(game_slug) <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = public.lfg_listings.user_id)) FOR SHARE",
             new { id }, tx);
         if (listing.Status != "published") return Results.NotFound(new { error = "LISTING_NOT_PUBLISHED" });
         if (listing.UserId == userCtx.UserIdGuid) return Results.BadRequest(new { error = "OWN_LISTING" });

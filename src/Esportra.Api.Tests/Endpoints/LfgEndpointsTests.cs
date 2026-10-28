@@ -36,6 +36,13 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         return (id, factory.CreateAuthenticatedClient(id));
     }
 
+    private async Task LinkRiotAsync(Guid userId)
+    {
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@userId, @puuid, 'Player', 'TAG') ON CONFLICT (user_id) DO NOTHING",
+            new { userId, puuid = userId.ToString() });
+    }
+
     /// <summary>Seeds an lfg_listings row directly and returns its id.</summary>
     private async Task<Guid> SeedListingAsync(
         Guid userId,
@@ -44,6 +51,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         DateTimeOffset? expiresAt = null)
     {
         var id = Guid.NewGuid();
+        if (gameSlug == "valorant") await LinkRiotAsync(userId);
         await using var conn = factory.Seeder.OpenConnection();
         await conn.ExecuteAsync(
             """
@@ -82,6 +90,58 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         return id;
     }
 
+    [Theory]
+    [InlineData("looking_for_team", "coach")]
+    [InlineData("looking_for_team", "manager")]
+    [InlineData("looking_for_team", "duelist")]
+    [InlineData("looking_for_player", "coach")]
+    [InlineData("competitive_roster", "manager")]
+    public async Task ValorantCreation_RequiresLinkedRiotForEveryRoleAndListingType(string intent, string role)
+    {
+        var (_, client) = await User();
+        var response = await client.PostAsJsonAsync("/api/competitive/lfg", new { game_slug = "valorant", intent, preferred_roles = new[] { role } });
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString().Should().Be("NO_LINKED_RIOT_ACCOUNT");
+    }
+
+    [Theory]
+    [InlineData("draft")]
+    [InlineData("paused")]
+    public async Task ValorantPublishAndResume_RecheckRiotLink(string status)
+    {
+        var (owner, client) = await User();
+        var listing = await SeedListingAsync(owner, "valorant", status);
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("DELETE FROM public.riot_accounts WHERE user_id = @owner", new { owner });
+        var response = await client.PostAsync($"/api/competitive/lfg/{listing}/publish", null);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString().Should().Be("NO_LINKED_RIOT_ACCOUNT");
+        (await client.GetAsync($"/api/competitive/lfg/{listing}")).EnsureSuccessStatusCode();
+        await LinkRiotAsync(owner);
+        (await client.PostAsync($"/api/competitive/lfg/{listing}/publish", null)).EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task UnlinkedValorantListing_IsHiddenFromOthersButOwnerCanManage()
+    {
+        var (owner, ownerClient) = await User();
+        var (_, viewer) = await User();
+        var listing = await SeedListingAsync(owner, "valorant");
+        (await viewer.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).EnsureSuccessStatusCode();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("DELETE FROM public.riot_accounts WHERE user_id = @owner", new { owner });
+        (await ownerClient.GetAsync($"/api/competitive/lfg/{listing}")).EnsureSuccessStatusCode();
+        (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        foreach (var url in new[] { "/api/competitive/lfg?game=valorant", "/api/competitive/lfg/saved?game=valorant" })
+        {
+            var rows = await (await viewer.GetAsync(url)).Content.ReadFromJsonAsync<JsonElement>();
+            rows.EnumerateArray().Should().NotContain(row => row.GetProperty("id").GetGuid() == listing);
+        }
+        (await viewer.PostAsJsonAsync($"/api/competitive/lfg/{listing}/interest", new { message = "Hello" })).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        await LinkRiotAsync(owner);
+        (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).EnsureSuccessStatusCode();
+    }
+
     [Fact]
     public async Task CurrentRank_AppearsInOwnStatsDiscoverySavedAndDetails()
     {
@@ -91,10 +151,10 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         await using var conn = factory.Seeder.OpenConnection();
         await conn.ExecuteAsync("""
             UPDATE public.lfg_listings SET intent = 'looking_for_team' WHERE id = @listing;
-            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@owner, 'peak-test', 'Player', 'TAG');
+            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@owner, 'peak-test', 'Player', 'TAG') ON CONFLICT (user_id) DO UPDATE SET puuid = EXCLUDED.puuid;
             INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id,
-                competitive_tier, competitive_tier_name, player_card_id)
-            VALUES (@owner, 'valorant', 'peak-test', 10, 'Silver 2', 'c86953ca-4c94-c0f7-fd91-c19e03ff2b9f');
+                competitive_tier, competitive_tier_name, player_card_id, hs_pct, headshot_data_complete, sync_status, synced_at)
+            VALUES (@owner, 'valorant', 'peak-test', 10, 'Silver 2', 'c86953ca-4c94-c0f7-fd91-c19e03ff2b9f', 0, true, 'complete', now());
             """, new { owner, listing });
         var own = await (await ownerClient.GetAsync("/api/competitive/game-stats/me?game=valorant")).Content.ReadFromJsonAsync<JsonElement>();
         own.GetProperty("competitive_tier").GetInt32().Should().Be(10);
@@ -104,6 +164,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
             var rows = await (await viewer.GetAsync(path)).Content.ReadFromJsonAsync<JsonElement>();
             var row = rows.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == listing);
             row.GetProperty("competitiveTier").GetInt32().Should().Be(10);
+            row.GetProperty("hsPct").GetDecimal().Should().Be(0);
             row.GetProperty("playerCardId").GetString().Should().Be("c86953ca-4c94-c0f7-fd91-c19e03ff2b9f");
         }
         var detail = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
@@ -111,12 +172,21 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         detail.TryGetProperty("peakCompetitiveTier", out _).Should().BeFalse();
         var mine = await (await ownerClient.GetAsync("/api/competitive/lfg/mine")).Content.ReadFromJsonAsync<JsonElement>();
         mine.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == listing).GetProperty("competitiveTier").GetInt32().Should().Be(10);
+        await conn.ExecuteAsync("UPDATE public.player_game_stats SET headshot_data_complete = false WHERE user_id = @owner AND game_slug = 'valorant'", new { owner });
+        var incomplete = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+        incomplete.GetProperty("hsPct").ValueKind.Should().Be(JsonValueKind.Null);
+        await conn.ExecuteAsync("UPDATE public.riot_accounts SET puuid = @puuid WHERE user_id = @owner", new { owner, puuid = $"relinked-{owner}" });
+        var relinked = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+        relinked.GetProperty("hsPct").ValueKind.Should().Be(JsonValueKind.Null);
+        relinked.GetProperty("competitiveTier").ValueKind.Should().Be(JsonValueKind.Null);
+        relinked.GetProperty("playerCardId").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
     [Fact]
     public async Task PlayerListing_IgnoresRecruitmentRankRequirementsAndClearsLegacyValues()
     {
         var (owner, client) = await User();
+        await LinkRiotAsync(owner);
         var create = await client.PostAsJsonAsync("/api/competitive/lfg", new { game_slug = "valorant", intent = "looking_for_team", min_rank_sort_order = 4 });
         create.EnsureSuccessStatusCode();
         var listing = await SeedListingAsync(owner, "valorant", status: "draft");
@@ -142,7 +212,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         await conn.ExecuteAsync("""
             UPDATE public.lfg_listings SET intent = 'looking_for_team', min_rank_sort_order = 20, max_rank_sort_order = 22 WHERE id = @player;
             UPDATE public.lfg_listings SET intent = 'looking_for_player', min_rank_sort_order = 3, max_rank_sort_order = 5 WHERE id = @team;
-            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@owner, 'rank-test', 'Player', 'TAG');
+            INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line) VALUES (@owner, 'rank-test', 'Player', 'TAG') ON CONFLICT (user_id) DO UPDATE SET puuid = EXCLUDED.puuid;
             INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, competitive_tier)
                 VALUES (@owner, 'valorant', 'rank-test', 7);
             """, new { owner, player, team });
@@ -224,7 +294,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
             INSERT INTO public.team_roster_members (roster_id, user_id) VALUES (@rosterId, @owner), (@rosterId, @member);
             INSERT INTO public.player_game_profiles (user_id, game_slug, profile_visible) VALUES (@member, 'valorant', true);
             INSERT INTO public.riot_accounts (user_id, puuid, game_name, tag_line)
-                VALUES (@owner, 'private', 'Owner', 'TAG'), (@member, 'public', 'Member', 'TAG');
+                VALUES (@owner, 'private', 'Owner', 'TAG'), (@member, 'public', 'Member', 'TAG') ON CONFLICT (user_id) DO UPDATE SET puuid = EXCLUDED.puuid;
             INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, kd_ratio, win_rate)
                 VALUES (@owner, 'valorant', 'private', 1.11, 44), (@member, 'valorant', 'public', 1.50, 60);
             """, new { teamId, listingId, rosterId, owner, member });

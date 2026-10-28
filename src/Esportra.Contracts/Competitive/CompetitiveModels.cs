@@ -159,6 +159,7 @@ public sealed record LfgListingRow
     public int? LossCount { get; init; }
     public decimal? WinRate { get; init; }
     public decimal? KdRatio { get; init; }
+    public decimal? HsPct { get; init; }
     public string? PopularAgents { get; init; }
     public string? StatsSyncStatus { get; init; }
     public int? MatchesAnalyzed { get; init; }
