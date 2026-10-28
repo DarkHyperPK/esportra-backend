@@ -12,6 +12,53 @@ public static class LfgExperienceEndpoints
 {
     private static UserContext? User(HttpContext ctx) => ctx.Items["UserContext"] as UserContext;
 
+    public static async Task<IResult> GetRosterAsync(Guid id, HttpContext ctx, IDbConnectionFactory db)
+    {
+        var user = User(ctx);
+        if (user is null) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var listing = await conn.QuerySingleOrDefaultAsync<LfgRosterListing>(
+            """
+            SELECT team_id, game_slug FROM public.lfg_listings
+            WHERE id = @id AND team_id IS NOT NULL
+              AND intent::text IN ('looking_for_player', 'competitive_roster')
+              AND (user_id = @userId OR (status = 'published' AND (expires_at IS NULL OR expires_at > now())))
+            """, new { id, userId = user.UserIdGuid });
+        if (listing is null) return Results.NotFound();
+
+        var rosterIds = (await conn.QueryAsync<Guid>(
+            "SELECT id FROM public.team_rosters WHERE team_id = @teamId AND lower(game) = lower(@game) ORDER BY id LIMIT 2",
+            new { teamId = listing.TeamId, game = listing.GameSlug })).ToArray();
+        if (rosterIds.Length == 0) return Results.Ok(new { status = "missing", members = Array.Empty<LfgRosterMember>() });
+        if (rosterIds.Length > 1) return Results.Ok(new { status = "ambiguous", members = Array.Empty<LfgRosterMember>() });
+
+        var members = await conn.QueryAsync<LfgRosterMember>(
+            """
+            SELECT rm.user_id, p.username, p.avatar_url, p.avatar_seed, p.avatar_style,
+                   rm.roster_role::text AS roster_role, COALESCE(rm.is_starter, false) AS is_starter,
+                   CASE WHEN visible.can_view THEN stats.competitive_tier END AS competitive_tier,
+                   CASE WHEN visible.can_view THEN stats.competitive_tier_name END AS competitive_tier_name,
+                   CASE WHEN visible.can_view THEN stats.kd_ratio END AS kd_ratio,
+                   CASE WHEN visible.can_view THEN stats.win_rate END AS win_rate,
+                   CASE WHEN visible.can_view THEN stats.matches_analyzed END AS matches_analyzed
+            FROM public.team_roster_members rm
+            JOIN public.team_members tm ON tm.team_id = @teamId AND tm.user_id = rm.user_id AND tm.is_active = true
+            JOIN public.profiles p ON p.id = rm.user_id
+            LEFT JOIN public.player_game_stats stats ON stats.user_id = rm.user_id AND stats.game_slug = @game
+            CROSS JOIN LATERAL (SELECT rm.user_id = @userId OR EXISTS (
+                SELECT 1 FROM public.player_game_profiles pgp
+                WHERE pgp.user_id = rm.user_id AND pgp.game_slug = @game AND pgp.profile_visible = true
+            ) OR EXISTS (
+                SELECT 1 FROM public.lfg_listings own
+                WHERE own.user_id = rm.user_id AND own.game_slug = @game AND own.status = 'published'
+                  AND (own.expires_at IS NULL OR own.expires_at > now())
+            ) AS can_view) visible
+            WHERE rm.roster_id = @rosterId AND rm.is_active = true
+            ORDER BY rm.display_order, rm.created_at, rm.user_id
+            """, new { teamId = listing.TeamId, game = listing.GameSlug, rosterId = rosterIds[0], userId = user.UserIdGuid });
+        return Results.Ok(new { status = "available", members });
+    }
+
     public static async Task<IResult> GetInterestsAsync(
         HttpContext ctx, IDbConnectionFactory db, [FromQuery] string? direction,
         [FromQuery] string? game, [FromQuery] string? status,
@@ -73,7 +120,7 @@ public static class LfgExperienceEndpoints
                 reg.display_name AS region_display_name, min_rt.display_name AS min_rank_display_name,
                 min_rt.icon_url AS min_rank_icon_url, max_rt.display_name AS max_rank_display_name,
                 max_rt.icon_url AS max_rank_icon_url, pgs.competitive_tier, pgs.competitive_tier_name,
-                pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, pgs.popular_agents::text AS popular_agents,
+                pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                 pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
                 ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                 (SELECT count(*)::int FROM public.team_members tm WHERE tm.team_id = l.team_id AND tm.is_active) AS team_member_count,
@@ -173,6 +220,12 @@ public static class LfgExperienceEndpoints
         return Results.Ok(new { interest = updated, conversation_id = conversation });
     }
 }
+
+public sealed record LfgRosterListing(Guid TeamId, string GameSlug);
+
+public sealed record LfgRosterMember(Guid UserId, string? Username, string? AvatarUrl, string? AvatarSeed,
+    string? AvatarStyle, string? RosterRole, bool IsStarter, int? CompetitiveTier,
+    string? CompetitiveTierName, decimal? KdRatio, decimal? WinRate, int? MatchesAnalyzed);
 
 public sealed record LfgInboxRow
 {
