@@ -57,6 +57,8 @@ public static class LfgEndpoints
 
         app.MapGet("/api/competitive/game-stats/me", GetMyGameStatsAsync)
             .RequireAuthorization("Authenticated");
+        app.MapGet("/api/competitive/game-stats/valorant/matches", ValorantArchiveEndpoints.GetMatchesAsync)
+            .RequireAuthorization("Authenticated");
         app.MapPost("/api/competitive/game-stats/sync", SyncRiotStatsAsync)
             .RequireAuthorization("Authenticated");
 
@@ -68,6 +70,8 @@ public static class LfgEndpoints
         // Parameterized routes: register {id}/interests before {id} so the static
         // "interests" segment wins over any potential guid collision.
         app.MapGet("/api/competitive/lfg/{id}/interests", GetListingInterestsAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapGet("/api/competitive/lfg/{id:guid}/roster", LfgExperienceEndpoints.GetRosterAsync)
             .RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/{id}", GetListingAsync)
             .RequireAuthorization("Authenticated");
@@ -187,13 +191,13 @@ public static class LfgEndpoints
 
         if (min_rank.HasValue)
         {
-            conditions.Add("l.min_rank_sort_order >= @minRank");
+            conditions.Add("(CASE WHEN l.intent = 'looking_for_team' THEN CASE WHEN l.game_slug = 'valorant' AND pgs.competitive_tier >= 3 THEN pgs.competitive_tier - 3 END ELSE l.min_rank_sort_order END) >= @minRank");
             p.Add("minRank", min_rank.Value);
         }
 
         if (max_rank.HasValue)
         {
-            conditions.Add("l.max_rank_sort_order <= @maxRank");
+            conditions.Add("(CASE WHEN l.intent = 'looking_for_team' THEN CASE WHEN l.game_slug = 'valorant' AND pgs.competitive_tier >= 3 THEN pgs.competitive_tier - 3 END ELSE l.max_rank_sort_order END) <= @maxRank");
             p.Add("maxRank", max_rank.Value);
         }
 
@@ -226,7 +230,7 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
-                   pgs.popular_agents::text AS popular_agents,
+                   pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
@@ -280,6 +284,9 @@ public static class LfgEndpoints
         if (!ValidIntents.Contains(req.Intent ?? ""))
             return Results.BadRequest(new { error = $"Invalid intent. Allowed: {string.Join(", ", ValidIntents)}." });
 
+        if (req.Intent == "looking_for_team" && (req.MinRankSortOrder.HasValue || req.MaxRankSortOrder.HasValue))
+            return Results.BadRequest(new { error = "Rank requirements belong to team recruitment listings." });
+
         if (req.Description is { Length: > 280 })
             return Results.BadRequest(new { error = "description must be 280 characters or fewer." });
 
@@ -313,6 +320,7 @@ public static class LfgEndpoints
                 """,
                 new { game = req.GameSlug })).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            validRoleKeys.UnionWith(["coach", "manager"]);
             var badRole = req.PreferredRoles.FirstOrDefault(r => !validRoleKeys.Contains(r));
             if (badRole is not null)
                 return Results.BadRequest(new { error = $"Unknown role '{badRole}' for this game." });
@@ -393,7 +401,7 @@ public static class LfgEndpoints
                 preferredServers = req.PreferredServers ?? Array.Empty<string>(),
                 minRank = req.MinRankSortOrder,
                 maxRank = req.MaxRankSortOrder,
-                preferredRoles = req.PreferredRoles ?? Array.Empty<string>(),
+                preferredRoles = NormalizeStaffRoles(req.PreferredRoles) ?? Array.Empty<string>(),
                 preferredAgents = req.PreferredAgents ?? Array.Empty<string>(),
                 languages = req.Languages ?? Array.Empty<string>(),
                 description = req.Description,
@@ -436,7 +444,7 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
-                   pgs.popular_agents::text AS popular_agents,
+                   pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
@@ -501,7 +509,7 @@ public static class LfgEndpoints
                    max_rt.icon_url    AS max_rank_icon_url,
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
-                   pgs.popular_agents::text AS popular_agents,
+                   pgs.popular_agents::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
@@ -638,10 +646,14 @@ public static class LfgEndpoints
             return Results.BadRequest(new { error = "minimum rank must not exceed maximum rank." });
 
         using var conn = db.CreateConnection();
-        var gameSlug = await conn.QuerySingleOrDefaultAsync<string>(
-            "SELECT game_slug FROM public.lfg_listings WHERE id = @id AND user_id = @userId AND status IN ('draft', 'published', 'paused')",
+        var editable = await conn.QuerySingleOrDefaultAsync<EditableLfgListing>(
+            "SELECT game_slug, intent::text AS intent FROM public.lfg_listings WHERE id = @id AND user_id = @userId AND status IN ('draft', 'published', 'paused')",
             new { id, userId = userCtx.UserIdGuid });
-        if (gameSlug is null) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
+        if (editable is null) return Results.BadRequest(new { error = "LISTING_NOT_EDITABLE" });
+        var gameSlug = editable.GameSlug;
+        var isPlayer = editable.Intent == "looking_for_team";
+        if (isPlayer && (req.MinRankSortOrder.HasValue || req.MaxRankSortOrder.HasValue))
+            return Results.BadRequest(new { error = "Rank requirements belong to team recruitment listings." });
         if (string.Equals(gameSlug, "valorant", StringComparison.OrdinalIgnoreCase) && !ValidPreferredAgents(req.PreferredAgents))
             return Results.BadRequest(new { error = "Choose up to five distinct agents." });
         if (req.PreferredRoles is { Length: > 0 })
@@ -649,6 +661,7 @@ public static class LfgEndpoints
             var validRoles = (await conn.QueryAsync<string>(
                 "SELECT r.role_key FROM public.game_catalog_game_roles r JOIN public.game_catalog_versions v ON v.id = r.version_id WHERE v.is_active AND r.game_slug = @gameSlug",
                 new { gameSlug })).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            validRoles.UnionWith(["coach", "manager"]);
             if (req.PreferredRoles.Any(role => !validRoles.Contains(role)))
                 return Results.BadRequest(new { error = "Unknown role for this game." });
         }
@@ -679,15 +692,15 @@ public static class LfgEndpoints
                 preferredServers = req.PreferredServers,
                 minRank = req.MinRankSortOrder,
                 maxRank = req.MaxRankSortOrder,
-                preferredRoles = req.PreferredRoles,
+                preferredRoles = NormalizeStaffRoles(req.PreferredRoles),
                 preferredAgents = req.PreferredAgents,
                 languages = req.Languages,
                 description = req.Description,
                 expiresAt = req.ExpiresAt,
                 clearMode = req.ClearMode,
                 clearRegion = req.ClearRegion,
-                clearMinRank = req.ClearMinRank,
-                clearMaxRank = req.ClearMaxRank,
+                clearMinRank = isPlayer || req.ClearMinRank,
+                clearMaxRank = isPlayer || req.ClearMaxRank,
                 clearDescription = req.ClearDescription,
             });
 
@@ -1002,7 +1015,9 @@ public static class LfgEndpoints
                 pgs.win_rate               AS win_rate,
                 pgs.kd_ratio               AS kd_ratio,
                 pgs.matches_analyzed       AS matches_analyzed,
-                pgs.popular_agents::text   AS popular_agents
+                pgs.popular_agents::text   AS popular_agents,
+                pgs.hs_pct                 AS hs_pct,
+                pgs.player_card_id         AS player_card_id
             FROM (SELECT @userId::uuid AS uid) AS u
             LEFT JOIN public.riot_accounts ra ON ra.user_id = u.uid
             LEFT JOIN public.player_game_stats pgs
@@ -1016,6 +1031,7 @@ public static class LfgEndpoints
         // Auto-sync: if Riot is linked but stats are missing or stale (>1h), enqueue background sync.
         // Cooldown via updated_at prevents re-enqueue storms after failed syncs (sync_error path
         // keeps synced_at old) — a fresh attempt at most every 10 minutes per user.
+        var responseSyncStatus = row.SyncStatus;
         if (row.RiotLinked && string.Equals(game, "valorant", StringComparison.OrdinalIgnoreCase))
         {
             var now = DateTimeOffset.UtcNow;
@@ -1025,22 +1041,37 @@ public static class LfgEndpoints
             var lastTouchAgeMinutes = lastUpdatedAt is null
                 ? double.MaxValue
                 : (now - lastUpdatedAt.Value).TotalMinutes;
-            var needsSync = syncAgeHours >= 1 || row.SyncStatus is "error" or "pending" or null;
+            var needsSync = syncAgeHours >= 1 || row.SyncStatus is "error" or "partial" or "pending" or "syncing" or null;
             if (needsSync && lastTouchAgeMinutes >= 10)
             {
                 // Stamp 'pending' synchronously so the caller (and its 5s poll) sees the sync
                 // kicking off immediately, instead of a stale null status.
-                await conn.ExecuteAsync(
+                var claimed = await conn.ExecuteAsync(
                     """
                     INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
                     VALUES (@userId, 'valorant', @puuid, 'pending')
                     ON CONFLICT (user_id, game_slug) DO UPDATE SET
                         sync_status = 'pending', updated_at = now()
+                    WHERE player_game_stats.updated_at <= now() - interval '10 minutes'
                     """,
                     new { userId = userCtx.UserIdGuid, puuid = row.RiotPuuid ?? "" });
 
-                backgroundJobs.Enqueue<ValorantStatsSyncService>(
-                    s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
+                if (claimed > 0)
+                {
+                    try
+                    {
+                        backgroundJobs.Enqueue<ValorantStatsSyncService>(
+                            s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
+                        responseSyncStatus = "pending";
+                    }
+                    catch
+                    {
+                        await conn.ExecuteAsync("UPDATE public.player_game_stats SET sync_status = 'error', updated_at = now() WHERE user_id = @userId AND game_slug = 'valorant' AND sync_status = 'pending'", new { userId = userCtx.UserIdGuid });
+                        responseSyncStatus = "error";
+                    }
+                }
+                else
+                    responseSyncStatus = await conn.QuerySingleOrDefaultAsync<string>("SELECT sync_status FROM public.player_game_stats WHERE user_id = @userId AND game_slug = 'valorant'", new { userId = userCtx.UserIdGuid });
             }
         }
 
@@ -1052,13 +1083,16 @@ public static class LfgEndpoints
         }
 
         var syncedAtDto = GameStatsRaw.ToDto(row.SyncedAt);
+        var actStats = row.RiotLinked && string.Equals(game, "valorant", StringComparison.OrdinalIgnoreCase)
+            ? await ValorantArchiveEndpoints.GetActsAsync(conn, userCtx.UserIdGuid) : [];
 
         return Results.Ok(new
         {
             riot_linked = row.RiotLinked,
+            act_stats = actStats,
             riot_game_name = row.RiotGameName,
             riot_tag_line = row.RiotTagLine,
-            sync_status = row.SyncStatus,
+            sync_status = responseSyncStatus,
             synced_at = syncedAtDto,
             competitive_tier = row.CompetitiveTier,
             competitive_tier_name = row.CompetitiveTierName,
@@ -1067,6 +1101,8 @@ public static class LfgEndpoints
             win_rate = row.WinRate,
             kd_ratio = row.KdRatio,
             matches_analyzed = row.MatchesAnalyzed,
+            hs_pct = row.HsPct,
+            player_card_id = row.PlayerCardId,
             popular_agents = (object?)parsedAgents,
         });
     }
@@ -1103,6 +1139,10 @@ public static class LfgEndpoints
 
         return Results.Ok(new { status = "queued" });
     }
+    private static string[]? NormalizeStaffRoles(string[]? roles) => roles?.Select(role =>
+        role.Equals("coach", StringComparison.OrdinalIgnoreCase) ? "coach" :
+        role.Equals("manager", StringComparison.OrdinalIgnoreCase) ? "manager" : role).ToArray();
+
 }
 
 // ── Request DTOs ───────────────────────────────────────────────────────────────
@@ -1167,6 +1207,8 @@ file sealed record GameStatsRaw
     public decimal? KdRatio { get; init; }
     public int? MatchesAnalyzed { get; init; }
     public string? PopularAgents { get; init; }
+    public decimal? HsPct { get; init; }
+    public string? PlayerCardId { get; init; }
 
     /// <summary>
     /// Npgsql reads timestamptz as DateTime. Normalize to a DateTimeOffset without
@@ -1183,4 +1225,10 @@ file sealed record GameStatsRaw
             _ => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc), TimeSpan.Zero),
         };
     }
+}
+
+file sealed record EditableLfgListing
+{
+    public string GameSlug { get; init; } = "";
+    public string Intent { get; init; } = "";
 }

@@ -87,7 +87,7 @@ public sealed class ValorantStatsSyncService(
                        win_count, loss_count, total_kills, total_deaths,
                        total_assists, matches_analyzed, total_score, popular_agents::text AS popular_agents,
                        aggregation_version, sync_status,
-                       total_headshots, total_shots, total_performance_sum
+                       total_headshots, total_shots
                 FROM public.player_game_stats
                 WHERE user_id = @userId AND game_slug = 'valorant'
                 """,
@@ -151,9 +151,7 @@ public sealed class ValorantStatsSyncService(
                         avg_score = CASE WHEN @reset THEN NULL ELSE avg_score END,
                         total_headshots = CASE WHEN @reset THEN 0 ELSE total_headshots END,
                         total_shots = CASE WHEN @reset THEN 0 ELSE total_shots END,
-                        total_performance_sum = CASE WHEN @reset THEN 0 ELSE total_performance_sum END,
                         hs_pct = CASE WHEN @reset THEN NULL ELSE hs_pct END,
-                        avg_performance = CASE WHEN @reset THEN NULL ELSE avg_performance END,
                         player_card_id = CASE WHEN @reset THEN NULL ELSE player_card_id END,
                         last_match_id = CASE WHEN @reset THEN NULL ELSE last_match_id END,
                         aggregation_version = @version, sync_status = @status, synced_at = now(), updated_at = now(), last_act_id = @actId
@@ -183,7 +181,6 @@ public sealed class ValorantStatsSyncService(
                         TotalScore = existing?.TotalScore ?? 0,
                         TotalHeadshots = existing?.TotalHeadshots ?? 0,
                         TotalShots = existing?.TotalShots ?? 0,
-                        TotalPerformance = (double)(existing?.TotalPerformanceSum ?? 0),
                     };
 
                 if (!actReset && existing is not null) RestoreAgentStats(existing.PopularAgents, stats.AgentStats);
@@ -191,7 +188,7 @@ public sealed class ValorantStatsSyncService(
                 var archived = (await conn.QueryAsync<ValorantMatchArchive.Match>("""
                     SELECT match_id AS id, act_id, started_at, queue_id, agent_id, won,
                            kills, deaths, assists, score, competitive_tier AS tier,
-                           headshots, shots, performance
+                           headshots, shots
                     FROM public.valorant_player_matches
                     WHERE user_id = @userId AND provider_player_id = @puuid AND match_id = ANY(@ids)
                     """, new { userId, puuid = account.Puuid, ids = matchIds.ToArray() }))
@@ -209,8 +206,7 @@ public sealed class ValorantStatsSyncService(
                         stored.Shots > 0)
                     {
                         AccumulatePlayer(stats, stored.AgentId, stored.Kills, stored.Deaths, stored.Assists,
-                            stored.Score, stored.Tier ?? 0, stored.Won, stored.Headshots, stored.Shots,
-                            (double)stored.Performance, null);
+                            stored.Score, stored.Tier ?? 0, stored.Won, stored.Headshots, stored.Shots, null);
                         newestMatchId = matchId;
                         continue;
                     }
@@ -250,7 +246,6 @@ public sealed class ValorantStatsSyncService(
                 var kdRatio = stats.Deaths > 0 ? Math.Round((decimal)stats.Kills / stats.Deaths, 2) : (decimal?)null;
                 var avgScore = stats.TotalMatches > 0 ? stats.TotalScore / stats.TotalMatches : (int?)null;
                 var hsPct = stats.TotalShots > 0 ? Math.Round(100.0m * stats.TotalHeadshots / stats.TotalShots, 2) : (decimal?)null;
-                var avgPerformance = stats.TotalMatches > 0 ? Math.Round((decimal)(stats.TotalPerformance / stats.TotalMatches), 2) : (decimal?)null;
 
                 var tierName = stats.LatestCompetitiveTier > 0
                     ? await ResolveTierName(conn, stats.LatestCompetitiveTier)
@@ -274,9 +269,7 @@ public sealed class ValorantStatsSyncService(
                     total_score           = @totalScore,
                     total_headshots       = @totalHeadshots,
                     total_shots           = @totalShots,
-                    total_performance_sum = @totalPerformanceSum,
                     hs_pct                = @hsPct,
-                    avg_performance       = @avgPerformance,
                     player_card_id        = CASE WHEN @playerCard IS NOT NULL THEN @playerCard ELSE player_card_id END,
                     last_match_id         = CASE WHEN @reset THEN @lastMatchId ELSE COALESCE(@lastMatchId, last_match_id) END,
                     last_act_id           = @actId,
@@ -305,9 +298,7 @@ public sealed class ValorantStatsSyncService(
                         totalScore = stats.TotalScore,
                         totalHeadshots = stats.TotalHeadshots,
                         totalShots = stats.TotalShots,
-                        totalPerformanceSum = (decimal)stats.TotalPerformance,
                         hsPct,
-                        avgPerformance,
                         playerCard = stats.LatestPlayerCard,
                         lastMatchId = newestMatchId,
                         reset = actReset,
@@ -365,7 +356,6 @@ public sealed class ValorantStatsSyncService(
                 Assists = item.TryGetProperty("assists", out var a) && a.TryGetInt32(out var av) ? av : 0,
                 Headshots = item.TryGetProperty("headshots", out var hs) && hs.TryGetInt32(out var hsv) ? hsv : 0,
                 Shots = item.TryGetProperty("shots", out var sh) && sh.TryGetInt32(out var shv) ? shv : 0,
-                TotalPerformance = item.TryGetProperty("total_performance", out var tp) && tp.TryGetDouble(out var tpv) ? tpv : 0.0,
             };
         }
     }
@@ -423,8 +413,6 @@ public sealed class ValorantStatsSyncService(
             var deaths = playerStats.GetProperty("deaths").GetInt32();
             var assists = playerStats.GetProperty("assists").GetInt32();
             var score = playerStats.GetProperty("score").GetInt32();
-            var performance = playerStats.TryGetProperty("performance", out var perf) && perf.TryGetDouble(out var perfVal)
-                ? perfVal : 0.0;
             var characterId = player.GetProperty("characterId").GetString() ?? "";
             var playerTeamId = player.TryGetProperty("teamId", out var tid) ? tid.GetString() ?? "" : "";
             var playerCard = player.TryGetProperty("playerCard", out var pc) ? pc.GetString() : null;
@@ -436,7 +424,7 @@ public sealed class ValorantStatsSyncService(
             var hasWinner = teamWins.Values.Any(won => won);
             bool? result = hasWinner && teamWins.TryGetValue(playerTeamId, out var won) ? won : null;
             AccumulatePlayer(stats, characterId, kills, deaths, assists, score, tier, result,
-                headshots, shots, performance, playerCard);
+                headshots, shots, playerCard);
 
             return true;
         }
@@ -445,7 +433,7 @@ public sealed class ValorantStatsSyncService(
 
     private static void AccumulatePlayer(AggregatedStats stats, string? characterId, int kills,
         int deaths, int assists, int score, int tier, bool? won,
-        int headshots, int shots, double performance, string? playerCard)
+        int headshots, int shots, string? playerCard)
     {
         stats.TotalMatches++;
         stats.Kills += kills;
@@ -454,7 +442,6 @@ public sealed class ValorantStatsSyncService(
         stats.TotalScore += score;
         stats.TotalHeadshots += headshots;
         stats.TotalShots += shots;
-        stats.TotalPerformance += performance;
         if (won == true) stats.Wins++; else if (won == false) stats.Losses++;
         if (tier >= 3) stats.LatestCompetitiveTier = tier;
         if (!string.IsNullOrEmpty(playerCard)) stats.LatestPlayerCard = playerCard;
@@ -470,7 +457,6 @@ public sealed class ValorantStatsSyncService(
         agentStat.Assists += assists;
         agentStat.Headshots += headshots;
         agentStat.Shots += shots;
-        agentStat.TotalPerformance += performance;
         if (won == true) agentStat.Wins++;
     }
 
@@ -593,7 +579,6 @@ public sealed class ValorantStatsSyncService(
                     : (a.CharacterId, "");
                 var agentKd = a.Deaths > 0 ? Math.Round((decimal)a.Kills / a.Deaths, 2) : (decimal?)null;
                 var agentHsPct = a.Shots > 0 ? Math.Round(100.0m * a.Headshots / a.Shots, 2) : (decimal?)null;
-                var agentAvgPerf = a.GamesPlayed > 0 ? Math.Round((decimal)(a.TotalPerformance / a.GamesPlayed), 2) : (decimal?)null;
                 return new
                 {
                     agent_id = a.CharacterId,
@@ -606,10 +591,8 @@ public sealed class ValorantStatsSyncService(
                     assists = a.Assists,
                     headshots = a.Headshots,
                     shots = a.Shots,
-                    total_performance = a.TotalPerformance,
                     kd_ratio = agentKd,
                     hs_pct = agentHsPct,
-                    avg_performance = agentAvgPerf,
                 };
             })
             .ToList();
@@ -635,7 +618,7 @@ public sealed class ValorantStatsSyncService(
         int WinCount, int LossCount,
         int TotalKills, int TotalDeaths, int TotalAssists,
         int MatchesAnalyzed, int TotalScore, string? PopularAgents, int AggregationVersion, string? SyncStatus,
-        int TotalHeadshots, int TotalShots, decimal TotalPerformanceSum);
+        int TotalHeadshots, int TotalShots);
 
     private sealed class AggregatedStats
     {
@@ -648,7 +631,6 @@ public sealed class ValorantStatsSyncService(
         public int TotalScore;
         public int TotalHeadshots;
         public int TotalShots;
-        public double TotalPerformance;
         public int LatestCompetitiveTier;
         public string? LatestPlayerCard;
         public Dictionary<string, AgentStat> AgentStats = new(StringComparer.OrdinalIgnoreCase);
@@ -664,6 +646,5 @@ public sealed class ValorantStatsSyncService(
         public int Assists;
         public int Headshots;
         public int Shots;
-        public double TotalPerformance;
     }
 }

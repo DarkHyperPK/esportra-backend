@@ -24,7 +24,6 @@ internal static class ValorantMatchArchive
         public int? Tier { get; init; }
         public int Headshots { get; init; }
         public int Shots { get; init; }
-        public decimal Performance { get; init; }
     }
 
     internal static async Task<bool> SyncAsync(IDbConnection conn, RiotApiClient riot, Guid userId,
@@ -77,13 +76,12 @@ internal static class ValorantMatchArchive
                 await conn.ExecuteAsync("""
                     INSERT INTO public.valorant_player_matches
                         (user_id, provider_player_id, match_id, act_id, started_at, queue_id, agent_id, won,
-                         kills, deaths, assists, score, competitive_tier, headshots, shots, performance)
+                         kills, deaths, assists, score, competitive_tier, headshots, shots)
                     VALUES (@userId, @puuid, @id, @actId, @startedAt, @queueId, @agentId, @won,
-                            @kills, @deaths, @assists, @score, @tier, @headshots, @shots, @performance)
+                            @kills, @deaths, @assists, @score, @tier, @headshots, @shots)
                     ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
-                        headshots   = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.headshots   ELSE valorant_player_matches.headshots   END,
-                        shots       = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.shots       ELSE valorant_player_matches.shots       END,
-                        performance = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.performance ELSE valorant_player_matches.performance END
+                        headshots = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.headshots ELSE valorant_player_matches.headshots END,
+                        shots     = CASE WHEN valorant_player_matches.shots = 0 THEN EXCLUDED.shots     ELSE valorant_player_matches.shots     END
                     """, new
                 {
                     userId,
@@ -100,8 +98,7 @@ internal static class ValorantMatchArchive
                     match.Score,
                     match.Tier,
                     match.Headshots,
-                    match.Shots,
-                    match.Performance
+                    match.Shots
                 });
                 await RemovePendingAsync(conn, userId, puuid, id);
             }
@@ -162,8 +159,6 @@ internal static class ValorantMatchArchive
             && result.ValueKind is JsonValueKind.True or JsonValueKind.False ? result.GetBoolean() : null;
 
         var (headshots, shots) = ExtractHeadshots(root, puuid);
-        var performance = stats.TryGetProperty("performance", out var perf) && perf.TryGetDouble(out var perfVal)
-            ? (decimal)perfVal : 0m;
 
         return new Match
         {
@@ -179,8 +174,7 @@ internal static class ValorantMatchArchive
             Score = stats.GetProperty("score").GetInt32(),
             Tier = player.TryGetProperty("competitiveTier", out var tier) && tier.TryGetInt32(out var value) && value >= 3 ? value : null,
             Headshots = headshots,
-            Shots = shots,
-            Performance = performance
+            Shots = shots
         };
     }
 
