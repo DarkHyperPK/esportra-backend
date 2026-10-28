@@ -58,6 +58,8 @@ public sealed class ValorantMatchArchiveIntegrationTests(ApiFactory factory) : I
         (await ValorantMatchArchive.SyncAsync(conn, riot, owner, puuid, "ap", currentOnly, acts, CancellationToken.None)).Should().BeTrue();
         (await conn.ExecuteScalarAsync<int>("SELECT count(*)::int FROM public.valorant_player_matches WHERE user_id = @owner", new { owner })).Should().Be(2);
         handler.CurrentRequests.Should().Be(1);
+        (await conn.ExecuteScalarAsync<string>("SELECT agent_id FROM public.valorant_player_matches WHERE user_id = @owner AND match_id = 'a-current'", new { owner }))
+            .Should().Be("agent");
         (await conn.ExecuteScalarAsync<string>("SELECT player_card_id FROM public.valorant_player_matches WHERE user_id = @owner AND match_id = 'a-current'", new { owner }))
             .Should().Be("c86953ca-4c94-c0f7-fd91-c19e03ff2b9f");
         handler.PreviousRequests.Should().Be(2);

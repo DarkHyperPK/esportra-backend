@@ -91,8 +91,19 @@ internal static class ValorantMatchArchive
                             @kills, @deaths, @assists, @score, @tier, @headshots, @shots,
                             @headshotDataComplete, @playerCardId, 2)
                     ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
-                        headshots = EXCLUDED.headshots, shots = EXCLUDED.shots,
-                        headshot_data_complete = EXCLUDED.headshot_data_complete,
+                        act_id = EXCLUDED.act_id, started_at = EXCLUDED.started_at,
+                        queue_id = COALESCE(EXCLUDED.queue_id, valorant_player_matches.queue_id),
+                        agent_id = COALESCE(EXCLUDED.agent_id, valorant_player_matches.agent_id),
+                        won = COALESCE(EXCLUDED.won, valorant_player_matches.won),
+                        kills = EXCLUDED.kills, deaths = EXCLUDED.deaths, assists = EXCLUDED.assists,
+                        score = EXCLUDED.score,
+                        competitive_tier = COALESCE(EXCLUDED.competitive_tier, valorant_player_matches.competitive_tier),
+                        headshots = CASE WHEN valorant_player_matches.headshot_data_complete IS TRUE
+                            AND EXCLUDED.headshot_data_complete IS NOT TRUE THEN valorant_player_matches.headshots ELSE EXCLUDED.headshots END,
+                        shots = CASE WHEN valorant_player_matches.headshot_data_complete IS TRUE
+                            AND EXCLUDED.headshot_data_complete IS NOT TRUE THEN valorant_player_matches.shots ELSE EXCLUDED.shots END,
+                        headshot_data_complete = CASE WHEN valorant_player_matches.headshot_data_complete IS TRUE
+                            THEN true ELSE EXCLUDED.headshot_data_complete END,
                         player_card_id = COALESCE(EXCLUDED.player_card_id, valorant_player_matches.player_card_id),
                         match_data_version = 2
                     """, new
