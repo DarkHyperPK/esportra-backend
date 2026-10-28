@@ -890,9 +890,16 @@ public static class LfgEndpoints
                 jsonb_build_object('interest_id', @interestId::text, 'listing_id', @listingId::text, 'from_username', @fromUsername), FALSE
             WHERE NOT EXISTS (SELECT 1 FROM public.notifications WHERE user_id = @ownerId
                 AND type::text = 'lfg_interest_received' AND data->>'interest_id' = @interestId::text)
-            """, new { ownerId = listing.UserId, title = $"{fromUsername ?? "Someone"} is interested in your listing",
-                message = row.Message ?? "They want to connect.", link = $"/competitive/lfg/{id}",
-                interestId = row.Id, listingId = id, fromUsername = fromUsername ?? "" }, tx);
+            """, new
+        {
+            ownerId = listing.UserId,
+            title = $"{fromUsername ?? "Someone"} is interested in your listing",
+            message = row.Message ?? "They want to connect.",
+            link = $"/competitive/lfg/{id}",
+            interestId = row.Id,
+            listingId = id,
+            fromUsername = fromUsername ?? ""
+        }, tx);
         tx.Commit();
         return Results.Ok(row);
     }
