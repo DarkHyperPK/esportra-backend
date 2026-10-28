@@ -640,20 +640,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         // Seed a listing with a far-future expires_at (effectively never expires).
         // expires_at is NOT NULL in the schema; the endpoint also handles IS NULL for
         // future flexibility but the column constraint applies here.
-        var id = Guid.NewGuid();
-        var farFuture = DateTimeOffset.UtcNow.AddYears(100);
-        await using var conn = factory.Seeder.OpenConnection();
-        await conn.ExecuteAsync(
-            """
-            INSERT INTO public.lfg_listings
-                (id, user_id, game_slug, intent, status, preferred_servers,
-                 preferred_roles, languages, expires_at, created_at, updated_at)
-            VALUES
-                (@id, @userId, 'valorant', 'duo'::lfg_intent, 'published'::lfg_listing_status,
-                 ARRAY[]::text[], ARRAY[]::text[], ARRAY[]::text[],
-                 @farFuture, NOW(), NOW())
-            """,
-            new { id, userId = ownerId, farFuture });
+        var id = await SeedListingAsync(ownerId, "valorant", expiresAt: DateTimeOffset.UtcNow.AddYears(100));
 
         var response = await viewerClient.GetAsync("/api/competitive/lfg?game=valorant&limit=50");
         response.StatusCode.Should().Be(HttpStatusCode.OK);
