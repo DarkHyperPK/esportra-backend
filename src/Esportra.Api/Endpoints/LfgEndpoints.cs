@@ -974,6 +974,7 @@ public static class LfgEndpoints
         [FromQuery] string? game,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IBackgroundJobClient backgroundJobs,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1009,6 +1010,19 @@ public static class LfgEndpoints
 
         if (row is null)
             return Results.Ok(new { riot_linked = false });
+
+        // Auto-sync: if Riot is linked but stats are missing or stale (>1h), enqueue background sync
+        if (row.RiotLinked && string.Equals(game, "valorant", StringComparison.OrdinalIgnoreCase))
+        {
+            var stale = row.SyncedAt is null
+                || (DateTimeOffset.UtcNow - row.SyncedAt.Value).TotalHours >= 1
+                || row.SyncStatus is "error" or null;
+            if (stale)
+            {
+                backgroundJobs.Enqueue<ValorantStatsSyncService>(
+                    s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
+            }
+        }
 
         System.Text.Json.JsonElement? parsedAgents = null;
         if (!string.IsNullOrEmpty(row.PopularAgents))
@@ -1113,7 +1127,7 @@ file sealed record GameStatsRaw(
     string? RiotGameName,
     string? RiotTagLine,
     string? SyncStatus,
-    DateTime? SyncedAt,
+    DateTimeOffset? SyncedAt,
     int? CompetitiveTier,
     string? CompetitiveTierName,
     int? WinCount,
