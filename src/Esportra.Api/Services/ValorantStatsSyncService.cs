@@ -113,6 +113,8 @@ public sealed class ValorantStatsSyncService(
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 { logger.LogWarning(ex, "Valorant match archive could not complete for user {UserId}", userId); }
 
+                await ValorantHeadshotRecovery.RepairAsync(conn, userId, account.Puuid, act.ActId);
+
                 // Player cards are account cosmetics, so the latest match in any mode can supply one.
                 var archivePlayerCard = await conn.QuerySingleOrDefaultAsync<string>("""
                     SELECT player_card_id FROM public.valorant_player_matches

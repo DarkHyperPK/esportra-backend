@@ -108,7 +108,8 @@ public sealed class ValorantMatchArchiveIntegrationTests(ApiFactory factory) : I
                 },
                 teams = new[] { new { teamId = "Blue", won = true }, new { teamId = "Red", won = false } },
                 players = new[] { new { puuid, teamId = "Blue", characterId = "agent", playerCard = "c86953ca-4c94-c0f7-fd91-c19e03ff2b9f", competitiveTier = 10,
-                    stats = new { kills = 10, deaths = 5, assists = 3, score = 500 } } }
+                    stats = new { kills = 10, deaths = 5, assists = 3, score = 500 } } },
+                roundResults = new[] { new { playerStats = new[] { new { puuid, damage = new[] { new { headshots = 2, bodyshots = 7, legshots = 1 } } } } } }
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(body) });
         }

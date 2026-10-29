@@ -66,7 +66,7 @@ public sealed class ValorantMatchArchiveTests
         match.QueueId.Should().Be("unrated");
         match.AgentId.Should().Be("agent-a");
         match.PlayerCardId.Should().Be("c86953ca-4c94-c0f7-fd91-c19e03ff2b9f");
-        match.MatchDataVersion.Should().Be(2);
+        match.MatchDataVersion.Should().Be(3);
         match.Kills.Should().Be(12);
         match.Won.Should().BeNull();
         JsonSerializer.Serialize(match).Should().NotContain("private");

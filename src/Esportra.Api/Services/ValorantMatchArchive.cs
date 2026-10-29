@@ -61,10 +61,20 @@ internal static class ValorantMatchArchive
             ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
                 match_started_at = COALESCE(EXCLUDED.match_started_at, valorant_match_backlog.match_started_at)
             """, new { userId, puuid, ids = candidates.Select(c => c.Id).ToArray(), starts = candidates.Select(c => c.StartMillis).ToArray(), cardCandidate });
+        // Repair legacy cached competitive matches even if Riot no longer lists
+        // their IDs. Successful-but-incomplete responses get a bounded retry below.
+        await conn.ExecuteAsync("""
+            INSERT INTO public.valorant_match_backlog (user_id, provider_player_id, match_id, match_started_at)
+            SELECT user_id, provider_player_id, match_id, started_at FROM public.valorant_player_matches
+            WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = @actId
+              AND queue_id = 'competitive' AND headshot_data_complete IS NOT TRUE AND match_data_version < 3
+            ON CONFLICT (user_id, provider_player_id, match_id) DO NOTHING
+            """, new { userId, puuid, actId = current.Id });
         var pending = await conn.QueryAsync<string>("""
             SELECT match_id FROM public.valorant_match_backlog
             WHERE user_id = @userId AND provider_player_id = @puuid
               AND (match_started_at IS NULL OR match_started_at >= @start)
+              AND (retry_after IS NULL OR retry_after <= now())
             ORDER BY match_started_at DESC NULLS LAST, discovered_at, match_id
             """, new { userId, puuid, start = current.Start.UtcDateTime });
         var complete = true;
@@ -89,7 +99,7 @@ internal static class ValorantMatchArchive
                          headshot_data_complete, player_card_id, match_data_version)
                     VALUES (@userId, @puuid, @id, @actId, @startedAt, @queueId, @agentId, @won,
                             @kills, @deaths, @assists, @score, @tier, @headshots, @shots,
-                            @headshotDataComplete, @playerCardId, 2)
+                            @headshotDataComplete, @playerCardId, 3)
                     ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
                         act_id = EXCLUDED.act_id, started_at = EXCLUDED.started_at,
                         queue_id = COALESCE(EXCLUDED.queue_id, valorant_player_matches.queue_id),
@@ -105,7 +115,7 @@ internal static class ValorantMatchArchive
                         headshot_data_complete = CASE WHEN valorant_player_matches.headshot_data_complete IS TRUE
                             THEN true ELSE EXCLUDED.headshot_data_complete END,
                         player_card_id = COALESCE(EXCLUDED.player_card_id, valorant_player_matches.player_card_id),
-                        match_data_version = 2
+                        match_data_version = 3
                     """, new
                 {
                     userId,
@@ -126,11 +136,22 @@ internal static class ValorantMatchArchive
                     match.HeadshotDataComplete,
                     match.PlayerCardId
                 });
-                await RemovePendingAsync(conn, userId, puuid, id);
+                if (string.Equals(match.QueueId, "competitive", StringComparison.OrdinalIgnoreCase) && match.HeadshotDataComplete != true)
+                    await conn.ExecuteAsync("""
+                        UPDATE public.valorant_match_backlog SET retry_after = now() + interval '12 hours'
+                        WHERE user_id = @userId AND provider_player_id = @puuid AND match_id = @id
+                        """, new { userId, puuid, id });
+                else
+                    await RemovePendingAsync(conn, userId, puuid, id);
             }
             catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentOutOfRangeException)
             { complete = false; }
         }
+        complete &= !await conn.ExecuteScalarAsync<bool>("""
+            SELECT EXISTS (SELECT 1 FROM public.valorant_match_backlog
+                WHERE user_id = @userId AND provider_player_id = @puuid
+                  AND (match_started_at IS NULL OR match_started_at >= @start))
+            """, new { userId, puuid, start = current.Start.UtcDateTime });
         await conn.ExecuteAsync("""
             UPDATE public.valorant_act_syncs SET sync_status = @status, updated_at = now()
             WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = ANY(@ids)
@@ -203,7 +224,7 @@ internal static class ValorantMatchArchive
             Shots = shots,
             HeadshotDataComplete = complete,
             PlayerCardId = player.TryGetProperty("playerCard", out var card) && card.ValueKind == JsonValueKind.String ? card.GetString() : null,
-            MatchDataVersion = 2
+            MatchDataVersion = 3
         };
     }
 
@@ -236,6 +257,7 @@ internal static class ValorantMatchArchive
                         !dmg.TryGetProperty("bodyshots", out var b) || b.ValueKind != JsonValueKind.Number || !b.TryGetInt32(out var bs) ||
                         !dmg.TryGetProperty("legshots", out var l) || l.ValueKind != JsonValueKind.Number || !l.TryGetInt32(out var ls))
                     { complete = false; continue; }
+                    if (hs < 0 || bs < 0 || ls < 0) { complete = false; continue; }
                     headshots += hs;
                     shots += hs + bs + ls;
                 }
