@@ -234,6 +234,7 @@ public static class LfgEndpoints
                    CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                   CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
@@ -432,7 +433,7 @@ public static class LfgEndpoints
 
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<LfgListingRow>(
-            """
+            $"""
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
@@ -451,6 +452,7 @@ public static class LfgEndpoints
                    CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                   CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
@@ -499,7 +501,7 @@ public static class LfgEndpoints
 
         using var conn = db.CreateConnection();
         var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
-            """
+            $"""
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
@@ -518,6 +520,7 @@ public static class LfgEndpoints
                    CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                   CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm

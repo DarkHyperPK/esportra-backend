@@ -326,6 +326,55 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TeamArtwork_UsesCurrentCaptainLinkedAccount_AcrossListingSurfaces(bool explicitCaptain)
+    {
+        var (owner, ownerClient) = await User();
+        var (captain, _) = await User();
+        var (_, viewer) = await User();
+        var team = await factory.Seeder.SeedTeamAsync(owner);
+        var listing = await SeedListingAsync(owner, "valorant");
+        await LinkRiotAsync(captain);
+        var captainCard = Guid.NewGuid().ToString();
+        var ownerCard = Guid.NewGuid().ToString();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            UPDATE public.teams SET captain_id = @captainId WHERE id = @team;
+            UPDATE public.team_members SET role = 'manager' WHERE team_id = @team AND user_id = @owner;
+            INSERT INTO public.team_members (team_id, user_id, role, is_active) VALUES (@team, @captain, 'captain', TRUE);
+            UPDATE public.lfg_listings SET intent = 'looking_for_player', team_id = @team WHERE id = @listing;
+            INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, player_card_id)
+                VALUES (@owner, 'valorant', @ownerProvider, @ownerCard), (@captain, 'valorant', @captainProvider, @captainCard);
+            """, new { team, listing, owner, captain, captainId = explicitCaptain ? (Guid?)captain : null, ownerProvider = owner.ToString(), captainProvider = captain.ToString(), ownerCard, captainCard });
+        (await viewer.PutAsJsonAsync($"/api/competitive/lfg/{listing}/saved", new { })).EnsureSuccessStatusCode();
+        var detail = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+        detail.GetProperty("teamCaptainPlayerCardId").GetString().Should().Be(captainCard);
+        foreach (var (client, url) in new[] {
+            (viewer, "/api/competitive/lfg?game=valorant&intent=looking_for_player&limit=100"),
+            (viewer, "/api/competitive/lfg/saved"), (ownerClient, "/api/competitive/lfg/mine") })
+        {
+            var response = await client.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+            var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+            rows.EnumerateArray().Single(row => row.GetProperty("id").GetGuid() == listing)
+                .GetProperty("teamCaptainPlayerCardId").GetString().Should().Be(captainCard);
+        }
+        var eligible = await (await ownerClient.GetAsync("/api/teams/my-captain-teams")).Content.ReadFromJsonAsync<JsonElement>();
+        eligible.EnumerateArray().Single(row => row.GetProperty("id").GetGuid() == team)
+            .GetProperty("captain_valorant_player_card_id").GetString().Should().Be(captainCard);
+        await conn.ExecuteAsync("UPDATE public.riot_accounts SET puuid = @newAccount WHERE user_id = @captain", new { captain, newAccount = Guid.NewGuid().ToString() });
+        var relinked = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+        relinked.GetProperty("teamCaptainPlayerCardId").ValueKind.Should().Be(JsonValueKind.Null);
+        if (!explicitCaptain)
+        {
+            await conn.ExecuteAsync("UPDATE public.riot_accounts SET puuid = @provider WHERE user_id = @captain; UPDATE public.team_members SET role = 'captain' WHERE team_id = @team AND user_id = @owner", new { captain, provider = captain.ToString(), team, owner });
+            var ambiguous = await (await viewer.GetAsync($"/api/competitive/lfg/{listing}")).Content.ReadFromJsonAsync<JsonElement>();
+            ambiguous.GetProperty("teamCaptainPlayerCardId").ValueKind.Should().Be(JsonValueKind.Null);
+        }
+    }
+
     // ── Catalog: GET /api/catalog/rank-tiers ─────────────────────────────────
 
     [Fact]

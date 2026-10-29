@@ -1954,7 +1954,8 @@ public static class TeamEndpoints
             using var conn = db.CreateConnection();
             var teams = await conn.QueryAsync<dynamic>(
                 $"""
-                SELECT DISTINCT t.*
+                SELECT DISTINCT t.*,
+                    {LfgTeamArtworkSql.CaptainValorantPlayerCard} AS captain_valorant_player_card_id
                 FROM teams t
                 LEFT JOIN team_members tm
                   ON tm.team_id = t.id AND tm.user_id = @userId AND tm.is_active = TRUE

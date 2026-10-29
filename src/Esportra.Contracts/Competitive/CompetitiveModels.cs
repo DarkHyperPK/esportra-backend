@@ -170,6 +170,7 @@ public sealed record LfgListingRow
     // Team enrichment (for LFP listings)
     public string? TeamName { get; init; }
     public string? TeamLogoUrl { get; init; }
+    public string? TeamCaptainPlayerCardId { get; init; }
     public string? TeamTag { get; init; }
     public int? TeamMemberCount { get; init; }
     public int? TeamVerifiedCount { get; init; }

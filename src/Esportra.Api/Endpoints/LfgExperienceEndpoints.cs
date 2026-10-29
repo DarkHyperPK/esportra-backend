@@ -113,7 +113,7 @@ public static class LfgExperienceEndpoints
         if (user is null) return Results.Unauthorized();
         using var conn = db.CreateConnection();
         var rows = await conn.QueryAsync<LfgListingRow>(
-            """
+            $"""
             WITH active_v AS (SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1)
             SELECT l.id, l.user_id, l.team_id, l.game_slug, l.intent::text AS intent,
                 l.status::text AS status, l.mode_key, l.region_key, l.preferred_servers,
@@ -126,6 +126,7 @@ public static class LfgExperienceEndpoints
                 max_rt.icon_url AS max_rank_icon_url, pgs.competitive_tier, pgs.competitive_tier_name,
                 pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio, CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct, (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                 pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                 ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                 (SELECT count(*)::int FROM public.team_members tm WHERE tm.team_id = l.team_id AND tm.is_active) AS team_member_count,
                 true AS is_saved, vi.id AS viewer_interest_id, vi.status::text AS viewer_interest_status,
