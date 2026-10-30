@@ -62,7 +62,7 @@ public static class ScrimEndpoints
         app.MapPost("/api/scrims/listings/{id:guid}/pause", PauseListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/reopen", ReopenListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/close", CloseListingAsync).RequireAuthorization("Authenticated");
-        app.MapGet("/api/scrims/discover", DiscoverAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/scrims/discover", DiscoverAsync).AllowAnonymous();
 
         // ── Scrim Offers ────────────────────────────────────────────────────────
         app.MapPost("/api/scrims/listings/{id:guid}/offer", MakeOfferAsync).RequireAuthorization("Authenticated");
