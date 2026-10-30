@@ -10,26 +10,26 @@ public sealed record ScrimListingRow(
     DateTime CreatedAt, DateTime UpdatedAt,
     string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null,
     string ScheduleType = "one_off",
-    DateTimeOffset? ScheduleUntil = null,
+    DateTime? ScheduleUntil = null,
     int? SlotDurationMinutes = null);
 
 public sealed record ScrimOfferRow(
     Guid Id, Guid ListingId, Guid OfferingTeamId,
-    DateTimeOffset? ProposedAt, int? ProposedDurationMinutes,
+    DateTime? ProposedAt, int? ProposedDurationMinutes,
     string? Notes, string Status, DateTime CreatedAt, DateTime UpdatedAt,
     string? OfferingTeamName = null, string? OfferingTeamLogo = null,
     string? ListingGameSlug = null, string? ListingTeamName = null);
 
 public sealed record ScrimSessionRow(
     Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
-    DateTimeOffset? ScheduledAt, int? DurationMinutes, string Status,
+    DateTime? ScheduledAt, int? DurationMinutes, string Status,
     bool ResultReportedByTeam1, bool ResultReportedByTeam2,
     int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
     string? ModeKey = null, string? ServerInfo = null, string? LobbyCode = null,
     string? Team1Name = null, string? Team1Logo = null,
     string? Team2Name = null, string? Team2Logo = null,
-    DateTimeOffset? Team1CheckedInAt = null,
-    DateTimeOffset? Team2CheckedInAt = null);
+    DateTime? Team1CheckedInAt = null,
+    DateTime? Team2CheckedInAt = null);
 
 public sealed record ScrimResultReportRow(
     Guid Id, Guid SessionId, Guid ReportingTeamId,
@@ -37,7 +37,7 @@ public sealed record ScrimResultReportRow(
     string[]? ScreenshotsUrls, DateTime? SubmittedAt,
     string? ReportingTeamName = null,
     Guid? ConfirmedByTeamId = null,
-    DateTimeOffset? ConfirmedAt = null);
+    DateTime? ConfirmedAt = null);
 
 public sealed record ScrimDisputeRow(
     Guid Id, Guid SessionId, Guid RaisedByTeamId,
@@ -47,7 +47,7 @@ public sealed record ScrimDisputeRow(
 
 public sealed record PracticeSessionRow(
     Guid Id, Guid TeamId, string? GameSlug, string Title,
-    DateTimeOffset? ScheduledAt, int? DurationMinutes,
+    DateTime? ScheduledAt, int? DurationMinutes,
     string? Notes, string Status, Guid CreatedBy,
     DateTime CreatedAt, DateTime UpdatedAt,
     string? TeamName = null);
@@ -91,7 +91,7 @@ public sealed record RecruitmentApplicationRow(
 
 public sealed record TryoutSessionRow(
     Guid Id, Guid TeamId, string? GameSlug, string Title,
-    string? Description, DateTimeOffset? ScheduledAt,
+    string? Description, DateTime? ScheduledAt,
     int? DurationMinutes, int? MaxParticipants,
     string? MinRankKey, string? MaxRankKey,
     string Status, Guid CreatedBy, DateTime CreatedAt, DateTime UpdatedAt,
@@ -113,7 +113,7 @@ public sealed record TryoutEvaluationRow(
 
 public sealed record TryoutInviteRow(
     Guid SessionId, Guid ParticipantId, string ParticipantStatus,
-    string Title, string? GameSlug, DateTimeOffset? ScheduledAt,
+    string Title, string? GameSlug, DateTime? ScheduledAt,
     string? TeamName, string? TeamLogoUrl, string SessionStatus);
 
 // ── LFG ─────────────────────────────────────────────────────────────────────────
