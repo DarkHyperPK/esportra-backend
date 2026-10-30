@@ -41,11 +41,16 @@ public static class NotificationEndpoints
             // Fetch notifications
             var notifications = await conn.QueryAsync<dynamic>(
                 """
-                SELECT id, user_id, type, title, message, link,
-                       is_read, data, created_at
-                FROM notifications
-                WHERE user_id = @userId
-                ORDER BY created_at DESC
+                SELECT n.id, n.user_id, n.type, n.title, n.message, n.link,
+                       n.is_read, n.data, n.created_at,
+                       actor.username AS actor_name, actor.avatar_url AS actor_avatar_url
+                FROM notifications n
+                LEFT JOIN public.lfg_interests interest
+                    ON n.type::text = 'lfg_interest_received' AND interest.id::text = n.data->>'interest_id'
+                    AND interest.to_user_id = n.user_id
+                LEFT JOIN public.profiles actor ON actor.id = interest.from_user_id
+                WHERE n.user_id = @userId
+                ORDER BY n.created_at DESC
                 LIMIT @limit OFFSET @offset
                 """,
                 new { userId = userCtx.UserIdGuid, limit, offset });

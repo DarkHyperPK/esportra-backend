@@ -16,8 +16,8 @@ public static class LfgExperienceEndpoints
 
     public static async Task<IResult> GetRosterAsync(Guid id, HttpContext ctx, IDbConnectionFactory db)
     {
+        ctx.Response.Headers.CacheControl = "private, no-store";
         var user = User(ctx);
-        if (user is null) return Results.Unauthorized();
         using var conn = db.CreateConnection();
         var listing = await conn.QuerySingleOrDefaultAsync<LfgRosterListing>(
             """
@@ -26,7 +26,7 @@ public static class LfgExperienceEndpoints
               AND (user_id = @userId OR lower(game_slug) <> 'valorant' OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = public.lfg_listings.user_id))
               AND intent::text IN ('looking_for_player', 'competitive_roster')
               AND (user_id = @userId OR (status = 'published' AND (expires_at IS NULL OR expires_at > now())))
-            """, new { id, userId = user.UserIdGuid });
+            """, new { id, userId = user?.UserIdGuid });
         if (listing is null) return Results.NotFound();
 
         var rosterIds = (await conn.QueryAsync<Guid>(
@@ -59,7 +59,7 @@ public static class LfgExperienceEndpoints
             ) AS can_view) visible
             WHERE rm.roster_id = @rosterId AND rm.is_active = true
             ORDER BY rm.display_order, rm.created_at, rm.user_id
-            """, new { teamId = listing.TeamId, game = listing.GameSlug, rosterId = rosterIds[0], userId = user.UserIdGuid });
+            """, new { teamId = listing.TeamId, game = listing.GameSlug, rosterId = rosterIds[0], userId = user?.UserIdGuid });
         return Results.Ok(new { status = "available", members });
     }
 

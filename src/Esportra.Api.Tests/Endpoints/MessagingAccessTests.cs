@@ -83,6 +83,64 @@ public sealed class MessagingAccessTests(ApiFactory factory)
     }
 
     [Fact]
+    public async Task ReadReceipt_StopsAtVisibleMessage_AndNeverMovesBackwards()
+    {
+        var (sender, senderClient) = await User();
+        var (reader, readerClient) = await User();
+        var (_, outsider) = await User();
+        var conversation = await Conversation(sender, reader);
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            INSERT INTO public.messages (id, conversation_id, sender_id, content, created_at)
+            VALUES (@first, @conversation, @sender, 'first', now() - interval '2 minutes'),
+                   (@second, @conversation, @sender, 'second', now() - interval '1 minute')
+            """, new { first, second, conversation, sender });
+
+        (await outsider.PutAsJsonAsync($"/api/conversations/{conversation}/read?through={second}", new { })).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await readerClient.PutAsJsonAsync($"/api/conversations/{conversation}/read?through={Guid.NewGuid()}", new { })).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await readerClient.PutAsJsonAsync($"/api/conversations/{conversation}/read?through={first}", new { })).EnsureSuccessStatusCode();
+        var atFirst = await conn.ExecuteScalarAsync<DateTime>("SELECT last_read_at FROM public.conversation_participants WHERE conversation_id = @conversation AND user_id = @reader", new { conversation, reader });
+        (await conn.ExecuteScalarAsync<DateTime>("SELECT created_at FROM public.messages WHERE id = @first", new { first })).Should().Be(atFirst);
+        var list = await (await readerClient.GetAsync("/api/conversations")).Content.ReadFromJsonAsync<JsonElement>();
+        list.EnumerateArray().Single(c => c.GetProperty("id").GetGuid() == conversation).GetProperty("unread_count").GetInt32().Should().Be(1);
+        (await readerClient.PutAsJsonAsync($"/api/conversations/{conversation}/read?through={second}", new { })).EnsureSuccessStatusCode();
+        (await readerClient.PutAsJsonAsync($"/api/conversations/{conversation}/read?through={first}", new { })).EnsureSuccessStatusCode();
+        var atSecond = await conn.ExecuteScalarAsync<DateTime>("SELECT last_read_at FROM public.conversation_participants WHERE conversation_id = @conversation AND user_id = @reader", new { conversation, reader });
+        atSecond.Should().BeAfter(atFirst);
+        var senderList = await (await senderClient.GetAsync("/api/conversations")).Content.ReadFromJsonAsync<JsonElement>();
+        var participants = senderList.EnumerateArray().Single(c => c.GetProperty("id").GetGuid() == conversation).GetProperty("participants");
+        participants.EnumerateArray().Single(p => p.GetProperty("user_id").GetGuid() == reader).GetProperty("last_read_at").ValueKind.Should().NotBe(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task LfgNotification_IncludesRequestersPublicAvatar_ForOwnerOnly()
+    {
+        var (owner, ownerClient) = await User();
+        var (requester, _) = await User();
+        var (_, outsider) = await User();
+        var listing = Guid.NewGuid();
+        var interest = Guid.NewGuid();
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            UPDATE public.profiles SET username = 'avatarrequester', avatar_url = 'https://example.test/avatar.png' WHERE id = @requester;
+            INSERT INTO public.lfg_listings (id, user_id, game_slug, intent, status)
+            VALUES (@listing, @owner, 'valorant', 'looking_for_team', 'published');
+            INSERT INTO public.lfg_interests (id, listing_id, from_user_id, to_user_id, status)
+            VALUES (@interest, @listing, @requester, @owner, 'expressed');
+            INSERT INTO public.notifications (user_id, type, title, message, data, is_read)
+            VALUES (@owner, 'lfg_interest_received', 'Request', 'Interested', jsonb_build_object('interest_id', @interest::text), FALSE)
+            """, new { owner, requester, listing, interest });
+        var notification = await (await ownerClient.GetAsync("/api/notifications")).Content.ReadFromJsonAsync<JsonElement>();
+        var item = notification.GetProperty("notifications").EnumerateArray().Single(n => n.GetProperty("type").GetString() == "lfg_interest_received");
+        item.GetProperty("actor_name").GetString().Should().Be("avatarrequester");
+        item.GetProperty("actor_avatar_url").GetString().Should().Be("https://example.test/avatar.png");
+        var other = await (await outsider.GetAsync("/api/notifications")).Content.ReadFromJsonAsync<JsonElement>();
+        other.GetProperty("notifications").EnumerateArray().Should().NotContain(n => n.GetProperty("type").GetString() == "lfg_interest_received");
+    }
+
+    [Fact]
     public async Task DirectConversation_RejectsMultipleOtherParticipants()
     {
         var (_, client) = await User();

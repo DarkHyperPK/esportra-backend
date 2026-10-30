@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json.Serialization;
 using Dapper;
 using Esportra.Api.Services;
@@ -73,7 +74,8 @@ public static class LfgEndpoints
             .RequireAuthorization("Authenticated");
 
         app.MapGet("/api/competitive/lfg", DiscoverAsync)
-            .RequireAuthorization("Authenticated");
+            .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("public"))
+            .AllowAnonymous();
         app.MapPost("/api/competitive/lfg", CreateListingAsync)
             .RequireAuthorization("Authenticated");
 
@@ -82,9 +84,11 @@ public static class LfgEndpoints
         app.MapGet("/api/competitive/lfg/{id}/interests", GetListingInterestsAsync)
             .RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/lfg/{id:guid}/roster", LfgExperienceEndpoints.GetRosterAsync)
-            .RequireAuthorization("Authenticated");
+            .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("public"))
+            .AllowAnonymous();
         app.MapGet("/api/competitive/lfg/{id}", GetListingAsync)
-            .RequireAuthorization("Authenticated");
+            .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("public"))
+            .AllowAnonymous();
 
         app.MapPut("/api/competitive/lfg/{id}", UpdateListingAsync)
             .RequireAuthorization("Authenticated");
@@ -121,8 +125,9 @@ public static class LfgEndpoints
         [FromQuery] int limit = 20,
         [FromQuery] int offset = 0)
     {
+        ctx.Response.Headers.CacheControl = "private, no-store";
         var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null) return Results.Unauthorized();
+        if (userCtx is null && saved_only == true) return Results.Unauthorized();
 
         if (string.IsNullOrWhiteSpace(game))
             return Results.BadRequest(new { error = "game query parameter is required." });
@@ -134,13 +139,13 @@ public static class LfgEndpoints
         {
             "l.game_slug = @game",
             "l.status = 'published'",
-            "l.user_id != @callerId",
+            "(@callerId IS NULL OR l.user_id != @callerId)",
             "(lower(l.game_slug) <> 'valorant' OR ra.user_id IS NOT NULL)",
             "(l.expires_at > now() OR l.expires_at IS NULL)",
         };
         var p = new DynamicParameters();
         p.Add("game", game);
-        p.Add("callerId", userCtx.UserIdGuid);
+        p.Add("callerId", userCtx?.UserIdGuid, DbType.Guid);
         p.Add("limit", limit);
         p.Add("offset", offset);
 
@@ -245,7 +250,8 @@ public static class LfgEndpoints
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(CASE WHEN item->>'headshot_data_complete' = 'true' THEN item ELSE item - 'hs_pct' END), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, CASE WHEN l.game_slug <> 'valorant' OR pgs.last_act_id IS NOT NULL THEN pgs.synced_at END AS riot_synced_at, pgs.player_card_id,
                    CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
-                   ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
+                   CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true) THEN ra.game_name END AS riot_game_name,
+                   CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true) THEN ra.tag_line END AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
                     WHERE tm.team_id = l.team_id AND tm.is_active = TRUE) AS team_member_count,
@@ -506,8 +512,8 @@ public static class LfgEndpoints
         IDbConnectionFactory db,
         CancellationToken ct)
     {
+        ctx.Response.Headers.CacheControl = "private, no-store";
         var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
         var row = await conn.QuerySingleOrDefaultAsync<LfgListingRow>(
@@ -531,7 +537,8 @@ public static class LfgEndpoints
                    (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(CASE WHEN item->>'headshot_data_complete' = 'true' THEN item ELSE item - 'hs_pct' END), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
                    pgs.matches_analyzed, CASE WHEN l.game_slug <> 'valorant' OR pgs.last_act_id IS NOT NULL THEN pgs.synced_at END AS riot_synced_at, pgs.player_card_id,
                    CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
-                   ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
+                   CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true) THEN ra.game_name END AS riot_game_name,
+                   CASE WHEN COALESCE((pr.privacy_settings->>'show_riot_account')::boolean, true) THEN ra.tag_line END AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
                    (SELECT COUNT(*)::int FROM public.team_members tm
                     WHERE tm.team_id = l.team_id AND tm.is_active = TRUE) AS team_member_count,
@@ -560,13 +567,15 @@ public static class LfgEndpoints
             WHERE l.id = @id AND (l.user_id = @viewerId OR lower(l.game_slug) <> 'valorant'
                 OR EXISTS (SELECT 1 FROM public.riot_accounts linked WHERE linked.user_id = l.user_id))
             """,
-            new { id, viewerId = userCtx.UserIdGuid });
+            new { id, viewerId = userCtx?.UserIdGuid });
 
         if (row is null) return Results.NotFound();
 
         // Non-owners may only see published listings.
-        var isOwner = row.UserId == userCtx.UserIdGuid;
+        var isOwner = userCtx is not null && row.UserId == userCtx.UserIdGuid;
         if (!isOwner && (row.Status != "published" || row.ExpiresAt <= DateTimeOffset.UtcNow)) return Results.NotFound();
+
+        if (userCtx is null) return Results.Ok(row);
 
         var viewer = await conn.QuerySingleOrDefaultAsync<LfgViewerState>(
             """

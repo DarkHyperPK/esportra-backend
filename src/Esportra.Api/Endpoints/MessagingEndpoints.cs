@@ -273,20 +273,40 @@ public static class MessagingEndpoints
         // ── PUT /api/conversations/{id}/read ─────────────────────────────────
         app.MapPut("/api/conversations/{id}/read", async (
             Guid id,
+            [FromQuery] Guid? through,
             HttpContext ctx,
             IDbConnectionFactory db,
+            IHubContext<ConversationHub> conversationHub,
             CancellationToken ct) =>
         {
             var userCtx = ctx.Items["UserContext"] as UserContext;
             if (userCtx is null) return Results.Unauthorized();
 
             using var conn = db.CreateConnection();
-
-            var updated = await conn.ExecuteAsync(
-                "UPDATE conversation_participants SET last_read_at = NOW() WHERE conversation_id = @id AND user_id = @userId AND is_active = TRUE",
+            var isMember = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM conversation_participants WHERE conversation_id = @id AND user_id = @userId AND is_active = TRUE)",
                 new { id, userId = userCtx.UserIdGuid });
+            if (!isMember) return Results.Forbid();
 
-            return updated == 0 ? Results.Forbid() : Results.Ok(new { success = true });
+            // A visible-message watermark avoids marking a message received after the
+            // current page was loaded as read. Older clients may omit it.
+            var readAt = through is null ? DateTime.UtcNow : await conn.QuerySingleOrDefaultAsync<DateTime?>(
+                "SELECT created_at FROM public.messages WHERE id = @through AND conversation_id = @id",
+                new { id, through });
+            if (readAt is null) return Results.BadRequest(new { error = "MESSAGE_NOT_FOUND" });
+            var updated = await conn.ExecuteScalarAsync<DateTime?>("""
+                UPDATE conversation_participants SET last_read_at = @readAt
+                WHERE conversation_id = @id AND user_id = @userId AND is_active = TRUE
+                  AND (last_read_at IS NULL OR last_read_at < @readAt)
+                RETURNING last_read_at
+                """, new { id, userId = userCtx.UserIdGuid, readAt });
+            if (updated is not null)
+            {
+                var recipients = (await ActiveParticipantsAsync(conn, id)).Where(recipient => recipient != userCtx.UserIdGuid.ToString()).ToArray();
+                await conversationHub.Clients.Users(recipients).SendAsync(ConversationHubEvents.MessagesRead,
+                    new { conversationId = id, userId = userCtx.UserIdGuid, lastReadAt = updated }, ct);
+            }
+            return Results.Ok(new { success = true });
         }).RequireAuthorization("Authenticated");
 
         // ── POST /api/conversations/{id}/join ────────────────────────────────

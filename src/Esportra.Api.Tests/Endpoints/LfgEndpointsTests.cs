@@ -312,6 +312,12 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         visible.GetProperty("kdRatio").GetDecimal().Should().Be(1.50m);
         visible.TryGetProperty("email", out _).Should().BeFalse();
         visible.TryGetProperty("riotPuuid", out _).Should().BeFalse();
+        using var guest = Anon();
+        var guestResponse = await guest.GetAsync($"/api/competitive/lfg/{listingId}/roster");
+        guestResponse.EnsureSuccessStatusCode();
+        var guestRoster = await guestResponse.Content.ReadFromJsonAsync<JsonElement>();
+        guestRoster.GetProperty("members").EnumerateArray().Single(item => item.GetProperty("userId").GetGuid() == owner)
+            .GetProperty("kdRatio").ValueKind.Should().Be(JsonValueKind.Null);
         var playerListing = await SeedListingAsync(owner, "valorant");
         await conn.ExecuteAsync("UPDATE public.lfg_listings SET intent = 'looking_for_team' WHERE id = @playerListing", new { playerListing });
         var optedIn = await (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).Content.ReadFromJsonAsync<JsonElement>();
@@ -326,6 +332,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         duplicate.GetProperty("status").GetString().Should().Be("ambiguous");
         await conn.ExecuteAsync("UPDATE public.lfg_listings SET status = 'paused' WHERE id = @listingId", new { listingId });
         (await viewer.GetAsync($"/api/competitive/lfg/{listingId}/roster")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await guest.GetAsync($"/api/competitive/lfg/{listingId}/roster")).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Theory]
@@ -700,13 +707,47 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         ids.Should().Contain(id, "listing with far-future expires_at must appear in discovery");
     }
 
+    [Fact]
+    public async Task Guest_CanBrowseOnlyPublicListings_WithoutViewerDataOrPrivateRiotIdentity()
+    {
+        var (owner, _) = await User();
+        var name = $"guest{owner.ToString("N")[..8]}";
+        var visible = await SeedListingAsync(owner, "valorant");
+        var draft = await SeedListingAsync(owner, "valorant", status: "draft");
+        var expired = await SeedListingAsync(owner, "valorant", expiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        await using var conn = factory.Seeder.OpenConnection();
+        await conn.ExecuteAsync("""
+            UPDATE public.profiles SET username = @name, privacy_settings = '{"show_riot_account":false}'::jsonb WHERE id = @owner;
+            UPDATE public.lfg_listings SET intent = 'looking_for_team' WHERE id = ANY(@ids)
+            """, new { owner, name, ids = new[] { visible, draft, expired } });
+        using var guest = Anon();
+        var response = await guest.GetAsync($"/api/competitive/lfg?game=valorant&q={name}");
+        response.EnsureSuccessStatusCode();
+        response.Headers.CacheControl!.NoStore.Should().BeTrue();
+        var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+        rows.GetArrayLength().Should().Be(1);
+        rows[0].GetProperty("id").GetGuid().Should().Be(visible);
+        rows[0].GetProperty("isSaved").GetBoolean().Should().BeFalse();
+        rows[0].GetProperty("viewerInterestId").ValueKind.Should().Be(JsonValueKind.Null);
+        rows[0].GetProperty("riotGameName").ValueKind.Should().Be(JsonValueKind.Null);
+        var detail = await guest.GetAsync($"/api/competitive/lfg/{visible}");
+        detail.EnsureSuccessStatusCode();
+        var body = await detail.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("riotGameName").ValueKind.Should().Be(JsonValueKind.Null);
+        (await guest.GetAsync($"/api/competitive/lfg/{draft}")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await guest.GetAsync($"/api/competitive/lfg/{expired}")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await guest.GetAsync("/api/competitive/lfg?game=valorant&saved_only=true")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await guest.PutAsJsonAsync($"/api/competitive/lfg/{visible}/saved", new { })).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await guest.PostAsJsonAsync($"/api/competitive/lfg/{visible}/interest", new { message = "Hello" })).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     // ── Authorization: unauthenticated requests ───────────────────────────────
 
     [Fact]
-    public async Task GetListing_Unauthenticated_Returns401()
+    public async Task GetListing_Unauthenticated_UnknownListingReturns404()
     {
         var response = await Anon().GetAsync($"/api/competitive/lfg/{Guid.NewGuid()}");
-        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]

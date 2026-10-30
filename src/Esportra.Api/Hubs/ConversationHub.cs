@@ -156,6 +156,9 @@ public static class ConversationHubEvents
     /// <summary>A message was deleted.</summary>
     public const string MessageDeleted = "MessageDeleted";
 
+    /// <summary>A participant read messages in a conversation.</summary>
+    public const string MessagesRead = "MessagesRead";
+
     /// <summary>User started typing.</summary>
     public const string TypingStart = "TypingStart";
 
