@@ -30,7 +30,7 @@ public sealed class ValorantHeadshotRecoveryTests
         Deaths = 5 * count,
         Assists = 3 * count,
         Score = 500 * count,
-        PopularAgents = $$"""[{"agent_id":"agent","games_played":{{count}},"kd_ratio":2,"custom":"preserve"}]"""
+        PopularAgents = $$"""[{"agent_id":"agent","games_played":{{count}},"wins":{{count}},"kills":{{10 * count}},"deaths":{{5 * count}},"assists":{{3 * count}},"kd_ratio":2,"custom":"preserve"}]"""
     };
 
     [Fact]
@@ -54,6 +54,22 @@ public sealed class ValorantHeadshotRecoveryTests
     {
         ValorantHeadshotRecovery.Build(Totals(), [Match("one", 0)])!.Percentage.Should().Be(0m);
         ValorantHeadshotRecovery.Build(Totals(), [Match("one", 0) with { Shots = 0 }])!.Percentage.Should().BeNull();
+    }
+
+    [Fact]
+    public void AgentRecovery_UsesOnlyCompleteMatchingGames_WithoutClaimingOverallCoverage()
+    {
+        const string agents = """
+            [{"agent_id":"agent","games_played":1,"wins":1,"kills":10,"deaths":5,"assists":3,"headshot_data_complete":false},
+             {"agent_id":"missing","games_played":2,"wins":2,"kills":20,"deaths":10,"assists":6,"headshot_data_complete":false}]
+            """;
+        var matches = new[] { Match("one"), Match("two") with { AgentId = "missing", HeadshotDataComplete = false } };
+        ValorantHeadshotRecovery.Build(Totals(3), matches).Should().BeNull();
+        using var result = JsonDocument.Parse(ValorantHeadshotRecovery.RepairAgents(agents, matches)!);
+        result.RootElement[0].GetProperty("headshot_data_complete").GetBoolean().Should().BeTrue();
+        result.RootElement[0].GetProperty("hs_pct").GetDecimal().Should().Be(20m);
+        result.RootElement[1].GetProperty("headshot_data_complete").GetBoolean().Should().BeFalse();
+        result.RootElement[1].TryGetProperty("hs_pct", out _).Should().BeFalse();
     }
 
     [Theory]

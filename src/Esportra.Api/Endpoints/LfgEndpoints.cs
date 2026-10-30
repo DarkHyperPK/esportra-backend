@@ -59,7 +59,17 @@ public static class LfgEndpoints
             .RequireAuthorization("Authenticated");
         app.MapGet("/api/competitive/game-stats/valorant/matches", ValorantArchiveEndpoints.GetMatchesAsync)
             .RequireAuthorization("Authenticated");
-        app.MapPost("/api/competitive/game-stats/sync", SyncRiotStatsAsync)
+        app.MapGet("/api/competitive/game-stats/sync", LfgStatsSyncEndpoints.MineStateAsync)
+            .RequireAuthorization("Authenticated");
+        app.MapGet("/api/competitive/lfg/{id:guid}/stats-sync", LfgStatsSyncEndpoints.ListingStateAsync)
+            .RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/competitive/game-stats/sync", LfgStatsSyncEndpoints.SyncMineAsync)
+            .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("valorantSync"))
+            .RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/competitive/lfg/{id:guid}/sync-stats", LfgStatsSyncEndpoints.SyncListingAsync)
+            .WithMetadata(new Esportra.Api.Middleware.RateLimitPolicyMetadata("valorantSync"))
             .RequireAuthorization("Authenticated");
 
         app.MapGet("/api/competitive/lfg", DiscoverAsync)
@@ -232,8 +242,8 @@ public static class LfgEndpoints
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
                    CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
-                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(CASE WHEN item->>'headshot_data_complete' = 'true' THEN item ELSE item - 'hs_pct' END), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                   pgs.matches_analyzed, CASE WHEN l.game_slug <> 'valorant' OR pgs.last_act_id IS NOT NULL THEN pgs.synced_at END AS riot_synced_at, pgs.player_card_id,
                    CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
@@ -450,8 +460,8 @@ public static class LfgEndpoints
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
                    CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
-                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(CASE WHEN item->>'headshot_data_complete' = 'true' THEN item ELSE item - 'hs_pct' END), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                   pgs.matches_analyzed, CASE WHEN l.game_slug <> 'valorant' OR pgs.last_act_id IS NOT NULL THEN pgs.synced_at END AS riot_synced_at, pgs.player_card_id,
                    CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
@@ -518,8 +528,8 @@ public static class LfgEndpoints
                    pgs.competitive_tier, pgs.competitive_tier_name,
                    pgs.win_count, pgs.loss_count, pgs.win_rate, pgs.kd_ratio,
                    CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct END AS hs_pct,
-                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
-                   pgs.matches_analyzed, pgs.synced_at AS riot_synced_at, pgs.player_card_id,
+                   (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(CASE WHEN item->>'headshot_data_complete' = 'true' THEN item ELSE item - 'hs_pct' END), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text AS popular_agents, pgs.sync_status AS stats_sync_status,
+                   pgs.matches_analyzed, CASE WHEN l.game_slug <> 'valorant' OR pgs.last_act_id IS NOT NULL THEN pgs.synced_at END AS riot_synced_at, pgs.player_card_id,
                    CASE WHEN l.game_slug = 'valorant' THEN {LfgTeamArtworkSql.CaptainValorantPlayerCard} END AS team_captain_player_card_id,
                    ra.game_name AS riot_game_name, ra.tag_line AS riot_tag_line,
                    t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
@@ -983,7 +993,7 @@ public static class LfgEndpoints
         [FromQuery] string? game,
         HttpContext ctx,
         IDbConnectionFactory db,
-        IBackgroundJobClient backgroundJobs,
+        ValorantSyncRequestService syncRequests,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1002,8 +1012,9 @@ public static class LfgEndpoints
                 ra.game_name               AS riot_game_name,
                 ra.tag_line                AS riot_tag_line,
                 pgs.sync_status            AS sync_status,
-                pgs.synced_at              AS synced_at,
+                CASE WHEN lower(@game) <> 'valorant' OR pgs.last_act_id IS NOT NULL THEN pgs.synced_at END AS synced_at,
                 pgs.updated_at             AS updated_at,
+                pgs.sync_requested_at      AS sync_requested_at,
                 pgs.competitive_tier       AS competitive_tier,
                 pgs.competitive_tier_name  AS competitive_tier_name,
                 pgs.win_count              AS win_count,
@@ -1011,7 +1022,7 @@ public static class LfgEndpoints
                 pgs.win_rate               AS win_rate,
                 pgs.kd_ratio               AS kd_ratio,
                 pgs.matches_analyzed       AS matches_analyzed,
-                (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN pgs.headshot_data_complete THEN pgs.popular_agents WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(item - 'hs_pct'), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text   AS popular_agents,
+                (CASE WHEN pgs.popular_agents IS NULL THEN NULL WHEN jsonb_typeof(pgs.popular_agents) = 'array' THEN (SELECT COALESCE(jsonb_agg(CASE WHEN item->>'headshot_data_complete' = 'true' THEN item ELSE item - 'hs_pct' END), '[]'::jsonb) FROM jsonb_array_elements(pgs.popular_agents) item) ELSE '[]'::jsonb END)::text   AS popular_agents,
                 CASE WHEN pgs.headshot_data_complete THEN pgs.hs_pct ELSE NULL END AS hs_pct,
                 pgs.player_card_id         AS player_card_id
             FROM (SELECT @userId::uuid AS uid) AS u
@@ -1027,7 +1038,7 @@ public static class LfgEndpoints
 
         // Auto-sync: if Riot is linked but stats are missing or stale (>1h), enqueue background sync.
         // Cooldown via updated_at prevents re-enqueue storms after failed syncs (sync_error path
-        // keeps synced_at old) — a fresh attempt at most every 10 minutes per user.
+        // keeps synced_at old); the shared coordinator enforces a one-hour provider cooldown.
         var responseSyncStatus = row.SyncStatus;
         if (row.RiotLinked && string.Equals(game, "valorant", StringComparison.OrdinalIgnoreCase))
         {
@@ -1038,39 +1049,17 @@ public static class LfgEndpoints
             var lastTouchAgeMinutes = lastUpdatedAt is null
                 ? double.MaxValue
                 : (now - lastUpdatedAt.Value).TotalMinutes;
-            var needsSync = syncAgeHours >= 1 || row.SyncStatus is "error" or "partial" or "pending" or "syncing" or null;
+            var needsSync = syncAgeHours >= 1 && ValorantStatsFreshness.Remaining(row.SyncRequestedAt) == 0;
             if (needsSync && lastTouchAgeMinutes >= 10)
             {
-                // Stamp 'pending' synchronously so the caller (and its 5s poll) sees the sync
-                // kicking off immediately, instead of a stale null status.
-                var claimed = await conn.ExecuteAsync(
-                    """
-                    INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
-                    VALUES (@userId, 'valorant', @puuid, 'pending')
-                    ON CONFLICT (user_id, game_slug) DO UPDATE SET
-                        sync_status = 'pending', updated_at = now()
-                    WHERE player_game_stats.updated_at <= now() - interval '10 minutes'
-                       OR (player_game_stats.provider_player_id IS DISTINCT FROM @puuid
-                           AND player_game_stats.sync_status NOT IN ('pending', 'syncing'))
-                    """,
-                    new { userId = userCtx.UserIdGuid, puuid = row.RiotPuuid ?? "" });
-
-                if (claimed > 0)
+                // All entry points share the same per-player claim and cooldown.
+                var result = await syncRequests.RequestAsync(userCtx.UserIdGuid, ct);
+                responseSyncStatus = result.Status switch
                 {
-                    try
-                    {
-                        backgroundJobs.Enqueue<ValorantStatsSyncService>(
-                            s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
-                        responseSyncStatus = "pending";
-                    }
-                    catch
-                    {
-                        await conn.ExecuteAsync("UPDATE public.player_game_stats SET sync_status = 'error', updated_at = now() WHERE user_id = @userId AND game_slug = 'valorant' AND sync_status = 'pending'", new { userId = userCtx.UserIdGuid });
-                        responseSyncStatus = "error";
-                    }
-                }
-                else
-                    responseSyncStatus = await conn.QuerySingleOrDefaultAsync<string>("SELECT sync_status FROM public.player_game_stats WHERE user_id = @userId AND game_slug = 'valorant'", new { userId = userCtx.UserIdGuid });
+                    "queued" => "pending",
+                    "pending" or "syncing" or "error" => result.Status,
+                    _ => responseSyncStatus,
+                };
             }
         }
 
@@ -1106,38 +1095,6 @@ public static class LfgEndpoints
         });
     }
 
-    // ── POST /api/competitive/game-stats/sync ────────────────────────────────
-
-    private static async Task<IResult> SyncRiotStatsAsync(
-        HttpContext ctx,
-        IDbConnectionFactory db,
-        IBackgroundJobClient backgroundJobs,
-        CancellationToken ct)
-    {
-        var userCtx = ctx.Items["UserContext"] as UserContext;
-        if (userCtx is null) return Results.Unauthorized();
-
-        using var conn = db.CreateConnection();
-
-        var hasPuuid = await conn.ExecuteScalarAsync<bool>(
-            "SELECT EXISTS(SELECT 1 FROM public.riot_accounts WHERE user_id = @userId)",
-            new { userId = userCtx.UserIdGuid });
-        if (!hasPuuid)
-            return Results.BadRequest(new { error = "NO_LINKED_RIOT_ACCOUNT" });
-
-        var lastSyncRaw = await conn.QuerySingleOrDefaultAsync<DateTime?>(
-            "SELECT synced_at FROM public.player_game_stats WHERE user_id = @userId AND game_slug = 'valorant'",
-            new { userId = userCtx.UserIdGuid });
-        var lastSync = GameStatsRaw.ToDto(lastSyncRaw);
-
-        if (lastSync.HasValue && (DateTimeOffset.UtcNow - lastSync.Value).TotalMinutes < 5)
-            return Results.Ok(new { status = "fresh", synced_at = lastSync.Value });
-
-        backgroundJobs.Enqueue<ValorantStatsSyncService>(
-            s => s.SyncForUserAsync(userCtx.UserIdGuid, CancellationToken.None));
-
-        return Results.Ok(new { status = "queued" });
-    }
     private static string[]? NormalizeStaffRoles(string[]? roles) => roles?.Select(role =>
         role.Equals("coach", StringComparison.OrdinalIgnoreCase) ? "coach" :
         role.Equals("manager", StringComparison.OrdinalIgnoreCase) ? "manager" : role).ToArray();
@@ -1198,6 +1155,7 @@ file sealed record GameStatsRaw
     public string? SyncStatus { get; init; }
     public DateTime? SyncedAt { get; init; }
     public DateTime? UpdatedAt { get; init; }
+    public DateTime? SyncRequestedAt { get; init; }
     public int? CompetitiveTier { get; init; }
     public string? CompetitiveTierName { get; init; }
     public int? WinCount { get; init; }

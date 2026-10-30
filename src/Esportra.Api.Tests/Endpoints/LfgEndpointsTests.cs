@@ -1,3 +1,4 @@
+using Esportra.Api.Services;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -260,7 +261,8 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
         var context = new DefaultHttpContext();
         context.Items["UserContext"] = new UserContext { UserId = user.ToString() };
         var db = factory.Services.GetRequiredService<IDbConnectionFactory>();
-        var first = await LfgEndpoints.GetMyGameStatsAsync("valorant", context, db, jobs, CancellationToken.None);
+        var syncRequests = new ValorantSyncRequestService(db, jobs, Microsoft.Extensions.Logging.Abstractions.NullLogger<ValorantSyncRequestService>.Instance);
+        var first = await LfgEndpoints.GetMyGameStatsAsync("valorant", context, db, syncRequests, CancellationToken.None);
         var pending = JsonSerializer.SerializeToElement(((IValueHttpResult)first).Value);
         pending.GetProperty("sync_status").GetString().Should().Be("pending");
         jobs.Received(1).Create(Arg.Any<Job>(), Arg.Any<IState>());
@@ -269,7 +271,7 @@ public sealed class LfgEndpointsTests(ApiFactory factory) : IAsyncLifetime
               popular_agents = '[{"agent_id":"jett","games_played":2,"wins":1,"kills":10,"deaths":5,"kd_ratio":2}]'::jsonb
             WHERE user_id = @user AND game_slug = 'valorant'
             """, new { user });
-        var result = await LfgEndpoints.GetMyGameStatsAsync("valorant", context, db, jobs, CancellationToken.None);
+        var result = await LfgEndpoints.GetMyGameStatsAsync("valorant", context, db, syncRequests, CancellationToken.None);
         var completed = JsonSerializer.SerializeToElement(((IValueHttpResult)result).Value);
         completed.GetProperty("sync_status").GetString().Should().Be("complete");
         completed.GetProperty("popular_agents")[0].GetProperty("games_played").GetInt32().Should().Be(2);

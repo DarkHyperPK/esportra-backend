@@ -30,7 +30,7 @@ internal static class ValorantMatchArchive
     }
 
     internal static async Task<bool> SyncAsync(IDbConnection conn, RiotApiClient riot, Guid userId,
-        string puuid, string shard, string matchlist, IReadOnlyList<Act> acts, CancellationToken ct)
+        string puuid, string shard, string matchlist, IReadOnlyList<Act> acts, CancellationToken ct, bool retryIncomplete = false)
     {
         var current = acts.SingleOrDefault(act => act.IsCurrent);
         if (current is null) return false;
@@ -61,15 +61,16 @@ internal static class ValorantMatchArchive
             ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
                 match_started_at = COALESCE(EXCLUDED.match_started_at, valorant_match_backlog.match_started_at)
             """, new { userId, puuid, ids = candidates.Select(c => c.Id).ToArray(), starts = candidates.Select(c => c.StartMillis).ToArray(), cardCandidate });
-        // Repair legacy cached competitive matches even if Riot no longer lists
+        // Repair incomplete cached competitive matches even if Riot no longer lists
         // their IDs. Successful-but-incomplete responses get a bounded retry below.
         await conn.ExecuteAsync("""
             INSERT INTO public.valorant_match_backlog (user_id, provider_player_id, match_id, match_started_at)
             SELECT user_id, provider_player_id, match_id, started_at FROM public.valorant_player_matches
             WHERE user_id = @userId AND provider_player_id = @puuid AND act_id = @actId
-              AND queue_id = 'competitive' AND headshot_data_complete IS NOT TRUE AND match_data_version < 3
-            ON CONFLICT (user_id, provider_player_id, match_id) DO NOTHING
-            """, new { userId, puuid, actId = current.Id });
+              AND queue_id = 'competitive' AND headshot_data_complete IS NOT TRUE
+            ON CONFLICT (user_id, provider_player_id, match_id) DO UPDATE SET
+                retry_after = CASE WHEN @retryIncomplete THEN NULL ELSE valorant_match_backlog.retry_after END
+            """, new { userId, puuid, actId = current.Id, retryIncomplete });
         var pending = await conn.QueryAsync<string>("""
             SELECT match_id FROM public.valorant_match_backlog
             WHERE user_id = @userId AND provider_player_id = @puuid
@@ -138,7 +139,7 @@ internal static class ValorantMatchArchive
                 });
                 if (string.Equals(match.QueueId, "competitive", StringComparison.OrdinalIgnoreCase) && match.HeadshotDataComplete != true)
                     await conn.ExecuteAsync("""
-                        UPDATE public.valorant_match_backlog SET retry_after = now() + interval '12 hours'
+                        UPDATE public.valorant_match_backlog SET retry_after = now() + interval '1 hour'
                         WHERE user_id = @userId AND provider_player_id = @puuid AND match_id = @id
                         """, new { userId, puuid, id });
                 else

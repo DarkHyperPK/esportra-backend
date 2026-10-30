@@ -8,7 +8,7 @@ namespace Esportra.Api.ScheduledJobs;
 [Queue("default")]
 public sealed class ValorantStatsSyncJob(
     IDbConnectionFactory db,
-    ValorantStatsSyncService syncService,
+    ValorantSyncRequestService syncRequests,
     ILogger<ValorantStatsSyncJob> logger)
 {
     private const int BatchSize = 20;
@@ -32,7 +32,9 @@ public sealed class ValorantStatsSyncJob(
                 SELECT 1 FROM public.player_game_profiles pgp
                 WHERE pgp.user_id = ra.user_id AND pgp.game_slug = 'valorant' AND pgp.profile_visible = TRUE
             ))
-              AND (pgs.synced_at IS NULL OR pgs.synced_at < now() - INTERVAL '1 hour' OR pgs.sync_status IN ('error', 'pending', 'syncing'))
+              AND (pgs.provider_player_id IS DISTINCT FROM ra.puuid OR (
+                (pgs.last_act_id IS NULL OR pgs.synced_at IS NULL OR pgs.synced_at < now() - INTERVAL '1 hour')
+                AND (pgs.sync_requested_at IS NULL OR pgs.sync_requested_at < now() - INTERVAL '1 hour')))
               AND (pgs.updated_at IS NULL OR pgs.updated_at < now() - INTERVAL '10 minutes')
             ORDER BY COALESCE(pgs.updated_at, '1970-01-01'::timestamptz), ra.user_id
             LIMIT @batchSize
@@ -48,7 +50,7 @@ public sealed class ValorantStatsSyncJob(
             ct.ThrowIfCancellationRequested();
             try
             {
-                await syncService.SyncForUserAsync(userId, ct);
+                await syncRequests.RequestAsync(userId, ct);
             }
             catch (Exception ex)
             {

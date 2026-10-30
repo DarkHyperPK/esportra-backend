@@ -375,6 +375,7 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScoreboardRiotCheckJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IScoreboardRiotCheckTrigger, Esportra.Api.ScheduledJobs.ScoreboardRiotCheckTrigger>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>();
 builder.Services.AddScoped<Esportra.Api.Services.ValorantStatsSyncService>();
+builder.Services.AddScoped<Esportra.Api.Services.ValorantSyncRequestService>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ValorantStatsSyncJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IReportAutoAcceptScheduler, Esportra.Api.ScheduledJobs.ReportAutoAcceptScheduler>();
 

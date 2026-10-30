@@ -16,7 +16,9 @@ public sealed class ValorantStatsSyncService(
     private const string ValorantAgentsUrl = "https://valorant-api.com/v1/agents?isPlayableCharacter=true";
     private const string ValorantSeasonsUrl = "https://valorant-api.com/v1/seasons";
 
-    public async Task SyncForUserAsync(Guid userId, CancellationToken ct)
+    public Task SyncForUserAsync(Guid userId, CancellationToken ct) => SyncForUserAsync(userId, false, ct);
+
+    public async Task SyncForUserAsync(Guid userId, bool retryIncomplete, CancellationToken ct)
     {
         using var conn = db.CreateConnection();
 
@@ -36,6 +38,9 @@ public sealed class ValorantStatsSyncService(
                 return;
             }
 
+            var requestedAt = await BeginRefreshAsync(conn, userId, account.Puuid, ct);
+            if (requestedAt is null) return;
+
             using (var tx = conn.BeginTransaction())
             {
                 await conn.ExecuteAsync("""
@@ -50,10 +55,11 @@ public sealed class ValorantStatsSyncService(
                     WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id <> @puuid
                     """, new { userId, puuid = account.Puuid }, tx);
                 await conn.ExecuteAsync("""
-                    INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status)
-                    VALUES (@userId, 'valorant', @puuid, 'syncing')
-                    ON CONFLICT (user_id, game_slug) DO UPDATE SET sync_status = 'syncing', updated_at = now()
-                    """, new { userId, puuid = account.Puuid }, tx);
+                    INSERT INTO public.player_game_stats (user_id, game_slug, provider_player_id, sync_status, sync_requested_at, synced_at)
+                    VALUES (@userId, 'valorant', @puuid, 'syncing', @requestedAt, NULL)
+                    ON CONFLICT (user_id, game_slug) DO UPDATE SET sync_status = 'syncing',
+                        sync_requested_at = @requestedAt, updated_at = now()
+                    """, new { userId, puuid = account.Puuid, requestedAt }, tx);
                 tx.Commit();
             }
 
@@ -109,7 +115,7 @@ public sealed class ValorantStatsSyncService(
 
                 var acts = new List<ValorantMatchArchive.Act> { new(act.ActId, act.StartTime, true) };
                 var archiveComplete = false;
-                try { archiveComplete = await ValorantMatchArchive.SyncAsync(conn, riot, userId, account.Puuid, shard, listBody, acts, ct); }
+                try { archiveComplete = await ValorantMatchArchive.SyncAsync(conn, riot, userId, account.Puuid, shard, listBody, acts, ct, retryIncomplete); }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 { logger.LogWarning(ex, "Valorant match archive could not complete for user {UserId}", userId); }
 
@@ -245,8 +251,8 @@ public sealed class ValorantStatsSyncService(
                         TotalScore = existing?.TotalScore ?? 0,
                         TotalHeadshots = existing?.TotalHeadshots ?? 0,
                         TotalShots = existing?.TotalShots ?? 0,
-                        HeadshotDataComplete = existing is null || existing.MatchesAnalyzed == 0 ||
-                            (existing.HeadshotDataComplete && existing.AggregationVersion >= 4),
+                        // A verified hit-data repair remains valid on legacy aggregate versions.
+                        HeadshotDataComplete = existing is null || existing.MatchesAnalyzed == 0 || existing.HeadshotDataComplete,
                     };
 
                 if (!actReset && existing is not null) RestoreAgentStats(existing.PopularAgents, stats.AgentStats);
@@ -390,6 +396,31 @@ public sealed class ValorantStatsSyncService(
         {
             await conn.ExecuteAsync("SELECT pg_advisory_unlock(hashtextextended(@key, 0))", new { key = $"valorant-stats:{userId}" });
         }
+    }
+
+    private sealed record RefreshState(DateTime? SyncedAt, DateTime? RequestedAt, string? Status, bool SameAccount);
+
+    private static async Task<DateTime?> BeginRefreshAsync(System.Data.IDbConnection conn, Guid userId, string puuid, CancellationToken ct)
+    {
+        var state = await conn.QuerySingleOrDefaultAsync<RefreshState>(new CommandDefinition("""
+            SELECT CASE WHEN last_act_id IS NOT NULL THEN synced_at END AS syncedat,
+                   sync_requested_at AS requestedat, sync_status AS status,
+                   provider_player_id = @puuid AS sameaccount
+            FROM public.player_game_stats WHERE user_id = @userId AND game_slug = 'valorant'
+            """, new { userId, puuid }, cancellationToken: ct));
+        if (state?.SameAccount == true && (ValorantStatsFreshness.Remaining(state.SyncedAt) > 0 ||
+            (state.Status != "pending" && ValorantStatsFreshness.Remaining(state.RequestedAt) > 0)))
+        {
+            await ValorantHeadshotRecovery.RepairSavedAsync(conn, userId, ct);
+            // A duplicate queued job must not call Riot or leave a fresh snapshot stuck as pending.
+            await conn.ExecuteAsync(new CommandDefinition("""
+                UPDATE public.player_game_stats SET sync_status = 'partial', updated_at = now()
+                WHERE user_id = @userId AND game_slug = 'valorant' AND provider_player_id = @puuid
+                  AND sync_status IN ('pending', 'syncing')
+                """, new { userId, puuid }, cancellationToken: ct));
+            return null;
+        }
+        return state is { Status: "pending", RequestedAt: not null } ? state.RequestedAt : DateTime.UtcNow;
     }
 
     private static bool MatchlistContains(string json, string matchId)
