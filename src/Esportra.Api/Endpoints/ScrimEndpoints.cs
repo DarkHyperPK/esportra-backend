@@ -5,6 +5,9 @@ using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
+using Esportra.Api.ScheduledJobs;
+using Esportra.Api.Services;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -86,6 +89,10 @@ public static class ScrimEndpoints
         app.MapPatch("/api/scrims/sessions/{id:guid}/lobby", UpdateLobbyAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/confirm-result", ConfirmResultAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/checkin", CheckInAsync).RequireAuthorization("Authenticated");
+
+        // ── Scrim Slots (PROJ-078) ──────────────────────────────────────────────
+        app.MapGet("/api/scrims/listings/{id:guid}/slots", GetSlotsAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/listings/{id:guid}/slots", CreateSlotsAsync).RequireAuthorization("Authenticated");
 
         // ── Practice ────────────────────────────────────────────────────────────
         app.MapPost("/api/practice/sessions", CreatePracticeAsync).RequireAuthorization("Authenticated");
@@ -518,6 +525,7 @@ public static class ScrimEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> hub,
+        IBackgroundJobClient backgroundJobs,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -535,7 +543,7 @@ public static class ScrimEndpoints
                 """
                 SELECT so.id, so.listing_id, so.offering_team_id,
                        so.proposed_at, so.proposed_duration_minutes, so.status,
-                       sl.team_id AS listing_team_id, sl.schedule_type
+                       sl.team_id AS listing_team_id, sl.schedule_type, so.slot_id
                 FROM public.scrim_offers so
                 JOIN public.scrim_listings sl ON sl.id = so.listing_id
                 WHERE so.id = @id
@@ -596,6 +604,33 @@ public static class ScrimEndpoints
             }
 
             tx.Commit();
+
+            // D3: Enqueue Hangfire delayed jobs for session lifecycle automation.
+            // Jobs are enqueued post-commit so they only fire for committed sessions.
+            if (session.ScheduledAt.HasValue)
+            {
+                var scheduledAt = new DateTimeOffset(session.ScheduledAt.Value, TimeSpan.Zero);
+                var reminderId = backgroundJobs.Schedule<ScrimReminderJob>(
+                    j => j.RunAsync(session.Id, CancellationToken.None),
+                    scheduledAt.AddMinutes(-30));
+                var windowId = backgroundJobs.Schedule<ScrimCheckinWindowJob>(
+                    j => j.RunAsync(session.Id, CancellationToken.None),
+                    scheduledAt.AddMinutes(-15));
+                var timeoutId = backgroundJobs.Schedule<ScrimCheckinTimeoutJob>(
+                    j => j.RunAsync(session.Id, CancellationToken.None),
+                    scheduledAt.AddMinutes(15));
+
+                // Store job IDs so they can be deleted if the session is cancelled.
+                var jobIds = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    reminder = reminderId,
+                    window = windowId,
+                    timeout = timeoutId,
+                });
+                await conn.ExecuteAsync(
+                    "UPDATE public.scrim_sessions SET hangfire_job_ids = @jobIds::jsonb WHERE id = @sessionId",
+                    new { jobIds, sessionId = session.Id });
+            }
 
             // M5: open inbox conversation between team captains (best-effort, post-commit).
             await OpenScrimConversationAsync(
@@ -696,11 +731,13 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
+        // Fetch session + raw veto tokens (tokens are excluded from ScrimSessionRow mapping).
+        var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionWithTokens>(
             """
             SELECT ss.*,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
-                   t2.name AS team2_name, t2.logo_url AS team2_logo
+                   t2.name AS team2_name, t2.logo_url AS team2_logo,
+                   ss.veto_team1_token, ss.veto_team2_token
             FROM public.scrim_sessions ss
             JOIN public.teams t1 ON t1.id = ss.team1_id
             JOIN public.teams t2 ON t2.id = ss.team2_id
@@ -715,7 +752,32 @@ public static class ScrimEndpoints
             """,
             new { id, userId = userCtx.UserIdGuid });
 
-        return row is null ? Results.NotFound() : Results.Ok(row);
+        if (row is null) return Results.NotFound();
+
+        // Derive veto_my_token based on caller's team — raw tokens never sent.
+        string? vetoMyToken = null;
+        if (row.VetoSessionId.HasValue)
+        {
+            var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
+                """
+                SELECT team_id FROM public.team_members
+                WHERE user_id = @userId
+                  AND team_id IN (@t1, @t2)
+                  AND is_active = TRUE
+                LIMIT 1
+                """,
+                new { userId = userCtx.UserIdGuid, t1 = row.Team1Id, t2 = row.Team2Id });
+
+            vetoMyToken = callerTeamId == row.Team1Id
+                ? row.VetoTeam1Token
+                : callerTeamId == row.Team2Id
+                    ? row.VetoTeam2Token
+                    : null;
+        }
+
+        // Return session row with derived VetoMyToken (raw tokens excluded).
+        var response = row.ToSessionRow(vetoMyToken);
+        return Results.Ok(response);
     }
 
     // ── Session lifecycle ──────────────────────────────────────────────────────
@@ -726,8 +788,39 @@ public static class ScrimEndpoints
     private static Task<IResult> CompleteSessionAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
         => TransitionSessionAsync(id, ctx, db, "completed", ["in_progress"]);
 
-    private static Task<IResult> CancelSessionAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
-        => TransitionSessionAsync(id, ctx, db, "cancelled", ["scheduled", "in_progress"]);
+    private static async Task<IResult> CancelSessionAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IBackgroundJobClient backgroundJobs, CancellationToken ct)
+    {
+        var result = await TransitionSessionAsync(id, ctx, db, "cancelled", ["scheduled", "in_progress"]);
+
+        // Delete Hangfire jobs on cancel so they don't fire for a cancelled session.
+        if (result is IStatusCodeHttpResult { StatusCode: 200 })
+        {
+            using var conn = db.CreateConnection();
+            var jobIds = await conn.ExecuteScalarAsync<string?>(
+                "SELECT hangfire_job_ids FROM public.scrim_sessions WHERE id = @id", new { id });
+
+            if (!string.IsNullOrEmpty(jobIds))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(jobIds);
+                    var root = doc.RootElement;
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                            backgroundJobs.Delete(prop.Value.GetString()!);
+                    }
+                }
+                catch
+                {
+                    // Non-critical: if deletion fails, jobs are idempotent and will no-op.
+                }
+            }
+        }
+
+        return result;
+    }
 
     // ── POST /api/scrims/sessions/{id}/report-result ───────────────────────────
 
@@ -1146,20 +1239,12 @@ public static class ScrimEndpoints
 
     // ── POST /api/scrims/sessions/{id}/checkin ────────────────────────────────
 
-    /// <remarks>
-    /// Check-in timeout (single team checked in but other has not after 30 minutes):
-    /// This is intentionally NOT handled in-process. A dedicated background job
-    /// (ScrimCheckinTimeoutJob, BackgroundService running every 5 minutes) should query
-    /// for sessions where (team1_checked_in_at IS NOT NULL XOR team2_checked_in_at IS NOT NULL)
-    /// AND GREATEST(team1_checked_in_at, team2_checked_in_at) &lt; now() - INTERVAL '30 minutes'
-    /// and transition those sessions to 'cancelled', notifying both teams.
-    /// This job is deferred to a separate task to keep T2 scope clean.
-    /// </remarks>
     private static async Task<IResult> CheckInAsync(
         Guid id,
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> hub,
+        ScrimVetoService vetoService,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -1167,18 +1252,24 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionCheckinRef>(
             """
             SELECT team1_id, team2_id, status,
-                   team1_checked_in_at, team2_checked_in_at
-            FROM public.scrim_sessions WHERE id = @id
+                   team1_checked_in_at, team2_checked_in_at,
+                   checkin_window_opened_at, game_slug,
+                   (SELECT name FROM public.teams WHERE id = ss.team1_id) AS team1_name,
+                   (SELECT name FROM public.teams WHERE id = ss.team2_id) AS team2_name
+            FROM public.scrim_sessions ss WHERE id = @id
             """,
             new { id });
 
         if (session is null) return Results.NotFound();
         if (session.Status is "completed" or "cancelled" or "disputed")
             return Results.Conflict(new { error = $"Cannot check in when session is '{session.Status}'." });
+
+        // D4: Check-in is strict — reject if the window is not yet open.
+        if (session.CheckinWindowOpenedAt is null)
+            return Results.Conflict(new { error = "Check-in window is not open yet. The window opens 15 minutes before the session." });
 
         var isStaff = await conn.ExecuteScalarAsync<bool>(
             """
@@ -1243,6 +1334,10 @@ public static class ScrimEndpoints
                 WHERE id = @id
                 """,
                 new { id });
+
+            // Best-effort veto creation for eligible games (D4: proceed on failure).
+            await vetoService.TryCreateVetoSessionAsync(
+                id, session.GameSlug, session.Team1Name ?? "Team 1", session.Team2Name ?? "Team 2", ct);
         }
 
         // Notify both teams of the check-in state change.
@@ -1271,6 +1366,27 @@ public static class ScrimEndpoints
         {
             await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_session_started",
                 "Session Started", "Both teams have checked in — your scrim is now in progress.");
+
+            // Notify veto is ready if a veto session was created.
+            var vetoSessionId = await conn.ExecuteScalarAsync<Guid?>(
+                "SELECT veto_session_id FROM public.scrim_sessions WHERE id = @id", new { id });
+
+            if (vetoSessionId.HasValue)
+            {
+                foreach (var staffId in allStaffIds)
+                {
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                        VALUES (@userId, 'scrim_veto_ready'::notification_type,
+                                'Map Veto Ready', 'The map veto is ready. Check the session for your team link.', FALSE)
+                        """,
+                        new { userId = staffId });
+                }
+
+                await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_veto_ready",
+                    "Map Veto Ready", "The map veto is ready. Check the session for your team link.");
+            }
         }
 
         return Results.Ok(await FetchSessionWithTeamsAsync(conn, id));
@@ -1289,6 +1405,93 @@ public static class ScrimEndpoints
             WHERE ss.id = @id
             """,
             new { id });
+
+    // ── GET /api/scrims/listings/{id}/slots ───────────────────────────────────
+
+    private static async Task<IResult> GetSlotsAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct,
+        [FromQuery] int limit = 50,
+        [FromQuery] int offset = 0)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
+            "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
+        if (listing is null) return Results.NotFound();
+        if (listing.Status != "open") return Results.NotFound();
+
+        limit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 200);
+        offset = Math.Max(offset, 0);
+
+        var rows = await conn.QueryAsync<ScrimSlotRow>(
+            """
+            SELECT id, listing_id, starts_at, ends_at, status, created_at,
+                   booked_by_team_id, session_id
+            FROM public.scrim_slots
+            WHERE listing_id = @listingId
+              AND status = 'available'
+              AND starts_at > now()
+            ORDER BY starts_at
+            LIMIT @limit OFFSET @offset
+            """,
+            new { listingId = id, limit, offset });
+
+        return Results.Ok(rows);
+    }
+
+    // ── POST /api/scrims/listings/{id}/slots ──────────────────────────────────
+
+    private static async Task<IResult> CreateSlotsAsync(
+        Guid id,
+        [FromBody] CreateSlotsRequest req,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        if (req.Slots is null || req.Slots.Length == 0)
+            return Results.BadRequest(new { error = "At least one slot is required." });
+        if (req.Slots.Length > 100)
+            return Results.BadRequest(new { error = "Maximum 100 slots per request." });
+
+        using var conn = db.CreateConnection();
+
+        var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingTypeRef>(
+            "SELECT team_id, status, schedule_type FROM public.scrim_listings WHERE id = @id", new { id });
+        if (listing is null) return Results.NotFound();
+        if (listing.ScheduleType != "recurring")
+            return Results.BadRequest(new { error = "Slots can only be created for recurring listings." });
+        if (!await IsTeamStaffAsync(conn, listing.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+
+        var created = new List<ScrimSlotRow>();
+        foreach (var slot in req.Slots)
+        {
+            if (slot.StartsAt >= slot.EndsAt)
+                return Results.UnprocessableEntity(new { error = "starts_at must be before ends_at for each slot." });
+
+            // ON CONFLICT DO NOTHING: idempotent via UNIQUE(listing_id, starts_at).
+            var row = await conn.QuerySingleOrDefaultAsync<ScrimSlotRow>(
+                """
+                INSERT INTO public.scrim_slots (listing_id, starts_at, ends_at)
+                VALUES (@listingId, @startsAt, @endsAt)
+                ON CONFLICT (listing_id, starts_at) DO NOTHING
+                RETURNING id, listing_id, starts_at, ends_at, status, created_at, booked_by_team_id, session_id
+                """,
+                new { listingId = id, startsAt = slot.StartsAt, endsAt = slot.EndsAt });
+
+            if (row is not null) created.Add(row);
+        }
+
+        return Results.Ok(new { created = created.Count, slots = created });
+    }
 
     // ── Practice endpoints ─────────────────────────────────────────────────────
 
@@ -1748,13 +1951,47 @@ public static class ScrimEndpoints
     private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
     private sealed record ScrimSessionCheckinRef(
         Guid Team1Id, Guid Team2Id, string Status,
-        DateTimeOffset? Team1CheckedInAt, DateTimeOffset? Team2CheckedInAt);
+        DateTimeOffset? Team1CheckedInAt, DateTimeOffset? Team2CheckedInAt,
+        DateTimeOffset? CheckinWindowOpenedAt = null,
+        string? GameSlug = null,
+        string? Team1Name = null,
+        string? Team2Name = null);
     private sealed record ScrimOfferForAccept(
         Guid Id, Guid ListingId, Guid OfferingTeamId,
         DateTimeOffset? ProposedAt, int? ProposedDurationMinutes,
-        string Status, Guid ListingTeamId, string ScheduleType = "one_off");
+        string Status, Guid ListingTeamId, string ScheduleType = "one_off",
+        Guid? SlotId = null);
     private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
     private sealed record PracticeSessionRef(Guid TeamId, string Status);
+    private sealed record ScrimListingTypeRef(Guid TeamId, string Status, string ScheduleType);
+
+    /// <summary>
+    /// Projection for GetSessionAsync that includes raw veto tokens.
+    /// Tokens are never returned in API responses — VetoMyToken is derived per caller.
+    /// </summary>
+    private sealed record ScrimSessionWithTokens(
+        Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
+        DateTime? ScheduledAt, int? DurationMinutes, string Status,
+        bool ResultReportedByTeam1, bool ResultReportedByTeam2,
+        int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
+        string? ModeKey, string? ServerInfo, string? LobbyCode,
+        string? Team1Name, string? Team1Logo, string? Team2Name, string? Team2Logo,
+        DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt,
+        DateTime? CheckinWindowOpenedAt,
+        Guid? VetoSessionId,
+        string? VetoTeam1Token,
+        string? VetoTeam2Token)
+    {
+        public ScrimSessionRow ToSessionRow(string? vetoMyToken) => new(
+            Id, Team1Id, Team2Id, GameSlug,
+            ScheduledAt, DurationMinutes, Status,
+            ResultReportedByTeam1, ResultReportedByTeam2,
+            Team1Score, Team2Score, CreatedAt, UpdatedAt,
+            ModeKey, ServerInfo, LobbyCode,
+            Team1Name, Team1Logo, Team2Name, Team2Logo,
+            Team1CheckedInAt, Team2CheckedInAt,
+            CheckinWindowOpenedAt, VetoSessionId, vetoMyToken);
+    }
 }
 
 // ── Request DTOs ───────────────────────────────────────────────────────────────
@@ -1830,3 +2067,10 @@ public sealed record UpsertAttendanceRequest(
 
 public sealed record UpdateOwnAttendanceRequest(
     [property: JsonPropertyName("status")] string? Status = null);
+
+public sealed record SlotInput(
+    [property: JsonPropertyName("starts_at")] DateTimeOffset StartsAt,
+    [property: JsonPropertyName("ends_at")] DateTimeOffset EndsAt);
+
+public sealed record CreateSlotsRequest(
+    [property: JsonPropertyName("slots")] SlotInput[]? Slots = null);

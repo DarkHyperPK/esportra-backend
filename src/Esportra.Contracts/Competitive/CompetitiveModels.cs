@@ -18,7 +18,8 @@ public sealed record ScrimOfferRow(
     DateTime? ProposedAt, int? ProposedDurationMinutes,
     string? Notes, string Status, DateTime CreatedAt, DateTime UpdatedAt,
     string? OfferingTeamName = null, string? OfferingTeamLogo = null,
-    string? ListingGameSlug = null, string? ListingTeamName = null);
+    string? ListingGameSlug = null, string? ListingTeamName = null,
+    Guid? SlotId = null);
 
 public sealed record ScrimSessionRow(
     Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
@@ -29,7 +30,12 @@ public sealed record ScrimSessionRow(
     string? Team1Name = null, string? Team1Logo = null,
     string? Team2Name = null, string? Team2Logo = null,
     DateTime? Team1CheckedInAt = null,
-    DateTime? Team2CheckedInAt = null);
+    DateTime? Team2CheckedInAt = null,
+    DateTime? CheckinWindowOpenedAt = null,
+    Guid? VetoSessionId = null,
+    // VetoMyToken is NOT stored — derived per caller in GetSessionAsync.
+    // Raw veto_team1_token / veto_team2_token columns are intentionally excluded.
+    string? VetoMyToken = null);
 
 public sealed record ScrimResultReportRow(
     Guid Id, Guid SessionId, Guid ReportingTeamId,
@@ -41,7 +47,21 @@ public sealed record ScrimResultReportRow(
 
 public sealed record ScrimDisputeRow(
     Guid Id, Guid SessionId, Guid RaisedByTeamId,
-    string Reason, DateTime CreatedAt, string? Status = null);
+    string Reason, DateTime CreatedAt, string? Status = null,
+    string[]? EvidenceUrls = null,
+    string[]? ResponderEvidenceUrls = null,
+    string? ResponderNotes = null,
+    Guid? ResolvedBy = null,
+    string? Outcome = null,
+    string? ResolutionNotes = null,
+    DateTime? ResolvedAt = null);
+
+public sealed record ScrimSlotRow(
+    Guid Id, Guid ListingId,
+    DateTime StartsAt, DateTime EndsAt,
+    string Status, DateTime CreatedAt,
+    Guid? BookedByTeamId = null,
+    Guid? SessionId = null);
 
 // ── Practice ────────────────────────────────────────────────────────────────────
 

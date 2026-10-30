@@ -449,6 +449,14 @@ builder.Services.AddScoped<Esportra.Api.Jobs.RiotMatchValidationJob>();
 builder.Services.AddHttpClient("Discord");
 builder.Services.AddSingleton<Esportra.Api.Services.DiscordNotificationService>();
 
+// ── Scrims (PROJ-078) ────────────────────────────────────────────────────────
+builder.Services.AddOptions<Esportra.Api.Services.ScrimVetoOptions>()
+    .Bind(builder.Configuration.GetSection(Esportra.Api.Services.ScrimVetoOptions.SectionName));
+builder.Services.AddScoped<Esportra.Api.Services.ScrimVetoService>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScrimReminderJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScrimCheckinWindowJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScrimCheckinTimeoutJob>();
+
 // ── Hangfire (scheduled jobs) ─────────────────────────────────────────────────
 // Hangfire requires direct Postgres connection (not pooler) for LISTEN/NOTIFY.
 // Falls back to main connection string if no dedicated one is configured.
@@ -732,6 +740,7 @@ app.MapLfgEndpoints();
 app.MapRecruitmentEndpoints();
 app.MapTryoutEndpoints();
 app.MapScrimEndpoints();
+app.MapScrimAdminEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
 app.MapScoutingEndpoints();
 app.MapTournamentEndpoints();
