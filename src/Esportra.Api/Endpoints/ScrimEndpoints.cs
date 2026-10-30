@@ -757,6 +757,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
@@ -842,6 +843,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
@@ -888,6 +890,7 @@ public static class ScrimEndpoints
         if (req.Reason.Length > 1000) return Results.BadRequest(new { error = "reason max 1000 chars." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
@@ -1056,20 +1059,20 @@ public static class ScrimEndpoints
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
         if (!isStaff) return Results.Forbid();
 
-        // Fetch the existing result report for this session.
-        var report = await conn.QuerySingleOrDefaultAsync<ScrimResultReportRow>(
-            "SELECT * FROM public.scrim_result_reports WHERE session_id = @sessionId",
-            new { sessionId = id });
+        // Fetch ALL result reports for this session — both teams may have filed one.
+        var reports = (await conn.QueryAsync<ScrimResultReportRow>(
+            "SELECT * FROM public.scrim_result_reports WHERE session_id = @sessionId ORDER BY submitted_at DESC",
+            new { sessionId = id })).ToList();
 
-        if (report is null)
+        if (reports.Count == 0)
             return Results.NotFound(new { error = "No result report found for this session." });
 
-        // Idempotency: if already confirmed, return 200 with the current report.
-        if (report.ConfirmedAt is not null)
-            return Results.Ok(report);
+        // Idempotency: if any report is already confirmed, return 200 with it.
+        var alreadyConfirmed = reports.FirstOrDefault(r => r.ConfirmedAt is not null);
+        if (alreadyConfirmed is not null)
+            return Results.Ok(alreadyConfirmed);
 
-        // Security: the confirming team must be the OPPOSING team from whoever submitted.
-        // Derive the caller's team from their membership in either party.
+        // Security: derive the caller's team from their membership in either party.
         var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
             """
             SELECT team_id FROM public.team_members
@@ -1082,21 +1085,28 @@ public static class ScrimEndpoints
 
         if (callerTeamId is null) return Results.Forbid();
 
-        if (callerTeamId == report.ReportingTeamId)
-            return Results.Forbid(/* the reporting team cannot confirm their own report */);
+        // Find the report filed by the OPPOSING team. The confirming team cannot
+        // confirm their own report.
+        var report = reports.FirstOrDefault(r => r.ReportingTeamId != callerTeamId);
+        if (report is null)
+            return Results.Forbid(/* caller has only filed their own report; nothing to confirm yet */);
 
         using var tx = conn.BeginTransaction();
         try
         {
+            // Target the specific opposing-team report by reporting_team_id to avoid
+            // accidental multi-row update when both teams have filed reports.
             var confirmedReport = await conn.QuerySingleOrDefaultAsync<ScrimResultReportRow>(
                 """
                 UPDATE public.scrim_result_reports
                 SET confirmed_by_team_id = @confirmedByTeamId,
                     confirmed_at         = now()
-                WHERE session_id = @sessionId AND confirmed_at IS NULL
+                WHERE session_id       = @sessionId
+                  AND reporting_team_id = @reportingTeamId
+                  AND confirmed_at IS NULL
                 RETURNING *
                 """,
-                new { sessionId = id, confirmedByTeamId = callerTeamId }, tx);
+                new { sessionId = id, confirmedByTeamId = callerTeamId, reportingTeamId = report.ReportingTeamId }, tx);
 
             if (confirmedReport is null)
                 return Results.Conflict(new { error = "Result was already confirmed." });
