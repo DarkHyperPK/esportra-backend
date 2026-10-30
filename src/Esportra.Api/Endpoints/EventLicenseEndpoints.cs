@@ -63,6 +63,24 @@ public static class EventLicenseEndpoints
             });
         }).RequireAuthorization("Authenticated");
 
+        // ── GET /api/admin/tournaments/{id}/organizer-pro ────────────────────
+        app.MapGet("/api/admin/tournaments/{id}/organizer-pro", async (
+            Guid id,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var row = await conn.QuerySingleOrDefaultAsync<(bool Exists, bool HasPro)>(
+                """
+                SELECT EXISTS(SELECT 1 FROM tournaments WHERE id = @id) AS Exists,
+                       COALESCE((SELECT has_organizer_pro FROM event_licenses
+                                 WHERE tournament_id = @id LIMIT 1), FALSE) AS HasPro
+                """,
+                new { id });
+            if (!row.Exists) return Results.NotFound();
+            return Results.Ok(new { hasOrganizerPro = row.HasPro });
+        }).RequireAuthorization("Admin");
+
         // ── BE-10: POST /api/admin/tournaments/{id}/organizer-pro ────────────
         app.MapPost("/api/admin/tournaments/{id}/organizer-pro", async (
             Guid id,
@@ -105,7 +123,7 @@ public static class EventLicenseEndpoints
                 });
 
             return Results.Ok(new { tournamentId = id, hasOrganizerPro = req.Enabled });
-        }).RequireAuthorization("admin");
+        }).RequireAuthorization("Admin");
     }
 }
 

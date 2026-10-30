@@ -175,11 +175,11 @@ public static class ScrimEndpoints
 
     private static async Task<IResult> GetTeamListingsAsync(
         [FromQuery] Guid? team_id,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
         HttpContext ctx,
         IDbConnectionFactory db,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] int limit = 20,
+        [FromQuery] int offset = 0)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -650,11 +650,11 @@ public static class ScrimEndpoints
 
     private static async Task<IResult> GetTeamSessionsAsync(
         [FromQuery] Guid? team_id,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
         HttpContext ctx,
         IDbConnectionFactory db,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] int limit = 20,
+        [FromQuery] int offset = 0)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -1331,11 +1331,11 @@ public static class ScrimEndpoints
 
     private static async Task<IResult> GetTeamPracticeAsync(
         [FromQuery] Guid? team_id,
-        [FromQuery] int limit,
-        [FromQuery] int offset,
         HttpContext ctx,
         IDbConnectionFactory db,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] int limit = 20,
+        [FromQuery] int offset = 0)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
