@@ -36,6 +36,8 @@ public sealed record ScrimSessionRow(
     // VetoMyToken is NOT stored — derived per caller in GetSessionAsync.
     // Raw veto_team1_token / veto_team2_token columns are intentionally excluded.
     string? VetoMyToken = null,
+    // MyRole is the caller's team_members.role ('captain' or 'manager') — set by GetSessionAsync only.
+    string? MyRole = null,
     // Dispute is populated by GetSessionAsync only — not returned by other endpoints.
     ScrimDisputeRow? Dispute = null);
 

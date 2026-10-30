@@ -176,6 +176,10 @@ public static class ScrimEndpoints
                 slotDurationMinutes = req.SlotDurationMinutes,
             });
 
+        // AC16: Auto-generate slots for recurring listings with preferred availability set.
+        if (scheduleType == "recurring")
+            await GenerateSlotsAsync(conn, row.Id);
+
         return Results.Created($"/api/scrims/listings/{row.Id}", row);
     }
 
@@ -259,6 +263,11 @@ public static class ScrimEndpoints
                 timezone = req.Timezone,
                 notes = req.Notes,
             });
+
+        // AC16: Regenerate slots when preferred availability is updated on a recurring listing.
+        // ON CONFLICT DO NOTHING makes this idempotent — existing future slots are untouched.
+        if (updated is not null && updated.ScheduleType == "recurring")
+            await GenerateSlotsAsync(conn, id);
 
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
@@ -760,12 +769,18 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
 
         // Fetch session + raw veto tokens (tokens are excluded from ScrimSessionRow mapping).
+        // my_role: caller's team_members.role — used by the frontend to gate the check-in button.
         var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionWithTokens>(
             """
             SELECT ss.*,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
                    t2.name AS team2_name, t2.logo_url AS team2_logo,
-                   ss.veto_team1_token, ss.veto_team2_token
+                   ss.veto_team1_token, ss.veto_team2_token,
+                   (SELECT tm.role FROM public.team_members tm
+                    WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
+                      AND tm.user_id = @userId
+                      AND tm.is_active = TRUE
+                    LIMIT 1) AS my_role
             FROM public.scrim_sessions ss
             JOIN public.teams t1 ON t1.id = ss.team1_id
             JOIN public.teams t2 ON t2.id = ss.team2_id
@@ -2044,6 +2059,90 @@ public static class ScrimEndpoints
         }
     }
 
+    /// <summary>
+    /// Generates available scrim slots for a recurring listing based on its preferred availability.
+    /// Idempotent — ON CONFLICT (listing_id, starts_at) DO NOTHING.
+    /// Only generates future slots within the next 4 weeks (or schedule_until if sooner).
+    /// </summary>
+    private static async Task GenerateSlotsAsync(System.Data.IDbConnection conn, Guid listingId)
+    {
+        var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingRow>(
+            "SELECT * FROM public.scrim_listings WHERE id = @listingId",
+            new { listingId });
+
+        if (listing is null
+            || listing.ScheduleType != "recurring"
+            || listing.PreferredDays is not { Length: > 0 }
+            || listing.PreferredTimeStart is null
+            || listing.PreferredTimeEnd is null
+            || listing.SlotDurationMinutes is null or <= 0)
+            return;
+
+        var tz = TimeZoneInfo.Utc;
+        if (!string.IsNullOrWhiteSpace(listing.Timezone))
+        {
+            try { tz = TimeZoneInfo.FindSystemTimeZoneById(listing.Timezone); }
+            catch { /* unrecognised IANA id — fall back to UTC */ }
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var endUtc = nowUtc.AddDays(28);
+        if (listing.ScheduleUntil.HasValue && listing.ScheduleUntil.Value < endUtc)
+            endUtc = listing.ScheduleUntil.Value;
+
+        var preferredDays = listing.PreferredDays.ToHashSet();
+        var slotDuration = TimeSpan.FromMinutes(listing.SlotDurationMinutes.Value);
+        var timeStart = listing.PreferredTimeStart.Value.ToTimeSpan();
+        var timeEnd = listing.PreferredTimeEnd.Value.ToTimeSpan();
+
+        if (timeEnd <= timeStart || slotDuration <= TimeSpan.Zero) return;
+
+        var nowInTz = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, tz);
+        var date = nowInTz.Date;
+
+        while (true)
+        {
+            DateTime dayUtcStart;
+            try
+            {
+                dayUtcStart = TimeZoneInfo.ConvertTimeToUtc(
+                    DateTime.SpecifyKind(date, DateTimeKind.Unspecified), tz);
+            }
+            catch { date = date.AddDays(1); continue; }
+
+            if (dayUtcStart >= endUtc) break;
+
+            var dotNetDow = (int)date.DayOfWeek; // 0=Sunday … 6=Saturday (matches frontend convention)
+            if (preferredDays.Contains(dotNetDow))
+            {
+                for (var t = timeStart; t + slotDuration <= timeEnd; t += slotDuration)
+                {
+                    DateTime utcStart, utcEnd;
+                    try
+                    {
+                        utcStart = TimeZoneInfo.ConvertTimeToUtc(
+                            DateTime.SpecifyKind(date.Add(t), DateTimeKind.Unspecified), tz);
+                        utcEnd = TimeZoneInfo.ConvertTimeToUtc(
+                            DateTime.SpecifyKind(date.Add(t + slotDuration), DateTimeKind.Unspecified), tz);
+                    }
+                    catch { continue; } // skip ambiguous DST transitions
+
+                    if (utcStart <= nowUtc) continue; // only future slots
+
+                    await conn.ExecuteAsync(
+                        """
+                        INSERT INTO public.scrim_slots (listing_id, starts_at, ends_at)
+                        VALUES (@listingId, @startsAt, @endsAt)
+                        ON CONFLICT (listing_id, starts_at) DO NOTHING
+                        """,
+                        new { listingId, startsAt = utcStart, endsAt = utcEnd });
+                }
+            }
+
+            date = date.AddDays(1);
+        }
+    }
+
     private static async Task<bool> IsTeamStaffAsync(System.Data.IDbConnection conn, Guid teamId, Guid userId)
     {
         return await conn.ExecuteScalarAsync<bool>(
@@ -2093,7 +2192,8 @@ public static class ScrimEndpoints
         DateTime? CheckinWindowOpenedAt,
         Guid? VetoSessionId,
         string? VetoTeam1Token,
-        string? VetoTeam2Token)
+        string? VetoTeam2Token,
+        string? MyRole = null)
     {
         public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new(
             Id, Team1Id, Team2Id, GameSlug,
@@ -2104,6 +2204,7 @@ public static class ScrimEndpoints
             Team1Name, Team1Logo, Team2Name, Team2Logo,
             Team1CheckedInAt, Team2CheckedInAt,
             CheckinWindowOpenedAt, VetoSessionId, vetoMyToken,
+            MyRole: MyRole,
             Dispute: dispute);
     }
 }

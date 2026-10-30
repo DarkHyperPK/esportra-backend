@@ -1,0 +1,4 @@
+-- AC16: Scrim slot auto-generation marker migration.
+-- No schema changes required — scrim_slots, UNIQUE(listing_id, starts_at),
+-- and all supporting indexes/RLS were established in 20261031100400_scrim_slots.sql.
+-- Auto-generation logic lives in ScrimEndpoints.GenerateSlotsAsync.
