@@ -8,7 +8,10 @@ public sealed record ScrimListingRow(
     TimeOnly? PreferredTimeStart, TimeOnly? PreferredTimeEnd,
     string? Timezone, string? Notes, string Status,
     DateTime CreatedAt, DateTime UpdatedAt,
-    string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null);
+    string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null,
+    string ScheduleType = "one_off",
+    DateTimeOffset? ScheduleUntil = null,
+    int? SlotDurationMinutes = null);
 
 public sealed record ScrimOfferRow(
     Guid Id, Guid ListingId, Guid OfferingTeamId,
@@ -24,13 +27,17 @@ public sealed record ScrimSessionRow(
     int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
     string? ModeKey = null, string? ServerInfo = null, string? LobbyCode = null,
     string? Team1Name = null, string? Team1Logo = null,
-    string? Team2Name = null, string? Team2Logo = null);
+    string? Team2Name = null, string? Team2Logo = null,
+    DateTimeOffset? Team1CheckedInAt = null,
+    DateTimeOffset? Team2CheckedInAt = null);
 
 public sealed record ScrimResultReportRow(
     Guid Id, Guid SessionId, Guid ReportingTeamId,
     int Team1Score, int Team2Score, string? Notes,
     string[]? ScreenshotsUrls, DateTime? SubmittedAt,
-    string? ReportingTeamName = null);
+    string? ReportingTeamName = null,
+    Guid? ConfirmedByTeamId = null,
+    DateTimeOffset? ConfirmedAt = null);
 
 public sealed record ScrimDisputeRow(
     Guid Id, Guid SessionId, Guid RaisedByTeamId,

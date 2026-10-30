@@ -7,6 +7,7 @@ using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
 
 namespace Esportra.Api.Endpoints;
 
@@ -81,6 +82,11 @@ public static class ScrimEndpoints
         app.MapGet("/api/scrims/sessions/{id:guid}/results", GetSessionResultsAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/dispute", OpenDisputeAsync).RequireAuthorization("Authenticated");
 
+        // ── Scrim Sessions — PROJ-077 new endpoints ─────────────────────────────
+        app.MapPatch("/api/scrims/sessions/{id:guid}/lobby", UpdateLobbyAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/confirm-result", ConfirmResultAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/checkin", CheckInAsync).RequireAuthorization("Authenticated");
+
         // ── Practice ────────────────────────────────────────────────────────────
         app.MapPost("/api/practice/sessions", CreatePracticeAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/practice/sessions", GetTeamPracticeAsync).RequireAuthorization("Authenticated");
@@ -91,6 +97,19 @@ public static class ScrimEndpoints
         app.MapGet("/api/practice/sessions/{id:guid}/attendance", GetAttendanceAsync).RequireAuthorization("Authenticated");
         app.MapPut("/api/practice/sessions/{id:guid}/attendance", UpsertAttendanceAsync).RequireAuthorization("Authenticated");
         app.MapPut("/api/practice/attendance/{id:guid}", UpdateOwnAttendanceAsync).RequireAuthorization("Authenticated");
+    }
+
+    // ── Feature-flag guard ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns false when the 'scrims' feature flag exists and is disabled.
+    /// Absent flag row defaults to enabled (safe for new deploys before the row lands).
+    /// </summary>
+    private static async Task<bool> IsScrimsEnabledAsync(System.Data.IDbConnection conn)
+    {
+        var isEnabled = await conn.ExecuteScalarAsync<bool?>(
+            "SELECT is_enabled FROM public.feature_flags WHERE key = 'scrims'");
+        return isEnabled ?? true;
     }
 
     // ── POST /api/scrims/listings ──────────────────────────────────────────────
@@ -106,17 +125,41 @@ public static class ScrimEndpoints
         if (req.TeamId == Guid.Empty) return Results.BadRequest(new { error = "team_id is required." });
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
+        var scheduleType = req.ScheduleType ?? "one_off";
+        if (scheduleType is not ("one_off" or "recurring"))
+            return Results.UnprocessableEntity(new { error = "schedule_type must be 'one_off' or 'recurring'." });
+
+        if (scheduleType == "recurring")
+        {
+            if (req.ScheduleUntil is null)
+                return Results.UnprocessableEntity(new { error = "schedule_until is required for recurring listings." });
+            if (req.SlotDurationMinutes is null)
+                return Results.UnprocessableEntity(new { error = "slot_duration_minutes is required for recurring listings." });
+            if (req.SlotDurationMinutes <= 0)
+                return Results.UnprocessableEntity(new { error = "slot_duration_minutes must be positive." });
+        }
+        else
+        {
+            if (req.ScheduleUntil is not null)
+                return Results.UnprocessableEntity(new { error = "schedule_until is only valid for recurring listings." });
+            if (req.SlotDurationMinutes is not null)
+                return Results.UnprocessableEntity(new { error = "slot_duration_minutes is only valid for recurring listings." });
+        }
+
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
         var row = await conn.QuerySingleAsync<ScrimListingRow>(
             """
             INSERT INTO public.scrim_listings
                 (team_id, game_slug, mode_key, region_key, min_rank_key, max_rank_key,
-                 preferred_days, preferred_time_start, preferred_time_end, timezone, notes)
+                 preferred_days, preferred_time_start, preferred_time_end, timezone, notes,
+                 schedule_type, schedule_until, slot_duration_minutes)
             VALUES
                 (@teamId, @gameSlug, @modeKey, @regionKey, @minRankKey, @maxRankKey,
-                 @preferredDays, @preferredTimeStart::time, @preferredTimeEnd::time, @timezone, @notes)
+                 @preferredDays, @preferredTimeStart::time, @preferredTimeEnd::time, @timezone, @notes,
+                 @scheduleType, @scheduleUntil, @slotDurationMinutes)
             RETURNING *
             """,
             new
@@ -132,6 +175,9 @@ public static class ScrimEndpoints
                 preferredTimeEnd = req.PreferredTimeEnd,
                 timezone = req.Timezone,
                 notes = req.Notes,
+                scheduleType,
+                scheduleUntil = req.ScheduleUntil,
+                slotDurationMinutes = req.SlotDurationMinutes,
             });
 
         return Results.Created($"/api/scrims/listings/{row.Id}", row);
@@ -152,6 +198,7 @@ public static class ScrimEndpoints
         if (team_id is null) return Results.BadRequest(new { error = "team_id is required." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
@@ -183,6 +230,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var teamId = await conn.ExecuteScalarAsync<Guid?>("SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
         if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
@@ -274,6 +322,8 @@ public static class ScrimEndpoints
         [FromQuery] string? game,
         [FromQuery] string? mode_key,
         [FromQuery] string? region_key,
+        [FromQuery] int? min_rank_sort_order,
+        [FromQuery] int? max_rank_sort_order,
         [FromQuery] int? limit,
         [FromQuery] int? offset,
         IDbConnectionFactory db,
@@ -286,16 +336,63 @@ public static class ScrimEndpoints
         var actualOffset = Math.Max(offset ?? 0, 0);
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
+        // Build rank-filter conditions using a CTE to resolve sort_order from tier_key.
+        // The filter applies the overlap predicate:
+        //   listing.max_rank_sort_order >= minRankSortOrder  (listing reaches at least the min)
+        //   listing.min_rank_sort_order <= maxRankSortOrder  (listing starts before or at the max)
+        // Listings with NULL rank keys are excluded only when both filter params are supplied.
+        var rankConditions = "";
+        if (min_rank_sort_order.HasValue)
+        {
+            rankConditions +=
+                """
+
+                  AND (max_rt.sort_order IS NULL OR max_rt.sort_order >= @minRankSortOrder)
+                """;
+        }
+
+        if (max_rank_sort_order.HasValue)
+        {
+            rankConditions +=
+                """
+
+                  AND (min_rt.sort_order IS NULL OR min_rt.sort_order <= @maxRankSortOrder)
+                """;
+        }
+
         var rows = await conn.QueryAsync<ScrimListingRow>(
-            """
+            $"""
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
             SELECT sl.*, t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag
-            FROM public.scrim_listings sl JOIN public.teams t ON t.id = sl.team_id
+            FROM public.scrim_listings sl
+            JOIN public.teams t ON t.id = sl.team_id
+            LEFT JOIN public.game_catalog_rank_tiers min_rt
+                ON min_rt.tier_key = sl.min_rank_key
+               AND min_rt.game_slug = sl.game_slug
+               AND min_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers max_rt
+                ON max_rt.tier_key = sl.max_rank_key
+               AND max_rt.game_slug = sl.game_slug
+               AND max_rt.version_id = (SELECT id FROM active_v)
             WHERE sl.status = 'open' AND sl.game_slug = @game
               AND (@modeKey IS NULL OR sl.mode_key = @modeKey)
-              AND (@regionKey IS NULL OR sl.region_key = @regionKey)
+              AND (@regionKey IS NULL OR sl.region_key = @regionKey){rankConditions}
             ORDER BY sl.created_at DESC LIMIT @actualLimit OFFSET @actualOffset
             """,
-            new { game, modeKey = mode_key, regionKey = region_key, actualLimit, actualOffset });
+            new
+            {
+                game,
+                modeKey = mode_key,
+                regionKey = region_key,
+                minRankSortOrder = min_rank_sort_order,
+                maxRankSortOrder = max_rank_sort_order,
+                actualLimit,
+                actualOffset,
+            });
 
         return Results.Ok(rows);
     }
@@ -315,6 +412,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 300) return Results.BadRequest(new { error = "notes max 300 chars." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
 
         var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
@@ -377,6 +475,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var teamId = await conn.ExecuteScalarAsync<Guid?>(
             "SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
@@ -407,6 +506,7 @@ public static class ScrimEndpoints
         if (team_id is null) return Results.BadRequest(new { error = "team_id is required." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
@@ -430,12 +530,14 @@ public static class ScrimEndpoints
         HttpContext ctx,
         IDbConnectionFactory db,
         IHubContext<NotificationHub> hub,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         using var tx = conn.BeginTransaction();
 
         try
@@ -445,7 +547,7 @@ public static class ScrimEndpoints
                 """
                 SELECT so.id, so.listing_id, so.offering_team_id,
                        so.proposed_at, so.proposed_duration_minutes, so.status,
-                       sl.team_id AS listing_team_id
+                       sl.team_id AS listing_team_id, sl.schedule_type
                 FROM public.scrim_offers so
                 JOIN public.scrim_listings sl ON sl.id = so.listing_id
                 WHERE so.id = @id
@@ -492,7 +594,25 @@ public static class ScrimEndpoints
                     durationMinutes = offerRow.ProposedDurationMinutes,
                 }, tx);
 
+            // D7: Recurring listings stay 'open' so more sessions can be created.
+            // One-off listings close on acceptance (existing behaviour).
+            if (offerRow.ScheduleType != "recurring")
+            {
+                await conn.ExecuteAsync(
+                    """
+                    UPDATE public.scrim_listings
+                    SET status = 'closed'::scrim_listing_status, updated_at = now()
+                    WHERE id = @listingId
+                    """,
+                    new { listingId = offerRow.ListingId }, tx);
+            }
+
             tx.Commit();
+
+            // M5: open inbox conversation between team captains (best-effort, post-commit).
+            await OpenScrimConversationAsync(
+                conn, offerRow.ListingTeamId, offerRow.OfferingTeamId, session,
+                loggerFactory.CreateLogger(nameof(ScrimEndpoints)));
 
             // Notify offering team staff (after commit — outbox pattern).
             var staffIds = await conn.QueryAsync<Guid>(
@@ -553,6 +673,7 @@ public static class ScrimEndpoints
         if (team_id is null) return Results.BadRequest(new { error = "team_id is required." });
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
@@ -586,6 +707,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
             """
             SELECT ss.*,
@@ -812,6 +934,364 @@ public static class ScrimEndpoints
         return Results.Created($"/api/scrims/sessions/{id}/dispute", dispute);
     }
 
+    // ── PATCH /api/scrims/sessions/{id}/lobby ─────────────────────────────────
+
+    private static async Task<IResult> UpdateLobbyAsync(
+        Guid id,
+        [FromBody] UpdateLobbyRequest req,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        if (req.LobbyCode is null && req.ServerInfo is null)
+            return Results.BadRequest(new { error = "At least one of lobby_code or server_info must be provided." });
+
+        using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
+            "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id",
+            new { id });
+        if (session is null) return Results.NotFound();
+
+        if (session.Status is "in_progress" or "completed" or "cancelled" or "disputed")
+            return Results.Conflict(new { error = $"Lobby cannot be updated when session is '{session.Status}'." });
+
+        var isStaff = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE team_id IN (@t1, @t2)
+                  AND user_id = @userId
+                  AND role IN ('captain', 'manager')
+                  AND is_active = TRUE
+            )
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (!isStaff) return Results.Forbid();
+
+        var updated = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
+            """
+            UPDATE public.scrim_sessions
+            SET lobby_code  = COALESCE(@lobbyCode, lobby_code),
+                server_info = COALESCE(@serverInfo, server_info),
+                updated_at  = now()
+            WHERE id = @id
+            RETURNING *
+            """,
+            new { id, lobbyCode = req.LobbyCode, serverInfo = req.ServerInfo });
+
+        if (updated is null) return Results.NotFound();
+
+        // Notify the other team's staff (the team that did NOT make the update).
+        var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            SELECT team_id FROM public.team_members
+            WHERE user_id = @userId
+              AND team_id IN (@t1, @t2)
+              AND is_active = TRUE
+            LIMIT 1
+            """,
+            new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
+
+        var otherTeamId = callerTeamId == session.Team1Id ? session.Team2Id : session.Team1Id;
+        var otherStaffIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT user_id FROM public.team_members
+            WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
+            """,
+            new { teamId = otherTeamId })).ToList();
+
+        foreach (var staffId in otherStaffIds)
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                VALUES (@userId, 'scrim_lobby_updated'::notification_type,
+                        'Lobby Updated', 'The opposing team updated the lobby details.', FALSE)
+                """,
+                new { userId = staffId });
+        }
+
+        await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_lobby_updated",
+            "Lobby Updated", "The opposing team updated the lobby details.");
+
+        return Results.Ok(updated);
+    }
+
+    // ── POST /api/scrims/sessions/{id}/confirm-result ─────────────────────────
+
+    private static async Task<IResult> ConfirmResultAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
+            "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id",
+            new { id });
+        if (session is null) return Results.NotFound();
+
+        var isStaff = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE team_id IN (@t1, @t2)
+                  AND user_id = @userId
+                  AND role IN ('captain', 'manager')
+                  AND is_active = TRUE
+            )
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (!isStaff) return Results.Forbid();
+
+        // Fetch the existing result report for this session.
+        var report = await conn.QuerySingleOrDefaultAsync<ScrimResultReportRow>(
+            "SELECT * FROM public.scrim_result_reports WHERE session_id = @sessionId",
+            new { sessionId = id });
+
+        if (report is null)
+            return Results.NotFound(new { error = "No result report found for this session." });
+
+        // Idempotency: if already confirmed, return 200 with the current report.
+        if (report.ConfirmedAt is not null)
+            return Results.Ok(report);
+
+        // Security: the confirming team must be the OPPOSING team from whoever submitted.
+        // Derive the caller's team from their membership in either party.
+        var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            SELECT team_id FROM public.team_members
+            WHERE user_id = @userId
+              AND team_id IN (@t1, @t2)
+              AND is_active = TRUE
+            LIMIT 1
+            """,
+            new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
+
+        if (callerTeamId is null) return Results.Forbid();
+
+        if (callerTeamId == report.ReportingTeamId)
+            return Results.Forbid(/* the reporting team cannot confirm their own report */);
+
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var confirmedReport = await conn.QuerySingleOrDefaultAsync<ScrimResultReportRow>(
+                """
+                UPDATE public.scrim_result_reports
+                SET confirmed_by_team_id = @confirmedByTeamId,
+                    confirmed_at         = now()
+                WHERE session_id = @sessionId AND confirmed_at IS NULL
+                RETURNING *
+                """,
+                new { sessionId = id, confirmedByTeamId = callerTeamId }, tx);
+
+            if (confirmedReport is null)
+                return Results.Conflict(new { error = "Result was already confirmed." });
+
+            // Write canonical scores to the session and mark it completed.
+            await conn.ExecuteAsync(
+                """
+                UPDATE public.scrim_sessions
+                SET team1_score = @t1Score,
+                    team2_score = @t2Score,
+                    status      = 'completed'::scrim_session_status,
+                    updated_at  = now()
+                WHERE id = @sessionId
+                """,
+                new { sessionId = id, t1Score = confirmedReport.Team1Score, t2Score = confirmedReport.Team2Score }, tx);
+
+            tx.Commit();
+
+            // Notify both teams after commit.
+            var allStaffIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT user_id FROM public.team_members
+                WHERE team_id IN (@t1, @t2) AND role IN ('captain', 'manager') AND is_active = TRUE
+                """,
+                new { t1 = session.Team1Id, t2 = session.Team2Id })).ToList();
+
+            foreach (var staffId in allStaffIds)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                    VALUES (@userId, 'scrim_result_confirmed'::notification_type,
+                            'Result Confirmed', 'The scrim result has been confirmed by both teams.', FALSE)
+                    """,
+                    new { userId = staffId });
+            }
+
+            await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_result_confirmed",
+                "Result Confirmed", "The scrim result has been confirmed by both teams.");
+
+            return Results.Ok(confirmedReport);
+        }
+        catch
+        {
+            tx.Rollback();
+            throw;
+        }
+    }
+
+    // ── POST /api/scrims/sessions/{id}/checkin ────────────────────────────────
+
+    /// <remarks>
+    /// Check-in timeout (single team checked in but other has not after 30 minutes):
+    /// This is intentionally NOT handled in-process. A dedicated background job
+    /// (ScrimCheckinTimeoutJob, BackgroundService running every 5 minutes) should query
+    /// for sessions where (team1_checked_in_at IS NOT NULL XOR team2_checked_in_at IS NOT NULL)
+    /// AND GREATEST(team1_checked_in_at, team2_checked_in_at) &lt; now() - INTERVAL '30 minutes'
+    /// and transition those sessions to 'cancelled', notifying both teams.
+    /// This job is deferred to a separate task to keep T2 scope clean.
+    /// </remarks>
+    private static async Task<IResult> CheckInAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionCheckinRef>(
+            """
+            SELECT team1_id, team2_id, status,
+                   team1_checked_in_at, team2_checked_in_at
+            FROM public.scrim_sessions WHERE id = @id
+            """,
+            new { id });
+
+        if (session is null) return Results.NotFound();
+        if (session.Status is "completed" or "cancelled" or "disputed")
+            return Results.Conflict(new { error = $"Cannot check in when session is '{session.Status}'." });
+
+        var isStaff = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE team_id IN (@t1, @t2)
+                  AND user_id = @userId
+                  AND role IN ('captain', 'manager')
+                  AND is_active = TRUE
+            )
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (!isStaff) return Results.Forbid();
+
+        // Identify which team the caller belongs to.
+        var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            SELECT team_id FROM public.team_members
+            WHERE user_id = @userId
+              AND team_id IN (@t1, @t2)
+              AND is_active = TRUE
+            LIMIT 1
+            """,
+            new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
+
+        if (callerTeamId is null) return Results.Forbid();
+
+        var isTeam1 = callerTeamId == session.Team1Id;
+
+        // Idempotency: if already checked in, return 200 immediately.
+        if (isTeam1 && session.Team1CheckedInAt is not null)
+            return Results.Ok(await FetchSessionWithTeamsAsync(conn, id));
+        if (!isTeam1 && session.Team2CheckedInAt is not null)
+            return Results.Ok(await FetchSessionWithTeamsAsync(conn, id));
+
+        // Set the relevant timestamp.
+        var checkinCol = isTeam1
+            ? "team1_checked_in_at = now()"
+            : "team2_checked_in_at = now()";
+
+        var updatedSession = await conn.QuerySingleOrDefaultAsync<ScrimSessionCheckinRef>(
+            $"""
+            UPDATE public.scrim_sessions
+            SET {checkinCol}, updated_at = now()
+            WHERE id = @id
+            RETURNING team1_id, team2_id, status,
+                      team1_checked_in_at, team2_checked_in_at
+            """,
+            new { id });
+
+        if (updatedSession is null) return Results.NotFound();
+
+        var bothCheckedIn = updatedSession.Team1CheckedInAt is not null
+                         && updatedSession.Team2CheckedInAt is not null;
+
+        if (bothCheckedIn)
+        {
+            await conn.ExecuteAsync(
+                """
+                UPDATE public.scrim_sessions
+                SET status = 'in_progress'::scrim_session_status, updated_at = now()
+                WHERE id = @id
+                """,
+                new { id });
+        }
+
+        // Notify both teams of the check-in state change.
+        var allStaffIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT user_id FROM public.team_members
+            WHERE team_id IN (@t1, @t2) AND role IN ('captain', 'manager') AND is_active = TRUE
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id })).ToList();
+
+        foreach (var staffId in allStaffIds)
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                VALUES (@userId, 'scrim_checkin_updated'::notification_type,
+                        'Check-in Update', 'A team checked in for the scrim session.', FALSE)
+                """,
+                new { userId = staffId });
+        }
+
+        await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_checkin_updated",
+            "Check-in Update", "A team checked in for the scrim session.");
+
+        if (bothCheckedIn)
+        {
+            await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_session_started",
+                "Session Started", "Both teams have checked in — your scrim is now in progress.");
+        }
+
+        return Results.Ok(await FetchSessionWithTeamsAsync(conn, id));
+    }
+
+    private static Task<ScrimSessionRow?> FetchSessionWithTeamsAsync(
+        System.Data.IDbConnection conn, Guid id) =>
+        conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
+            """
+            SELECT ss.*,
+                   t1.name AS team1_name, t1.logo_url AS team1_logo,
+                   t2.name AS team2_name, t2.logo_url AS team2_logo
+            FROM public.scrim_sessions ss
+            JOIN public.teams t1 ON t1.id = ss.team1_id
+            JOIN public.teams t2 ON t2.id = ss.team2_id
+            WHERE ss.id = @id
+            """,
+            new { id });
+
     // ── Practice endpoints ─────────────────────────────────────────────────────
 
     private static async Task<IResult> CreatePracticeAsync(
@@ -1031,6 +1511,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var row = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
@@ -1051,6 +1532,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
@@ -1104,6 +1586,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
+        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
         var offer = await conn.QuerySingleOrDefaultAsync<ScrimOfferRef>(
             """
             SELECT so.listing_id, so.offering_team_id, sl.team_id AS listing_team_id
@@ -1170,6 +1653,83 @@ public static class ScrimEndpoints
         return Results.Ok(updated);
     }
 
+    /// <summary>
+    /// After a scrim session is committed, opens a direct inbox conversation between
+    /// the primary captain of each team and sends a system message with session context.
+    /// Failures are logged and swallowed — the session acceptance must not roll back.
+    /// </summary>
+    private static async Task OpenScrimConversationAsync(
+        System.Data.IDbConnection conn,
+        Guid listingTeamId,
+        Guid offeringTeamId,
+        ScrimSessionRow session,
+        ILogger logger)
+    {
+        try
+        {
+            var listingCaptain = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT user_id FROM public.team_members
+                WHERE team_id = @teamId AND role = 'captain' AND is_active = TRUE
+                ORDER BY user_id LIMIT 1
+                """, new { teamId = listingTeamId });
+
+            var offeringCaptain = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT user_id FROM public.team_members
+                WHERE team_id = @teamId AND role = 'captain' AND is_active = TRUE
+                ORDER BY user_id LIMIT 1
+                """, new { teamId = offeringTeamId });
+
+            if (listingCaptain is null || offeringCaptain is null) return;
+
+            var conversation = await conn.QuerySingleOrDefaultAsync<Guid?>(
+                """
+                SELECT c.id FROM public.conversations c
+                JOIN public.conversation_participants a
+                    ON a.conversation_id = c.id AND a.user_id = @userId AND a.is_active
+                JOIN public.conversation_participants b
+                    ON b.conversation_id = c.id AND b.user_id = @otherId AND b.is_active
+                WHERE c.type = 'direct'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM public.conversation_participants extra
+                    WHERE extra.conversation_id = c.id
+                      AND extra.user_id NOT IN (@userId, @otherId))
+                ORDER BY c.created_at, c.id LIMIT 1
+                """,
+                new { userId = listingCaptain.Value, otherId = offeringCaptain.Value });
+
+            if (conversation is null)
+            {
+                conversation = await conn.QuerySingleAsync<Guid>(
+                    "INSERT INTO public.conversations (type, created_by) VALUES ('direct', @userId) RETURNING id",
+                    new { userId = listingCaptain.Value });
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.conversation_participants (conversation_id, user_id)
+                    VALUES (@c, @a), (@c, @b) ON CONFLICT DO NOTHING
+                    """,
+                    new { c = conversation.Value, a = listingCaptain.Value, b = offeringCaptain.Value });
+            }
+
+            var scheduledStr = session.ScheduledAt?.ToString("yyyy-MM-dd HH:mm UTC") ?? "TBD";
+            var content = $"Scrim booked: {session.GameSlug ?? "Unknown"} — {scheduledStr} — Match Room: /competitive/scrims/sessions/{session.Id}";
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.messages (conversation_id, sender_id, content, message_type)
+                VALUES (@conversationId, @senderId, @content, 'system')
+                """,
+                new { conversationId = conversation.Value, senderId = listingCaptain.Value, content });
+            await conn.ExecuteAsync(
+                "UPDATE public.conversations SET updated_at = now() WHERE id = @id",
+                new { id = conversation.Value });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to open scrim inbox conversation for session {SessionId}.", session.Id);
+        }
+    }
+
     private static async Task<bool> IsTeamStaffAsync(System.Data.IDbConnection conn, Guid teamId, Guid userId)
     {
         return await conn.ExecuteScalarAsync<bool>(
@@ -1188,10 +1748,13 @@ public static class ScrimEndpoints
     private sealed record ScrimListingRef(Guid TeamId, string Status);
     private sealed record ScrimSessionRef(Guid Team1Id, Guid Team2Id, string Status);
     private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
+    private sealed record ScrimSessionCheckinRef(
+        Guid Team1Id, Guid Team2Id, string Status,
+        DateTimeOffset? Team1CheckedInAt, DateTimeOffset? Team2CheckedInAt);
     private sealed record ScrimOfferForAccept(
         Guid Id, Guid ListingId, Guid OfferingTeamId,
         DateTimeOffset? ProposedAt, int? ProposedDurationMinutes,
-        string Status, Guid ListingTeamId);
+        string Status, Guid ListingTeamId, string ScheduleType = "one_off");
     private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
     private sealed record PracticeSessionRef(Guid TeamId, string Status);
 }
@@ -1209,7 +1772,14 @@ public sealed record CreateScrimListingRequest(
     [property: JsonPropertyName("preferred_time_start")] string? PreferredTimeStart = null,
     [property: JsonPropertyName("preferred_time_end")] string? PreferredTimeEnd = null,
     [property: JsonPropertyName("timezone")] string? Timezone = null,
-    [property: JsonPropertyName("notes")] string? Notes = null);
+    [property: JsonPropertyName("notes")] string? Notes = null,
+    [property: JsonPropertyName("schedule_type")] string? ScheduleType = null,
+    [property: JsonPropertyName("schedule_until")] DateTimeOffset? ScheduleUntil = null,
+    [property: JsonPropertyName("slot_duration_minutes")] int? SlotDurationMinutes = null);
+
+public sealed record UpdateLobbyRequest(
+    [property: JsonPropertyName("lobby_code")] string? LobbyCode = null,
+    [property: JsonPropertyName("server_info")] string? ServerInfo = null);
 
 public sealed record UpdateScrimListingRequest(
     [property: JsonPropertyName("mode_key")] string? ModeKey = null,

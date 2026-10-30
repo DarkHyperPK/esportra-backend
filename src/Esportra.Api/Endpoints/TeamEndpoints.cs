@@ -120,7 +120,15 @@ public static class TeamEndpoints
                                'joined_at',      tm.joined_at,
                                'is_active',      tm.is_active
                            ) ORDER BY tm.display_order, tm.role, p.username
-                       ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members
+                       ) FILTER (WHERE p.id IS NOT NULL), '[]'::jsonb) AS members,
+                       (
+                           SELECT sl.game_slug
+                           FROM public.scrim_listings sl
+                           WHERE sl.team_id = t.id
+                           GROUP BY sl.game_slug
+                           ORDER BY COUNT(*) DESC
+                           LIMIT 1
+                       ) AS primary_game_slug
                 FROM teams t
                 LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.is_active = TRUE
                 LEFT JOIN profiles p ON p.id = tm.user_id
