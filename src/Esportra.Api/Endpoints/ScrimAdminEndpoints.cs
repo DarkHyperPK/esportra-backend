@@ -52,6 +52,10 @@ public static class ScrimAdminEndpoints
 
         using var conn = db.CreateConnection();
 
+        var totalCount = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM public.scrim_disputes WHERE status = @statusFilter",
+            new { statusFilter });
+
         var rows = await conn.QueryAsync<ScrimDisputeAdminRow>(
             """
             SELECT sd.id, sd.session_id, sd.raised_by_team_id, sd.reason, sd.status,
@@ -72,7 +76,7 @@ public static class ScrimAdminEndpoints
             """,
             new { statusFilter, actualSize, offset });
 
-        return Results.Ok(rows);
+        return Results.Ok(new { items = rows, total = totalCount, page = actualPage, pageSize = actualSize });
     }
 
     // ── POST /api/admin/scrims/disputes/{id}/resolve ────────────────────────────

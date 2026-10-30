@@ -84,6 +84,7 @@ public static class ScrimEndpoints
         app.MapPost("/api/scrims/sessions/{id:guid}/report-result", ReportResultAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/sessions/{id:guid}/results", GetSessionResultsAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/dispute", OpenDisputeAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/dispute/evidence", SubmitEvidenceAsync).RequireAuthorization("Authenticated");
 
         // ── Scrim Sessions — PROJ-077 new endpoints ─────────────────────────────
         app.MapPatch("/api/scrims/sessions/{id:guid}/lobby", UpdateLobbyAsync).RequireAuthorization("Authenticated");
@@ -420,8 +421,8 @@ public static class ScrimEndpoints
         var row = await conn.QuerySingleAsync<ScrimOfferRow>(
             """
             INSERT INTO public.scrim_offers
-                (listing_id, offering_team_id, proposed_at, proposed_duration_minutes, notes)
-            VALUES (@listingId, @offeringTeamId, @proposedAt, @proposedDurationMinutes, @notes)
+                (listing_id, offering_team_id, proposed_at, proposed_duration_minutes, notes, slot_id)
+            VALUES (@listingId, @offeringTeamId, @proposedAt, @proposedDurationMinutes, @notes, @slotId)
             RETURNING *
             """,
             new
@@ -431,6 +432,7 @@ public static class ScrimEndpoints
                 proposedAt = req.ProposedAt ?? DateTimeOffset.UtcNow,
                 proposedDurationMinutes = req.ProposedDurationMinutes,
                 notes = req.Notes,
+                slotId = req.SlotId,
             });
 
         // Notify listing team staff.
@@ -601,6 +603,32 @@ public static class ScrimEndpoints
                     WHERE id = @listingId
                     """,
                     new { listingId = offerRow.ListingId }, tx);
+            }
+
+            // DEFECT-4b: Lock slot atomically to prevent race conditions on concurrent accepts.
+            // Only applies when the offer was linked to a specific recurring slot.
+            if (offerRow.SlotId.HasValue)
+            {
+                var slotLocked = await conn.ExecuteScalarAsync<Guid?>(
+                    """
+                    UPDATE public.scrim_slots
+                    SET status = 'booked', booked_by_team_id = @team2Id, session_id = @sessionId
+                    WHERE id = @slotId AND status = 'available'
+                    RETURNING id
+                    """,
+                    new
+                    {
+                        slotId = offerRow.SlotId.Value,
+                        team2Id = offerRow.OfferingTeamId,
+                        sessionId = session.Id,
+                    },
+                    tx);
+
+                if (slotLocked is null)
+                {
+                    tx.Rollback();
+                    return Results.Conflict(new { error = "This slot has just been booked. Please select another time." });
+                }
             }
 
             tx.Commit();
@@ -775,8 +803,18 @@ public static class ScrimEndpoints
                     : null;
         }
 
-        // Return session row with derived VetoMyToken (raw tokens excluded).
-        var response = row.ToSessionRow(vetoMyToken);
+        // Fetch the most recent open dispute for this session (null if no dispute).
+        var dispute = await conn.QuerySingleOrDefaultAsync<ScrimDisputeRow>(
+            """
+            SELECT * FROM public.scrim_disputes
+            WHERE session_id = @id
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            new { id });
+
+        // Return session row with derived VetoMyToken (raw tokens excluded) + dispute.
+        var response = row.ToSessionRow(vetoMyToken, dispute);
         return Results.Ok(response);
     }
 
@@ -969,6 +1007,17 @@ public static class ScrimEndpoints
         if (req.RaisedByTeamId == Guid.Empty) return Results.BadRequest(new { error = "raised_by_team_id is required." });
         if (string.IsNullOrWhiteSpace(req.Reason)) return Results.BadRequest(new { error = "reason is required." });
         if (req.Reason.Length > 1000) return Results.BadRequest(new { error = "reason max 1000 chars." });
+        if (req.EvidenceUrls?.Length > 5)
+            return Results.UnprocessableEntity(new { error = "evidence_urls max 5 URLs." });
+        if (req.EvidenceUrls is not null)
+        {
+            foreach (var url in req.EvidenceUrls)
+            {
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                    return Results.UnprocessableEntity(new { error = $"Invalid URL: {url}" });
+            }
+        }
 
         using var conn = db.CreateConnection();
 
@@ -982,11 +1031,17 @@ public static class ScrimEndpoints
 
         var dispute = await conn.QuerySingleAsync<ScrimDisputeRow>(
             """
-            INSERT INTO public.scrim_disputes (session_id, raised_by_team_id, reason)
-            VALUES (@sessionId, @raisedByTeamId, @reason)
+            INSERT INTO public.scrim_disputes (session_id, raised_by_team_id, reason, evidence_urls)
+            VALUES (@sessionId, @raisedByTeamId, @reason, @evidenceUrls)
             RETURNING *
             """,
-            new { sessionId = id, raisedByTeamId = req.RaisedByTeamId, reason = req.Reason });
+            new
+            {
+                sessionId = id,
+                raisedByTeamId = req.RaisedByTeamId,
+                reason = req.Reason,
+                evidenceUrls = req.EvidenceUrls ?? Array.Empty<string>(),
+            });
 
         // Mark session as disputed.
         await conn.ExecuteAsync(
@@ -1016,6 +1071,64 @@ public static class ScrimEndpoints
         await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_dispute_raised", "Scrim Dispute Raised", "The opposing team raised a dispute on your scrim session.");
 
         return Results.Created($"/api/scrims/sessions/{id}/dispute", dispute);
+    }
+
+    // ── POST /api/scrims/sessions/{id}/dispute/evidence ───────────────────────
+
+    private static async Task<IResult> SubmitEvidenceAsync(
+        Guid id,
+        [FromBody] SubmitScrimEvidenceRequest req,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        var urls = req.ResponderEvidenceUrls ?? Array.Empty<string>();
+        if (urls.Length > 5)
+            return Results.UnprocessableEntity(new { error = "responder_evidence_urls max 5 URLs." });
+        foreach (var url in urls)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                return Results.UnprocessableEntity(new { error = $"Invalid URL: {url}" });
+        }
+
+        using var conn = db.CreateConnection();
+
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
+            "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
+        if (session is null) return Results.NotFound();
+
+        // Caller must be captain/manager on one of the two parties.
+        var isStaff = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE team_id IN (@t1, @t2)
+                  AND user_id = @userId
+                  AND role IN ('captain', 'manager')
+                  AND is_active = TRUE
+            )
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (!isStaff) return Results.Forbid();
+
+        var updated = await conn.QuerySingleOrDefaultAsync<ScrimDisputeRow>(
+            """
+            UPDATE public.scrim_disputes
+            SET responder_evidence_urls = @urls
+            WHERE session_id = @sessionId
+              AND status IN ('open', 'escalated')
+            RETURNING *
+            """,
+            new { sessionId = id, urls });
+
+        if (updated is null)
+            return Results.NotFound(new { error = "No open dispute found for this session." });
+
+        return Results.Ok(updated);
     }
 
     // ── PATCH /api/scrims/sessions/{id}/lobby ─────────────────────────────────
@@ -1435,7 +1548,7 @@ public static class ScrimEndpoints
                    booked_by_team_id, session_id
             FROM public.scrim_slots
             WHERE listing_id = @listingId
-              AND status = 'available'
+              AND status != 'cancelled'
               AND starts_at > now()
             ORDER BY starts_at
             LIMIT @limit OFFSET @offset
@@ -1982,7 +2095,7 @@ public static class ScrimEndpoints
         string? VetoTeam1Token,
         string? VetoTeam2Token)
     {
-        public ScrimSessionRow ToSessionRow(string? vetoMyToken) => new(
+        public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new(
             Id, Team1Id, Team2Id, GameSlug,
             ScheduledAt, DurationMinutes, Status,
             ResultReportedByTeam1, ResultReportedByTeam2,
@@ -1990,7 +2103,8 @@ public static class ScrimEndpoints
             ModeKey, ServerInfo, LobbyCode,
             Team1Name, Team1Logo, Team2Name, Team2Logo,
             Team1CheckedInAt, Team2CheckedInAt,
-            CheckinWindowOpenedAt, VetoSessionId, vetoMyToken);
+            CheckinWindowOpenedAt, VetoSessionId, vetoMyToken,
+            Dispute: dispute);
     }
 }
 
@@ -2031,7 +2145,8 @@ public sealed record MakeScrimOfferRequest(
     [property: JsonPropertyName("offering_team_id")] Guid OfferingTeamId,
     [property: JsonPropertyName("proposed_at")] DateTimeOffset? ProposedAt = null,
     [property: JsonPropertyName("proposed_duration_minutes")] int? ProposedDurationMinutes = null,
-    [property: JsonPropertyName("notes")] string? Notes = null);
+    [property: JsonPropertyName("notes")] string? Notes = null,
+    [property: JsonPropertyName("slot_id")] Guid? SlotId = null);
 
 public sealed record ReportScrimResultRequest(
     [property: JsonPropertyName("reporting_team_id")] Guid ReportingTeamId,
@@ -2042,7 +2157,11 @@ public sealed record ReportScrimResultRequest(
 
 public sealed record OpenDisputeRequest(
     [property: JsonPropertyName("raised_by_team_id")] Guid RaisedByTeamId,
-    [property: JsonPropertyName("reason")] string Reason);
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("evidence_urls")] string[]? EvidenceUrls = null);
+
+public sealed record SubmitScrimEvidenceRequest(
+    [property: JsonPropertyName("responder_evidence_urls")] string[]? ResponderEvidenceUrls = null);
 
 public sealed record CreatePracticeSessionRequest(
     [property: JsonPropertyName("team_id")] Guid TeamId,

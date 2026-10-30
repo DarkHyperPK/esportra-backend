@@ -1,6 +1,8 @@
 using Dapper;
+using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Database;
 using Esportra.Core.Match;
+using Hangfire;
 using Microsoft.Extensions.Options;
 
 namespace Esportra.Api.Services;
@@ -17,6 +19,7 @@ namespace Esportra.Api.Services;
 public sealed class ScrimVetoService(
     IDbConnectionFactory db,
     IOptions<ScrimVetoOptions> options,
+    IBackgroundJobClient backgroundJobs,
     ILogger<ScrimVetoService> logger)
 {
     private static string GenerateToken() =>
@@ -121,6 +124,22 @@ public sealed class ScrimVetoService(
                 WHERE id = @sessionId
                 """,
                 new { sessionId, vetoId, team1Token, team2Token });
+
+            // Schedule the veto-abandon job 10 minutes after veto creation.
+            // Job checks veto completion and cancels the session if both teams abandoned it.
+            var abandonJobId = backgroundJobs.Schedule<ScrimVetoAbandonJob>(
+                j => j.RunAsync(sessionId, vetoId, CancellationToken.None),
+                TimeSpan.FromMinutes(10));
+
+            // Merge the abandon job ID into hangfire_job_ids so CancelSessionAsync deletes it.
+            var vetoJobJson = System.Text.Json.JsonSerializer.Serialize(new { vetoAbandon = abandonJobId });
+            await conn.ExecuteAsync(
+                """
+                UPDATE public.scrim_sessions
+                SET hangfire_job_ids = COALESCE(hangfire_job_ids, '{}'::jsonb) || @vetoJobJson::jsonb
+                WHERE id = @sessionId
+                """,
+                new { sessionId, vetoJobJson });
 
             logger.LogInformation("[ScrimVetoService] Created veto session {VetoId} for scrim {SessionId} (game={Game}).",
                 vetoId, sessionId, gameSlug);
