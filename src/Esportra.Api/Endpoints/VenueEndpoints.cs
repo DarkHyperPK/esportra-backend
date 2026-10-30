@@ -539,6 +539,13 @@ public static class VenueEndpoints
                 return Results.BadRequest(new { error = "Invalid start time format." });
 
             using var conn = db.CreateConnection();
+
+            var venueStatus = await conn.ExecuteScalarAsync<string?>(
+                "SELECT status FROM venues WHERE id = @id AND deleted_at IS NULL", new { id });
+            if (venueStatus is null) return Results.NotFound(new { error = "Venue not found." });
+            if (venueStatus != "published")
+                return Results.BadRequest(new { error = "This venue is not yet verified and cannot accept bookings." });
+
             using var tx = conn.BeginTransaction();
             try
             {

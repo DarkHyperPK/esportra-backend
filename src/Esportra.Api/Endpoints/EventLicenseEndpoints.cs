@@ -16,6 +16,7 @@ public static class EventLicenseEndpoints
 {
     public static void MapEventLicenseEndpoints(this WebApplication app)
     {
+        app.MapProEventRequestEndpoints();
         // ── BE-4: GET /api/my/event-licenses/quota ───────────────────────────
         app.MapGet("/api/my/event-licenses/quota", async (
             HttpContext ctx,
