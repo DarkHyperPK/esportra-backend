@@ -6833,27 +6833,27 @@ public static class AdminEndpoints
                 """
                 SELECT
                     (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS verifications,
-                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days') AS verifications_stale,
+                    (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '3 days') AS "verificationsStale",
                     (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open') AS disputes,
-                    (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open' AND created_at < NOW() - INTERVAL '7 days') AS disputes_stale,
-                    (SELECT COUNT(*) FROM ghost_approvals WHERE status = 'pending') AS ghost_approvals,
+                    (SELECT COUNT(*) FROM tournament_disputes WHERE status = 'open' AND created_at < NOW() - INTERVAL '7 days') AS "disputesStale",
+                    (SELECT COUNT(*) FROM ghost_approvals WHERE status = 'pending') AS "ghostApprovals",
                     (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active') AS alerts,
-                    (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical') AS alerts_critical,
+                    (SELECT COUNT(*) FROM admin_alerts WHERE status = 'active' AND severity = 'critical') AS "alertsCritical",
                     (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending') AS moderation,
-                    (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending' AND created_at >= NOW() - INTERVAL '1 day') AS moderation_today,
+                    (SELECT COUNT(*) FROM moderation_queue WHERE status = 'pending' AND created_at >= NOW() - INTERVAL '1 day') AS "moderationToday",
                     (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending') AS gdpr,
-                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND requested_at < NOW() - INTERVAL '20 days') AS gdpr_due_soon
+                    (SELECT COUNT(*) FROM gdpr_requests WHERE status = 'pending' AND requested_at < NOW() - INTERVAL '20 days') AS "gdprDueSoon"
                 """);
 
             // Quick stats. Presence is an honest heuristic: distinct admins with recent audit activity.
             var stats = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM profiles) AS users_total,
-                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS users_growth,
-                    (SELECT COUNT(*) FROM tournaments) AS tournaments_total,
-                    (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS tournaments_growth,
-                    (SELECT COUNT(DISTINCT admin_id) FROM audit_logs WHERE created_at >= NOW() - INTERVAL '15 minutes') AS admins_active_recently
+                    (SELECT COUNT(*) FROM profiles) AS "usersTotal",
+                    (SELECT COUNT(*) FROM profiles WHERE created_at >= NOW() - INTERVAL '7 days') AS "usersGrowth",
+                    (SELECT COUNT(*) FROM tournaments) AS "tournamentsTotal",
+                    (SELECT COUNT(*) FROM tournaments WHERE created_at >= NOW() - INTERVAL '7 days') AS "tournamentsGrowth",
+                    (SELECT COUNT(DISTINCT admin_id) FROM audit_logs WHERE created_at >= NOW() - INTERVAL '15 minutes') AS "adminsActiveRecently"
                 """);
 
             // Sponsor fleet KPIs (30-day window, mirrors /api/admin/sponsors/overview)
@@ -6862,7 +6862,7 @@ public static class AdminEndpoints
                 SELECT
                     COALESCE(SUM(t.impressions), 0) AS impressions_30d,
                     COALESCE(SUM(t.clicks), 0) AS clicks_30d,
-                    (SELECT COUNT(*) FROM sponsors WHERE is_active) AS active_sponsors
+                    (SELECT COUNT(*) FROM sponsors WHERE is_active) AS "activeSponsors"
                 FROM sponsor_daily_totals t
                 WHERE t.stat_date >= CURRENT_DATE - INTERVAL '30 days'
                 """);
@@ -6871,10 +6871,10 @@ public static class AdminEndpoints
             var systemHealth = await conn.QuerySingleAsync<dynamic>(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch AND lower(value #>> '{}') IN ('true', '1', 'on')) AS kill_switches_armed,
-                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch) AS kill_switches_total,
-                    (SELECT COUNT(*) FROM anomaly_events WHERE is_resolved = FALSE) AS anomalies_unresolved,
-                    (SELECT COUNT(*) FROM feature_flags WHERE is_enabled) AS feature_flags_enabled
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch AND lower(value #>> '{}') IN ('true', '1', 'on')) AS "killSwitchesArmed",
+                    (SELECT COUNT(*) FROM system_config WHERE is_kill_switch) AS "killSwitchesTotal",
+                    (SELECT COUNT(*) FROM anomaly_events WHERE is_resolved = FALSE) AS "anomaliesUnresolved",
+                    (SELECT COUNT(*) FROM feature_flags WHERE is_enabled) AS "featureFlagsEnabled"
                 """);
 
             // Chart series — 14-day gapless daily counts
@@ -6925,8 +6925,8 @@ public static class AdminEndpoints
             // Recent activity from audit logs
             var recentActivity = await conn.QueryAsync<dynamic>(
                 """
-                SELECT al.id, al.action_type, al.target_type, al.target_id, al.target_name,
-                       al.created_at, p.username AS actor_name
+                SELECT al.id, al.action_type AS "actionType", al.target_type AS "targetType", al.target_id AS "targetId", al.target_name AS "targetName",
+                       al.created_at AS "createdAt", p.username AS "actorName"
                 FROM audit_logs al
                 LEFT JOIN profiles p ON p.id = al.admin_id
                 ORDER BY al.created_at DESC
@@ -6936,9 +6936,9 @@ public static class AdminEndpoints
             // Oldest pending verifications
             var oldestPending = await conn.QueryAsync<dynamic>(
                 """
-                SELECT vr.id, vr.requested_role, vr.status, vr.business_name,
-                       vr.first_name, vr.last_name, vr.created_at,
-                       p.username, p.avatar_url
+                SELECT vr.id, vr.requested_role AS "requestedRole", vr.status, vr.business_name AS "businessName",
+                       vr.first_name AS "firstName", vr.last_name AS "lastName", vr.created_at AS "createdAt",
+                       p.username, p.avatar_url AS "avatarUrl"
                 FROM verification_requests vr
                 JOIN profiles p ON p.id = vr.user_id
                 WHERE vr.status = 'pending'
@@ -6948,21 +6948,21 @@ public static class AdminEndpoints
 
             return Results.Ok(new
             {
-                pending_counts = pendingCounts,
+                pendingCounts,
                 stats,
-                sponsor_kpis = sponsorKpis,
-                system_health = systemHealth,
-                payments_available = false,
+                sponsorKpis,
+                systemHealth,
+                paymentsAvailable = false,
                 signups_7d = signups7d,
                 charts = new
                 {
                     signups_14d = signups14d,
                     tournaments_14d = tournaments14d,
                     disputes_14d = disputes14d,
-                    sponsor_daily_14d = sponsorDaily14d
+                    sponsorDaily_14d = sponsorDaily14d
                 },
-                recent_activity = recentActivity,
-                oldest_pending = oldestPending
+                recentActivity,
+                oldestPending
             });
         }).RequireAuthorization("Admin");
 

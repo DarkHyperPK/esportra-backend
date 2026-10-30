@@ -17,8 +17,8 @@ public static class ProEventRequestEndpoints
     {
         app.MapPost("/api/pro-event-requests", CreateAsync).AllowAnonymous()
             .WithMetadata(new RateLimitPolicyMetadata("auth"), new RequestSizeLimitAttribute(8192));
-        app.MapGet("/api/admin/pro-event-requests", ListAsync).RequireAuthorization("admin");
-        app.MapPut("/api/admin/pro-event-requests/{id:guid}/status", UpdateAsync).RequireAuthorization("admin");
+        app.MapGet("/api/admin/pro-event-requests", ListAsync).RequireAuthorization("Admin");
+        app.MapPut("/api/admin/pro-event-requests/{id:guid}/status", UpdateAsync).RequireAuthorization("Admin");
         app.MapProEventProofEndpoints();
         app.MapGet("/api/pro-event-requests/{id:guid}", ResumeAsync).AllowAnonymous()
             .WithMetadata(new RateLimitPolicyMetadata("strict"));
