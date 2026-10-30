@@ -1,9 +1,12 @@
 using System.Text.Json.Serialization;
 using Dapper;
+using Esportra.Api.Helpers;
+using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 
 namespace Esportra.Api.Endpoints;
 
@@ -222,8 +225,48 @@ public static class ScrimEndpoints
     private static Task<IResult> ReopenListingAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
         => TransitionListingAsync(id, ctx, db, "open", ["paused"]);
 
-    private static Task<IResult> CloseListingAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
-        => TransitionListingAsync(id, ctx, db, "closed", ["open", "paused"]);
+    private static async Task<IResult> CloseListingAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
+    {
+        var result = await TransitionListingAsync(id, ctx, db, "closed", ["open", "paused"]);
+
+        // Only notify on successful close.
+        if (result is IStatusCodeHttpResult { StatusCode: not 200 }) return result;
+
+        // Gap 9: Notify teams with pending offers that the listing was closed.
+        using var conn = db.CreateConnection();
+        var offerTeamIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT DISTINCT offering_team_id FROM public.scrim_offers
+            WHERE listing_id = @listingId AND status = 'pending'
+            """,
+            new { listingId = id })).ToList();
+
+        foreach (var offerTeamId in offerTeamIds)
+        {
+            var staffIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT user_id FROM public.team_members
+                WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
+                """,
+                new { teamId = offerTeamId })).ToList();
+
+            foreach (var staffId in staffIds)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                    VALUES (@userId, 'scrim_offer_declined'::notification_type, 'Scrim Listing Closed',
+                            'A scrim listing you offered on was closed.', FALSE)
+                    """,
+                    new { userId = staffId });
+            }
+
+            await TeamNotifications.PushAsync(hub, staffIds, "scrim_offer_declined", "Scrim Listing Closed", "A scrim listing you offered on was closed.");
+        }
+
+        return result;
+    }
 
     // ── GET /api/scrims/discover ───────────────────────────────────────────────
 
@@ -386,6 +429,7 @@ public static class ScrimEndpoints
         Guid id,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -461,7 +505,8 @@ public static class ScrimEndpoints
             var listingTeamName = await conn.ExecuteScalarAsync<string?>(
                 "SELECT name FROM public.teams WHERE id = @id", new { id = offerRow.ListingTeamId });
 
-            foreach (var staffId in staffIds)
+            var staffIdList = staffIds.ToList();
+            foreach (var staffId in staffIdList)
             {
                 await conn.ExecuteAsync(
                     """
@@ -470,6 +515,9 @@ public static class ScrimEndpoints
                     """,
                     new { userId = staffId, message = $"{listingTeamName ?? "A team"} accepted your scrim offer." });
             }
+
+            // Gap 1: real-time push after commit.
+            await TeamNotifications.PushAsync(hub, staffIdList, "scrim_offer_accepted", "Scrim Offer Accepted", $"{listingTeamName ?? "A team"} accepted your scrim offer.");
 
             return Results.Ok(session);
         }
@@ -482,13 +530,13 @@ public static class ScrimEndpoints
 
     // ── POST /api/scrims/offers/{id}/decline ───────────────────────────────────
 
-    private static async Task<IResult> DeclineOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
-        => await ChangeOfferStatusAsync(id, ctx, db, "declined", requiresListingTeam: true);
+    private static async Task<IResult> DeclineOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
+        => await ChangeOfferStatusAsync(id, ctx, db, hub, "declined", requiresListingTeam: true);
 
     // ── POST /api/scrims/offers/{id}/withdraw ──────────────────────────────────
 
-    private static async Task<IResult> WithdrawOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
-        => await ChangeOfferStatusAsync(id, ctx, db, "withdrawn", requiresListingTeam: false);
+    private static async Task<IResult> WithdrawOfferAsync(Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
+        => await ChangeOfferStatusAsync(id, ctx, db, hub, "withdrawn", requiresListingTeam: false);
 
     // ── GET /api/scrims/sessions ───────────────────────────────────────────────
 
@@ -578,6 +626,7 @@ public static class ScrimEndpoints
         [FromBody] ReportScrimResultRequest req,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -628,6 +677,28 @@ public static class ScrimEndpoints
                 WHERE id = @id
                 """,
                 new { id, t1 = req.Team1Score, t2 = req.Team2Score });
+
+            // Gap 9+1: Notify other team that a result was submitted.
+            var otherTeamId = isTeam1 ? session.Team2Id : session.Team1Id;
+            var otherStaffIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT user_id FROM public.team_members
+                WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
+                """,
+                new { teamId = otherTeamId })).ToList();
+
+            foreach (var staffId in otherStaffIds)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                    VALUES (@userId, 'scrim_result_submitted'::notification_type, 'Scrim Result Submitted',
+                            'The opposing team submitted a result report.', FALSE)
+                    """,
+                    new { userId = staffId });
+            }
+
+            await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_result_submitted", "Scrim Result Submitted", "The opposing team submitted a result report.");
 
             return Results.Ok(report);
         }
@@ -685,6 +756,7 @@ public static class ScrimEndpoints
         [FromBody] OpenDisputeRequest req,
         HttpContext ctx,
         IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
         CancellationToken ct)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
@@ -714,6 +786,28 @@ public static class ScrimEndpoints
         await conn.ExecuteAsync(
             "UPDATE public.scrim_sessions SET status = 'disputed', updated_at = now() WHERE id = @id",
             new { id });
+
+        // Gap 9+1: Notify the other team that a dispute was raised.
+        var otherTeamId = req.RaisedByTeamId == session.Team1Id ? session.Team2Id : session.Team1Id;
+        var otherStaffIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT user_id FROM public.team_members
+            WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
+            """,
+            new { teamId = otherTeamId })).ToList();
+
+        foreach (var staffId in otherStaffIds)
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                VALUES (@userId, 'scrim_dispute_raised'::notification_type, 'Scrim Dispute Raised',
+                        'The opposing team raised a dispute on your scrim session.', FALSE)
+                """,
+                new { userId = staffId });
+        }
+
+        await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_dispute_raised", "Scrim Dispute Raised", "The opposing team raised a dispute on your scrim session.");
 
         return Results.Created($"/api/scrims/sessions/{id}/dispute", dispute);
     }
@@ -831,7 +925,8 @@ public static class ScrimEndpoints
             SET title            = COALESCE(@title, title),
                 scheduled_at     = COALESCE(@scheduledAt, scheduled_at),
                 duration_minutes = COALESCE(@durationMinutes, duration_minutes),
-                notes            = COALESCE(@notes, notes)
+                notes            = COALESCE(@notes, notes),
+                updated_at       = now()
             WHERE id = @id RETURNING *
             """,
             new { id, title = req.Title, scheduledAt = req.ScheduledAt, durationMinutes = req.DurationMinutes, notes = req.Notes });
@@ -997,13 +1092,13 @@ public static class ScrimEndpoints
             return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
         var updated = await conn.QuerySingleOrDefaultAsync<PracticeSessionRow>(
-            "UPDATE public.practice_sessions SET status = @target::practice_session_status WHERE id = @id RETURNING *",
+            "UPDATE public.practice_sessions SET status = @target::practice_session_status, updated_at = now() WHERE id = @id RETURNING *",
             new { id, target });
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
     private static async Task<IResult> ChangeOfferStatusAsync(
-        Guid id, HttpContext ctx, IDbConnectionFactory db, string target, bool requiresListingTeam)
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, string target, bool requiresListingTeam)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -1024,7 +1119,55 @@ public static class ScrimEndpoints
         var updated = await conn.QuerySingleOrDefaultAsync<ScrimOfferRow>(
             "UPDATE public.scrim_offers SET status = @target::scrim_offer_status, updated_at = now() WHERE id = @id RETURNING *",
             new { id, target });
-        return updated is null ? Results.NotFound() : Results.Ok(updated);
+        if (updated is null) return Results.NotFound();
+
+        // Gap 9+1: Notify the affected team and push real-time.
+        Guid notifyTeamId;
+        string notifType;
+        string notifTitle;
+        string notifMessage;
+
+        if (target == "declined")
+        {
+            // Listing team declined → notify offering team.
+            notifyTeamId = offer.OfferingTeamId;
+            notifType = "scrim_offer_declined";
+            notifTitle = "Scrim Offer Declined";
+            notifMessage = "Your scrim offer was declined.";
+        }
+        else if (target == "withdrawn")
+        {
+            // Offering team withdrew → notify listing team.
+            notifyTeamId = offer.ListingTeamId;
+            notifType = "scrim_offer_withdrawn";
+            notifTitle = "Scrim Offer Withdrawn";
+            notifMessage = "A scrim offer was withdrawn.";
+        }
+        else
+        {
+            return Results.Ok(updated);
+        }
+
+        var staffIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT user_id FROM public.team_members
+            WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
+            """,
+            new { teamId = notifyTeamId })).ToList();
+
+        foreach (var staffId in staffIds)
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                VALUES (@userId, @notifType::notification_type, @notifTitle, @notifMessage, FALSE)
+                """,
+                new { userId = staffId, notifType, notifTitle, notifMessage });
+        }
+
+        await TeamNotifications.PushAsync(hub, staffIds, notifType, notifTitle, notifMessage);
+
+        return Results.Ok(updated);
     }
 
     private static async Task<bool> IsTeamStaffAsync(System.Data.IDbConnection conn, Guid teamId, Guid userId)
