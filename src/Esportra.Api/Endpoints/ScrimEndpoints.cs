@@ -99,18 +99,6 @@ public static class ScrimEndpoints
         app.MapPut("/api/practice/attendance/{id:guid}", UpdateOwnAttendanceAsync).RequireAuthorization("Authenticated");
     }
 
-    // ── Feature-flag guard ─────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns false when the 'scrims' feature flag exists and is disabled.
-    /// Absent flag row defaults to enabled (safe for new deploys before the row lands).
-    /// </summary>
-    private static async Task<bool> IsScrimsEnabledAsync(System.Data.IDbConnection conn)
-    {
-        var isEnabled = await conn.ExecuteScalarAsync<bool?>(
-            "SELECT is_enabled FROM public.feature_flags WHERE key = 'scrims'");
-        return isEnabled ?? true;
-    }
 
     // ── POST /api/scrims/listings ──────────────────────────────────────────────
 
@@ -147,7 +135,7 @@ public static class ScrimEndpoints
         }
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
 
         var row = await conn.QuerySingleAsync<ScrimListingRow>(
@@ -198,7 +186,7 @@ public static class ScrimEndpoints
         if (team_id is null) return Results.BadRequest(new { error = "team_id is required." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
@@ -230,7 +218,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var teamId = await conn.ExecuteScalarAsync<Guid?>("SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
         if (!await IsTeamStaffAsync(conn, teamId.Value, userCtx.UserIdGuid)) return Results.Forbid();
@@ -336,7 +324,7 @@ public static class ScrimEndpoints
         var actualOffset = Math.Max(offset ?? 0, 0);
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
 
         // Build rank-filter conditions using a CTE to resolve sort_order from tier_key.
         // The filter applies the overlap predicate:
@@ -412,7 +400,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 300) return Results.BadRequest(new { error = "notes max 300 chars." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
 
         var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
@@ -475,7 +463,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var teamId = await conn.ExecuteScalarAsync<Guid?>(
             "SELECT team_id FROM public.scrim_listings WHERE id = @id", new { id });
         if (teamId is null) return Results.NotFound();
@@ -506,7 +494,7 @@ public static class ScrimEndpoints
         if (team_id is null) return Results.BadRequest(new { error = "team_id is required." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
@@ -537,7 +525,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         using var tx = conn.BeginTransaction();
 
         try
@@ -673,7 +661,7 @@ public static class ScrimEndpoints
         if (team_id is null) return Results.BadRequest(new { error = "team_id is required." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
@@ -707,7 +695,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
             """
             SELECT ss.*,
@@ -757,7 +745,7 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
@@ -843,7 +831,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
@@ -890,7 +878,7 @@ public static class ScrimEndpoints
         if (req.Reason.Length > 1000) return Results.BadRequest(new { error = "reason max 1000 chars." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
             "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
@@ -954,7 +942,7 @@ public static class ScrimEndpoints
             return Results.BadRequest(new { error = "At least one of lobby_code or server_info must be provided." });
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
 
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id",
@@ -1039,7 +1027,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
 
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id",
@@ -1178,7 +1166,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
 
         var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionCheckinRef>(
             """
@@ -1521,7 +1509,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var row = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
             "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
@@ -1542,7 +1530,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var row = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
             "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
         if (row is null) return Results.NotFound();
@@ -1596,7 +1584,7 @@ public static class ScrimEndpoints
         if (userCtx is null) return Results.Unauthorized();
 
         using var conn = db.CreateConnection();
-        if (!await IsScrimsEnabledAsync(conn)) return Results.Forbid();
+
         var offer = await conn.QuerySingleOrDefaultAsync<ScrimOfferRef>(
             """
             SELECT so.listing_id, so.offering_team_id, sl.team_id AS listing_team_id
