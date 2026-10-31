@@ -71,6 +71,7 @@ public static class ScrimEndpoints
         app.MapPost("/api/scrims/listings/{id:guid}/reopen", ReopenListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/close", CloseListingAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/discover", DiscoverAsync).AllowAnonymous();
+        app.MapGet("/api/scrims/listings/{id:guid}/detail", GetListingDetailAsync).AllowAnonymous();
 
         // ── Scrim Offers ────────────────────────────────────────────────────────
         app.MapPost("/api/scrims/listings/{id:guid}/offer", MakeOfferAsync).RequireAuthorization("Authenticated");
@@ -437,6 +438,84 @@ public static class ScrimEndpoints
             });
 
         return Results.Ok(rows);
+    }
+
+    // ── GET /api/scrims/listings/{id}/detail ─────────────────────────────────
+
+    private static async Task<IResult> GetListingDetailAsync(
+        Guid id,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        using var conn = db.CreateConnection();
+
+        var listing = await conn.QuerySingleOrDefaultAsync<ScrimListingRow>(
+            """
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
+            SELECT sl.*, t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
+                   (SELECT count(*) FROM public.team_members tm
+                    WHERE tm.team_id = sl.team_id AND tm.is_active = TRUE) AS active_member_count,
+                   min_rt.display_name AS min_rank_display_name,
+                   min_rt.icon_url AS min_rank_icon_url,
+                   max_rt.display_name AS max_rank_display_name,
+                   max_rt.icon_url AS max_rank_icon_url,
+                   (SELECT count(*) FROM public.scrim_sessions ss
+                    WHERE (ss.team1_id = sl.team_id OR ss.team2_id = sl.team_id)
+                      AND ss.status = 'completed') AS scrims_completed
+            FROM public.scrim_listings sl
+            JOIN public.teams t ON t.id = sl.team_id
+            LEFT JOIN public.game_catalog_rank_tiers min_rt
+                ON min_rt.tier_key = sl.min_rank_key AND min_rt.game_slug = sl.game_slug
+               AND min_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN public.game_catalog_rank_tiers max_rt
+                ON max_rt.tier_key = sl.max_rank_key AND max_rt.game_slug = sl.game_slug
+               AND max_rt.version_id = (SELECT id FROM active_v)
+            WHERE sl.id = @id
+            """,
+            new { id });
+
+        if (listing is null) return Results.NotFound();
+
+        var members = await conn.QueryAsync<ScrimTeamMemberDetail>(
+            """
+            WITH active_v AS (
+                SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
+            )
+            SELECT p.username, p.avatar_seed, p.avatar_style,
+                   tm.role,
+                   pgp.rank_tier_key,
+                   rt.display_name AS rank_display_name,
+                   rt.icon_url AS rank_icon_url,
+                   pgp.competitive_tier,
+                   pgp.competitive_tier_name,
+                   pgp.win_rate,
+                   pgp.kd_ratio,
+                   pgp.hs_pct
+            FROM public.team_members tm
+            JOIN public.profiles p ON p.id = tm.user_id
+            LEFT JOIN public.player_game_profiles pgp
+                ON pgp.user_id = tm.user_id AND pgp.game_slug = @gameSlug
+            LEFT JOIN public.game_catalog_rank_tiers rt
+                ON rt.tier_key = pgp.rank_tier_key AND rt.game_slug = @gameSlug
+               AND rt.version_id = (SELECT id FROM active_v)
+            WHERE tm.team_id = @teamId AND tm.is_active = TRUE
+            ORDER BY CASE tm.role WHEN 'captain' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, p.username
+            """,
+            new { teamId = listing.TeamId, gameSlug = listing.GameSlug });
+
+        var slots = listing.ScheduleType == "recurring"
+            ? await conn.QueryAsync<ScrimSlotRow>(
+                """
+                SELECT * FROM public.scrim_slots
+                WHERE listing_id = @id AND starts_at > now()
+                ORDER BY starts_at LIMIT 14
+                """,
+                new { id })
+            : Enumerable.Empty<ScrimSlotRow>();
+
+        return Results.Ok(new { listing, members, slots });
     }
 
     // ── POST /api/scrims/listings/{id}/offer ───────────────────────────────────

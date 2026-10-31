@@ -37,6 +37,22 @@ public sealed record ScrimListingRow
     public int? ScrimsCompleted { get; init; }
 }
 
+public sealed record ScrimTeamMemberDetail
+{
+    public string? Username { get; init; }
+    public string? AvatarSeed { get; init; }
+    public string? AvatarStyle { get; init; }
+    public string? Role { get; init; }
+    public string? RankTierKey { get; init; }
+    public string? RankDisplayName { get; init; }
+    public string? RankIconUrl { get; init; }
+    public int? CompetitiveTier { get; init; }
+    public string? CompetitiveTierName { get; init; }
+    public decimal? WinRate { get; init; }
+    public decimal? KdRatio { get; init; }
+    public decimal? HsPct { get; init; }
+}
+
 public sealed record ScrimOfferRow
 {
     public Guid Id { get; init; }
