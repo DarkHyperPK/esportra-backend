@@ -359,18 +359,15 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
 
 
-        // Build rank-filter conditions using a CTE to resolve sort_order from tier_key.
-        // The filter applies the overlap predicate:
-        //   listing.max_rank_sort_order >= minRankSortOrder  (listing reaches at least the min)
-        //   listing.min_rank_sort_order <= maxRankSortOrder  (listing starts before or at the max)
-        // Listings with NULL rank keys are excluded only when both filter params are supplied.
+        // Rank filter uses the captain's actual rank (player_game_profiles → rank_tier_key → sort_order)
+        // rather than the listing's stated min/max preference, so discovery reflects real team level.
         var rankConditions = "";
         if (min_rank_sort_order.HasValue)
         {
             rankConditions +=
                 """
 
-                  AND (max_rt.sort_order IS NULL OR max_rt.sort_order >= @minRankSortOrder)
+                  AND (cap_rank.sort_order IS NULL OR cap_rank.sort_order >= @minRankSortOrder)
                 """;
         }
 
@@ -379,7 +376,7 @@ public static class ScrimEndpoints
             rankConditions +=
                 """
 
-                  AND (min_rt.sort_order IS NULL OR min_rt.sort_order <= @maxRankSortOrder)
+                  AND (cap_rank.sort_order IS NULL OR cap_rank.sort_order <= @maxRankSortOrder)
                 """;
         }
 
@@ -432,6 +429,20 @@ public static class ScrimEndpoints
                 ON max_rt.tier_key = sl.max_rank_key
                AND max_rt.game_slug = sl.game_slug
                AND max_rt.version_id = (SELECT id FROM active_v)
+            LEFT JOIN LATERAL (
+                SELECT rt_cap.sort_order
+                FROM public.team_members tm_cap
+                JOIN public.player_game_profiles pgp_cap
+                    ON pgp_cap.user_id = tm_cap.user_id AND pgp_cap.game_slug = sl.game_slug
+                JOIN public.game_catalog_rank_tiers rt_cap
+                    ON rt_cap.tier_key = pgp_cap.rank_tier_key
+                   AND rt_cap.game_slug = sl.game_slug
+                   AND rt_cap.version_id = (SELECT id FROM active_v)
+                WHERE tm_cap.team_id = sl.team_id
+                  AND tm_cap.role = 'captain'
+                  AND tm_cap.is_active = TRUE
+                LIMIT 1
+            ) cap_rank ON TRUE
             WHERE sl.status = 'open' AND sl.game_slug = @game
               AND (@modeKey IS NULL OR sl.mode_key = @modeKey)
               AND (@regionKey IS NULL OR sl.region_key = @regionKey){rankConditions}
