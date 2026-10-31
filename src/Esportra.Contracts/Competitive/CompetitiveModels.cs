@@ -28,6 +28,13 @@ public sealed record ScrimListingRow
     public string? TeamName { get; init; }
     public string? TeamLogoUrl { get; init; }
     public string? TeamTag { get; init; }
+    public int? ActiveMemberCount { get; init; }
+    public string? MinRankDisplayName { get; init; }
+    public string? MinRankIconUrl { get; init; }
+    public string? MaxRankDisplayName { get; init; }
+    public string? MaxRankIconUrl { get; init; }
+    public string? MembersPreview { get; init; }
+    public int? ScrimsCompleted { get; init; }
 }
 
 public sealed record ScrimOfferRow

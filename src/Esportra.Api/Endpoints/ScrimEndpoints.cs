@@ -387,7 +387,29 @@ public static class ScrimEndpoints
             WITH active_v AS (
                 SELECT id FROM public.game_catalog_versions WHERE is_active = TRUE LIMIT 1
             )
-            SELECT sl.*, t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag
+            SELECT sl.*, t.name AS team_name, t.logo_url AS team_logo_url, t.tag AS team_tag,
+                   (SELECT count(*) FROM public.team_members tm
+                    WHERE tm.team_id = sl.team_id AND tm.is_active = TRUE) AS active_member_count,
+                   min_rt.display_name AS min_rank_display_name,
+                   min_rt.icon_url AS min_rank_icon_url,
+                   max_rt.display_name AS max_rank_display_name,
+                   max_rt.icon_url AS max_rank_icon_url,
+                   (SELECT json_agg(sub ORDER BY sub.role_ord, sub.username)
+                    FROM (
+                        SELECT p.username, p.avatar_seed,
+                               CASE tm2.role WHEN 'captain' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END AS role_ord,
+                               pgp.rank_tier_key
+                        FROM public.team_members tm2
+                        JOIN public.profiles p ON p.id = tm2.user_id
+                        LEFT JOIN public.player_game_profiles pgp
+                            ON pgp.user_id = tm2.user_id AND pgp.game_slug = sl.game_slug
+                        WHERE tm2.team_id = sl.team_id AND tm2.is_active = TRUE
+                        LIMIT 6
+                    ) sub
+                   ) AS members_preview,
+                   (SELECT count(*) FROM public.scrim_sessions ss
+                    WHERE (ss.team1_id = sl.team_id OR ss.team2_id = sl.team_id)
+                      AND ss.status = 'completed') AS scrims_completed
             FROM public.scrim_listings sl
             JOIN public.teams t ON t.id = sl.team_id
             LEFT JOIN public.game_catalog_rank_tiers min_rt
