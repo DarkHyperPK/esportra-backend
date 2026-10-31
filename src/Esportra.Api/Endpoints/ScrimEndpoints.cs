@@ -11,6 +11,11 @@ using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
+using Esportra.Api.Middleware;
+using Esportra.Api.ScoreboardOcr;
+using Esportra.Infrastructure.Integrations;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace Esportra.Api.Endpoints;
 
@@ -94,6 +99,15 @@ public static class ScrimEndpoints
         // ── Scrim Slots (PROJ-078) ──────────────────────────────────────────────
         app.MapGet("/api/scrims/listings/{id:guid}/slots", GetSlotsAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/slots", CreateSlotsAsync).RequireAuthorization("Authenticated");
+
+        // ── Scrim History + Riot Scan (PROJ-078) ─────────────────────────────────
+        app.MapGet("/api/scrims/sessions/{id:guid}/recent-matches", GetSessionRecentMatchesAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/reports/parse-screenshot", ParseScrimScreenshotAsync)
+            .RequireAuthorization("Authenticated")
+            .DisableAntiforgery()
+            .WithMetadata(new RateLimitPolicyMetadata("screenshotOcr"));
+        app.MapGet("/api/scrims/teams/{teamId:guid}/history", GetTeamScrimHistoryAsync).AllowAnonymous();
+        app.MapPatch("/api/scrims/teams/{teamId:guid}/history/privacy", UpdateHistoryPrivacyAsync).RequireAuthorization("Authenticated");
 
         // ── Practice ────────────────────────────────────────────────────────────
         app.MapPost("/api/practice/sessions", CreatePracticeAsync).RequireAuthorization("Authenticated");
@@ -1621,6 +1635,399 @@ public static class ScrimEndpoints
         return Results.Ok(new { created = created.Count, slots = created });
     }
 
+    // ── GET /api/scrims/sessions/{id}/recent-matches ───────────────────────────
+
+    private static async Task<IResult> GetSessionRecentMatchesAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        RiotApiClient riotApi,
+        HybridCache cache,
+        ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
+            "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
+        if (session is null) return Results.NotFound();
+        if (session.Status != "in_progress")
+            return Results.Conflict(new { error = "Recent matches are only available while the session is in progress." });
+
+        var isStaff = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE team_id IN (@t1, @t2)
+                  AND user_id = @userId
+                  AND role IN ('captain', 'manager')
+                  AND is_active = TRUE
+            )
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (!isStaff) return Results.Forbid();
+
+        var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            SELECT team_id FROM public.team_members
+            WHERE user_id = @userId AND team_id IN (@t1, @t2) AND is_active = TRUE LIMIT 1
+            """,
+            new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
+        if (callerTeamId is null) return Results.Forbid();
+
+        var callerAccounts = (await conn.QueryAsync<dynamic>(
+            """
+            SELECT ra.puuid, ra.region FROM riot_accounts ra
+            JOIN team_members tm ON tm.user_id = ra.user_id
+            WHERE tm.team_id = @teamId AND ra.puuid IS NOT NULL AND tm.is_active = TRUE
+            """,
+            new { teamId = callerTeamId.Value })).AsList();
+
+        if (callerAccounts.Count == 0)
+            return Results.Ok(new { matches = Array.Empty<object>(), reason = "No linked Riot accounts found for your team" });
+
+        var allAccounts = (await conn.QueryAsync<dynamic>(
+            """
+            SELECT ra.puuid, tm.team_id FROM riot_accounts ra
+            JOIN team_members tm ON tm.user_id = ra.user_id
+            WHERE tm.team_id IN (@t1, @t2) AND ra.puuid IS NOT NULL AND tm.is_active = TRUE
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id })).AsList();
+
+        var team1Puuids = allAccounts
+            .Where(a => (Guid)a.team_id == session.Team1Id).Select(a => (string)a.puuid).ToHashSet();
+        var team2Puuids = allAccounts
+            .Where(a => (Guid)a.team_id == session.Team2Id).Select(a => (string)a.puuid).ToHashSet();
+
+        var shard = await RiotShards.ResolveAsync(riotApi, cache, (string)callerAccounts[0].puuid, (string?)callerAccounts[0].region, ct);
+        var matchIds = await CollectScrimMatchIdsAsync(callerAccounts, shard, riotApi, ct);
+
+        if (matchIds.Count == 0)
+            return Results.Ok(new { matches = Array.Empty<object>(), reason = "No recent matches in Riot history" });
+
+        var log = loggerFactory.CreateLogger("ScrimEndpoints.RecentMatches");
+        var candidates = new List<object>();
+        foreach (var riotMatchId in matchIds.Take(20))
+        {
+            var (detStatus, detBody) = await riotApi.ProxyAsync(shard, $"/val/match/v1/matches/{riotMatchId}", ct);
+            if (detStatus != 200) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(detBody);
+                var candidate = BuildScrimCandidate(doc.RootElement, riotMatchId, callerAccounts, team1Puuids, team2Puuids);
+                if (candidate is not null) candidates.Add(candidate);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "Failed to parse Riot match {MatchId}", riotMatchId);
+            }
+        }
+
+        return Results.Ok(new { matches = candidates });
+    }
+
+    // ── POST /api/scrims/sessions/{id}/reports/parse-screenshot ───────────────
+
+    private static async Task<IResult> ParseScrimScreenshotAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        ScoreboardOcrClient ocr,
+        ScoreboardScreenshotStore store,
+        RiotIdRefreshService riotIds,
+        IRiotMatchLookup riotMatches,
+        HybridCache cache,
+        CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
+        if (!ocr.IsConfigured)
+            return Results.Json(new { error = "Screenshot reading is not available right now." }, statusCode: 503);
+
+        var ocrEnabled = await cache.GetOrCreateAsync(
+            "ocr:kill-switch",
+            async _ =>
+            {
+                using var c = db.CreateConnection();
+                return await c.ExecuteScalarAsync<string>(
+                    "SELECT value FROM system_settings WHERE key = 'scoreboard_ocr_enabled'") ?? "false";
+            },
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+            cancellationToken: ct);
+        if (ocrEnabled != "true")
+            return Results.Json(new { error = "Screenshot reading is not available right now.", ocrEnabled = false }, statusCode: 503);
+
+        if (!ctx.Request.HasFormContentType)
+            return Results.BadRequest(new { error = "Send the screenshot as multipart form data." });
+        var form = await ctx.Request.ReadFormAsync(ct);
+        if (!Guid.TryParse(form["reportedByTeamId"].FirstOrDefault(), out var reportingTeamId))
+            return Results.BadRequest(new { error = "Invalid competitor ID" });
+        var file = form.Files.GetFile("file");
+        if (file is null || file.Length is 0 or > ScreenshotValidator.MaxBytes)
+            return Results.BadRequest(new { error = "Upload one screenshot of 10 MB or less." });
+
+        using var conn = db.CreateConnection();
+
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionForOcr>(
+            "SELECT team1_id, team2_id, status, game_slug FROM public.scrim_sessions WHERE id = @id", new { id });
+        if (session is null) return Results.NotFound();
+        if (session.Status != "in_progress")
+            return Results.Conflict(new { error = "Screenshots can only be uploaded while the session is in progress." });
+        if (session.GameSlug?.Contains("valorant", StringComparison.OrdinalIgnoreCase) != true)
+            return Results.BadRequest(new { error = "Screenshot reading currently supports Valorant only." });
+
+        var isParty = reportingTeamId == session.Team1Id || reportingTeamId == session.Team2Id;
+        if (!isParty) return Results.BadRequest(new { error = "Reporting team is not a party to this session." });
+        if (!await IsTeamStaffAsync(conn, reportingTeamId, userCtx.UserIdGuid))
+            return Results.Json(new { error = "Only a captain or manager of this team can submit a report." }, statusCode: 403);
+
+        var bytes = await ScoreboardOcrEndpoints.ReadAllAsync(file, ct);
+        var check = ScreenshotValidator.Validate(file.FileName, bytes);
+        if (!check.Ok) return Results.BadRequest(new { error = check.Error });
+
+        using (var budget = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            budget.CancelAfter(TimeSpan.FromSeconds(4));
+            try
+            {
+                var userIds = await ScoreboardRosterLoader.LoadUserIdsAsync(conn, session.Team1Id, session.Team2Id);
+                await riotIds.RefreshUsersAsync(userIds, TimeSpan.FromHours(6), budget.Token);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException && !ct.IsCancellationRequested) { }
+        }
+
+        var rosters = await ScoreboardRosterLoader.LoadAsync(conn, session.Team1Id, session.Team2Id);
+        var azureEnabled = await cache.GetOrCreateAsync(
+            "ocr:engine-setting",
+            async _ =>
+            {
+                using var c = db.CreateConnection();
+                return await c.ExecuteScalarAsync<string>(
+                    "SELECT value FROM system_settings WHERE key = 'azure_ocr_enabled'") ?? "false";
+            },
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+            cancellationToken: ct);
+        var engine = azureEnabled == "true" ? "azure" : "paddle";
+        var call = await ocr.ParseValorantAsync(bytes, $"screenshot{check.Extension}", check.ContentType, rosters, engine, ct);
+        if (call.Status == OcrCallStatus.Unreadable) return Results.UnprocessableEntity(new { error = call.UserMessage });
+        if (call.Status != OcrCallStatus.Success) return Results.Json(new { error = call.UserMessage }, statusCode: 502);
+
+        var parseId = Guid.NewGuid();
+        var path = ScoreboardScreenshotStore.BuildPath(id, parseId, check.Extension);
+        if (!await store.UploadAsync(path, bytes, check.ContentType, ct))
+            return Results.Json(new { error = "Could not store the screenshot. Please try again." }, statusCode: 502);
+
+        using var result = JsonDocument.Parse(call.ResultJson!);
+        var verification = ScoreboardVerification.FromParse(result.RootElement, rosters);
+
+        var linked = await ScoreboardRosterLoader.LoadLinkedAccountsAsync(conn, session.Team1Id, session.Team2Id);
+        var reportingLabel = reportingTeamId == session.Team1Id ? "team1" : "team2";
+        var puuids = linked
+            .OrderBy(a => a.Team == reportingLabel ? 0 : 1)
+            .Select(a => a.Puuid).Distinct().Take(3).ToList();
+        var query = ScoreboardRiotMatcher.QueryFrom(result.RootElement, DateTimeOffset.UtcNow, ScoreboardRiotMatcher.MatchWindow);
+        var riot = await ScoreboardRiotMatcher.FindAsync(riotMatches, puuids, query, TimeSpan.FromSeconds(6), ct);
+        object? candidate = null;
+        if (riot.Match is { } riotMatch)
+        {
+            verification = ScoreboardVerification.ApplyRiotMatch(
+                verification, linked, riotMatch, [], ScoreboardRiotMatcher.ScoreFrom(result.RootElement), DateTimeOffset.UtcNow);
+            if (ScoreboardRiotMatcher.SameGameAllySide(result.RootElement, riotMatch) is { } allySide)
+                candidate = ScoreboardRiotMatcher.Candidate(riotMatch, allySide, ScoreboardRiotMatcher.AllyTeamOf(result.RootElement), reportingLabel, linked);
+        }
+
+        return Results.Ok(new
+        {
+            parseId,
+            screenshotUrl = store.PublicUrl(path),
+            mapId = await ResolveScrimMapIdAsync(conn, result.RootElement),
+            team1Id = session.Team1Id,
+            team2Id = session.Team2Id,
+            result = result.RootElement.Clone(),
+            verification = System.Text.Json.JsonSerializer.SerializeToElement(verification, OcrVerificationJson.Options),
+            riot = new
+            {
+                status = riot.Status,
+                confident = candidate is not null,
+                candidate,
+                match = riot.Match is null ? null : ScoreboardRiotMatcher.Payload(riot.Match, linked),
+            },
+        });
+    }
+
+    // ── GET /api/scrims/teams/{teamId}/history ─────────────────────────────────
+
+    private static async Task<IResult> GetTeamScrimHistoryAsync(
+        Guid teamId,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var offset = (page - 1) * pageSize;
+
+        using var conn = db.CreateConnection();
+
+        var teamRow = await conn.QuerySingleOrDefaultAsync<TeamPrivacyRow>(
+            "SELECT scrim_history_public FROM public.teams WHERE id = @teamId", new { teamId });
+        if (teamRow is null) return Results.NotFound();
+
+        var callerCtx = ctx.Items["UserContext"] as UserContext;
+        bool computeResult;
+
+        if (!teamRow.ScrimHistoryPublic)
+        {
+            if (callerCtx is null) return Results.Unauthorized();
+            var isMember = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM public.team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
+                new { teamId, userId = callerCtx.UserIdGuid });
+            if (!isMember) return Results.Forbid();
+            computeResult = true;
+        }
+        else
+        {
+            computeResult = callerCtx is not null && await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM public.team_members WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE)",
+                new { teamId, userId = callerCtx?.UserIdGuid ?? Guid.Empty });
+        }
+
+        var total = await conn.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(*) FROM public.scrim_sessions
+            WHERE (team1_id = @teamId OR team2_id = @teamId) AND status = 'completed'
+            """,
+            new { teamId });
+
+        var rows = (await conn.QueryAsync<ScrimHistoryRow>(
+            """
+            SELECT ss.id, ss.scheduled_at, ss.game_slug,
+                   ss.team1_id, t1.name AS team1_name,
+                   ss.team2_id, t2.name AS team2_name,
+                   ss.team1_score, ss.team2_score,
+                   ss.updated_at AS completed_at,
+                   pvs.selected_map_id AS raw_map_id
+            FROM public.scrim_sessions ss
+            JOIN public.teams t1 ON t1.id = ss.team1_id
+            JOIN public.teams t2 ON t2.id = ss.team2_id
+            LEFT JOIN public.public_veto_sessions pvs ON pvs.id = ss.veto_session_id
+            WHERE (ss.team1_id = @teamId OR ss.team2_id = @teamId)
+              AND ss.status = 'completed'
+            ORDER BY ss.updated_at DESC
+            LIMIT @pageSize OFFSET @offset
+            """,
+            new { teamId, pageSize, offset })).ToList();
+
+        return Results.Ok(new
+        {
+            items = rows.Select(row => new
+            {
+                id = row.Id,
+                scheduled_at = row.ScheduledAt,
+                game_slug = row.GameSlug,
+                team1_id = row.Team1Id,
+                team1_name = row.Team1Name,
+                team2_id = row.Team2Id,
+                team2_name = row.Team2Name,
+                team1_score = row.Team1Score,
+                team2_score = row.Team2Score,
+                result = DeriveScrimResult(teamId, row, computeResult),
+                map_name = string.IsNullOrWhiteSpace(row.RawMapId) ? null : ValorantMapIds.Resolve(row.RawMapId),
+                completed_at = row.CompletedAt,
+            }),
+            total,
+            page,
+            pageSize,
+        });
+    }
+
+    // ── PATCH /api/scrims/teams/{teamId}/history/privacy ──────────────────────
+
+    private static async Task<IResult> UpdateHistoryPrivacyAsync(
+        Guid teamId,
+        [FromBody] UpdateHistoryPrivacyRequest req,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        var exists = await conn.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM public.teams WHERE id = @teamId)", new { teamId });
+        if (!exists) return Results.NotFound();
+        if (!await IsTeamStaffAsync(conn, teamId, userCtx.UserIdGuid)) return Results.Forbid();
+
+        await conn.ExecuteAsync(
+            "UPDATE public.teams SET scrim_history_public = @isPublic WHERE id = @teamId",
+            new { teamId, isPublic = req.Public });
+
+        return Results.Ok(new { scrimHistoryPublic = req.Public });
+    }
+
+    // ── Scrim scan helpers ─────────────────────────────────────────────────────
+
+    private static async Task<List<string>> CollectScrimMatchIdsAsync(
+        List<dynamic> accounts, string shard, RiotApiClient riotApi, CancellationToken ct)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ordered = new List<string>();
+        foreach (var account in accounts)
+        {
+            var (status, body) = await riotApi.ProxyAsync(shard, $"/val/match/v1/matchlists/by-puuid/{(string)account.puuid}", ct);
+            if (status != 200) continue;
+            using var doc = JsonDocument.Parse(body);
+            foreach (var entry in doc.RootElement.GetProperty("history").EnumerateArray())
+            {
+                var matchId = entry.GetProperty("matchId").GetString()!;
+                if (seen.Add(matchId)) ordered.Add(matchId);
+            }
+        }
+        return ordered;
+    }
+
+    private static object? BuildScrimCandidate(
+        JsonElement root, string riotMatchId, List<dynamic> accounts,
+        HashSet<string> team1Puuids, HashSet<string> team2Puuids)
+    {
+        foreach (var account in accounts)
+        {
+            var result = RiotMatchCandidates.Build(root, riotMatchId, (string)account.puuid, team1Puuids, team2Puuids);
+            if (result is not null) return result;
+        }
+        return null;
+    }
+
+    private static string? DeriveScrimResult(Guid teamId, ScrimHistoryRow row, bool compute)
+    {
+        if (!compute || row.Team1Score is null || row.Team2Score is null) return null;
+        var (mine, theirs) = teamId == row.Team1Id
+            ? (row.Team1Score.Value, row.Team2Score.Value)
+            : (row.Team2Score.Value, row.Team1Score.Value);
+        return mine > theirs ? "win" : mine < theirs ? "loss" : "draw";
+    }
+
+    private static async Task<Guid?> ResolveScrimMapIdAsync(System.Data.IDbConnection conn, JsonElement result)
+    {
+        if (!result.TryGetProperty("map", out var map) || !map.TryGetProperty("value", out var value)
+            || value.ValueKind != JsonValueKind.Object) return null;
+        var name = value.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        return await conn.QueryFirstOrDefaultAsync<Guid?>(
+            """
+            SELECT id FROM game_maps
+            WHERE game ILIKE '%valorant%' AND is_active = TRUE AND lower(map_name) = lower(@name)
+            LIMIT 1
+            """,
+            new { name });
+    }
+
     // ── Practice endpoints ─────────────────────────────────────────────────────
 
     private static async Task<IResult> CreatePracticeAsync(
@@ -2158,6 +2565,14 @@ public static class ScrimEndpoints
 
     // ── Private auth records ───────────────────────────────────────────────────
 
+    private sealed record ScrimSessionForOcr(Guid Team1Id, Guid Team2Id, string Status, string? GameSlug);
+    private sealed record ScrimHistoryRow(
+        Guid Id, DateTime? ScheduledAt, string? GameSlug,
+        Guid Team1Id, string? Team1Name, Guid Team2Id, string? Team2Name,
+        int? Team1Score, int? Team2Score,
+        DateTime CompletedAt, string? RawMapId);
+    private sealed record TeamPrivacyRow(bool ScrimHistoryPublic);
+
     private sealed record ScrimListingRef(Guid TeamId, string Status);
     private sealed record ScrimSessionRef(Guid Team1Id, Guid Team2Id, string Status);
     private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
@@ -2294,3 +2709,6 @@ public sealed record SlotInput(
 
 public sealed record CreateSlotsRequest(
     [property: JsonPropertyName("slots")] SlotInput[]? Slots = null);
+
+public sealed record UpdateHistoryPrivacyRequest(
+    [property: JsonPropertyName("public")] bool Public);
