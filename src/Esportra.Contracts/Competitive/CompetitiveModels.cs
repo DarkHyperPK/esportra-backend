@@ -8,10 +8,10 @@ public sealed record ScrimListingRow(
     TimeOnly? PreferredTimeStart, TimeOnly? PreferredTimeEnd,
     string? Timezone, string? Notes, string Status,
     DateTime CreatedAt, DateTime UpdatedAt,
-    string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null,
     string ScheduleType = "one_off",
     DateTime? ScheduleUntil = null,
-    int? SlotDurationMinutes = null);
+    int? SlotDurationMinutes = null,
+    string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null);
 
 public sealed record ScrimOfferRow(
     Guid Id, Guid ListingId, Guid OfferingTeamId,
