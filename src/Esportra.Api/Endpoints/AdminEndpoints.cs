@@ -1465,6 +1465,24 @@ public static class AdminEndpoints
             return Results.Ok(new { data = rows, total, statusCounts = statusCountDict });
         }).RequireAuthorization("Admin");
 
+        // ── GET /api/admin/tournaments/{id} ───────────────────────────────────
+        app.MapGet("/api/admin/tournaments/{id:guid}", async (
+            Guid id,
+            IDbConnectionFactory db,
+            CancellationToken ct) =>
+        {
+            using var conn = db.CreateConnection();
+            var tournament = await conn.QuerySingleOrDefaultAsync<dynamic>(new CommandDefinition(
+                """
+                SELECT t.*, p.username AS organizer_name
+                FROM tournaments t
+                LEFT JOIN profiles p ON p.id = t.organizer_id
+                WHERE t.id = @id
+                """, new { id }, cancellationToken: ct));
+            if (tournament is null) return Results.NotFound();
+            return Results.Ok(new { tournament });
+        }).RequireAuthorization("Admin");
+
         // ── PUT /api/admin/tournaments/{id} ───────────────────────────────────
         // Updates tournament status and/or is_featured flag from admin panel.
         app.MapPut("/api/admin/tournaments/{id}", async (
