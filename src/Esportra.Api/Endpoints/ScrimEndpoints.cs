@@ -488,15 +488,17 @@ public static class ScrimEndpoints
                    pgp.rank_tier_key,
                    rt.display_name AS rank_display_name,
                    rt.icon_url AS rank_icon_url,
-                   pgp.competitive_tier,
-                   pgp.competitive_tier_name,
-                   pgp.win_rate,
-                   pgp.kd_ratio,
-                   pgp.hs_pct
+                   pgs.competitive_tier,
+                   pgs.competitive_tier_name,
+                   pgs.win_rate,
+                   pgs.kd_ratio,
+                   pgs.hs_pct
             FROM public.team_members tm
             JOIN public.profiles p ON p.id = tm.user_id
             LEFT JOIN public.player_game_profiles pgp
                 ON pgp.user_id = tm.user_id AND pgp.game_slug = @gameSlug
+            LEFT JOIN public.player_game_stats pgs
+                ON pgs.user_id = tm.user_id AND pgs.game_slug = @gameSlug
             LEFT JOIN public.game_catalog_rank_tiers rt
                 ON rt.tier_key = pgp.rank_tier_key AND rt.game_slug = @gameSlug
                AND rt.version_id = (SELECT id FROM active_v)
