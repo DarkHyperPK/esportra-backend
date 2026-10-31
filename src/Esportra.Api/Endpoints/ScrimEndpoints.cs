@@ -410,7 +410,18 @@ public static class ScrimEndpoints
                    ) AS members_preview,
                    (SELECT count(*) FROM public.scrim_sessions ss
                     WHERE (ss.team1_id = sl.team_id OR ss.team2_id = sl.team_id)
-                      AND ss.status = 'completed') AS scrims_completed
+                      AND ss.status = 'completed') AS scrims_completed,
+                   (SELECT 'https://media.valorant-api.com/playercards/' || pgs.player_card_id || '/wideart.png'
+                    FROM public.team_members tm3
+                    JOIN public.player_game_stats pgs
+                        ON pgs.user_id = tm3.user_id AND pgs.game_slug = sl.game_slug
+                    WHERE tm3.team_id = sl.team_id
+                      AND tm3.role = 'captain'
+                      AND tm3.is_active = TRUE
+                      AND sl.game_slug = 'valorant'
+                      AND pgs.player_card_id IS NOT NULL
+                    LIMIT 1
+                   ) AS captain_card_url
             FROM public.scrim_listings sl
             JOIN public.teams t ON t.id = sl.team_id
             LEFT JOIN public.game_catalog_rank_tiers min_rt

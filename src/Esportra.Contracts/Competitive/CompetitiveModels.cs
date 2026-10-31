@@ -35,6 +35,7 @@ public sealed record ScrimListingRow
     public string? MaxRankIconUrl { get; init; }
     public string? MembersPreview { get; init; }
     public int? ScrimsCompleted { get; init; }
+    public string? CaptainCardUrl { get; init; }
 }
 
 public sealed record ScrimTeamMemberDetail
