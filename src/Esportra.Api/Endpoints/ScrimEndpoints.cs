@@ -2612,17 +2612,39 @@ public static class ScrimEndpoints
         string? Team2Name = null, string? Team2Logo = null,
         string? MyRole = null)
     {
-        public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new(
-            Id: Id, Team1Id: Team1Id, Team2Id: Team2Id, GameSlug: GameSlug,
-            ModeKey: ModeKey, ScheduledAt: ScheduledAt, DurationMinutes: DurationMinutes,
-            ServerInfo: ServerInfo, LobbyCode: LobbyCode, Status: Status,
-            ResultReportedByTeam1: ResultReportedByTeam1, ResultReportedByTeam2: ResultReportedByTeam2,
-            Team1Score: Team1Score, Team2Score: Team2Score, CreatedAt: CreatedAt, UpdatedAt: UpdatedAt,
-            Team1CheckedInAt: Team1CheckedInAt, Team2CheckedInAt: Team2CheckedInAt,
-            HangfireJobIds: HangfireJobIds, CheckinWindowOpenedAt: CheckinWindowOpenedAt,
-            VetoSessionId: VetoSessionId, VetoTeam1Token: VetoTeam1Token, VetoTeam2Token: VetoTeam2Token,
-            Team1Name: Team1Name, Team1Logo: Team1Logo, Team2Name: Team2Name, Team2Logo: Team2Logo,
-            VetoMyToken: vetoMyToken, MyRole: MyRole, Dispute: dispute);
+        public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new()
+        {
+            Id = Id,
+            Team1Id = Team1Id,
+            Team2Id = Team2Id,
+            GameSlug = GameSlug,
+            ModeKey = ModeKey,
+            ScheduledAt = ScheduledAt,
+            DurationMinutes = DurationMinutes,
+            ServerInfo = ServerInfo,
+            LobbyCode = LobbyCode,
+            Status = Status,
+            ResultReportedByTeam1 = ResultReportedByTeam1,
+            ResultReportedByTeam2 = ResultReportedByTeam2,
+            Team1Score = Team1Score,
+            Team2Score = Team2Score,
+            CreatedAt = CreatedAt,
+            UpdatedAt = UpdatedAt,
+            Team1CheckedInAt = Team1CheckedInAt,
+            Team2CheckedInAt = Team2CheckedInAt,
+            HangfireJobIds = HangfireJobIds,
+            CheckinWindowOpenedAt = CheckinWindowOpenedAt,
+            VetoSessionId = VetoSessionId,
+            VetoTeam1Token = VetoTeam1Token,
+            VetoTeam2Token = VetoTeam2Token,
+            Team1Name = Team1Name,
+            Team1Logo = Team1Logo,
+            Team2Name = Team2Name,
+            Team2Logo = Team2Logo,
+            VetoMyToken = vetoMyToken,
+            MyRole = MyRole,
+            Dispute = dispute,
+        };
     }
 }
 

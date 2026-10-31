@@ -1,64 +1,118 @@
 namespace Esportra.Contracts.Competitive;
 
 // ── Scrim ───────────────────────────────────────────────────────────────────────
+// Non-positional records: Dapper uses property injection, which correctly invokes
+// custom TypeHandlers for array columns (int[]?, string[]?) and tolerates queries
+// that return different column subsets (RETURNING * vs SELECT * + JOINs).
 
-public sealed record ScrimListingRow(
-    Guid Id, Guid TeamId, string? GameSlug, string? ModeKey, string? RegionKey,
-    string? MinRankKey, string? MaxRankKey, int[]? PreferredDays,
-    TimeOnly? PreferredTimeStart, TimeOnly? PreferredTimeEnd,
-    string? Timezone, string? Notes, string Status,
-    DateTime CreatedAt, DateTime UpdatedAt,
-    string ScheduleType = "one_off",
-    DateTime? ScheduleUntil = null,
-    int? SlotDurationMinutes = null,
-    string? TeamName = null, string? TeamLogoUrl = null, string? TeamTag = null);
+public sealed record ScrimListingRow
+{
+    public Guid Id { get; init; }
+    public Guid TeamId { get; init; }
+    public string? GameSlug { get; init; }
+    public string? ModeKey { get; init; }
+    public string? RegionKey { get; init; }
+    public string? MinRankKey { get; init; }
+    public string? MaxRankKey { get; init; }
+    public int[]? PreferredDays { get; init; }
+    public TimeOnly? PreferredTimeStart { get; init; }
+    public TimeOnly? PreferredTimeEnd { get; init; }
+    public string? Timezone { get; init; }
+    public string? Notes { get; init; }
+    public string Status { get; init; } = null!;
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+    public string ScheduleType { get; init; } = "one_off";
+    public DateTime? ScheduleUntil { get; init; }
+    public int? SlotDurationMinutes { get; init; }
+    public string? TeamName { get; init; }
+    public string? TeamLogoUrl { get; init; }
+    public string? TeamTag { get; init; }
+}
 
-public sealed record ScrimOfferRow(
-    Guid Id, Guid ListingId, Guid OfferingTeamId,
-    DateTime? ProposedAt, int? ProposedDurationMinutes,
-    string? Notes, string Status, DateTime CreatedAt, DateTime UpdatedAt,
-    string? OfferingTeamName = null, string? OfferingTeamLogo = null,
-    string? ListingGameSlug = null, string? ListingTeamName = null,
-    Guid? SlotId = null);
+public sealed record ScrimOfferRow
+{
+    public Guid Id { get; init; }
+    public Guid ListingId { get; init; }
+    public Guid OfferingTeamId { get; init; }
+    public DateTime? ProposedAt { get; init; }
+    public int? ProposedDurationMinutes { get; init; }
+    public string? Notes { get; init; }
+    public string Status { get; init; } = null!;
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+    public Guid? SlotId { get; init; }
+    public string? OfferingTeamName { get; init; }
+    public string? OfferingTeamLogo { get; init; }
+    public string? ListingGameSlug { get; init; }
+    public string? ListingTeamName { get; init; }
+}
 
-public sealed record ScrimSessionRow(
-    // DB columns in scrim_sessions creation order — must match SELECT ss.* positionally
-    Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
-    string? ModeKey, DateTime? ScheduledAt, int? DurationMinutes,
-    string? ServerInfo, string? LobbyCode, string Status,
-    bool ResultReportedByTeam1, bool ResultReportedByTeam2,
-    int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
-    DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt,
-    string? HangfireJobIds, DateTime? CheckinWindowOpenedAt,
-    Guid? VetoSessionId,
-    // Raw token columns included for Dapper materialization; never sent to clients.
-    string? VetoTeam1Token, string? VetoTeam2Token,
-    // JOIN-derived name columns (optional — absent in list queries)
-    string? Team1Name = null, string? Team1Logo = null,
-    string? Team2Name = null, string? Team2Logo = null,
-    // Derived fields — set programmatically after materialization, not DB columns
-    string? VetoMyToken = null,
-    string? MyRole = null,
-    ScrimDisputeRow? Dispute = null);
+public sealed record ScrimSessionRow
+{
+    public Guid Id { get; init; }
+    public Guid Team1Id { get; init; }
+    public Guid Team2Id { get; init; }
+    public string? GameSlug { get; init; }
+    public string? ModeKey { get; init; }
+    public DateTime? ScheduledAt { get; init; }
+    public int? DurationMinutes { get; init; }
+    public string? ServerInfo { get; init; }
+    public string? LobbyCode { get; init; }
+    public string Status { get; init; } = null!;
+    public bool ResultReportedByTeam1 { get; init; }
+    public bool ResultReportedByTeam2 { get; init; }
+    public int? Team1Score { get; init; }
+    public int? Team2Score { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public DateTime UpdatedAt { get; init; }
+    public DateTime? Team1CheckedInAt { get; init; }
+    public DateTime? Team2CheckedInAt { get; init; }
+    public string? HangfireJobIds { get; init; }
+    public DateTime? CheckinWindowOpenedAt { get; init; }
+    public Guid? VetoSessionId { get; init; }
+    public string? VetoTeam1Token { get; init; }
+    public string? VetoTeam2Token { get; init; }
+    public string? Team1Name { get; init; }
+    public string? Team1Logo { get; init; }
+    public string? Team2Name { get; init; }
+    public string? Team2Logo { get; init; }
+    public string? VetoMyToken { get; init; }
+    public string? MyRole { get; init; }
+    public ScrimDisputeRow? Dispute { get; init; }
+}
 
-public sealed record ScrimResultReportRow(
-    Guid Id, Guid SessionId, Guid ReportingTeamId,
-    int Team1Score, int Team2Score, string? Notes,
-    string[]? ScreenshotsUrls, DateTime? SubmittedAt,
-    string? ReportingTeamName = null,
-    Guid? ConfirmedByTeamId = null,
-    DateTime? ConfirmedAt = null);
+public sealed record ScrimResultReportRow
+{
+    public Guid Id { get; init; }
+    public Guid SessionId { get; init; }
+    public Guid ReportingTeamId { get; init; }
+    public int Team1Score { get; init; }
+    public int Team2Score { get; init; }
+    public string? Notes { get; init; }
+    public string[]? ScreenshotsUrls { get; init; }
+    public DateTime? SubmittedAt { get; init; }
+    public string? ReportingTeamName { get; init; }
+    public Guid? ConfirmedByTeamId { get; init; }
+    public DateTime? ConfirmedAt { get; init; }
+}
 
-public sealed record ScrimDisputeRow(
-    Guid Id, Guid SessionId, Guid RaisedByTeamId,
-    string Reason, DateTime CreatedAt, string? Status = null,
-    string[]? EvidenceUrls = null,
-    string[]? ResponderEvidenceUrls = null,
-    string? ResponderNotes = null,
-    Guid? ResolvedBy = null,
-    string? Outcome = null,
-    string? ResolutionNotes = null,
-    DateTime? ResolvedAt = null);
+public sealed record ScrimDisputeRow
+{
+    public Guid Id { get; init; }
+    public Guid SessionId { get; init; }
+    public Guid RaisedByTeamId { get; init; }
+    public string Reason { get; init; } = null!;
+    public string? Status { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public string[]? EvidenceUrls { get; init; }
+    public string[]? ResponderEvidenceUrls { get; init; }
+    public string? ResponderNotes { get; init; }
+    public Guid? ResolvedBy { get; init; }
+    public string? Outcome { get; init; }
+    public string? ResolutionNotes { get; init; }
+    public DateTime? ResolvedAt { get; init; }
+}
 
 public sealed record ScrimSlotRow(
     Guid Id, Guid ListingId,
