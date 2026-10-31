@@ -542,9 +542,11 @@ public static class TournamentEndpoints
                 new { tournamentId });
 
             var access = await ResolveAccessAsync(ctx, staffAuth, tournamentId, ct);
+            var visibilityUserCtx = ctx.Items["UserContext"] as UserContext;
+            var isSuperAdmin = visibilityUserCtx?.IsSuperAdmin == true;
 
-            // Visibility guard: draft and private tournaments are hidden from non-organizers
-            if (!access.IsOrganizer)
+            // Visibility guard: draft and private tournaments are hidden from non-organizers/non-admins
+            if (!access.IsOrganizer && !isSuperAdmin)
             {
                 string tournamentStatus = (string)tournament.status;
                 if (string.Equals(tournamentStatus, "draft", StringComparison.OrdinalIgnoreCase))
@@ -553,8 +555,7 @@ public static class TournamentEndpoints
                 bool isPublic = (bool)tournament.is_public;
                 if (!isPublic)
                 {
-                    var userCtx = ctx.Items["UserContext"] as UserContext;
-                    var callerId = userCtx?.UserIdGuid;
+                    var callerId = visibilityUserCtx?.UserIdGuid;
                     var isParticipant = callerId.HasValue && allParticipants.Any(p =>
                     {
                         string pStatus = (string)p.status;
@@ -567,11 +568,12 @@ public static class TournamentEndpoints
                 }
             }
 
-            var participants = FilterParticipantsForRole(allParticipants, access.IsOrganizer);
-            var mockCount = await FetchMockCountAsync(conn, tournamentId, access.IsOrganizer);
+            var canManage = access.IsOrganizer || isSuperAdmin;
+            var participants = FilterParticipantsForRole(allParticipants, canManage);
+            var mockCount = await FetchMockCountAsync(conn, tournamentId, canManage);
             var participantMode = await ResolveParticipantModeAsync(gameCatalog, tournament);
             var (unseededMatchCount, unscheduledFirstRoundCount, pendingEscalations) =
-                await FetchSchedulingCountsAsync(conn, tournamentId, access.IsOrganizer);
+                await FetchSchedulingCountsAsync(conn, tournamentId, canManage);
 
             return Results.Ok(new
             {
@@ -579,7 +581,7 @@ public static class TournamentEndpoints
                 participantMode,
                 participants,
                 stages,
-                isOrganizer = access.IsOrganizer,
+                isOrganizer = canManage,
                 staffPermissions = access.StaffPermissions,
                 staffRole = access.StaffRole,
                 mockCount,
