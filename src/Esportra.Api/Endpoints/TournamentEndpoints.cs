@@ -797,6 +797,16 @@ public static class TournamentEndpoints
                 new { id });
             if (existingTournament is null) return Results.NotFound();
 
+            // Organizer Pro gate: increasing max_teams beyond 32 requires has_organizer_pro.
+            if (req.MaxTeams > 32 && !userCtx.IsSuperAdmin)
+            {
+                var hasPro = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT COALESCE((SELECT has_organizer_pro FROM event_licenses WHERE tournament_id = @id LIMIT 1), FALSE)",
+                    new { id });
+                if (!hasPro)
+                    return Results.Json(new { error = "bracket_upgrade_required" }, statusCode: 402);
+            }
+
             var validationResult = await ValidateTournamentUpdateAsync(conn, id, req, (object)existingTournament, gameCatalog, userCtx.IsSuperAdmin);
             if (validationResult.error is not null) return validationResult.error;
 
