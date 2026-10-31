@@ -22,23 +22,23 @@ public sealed record ScrimOfferRow(
     Guid? SlotId = null);
 
 public sealed record ScrimSessionRow(
+    // DB columns in scrim_sessions creation order — must match SELECT ss.* positionally
     Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
-    DateTime? ScheduledAt, int? DurationMinutes, string Status,
+    string? ModeKey, DateTime? ScheduledAt, int? DurationMinutes,
+    string? ServerInfo, string? LobbyCode, string Status,
     bool ResultReportedByTeam1, bool ResultReportedByTeam2,
     int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
-    string? ModeKey = null, string? ServerInfo = null, string? LobbyCode = null,
+    DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt,
+    string? HangfireJobIds, DateTime? CheckinWindowOpenedAt,
+    Guid? VetoSessionId,
+    // Raw token columns included for Dapper materialization; never sent to clients.
+    string? VetoTeam1Token, string? VetoTeam2Token,
+    // JOIN-derived name columns (optional — absent in list queries)
     string? Team1Name = null, string? Team1Logo = null,
     string? Team2Name = null, string? Team2Logo = null,
-    DateTime? Team1CheckedInAt = null,
-    DateTime? Team2CheckedInAt = null,
-    DateTime? CheckinWindowOpenedAt = null,
-    Guid? VetoSessionId = null,
-    // VetoMyToken is NOT stored — derived per caller in GetSessionAsync.
-    // Raw veto_team1_token / veto_team2_token columns are intentionally excluded.
+    // Derived fields — set programmatically after materialization, not DB columns
     string? VetoMyToken = null,
-    // MyRole is the caller's team_members.role ('captain' or 'manager') — set by GetSessionAsync only.
     string? MyRole = null,
-    // Dispute is populated by GetSessionAsync only — not returned by other endpoints.
     ScrimDisputeRow? Dispute = null);
 
 public sealed record ScrimResultReportRow(

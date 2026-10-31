@@ -2595,32 +2595,34 @@ public static class ScrimEndpoints
     /// <summary>
     /// Projection for GetSessionAsync that includes raw veto tokens.
     /// Tokens are never returned in API responses — VetoMyToken is derived per caller.
+    /// Column order matches scrim_sessions DB creation order for Dapper positional materialization.
     /// </summary>
     private sealed record ScrimSessionWithTokens(
         Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
-        DateTime? ScheduledAt, int? DurationMinutes, string Status,
+        string? ModeKey, DateTime? ScheduledAt, int? DurationMinutes,
+        string? ServerInfo, string? LobbyCode, string Status,
         bool ResultReportedByTeam1, bool ResultReportedByTeam2,
         int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
-        string? ModeKey, string? ServerInfo, string? LobbyCode,
-        string? Team1Name, string? Team1Logo, string? Team2Name, string? Team2Logo,
         DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt,
-        DateTime? CheckinWindowOpenedAt,
+        string? HangfireJobIds, DateTime? CheckinWindowOpenedAt,
         Guid? VetoSessionId,
         string? VetoTeam1Token,
         string? VetoTeam2Token,
+        string? Team1Name = null, string? Team1Logo = null,
+        string? Team2Name = null, string? Team2Logo = null,
         string? MyRole = null)
     {
         public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new(
-            Id, Team1Id, Team2Id, GameSlug,
-            ScheduledAt, DurationMinutes, Status,
-            ResultReportedByTeam1, ResultReportedByTeam2,
-            Team1Score, Team2Score, CreatedAt, UpdatedAt,
-            ModeKey, ServerInfo, LobbyCode,
-            Team1Name, Team1Logo, Team2Name, Team2Logo,
-            Team1CheckedInAt, Team2CheckedInAt,
-            CheckinWindowOpenedAt, VetoSessionId, vetoMyToken,
-            MyRole: MyRole,
-            Dispute: dispute);
+            Id: Id, Team1Id: Team1Id, Team2Id: Team2Id, GameSlug: GameSlug,
+            ModeKey: ModeKey, ScheduledAt: ScheduledAt, DurationMinutes: DurationMinutes,
+            ServerInfo: ServerInfo, LobbyCode: LobbyCode, Status: Status,
+            ResultReportedByTeam1: ResultReportedByTeam1, ResultReportedByTeam2: ResultReportedByTeam2,
+            Team1Score: Team1Score, Team2Score: Team2Score, CreatedAt: CreatedAt, UpdatedAt: UpdatedAt,
+            Team1CheckedInAt: Team1CheckedInAt, Team2CheckedInAt: Team2CheckedInAt,
+            HangfireJobIds: HangfireJobIds, CheckinWindowOpenedAt: CheckinWindowOpenedAt,
+            VetoSessionId: VetoSessionId, VetoTeam1Token: VetoTeam1Token, VetoTeam2Token: VetoTeam2Token,
+            Team1Name: Team1Name, Team1Logo: Team1Logo, Team2Name: Team2Name, Team2Logo: Team2Logo,
+            VetoMyToken: vetoMyToken, MyRole: MyRole, Dispute: dispute);
     }
 }
 
