@@ -51,6 +51,7 @@ public sealed record ScrimTeamMemberDetail
     public decimal? WinRate { get; init; }
     public decimal? KdRatio { get; init; }
     public decimal? HsPct { get; init; }
+    public string? PlayerCardId { get; init; }
 }
 
 public sealed record ScrimOfferRow

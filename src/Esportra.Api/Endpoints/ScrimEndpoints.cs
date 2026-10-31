@@ -492,7 +492,8 @@ public static class ScrimEndpoints
                    pgs.competitive_tier_name,
                    pgs.win_rate,
                    pgs.kd_ratio,
-                   pgs.hs_pct
+                   pgs.hs_pct,
+                   pgs.player_card_id
             FROM public.team_members tm
             JOIN public.profiles p ON p.id = tm.user_id
             LEFT JOIN public.player_game_profiles pgp
