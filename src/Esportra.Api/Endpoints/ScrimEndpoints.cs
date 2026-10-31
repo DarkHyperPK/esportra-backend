@@ -322,9 +322,10 @@ public static class ScrimEndpoints
             {
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                    INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                     VALUES (@userId, 'scrim_offer_declined'::notification_type, 'Scrim Listing Closed',
-                            'A scrim listing you offered on was closed.', FALSE)
+                            'A scrim listing you offered on was closed.',
+                            '/competitive/scrims/workspace', FALSE)
                     """,
                     new { userId = staffId });
             }
@@ -473,9 +474,9 @@ public static class ScrimEndpoints
         {
             await conn.ExecuteAsync(
                 """
-                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_offer_received', 'Scrim Offer',
-                        @message, FALSE)
+                        @message, '/competitive/scrims/workspace', FALSE)
                 """,
                 new { userId = staffId, message = $"{offerTeamName ?? "A team"} sent a scrim offer." });
         }
@@ -704,8 +705,9 @@ public static class ScrimEndpoints
             {
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
-                    VALUES (@userId, 'scrim_offer_accepted', 'Scrim Offer Accepted', @message, FALSE)
+                    INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
+                    VALUES (@userId, 'scrim_offer_accepted', 'Scrim Offer Accepted', @message,
+                            '/competitive/scrims/workspace', FALSE)
                     """,
                     new { userId = staffId, message = $"{listingTeamName ?? "A team"} accepted your scrim offer." });
             }
@@ -962,9 +964,10 @@ public static class ScrimEndpoints
             {
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                    INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                     VALUES (@userId, 'scrim_result_submitted'::notification_type, 'Scrim Result Submitted',
-                            'The opposing team submitted a result report.', FALSE)
+                            'The opposing team submitted a result report.',
+                            '/competitive/scrims/workspace', FALSE)
                     """,
                     new { userId = staffId });
             }
@@ -1090,9 +1093,10 @@ public static class ScrimEndpoints
         {
             await conn.ExecuteAsync(
                 """
-                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_dispute_raised'::notification_type, 'Scrim Dispute Raised',
-                        'The opposing team raised a dispute on your scrim session.', FALSE)
+                        'The opposing team raised a dispute on your scrim session.',
+                        '/competitive/scrims/workspace', FALSE)
                 """,
                 new { userId = staffId });
         }
@@ -1236,9 +1240,10 @@ public static class ScrimEndpoints
         {
             await conn.ExecuteAsync(
                 """
-                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_lobby_updated'::notification_type,
-                        'Lobby Updated', 'The opposing team updated the lobby details.', FALSE)
+                        'Lobby Updated', 'The opposing team updated the lobby details.',
+                        '/competitive/scrims/workspace', FALSE)
                 """,
                 new { userId = staffId });
         }
@@ -1360,9 +1365,10 @@ public static class ScrimEndpoints
             {
                 await conn.ExecuteAsync(
                     """
-                    INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                    INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                     VALUES (@userId, 'scrim_result_confirmed'::notification_type,
-                            'Result Confirmed', 'The scrim result has been confirmed by both teams.', FALSE)
+                            'Result Confirmed', 'The scrim result has been confirmed by both teams.',
+                            '/competitive/scrims/workspace', FALSE)
                     """,
                     new { userId = staffId });
             }
@@ -1494,9 +1500,10 @@ public static class ScrimEndpoints
         {
             await conn.ExecuteAsync(
                 """
-                INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_checkin_updated'::notification_type,
-                        'Check-in Update', 'A team checked in for the scrim session.', FALSE)
+                        'Check-in Update', 'A team checked in for the scrim session.',
+                        '/competitive/scrims/workspace', FALSE)
                 """,
                 new { userId = staffId });
         }

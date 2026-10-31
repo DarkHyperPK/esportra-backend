@@ -175,9 +175,10 @@ public static class ScrimAdminEndpoints
                 {
                     await conn.ExecuteAsync(
                         """
-                        INSERT INTO public.notifications (user_id, type, title, message, is_read)
+                        INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                         VALUES (@userId, 'scrim_dispute_resolved'::notification_type,
-                                'Scrim Dispute Resolved', @message, FALSE)
+                                'Scrim Dispute Resolved', @message,
+                                '/competitive/scrims/workspace', FALSE)
                         """,
                         new { userId = staffId, message });
                 }
