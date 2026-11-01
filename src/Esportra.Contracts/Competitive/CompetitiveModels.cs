@@ -25,6 +25,7 @@ public sealed record ScrimListingRow
     public string ScheduleType { get; init; } = "one_off";
     public DateTime? ScheduleUntil { get; init; }
     public int? SlotDurationMinutes { get; init; }
+    public int BestOf { get; init; } = 1;
     public string? TeamName { get; init; }
     public string? TeamLogoUrl { get; init; }
     public string? TeamTag { get; init; }
@@ -105,6 +106,7 @@ public sealed record ScrimSessionRow
     public string? VetoMyToken { get; init; }
     public string? MyRole { get; init; }
     public ScrimDisputeRow? Dispute { get; init; }
+    public int BestOf { get; init; } = 1;
 }
 
 public sealed record ScrimResultReportRow

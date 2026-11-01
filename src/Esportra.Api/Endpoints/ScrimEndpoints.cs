@@ -140,6 +140,12 @@ public static class ScrimEndpoints
         if (scheduleType is not ("one_off" or "recurring"))
             return Results.UnprocessableEntity(new { error = "schedule_type must be 'one_off' or 'recurring'." });
 
+        // Best-of series format is fixed by the listing; together with availability it is
+        // what offering teams see before they send an offer.
+        var bestOf = req.BestOf ?? 1;
+        if (bestOf is not (1 or 3 or 5))
+            return Results.UnprocessableEntity(new { error = "best_of must be 1, 3 or 5." });
+
         if (scheduleType == "recurring")
         {
             if (req.ScheduleUntil is null)
@@ -166,11 +172,11 @@ public static class ScrimEndpoints
             INSERT INTO public.scrim_listings
                 (team_id, game_slug, mode_key, region_key, min_rank_key, max_rank_key,
                  preferred_days, preferred_time_start, preferred_time_end, timezone, notes,
-                 schedule_type, schedule_until, slot_duration_minutes)
+                 schedule_type, schedule_until, slot_duration_minutes, best_of)
             VALUES
                 (@teamId, @gameSlug, @modeKey, @regionKey, @minRankKey, @maxRankKey,
                  @preferredDays, @preferredTimeStart::time, @preferredTimeEnd::time, @timezone, @notes,
-                 @scheduleType, @scheduleUntil, @slotDurationMinutes)
+                 @scheduleType, @scheduleUntil, @slotDurationMinutes, @bestOf)
             RETURNING *
             """,
             new
@@ -189,6 +195,7 @@ public static class ScrimEndpoints
                 scheduleType,
                 scheduleUntil = req.ScheduleUntil,
                 slotDurationMinutes = req.SlotDurationMinutes,
+                bestOf,
             });
 
         // AC16: Auto-generate slots for recurring listings with preferred availability set.
@@ -262,6 +269,7 @@ public static class ScrimEndpoints
                 preferred_time_end   = COALESCE(@preferredTimeEnd::time, preferred_time_end),
                 timezone             = COALESCE(@timezone, timezone),
                 notes                = COALESCE(@notes, notes),
+                best_of              = COALESCE(@bestOf, best_of),
                 updated_at           = now()
             WHERE id = @id RETURNING *
             """,
@@ -277,6 +285,7 @@ public static class ScrimEndpoints
                 preferredTimeEnd = req.PreferredTimeEnd,
                 timezone = req.Timezone,
                 notes = req.Notes,
+                bestOf = req.BestOf is 1 or 3 or 5 ? req.BestOf : null,
             });
 
         // AC16: Regenerate slots when preferred availability is updated on a recurring listing.
@@ -725,12 +734,14 @@ public static class ScrimEndpoints
                 return Results.BadRequest(new { error = "Offer not found or already processed." });
 
             // Create scrim session.
+            // best_of is fixed by the listing: the offering team saw the format before offering,
+            // so acceptance inherits it (series length drives result reporting validation).
             var session = await conn.QuerySingleAsync<ScrimSessionRow>(
                 """
                 INSERT INTO public.scrim_sessions
-                    (team1_id, team2_id, game_slug, scheduled_at, duration_minutes, status)
+                    (team1_id, team2_id, game_slug, scheduled_at, duration_minutes, best_of, status)
                 SELECT sl.team_id, @team2Id, sl.game_slug,
-                       @scheduledAt, @durationMinutes, 'scheduled'
+                       @scheduledAt, @durationMinutes, COALESCE(sl.best_of, 1), 'scheduled'
                 FROM public.scrim_listings sl WHERE sl.id = @listingId
                 RETURNING *
                 """,
@@ -1034,13 +1045,26 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionRef>(
-            "SELECT team1_id, team2_id, status FROM public.scrim_sessions WHERE id = @id", new { id });
+        // Dedicated projection: ScrimSessionRef is positional and shared by five queries;
+        // adding best_of here would silently break Dapper's positional binding for them.
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionBestOfRef>(
+            "SELECT team1_id, team2_id, status, COALESCE(best_of, 1) AS best_of FROM public.scrim_sessions WHERE id = @id", new { id });
         if (session is null) return Results.NotFound();
 
         var isParty = req.ReportingTeamId == session.Team1Id || req.ReportingTeamId == session.Team2Id;
         if (!isParty) return Results.BadRequest(new { error = "Reporting team is not a party to this session." });
         if (!await IsTeamStaffAsync(conn, req.ReportingTeamId, userCtx.UserIdGuid)) return Results.Forbid();
+
+        // Series scores must be a real result of the listing's match format:
+        // winner has exactly winsNeeded series wins, loser has fewer but never negative.
+        var winsNeeded = (session.BestOf + 1) / 2;
+        var winner = Math.Max(req.Team1Score, req.Team2Score);
+        var loser = Math.Min(req.Team1Score, req.Team2Score);
+        if (winner != winsNeeded || loser < 0 || loser >= winsNeeded)
+            return Results.UnprocessableEntity(new
+            {
+                error = $"Not a valid best-of-{session.BestOf} result. Winner needs {winsNeeded} wins, loser 0–{winsNeeded - 1}.",
+            });
 
         try
         {
@@ -2708,6 +2732,8 @@ public static class ScrimEndpoints
 
     private sealed record ScrimListingRef(Guid TeamId, string Status);
     private sealed record ScrimSessionRef(Guid Team1Id, Guid Team2Id, string Status);
+    /// <summary>Dedicated projection for ReportResultAsync — includes the series format.</summary>
+    private sealed record ScrimSessionBestOfRef(Guid Team1Id, Guid Team2Id, string Status, int BestOf);
     private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
     private sealed record ScrimSessionCheckinRef(
         Guid Team1Id, Guid Team2Id, string Status,
@@ -2743,7 +2769,7 @@ public static class ScrimEndpoints
         string? VetoTeam2Token,
         string? Team1Name = null, string? Team1Logo = null,
         string? Team2Name = null, string? Team2Logo = null,
-        string? MyRole = null)
+        string? MyRole = null, int BestOf = 1)
     {
         public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new()
         {
@@ -2777,6 +2803,7 @@ public static class ScrimEndpoints
             VetoMyToken = vetoMyToken,
             MyRole = MyRole,
             Dispute = dispute,
+            BestOf = BestOf,
         };
     }
 }
@@ -2797,7 +2824,8 @@ public sealed record CreateScrimListingRequest(
     [property: JsonPropertyName("notes")] string? Notes = null,
     [property: JsonPropertyName("schedule_type")] string? ScheduleType = null,
     [property: JsonPropertyName("schedule_until")] DateTimeOffset? ScheduleUntil = null,
-    [property: JsonPropertyName("slot_duration_minutes")] int? SlotDurationMinutes = null);
+    [property: JsonPropertyName("slot_duration_minutes")] int? SlotDurationMinutes = null,
+    [property: JsonPropertyName("best_of")] int? BestOf = null);
 
 public sealed record UpdateLobbyRequest(
     [property: JsonPropertyName("lobby_code")] string? LobbyCode = null,
@@ -2812,7 +2840,8 @@ public sealed record UpdateScrimListingRequest(
     [property: JsonPropertyName("preferred_time_start")] string? PreferredTimeStart = null,
     [property: JsonPropertyName("preferred_time_end")] string? PreferredTimeEnd = null,
     [property: JsonPropertyName("timezone")] string? Timezone = null,
-    [property: JsonPropertyName("notes")] string? Notes = null);
+    [property: JsonPropertyName("notes")] string? Notes = null,
+    [property: JsonPropertyName("best_of")] int? BestOf = null);
 
 public sealed record MakeScrimOfferRequest(
     [property: JsonPropertyName("offering_team_id")] Guid OfferingTeamId,
