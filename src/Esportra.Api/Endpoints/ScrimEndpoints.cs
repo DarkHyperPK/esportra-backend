@@ -222,7 +222,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -664,7 +664,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
@@ -888,7 +888,7 @@ public static class ScrimEndpoints
 
         using var conn = db.CreateConnection();
 
-        if (!await IsTeamStaffAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await IsTeamMemberAsync(conn, team_id.Value, userCtx.UserIdGuid)) return Results.Forbid();
 
         limit = Math.Clamp(limit == 0 ? 20 : limit, 1, 100);
         offset = Math.Max(offset, 0);
@@ -2743,6 +2743,18 @@ public static class ScrimEndpoints
                 SELECT 1 FROM public.team_members
                 WHERE team_id = @teamId AND user_id = @userId
                   AND role IN ('captain', 'manager') AND is_active = TRUE
+            )
+            """,
+            new { teamId, userId });
+    }
+
+    private static async Task<bool> IsTeamMemberAsync(System.Data.IDbConnection conn, Guid teamId, Guid userId)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM public.team_members
+                WHERE team_id = @teamId AND user_id = @userId AND is_active = TRUE
             )
             """,
             new { teamId, userId });
