@@ -70,6 +70,7 @@ public static class ScrimEndpoints
         app.MapPost("/api/scrims/listings/{id:guid}/pause", PauseListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/reopen", ReopenListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/close", CloseListingAsync).RequireAuthorization("Authenticated");
+        app.MapDelete("/api/scrims/listings/{id:guid}", DeleteListingAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/discover", DiscoverAsync).AllowAnonymous();
         app.MapGet("/api/scrims/listings/{id:guid}/detail", GetListingDetailAsync).AllowAnonymous();
 
@@ -749,7 +750,7 @@ public static class ScrimEndpoints
                 {
                     team2Id = offerRow.OfferingTeamId,
                     listingId = offerRow.ListingId,
-                    scheduledAt = offerRow.ProposedAt ?? DateTimeOffset.UtcNow,
+                    scheduledAt = offerRow.ProposedAt ?? DateTime.UtcNow,
                     durationMinutes = offerRow.ProposedDurationMinutes,
                 }, tx);
 
@@ -2395,6 +2396,33 @@ public static class ScrimEndpoints
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
+    // ── DELETE /api/scrims/listings/{id} ──────────────────────────────────────
+
+    private static async Task<IResult> DeleteListingAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        var row = await conn.QuerySingleOrDefaultAsync<ScrimListingRef>(
+            "SELECT team_id, status FROM public.scrim_listings WHERE id = @id", new { id });
+        if (row is null) return Results.NotFound();
+        if (!await IsTeamStaffAsync(conn, row.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+
+        var pendingOffers = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM public.scrim_offers WHERE listing_id = @id AND status = 'pending'",
+            new { id });
+        if (pendingOffers > 0)
+            return Results.Conflict(new { error = "Decline or withdraw all pending offers before deleting this listing." });
+
+        var deleted = await conn.ExecuteAsync(
+            "DELETE FROM public.scrim_listings WHERE id = @id", new { id });
+
+        return deleted == 0 ? Results.NotFound() : Results.Ok(new { success = true });
+    }
+
     // ── Transition helpers ─────────────────────────────────────────────────────
 
     private static async Task<IResult> TransitionListingAsync(
@@ -2742,11 +2770,24 @@ public static class ScrimEndpoints
         string? GameSlug = null,
         string? Team1Name = null,
         string? Team2Name = null);
-    private sealed record ScrimOfferForAccept(
-        Guid Id, Guid ListingId, Guid OfferingTeamId,
-        DateTimeOffset? ProposedAt, int? ProposedDurationMinutes,
-        string Status, Guid ListingTeamId, string ScheduleType = "one_off",
-        Guid? SlotId = null);
+    /// <summary>
+    /// Property-based projection for AcceptOfferAsync.
+    /// Dapper matches positional record constructors against the raw reader types, so the
+    /// nullable SQL columns (proposed_duration_minutes, slot_id) never bind to a positional
+    /// record. Settable properties use Dapper's parameterless-constructor path instead.
+    /// </summary>
+    private sealed record ScrimOfferForAccept
+    {
+        public Guid Id { get; init; }
+        public Guid ListingId { get; init; }
+        public Guid OfferingTeamId { get; init; }
+        public DateTime? ProposedAt { get; init; }
+        public int? ProposedDurationMinutes { get; init; }
+        public string Status { get; init; } = null!;
+        public Guid ListingTeamId { get; init; }
+        public string ScheduleType { get; init; } = "one_off";
+        public Guid? SlotId { get; init; }
+    }
     private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
     private sealed record PracticeSessionRef(Guid TeamId, string Status);
     private sealed record ScrimListingTypeRef(Guid TeamId, string Status, string ScheduleType);
