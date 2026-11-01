@@ -142,9 +142,9 @@ public sealed record ScrimDisputeRow
 public sealed record ScrimSlotRow(
     Guid Id, Guid ListingId,
     DateTime StartsAt, DateTime EndsAt,
-    string Status, DateTime CreatedAt,
-    Guid? BookedByTeamId = null,
-    Guid? SessionId = null);
+    string Status,
+    Guid? BookedByTeamId, Guid? SessionId,
+    DateTime CreatedAt);
 
 // ── Practice ────────────────────────────────────────────────────────────────────
 
