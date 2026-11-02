@@ -373,6 +373,8 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IRiotIdRefreshTrigger, Esp
 builder.Services.AddScoped<Esportra.Api.Services.IRiotMatchLookup, Esportra.Api.Services.RiotMatchLookup>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScoreboardRiotCheckJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IScoreboardRiotCheckTrigger, Esportra.Api.ScheduledJobs.ScoreboardRiotCheckTrigger>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ProviderMatchIngestJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IProviderMatchIngestTrigger, Esportra.Api.ScheduledJobs.ProviderMatchIngestTrigger>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScrimGameAutoConfirmJob>();
 builder.Services.AddScoped<Esportra.Api.Services.ValorantStatsSyncService>();
@@ -746,6 +748,7 @@ app.MapScrimEndpoints();
 app.MapScrimScheduleEndpoints();
 app.MapScrimGameEndpoints();
 app.MapScrimRoomChatEndpoints();
+app.MapProviderMatchEndpoints();
 app.MapScrimAdminEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
 app.MapScoutingEndpoints();
