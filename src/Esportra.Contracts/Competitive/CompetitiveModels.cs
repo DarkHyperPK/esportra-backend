@@ -128,7 +128,11 @@ public sealed record ScrimSessionRow
     public string? HangfireJobIds { get; init; }
     public DateTime? CheckinWindowOpenedAt { get; init; }
     public Guid? VetoSessionId { get; init; }
+    // Credentials: whoever holds a team's token can act as that team in the veto. Populated from the
+    // database for server-side use only; never serialized. Callers get VetoMyToken instead.
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? VetoTeam1Token { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? VetoTeam2Token { get; init; }
     public string? Team1Name { get; init; }
     public string? Team1Logo { get; init; }
