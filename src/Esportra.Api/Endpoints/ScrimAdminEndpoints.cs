@@ -118,7 +118,7 @@ public static class ScrimAdminEndpoints
                     resolution_notes = @resolutionNotes
                 WHERE id = @id
                   AND status IN ('open', 'escalated')
-                RETURNING session_id, raised_by_team_id
+                RETURNING session_id, raised_by_team_id, game_number
                 """,
                 new
                 {
@@ -132,8 +132,13 @@ public static class ScrimAdminEndpoints
             if (resolved is null)
                 return Results.Conflict(new { error = "Dispute not found or already resolved." });
 
+            // A dispute about one map settles that map; the series follows from the settled maps.
+            if (resolved.GameNumber is { } disputedGame)
+            {
+                await ScrimGameEndpoints.ResolveGameAsync(conn, tx, resolved.SessionId, disputedGame, req.Outcome);
+            }
             // Update session status based on outcome.
-            if (req.Outcome != "no_contest")
+            else if (req.Outcome != "no_contest")
             {
                 await conn.ExecuteAsync(
                     """
@@ -209,7 +214,7 @@ public static class ScrimAdminEndpoints
         Guid Team1Id, Guid Team2Id, string? GameSlug, DateTime? ScheduledAt,
         string? Team1Name, string? Team2Name);
 
-    private sealed record ScrimDisputeResolveRef(Guid SessionId, Guid RaisedByTeamId);
+    private sealed record ScrimDisputeResolveRef(Guid SessionId, Guid RaisedByTeamId, int? GameNumber);
 
     private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
 }

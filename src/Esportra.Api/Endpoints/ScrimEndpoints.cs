@@ -953,7 +953,14 @@ public static class ScrimEndpoints
                    t2.name AS team2_name, t2.logo_url AS team2_logo,
                    ss.game_slug, ss.status::text AS status, ss.scheduled_at,
                    ss.team1_checked_in_at, ss.team2_checked_in_at, ss.checkin_window_opened_at,
-                   ss.result_reported_by_team1, ss.result_reported_by_team2,
+                   (ss.result_reported_by_team1 OR EXISTS (
+                        SELECT 1 FROM public.scrim_session_games g
+                        WHERE g.session_id = ss.id AND g.status = 'reported' AND g.reported_by_team_id = ss.team1_id
+                   )) AS result_reported_by_team1,
+                   (ss.result_reported_by_team2 OR EXISTS (
+                        SELECT 1 FROM public.scrim_session_games g
+                        WHERE g.session_id = ss.id AND g.status = 'reported' AND g.reported_by_team_id = ss.team2_id
+                   )) AS result_reported_by_team2,
                    COALESCE(pvs.status = 'in_progress', FALSE) AS veto_open,
                    pp.proposed_by_team_id AS pending_proposal_by_team_id,
                    d.status::text AS dispute_status,
