@@ -29,8 +29,9 @@ public sealed class ScrimCheckinTimeoutJob(
         var cancelled = await conn.QuerySingleOrDefaultAsync<ScrimSessionJobRef>(
             """
             UPDATE public.scrim_sessions
-            SET status     = 'cancelled'::scrim_session_status,
-                updated_at = now()
+            SET status           = 'cancelled'::scrim_session_status,
+                cancelled_reason = 'checkin_timeout',
+                updated_at       = now()
             WHERE id = @sessionId
               AND status = 'scheduled'
               AND (team1_checked_in_at IS NULL OR team2_checked_in_at IS NULL)

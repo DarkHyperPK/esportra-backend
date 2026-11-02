@@ -117,6 +117,9 @@ public sealed record ScrimSessionRow
     public string? MyRole { get; init; }
     public ScrimDisputeRow? Dispute { get; init; }
     public int BestOf { get; init; } = 1;
+    /// <summary>checkin_timeout | cancelled_by_team | listing_closed | admin; null = unknown/legacy.</summary>
+    public string? CancelledReason { get; init; }
+    public Guid? CancelledByTeamId { get; init; }
 }
 
 public sealed record ScrimResultReportRow

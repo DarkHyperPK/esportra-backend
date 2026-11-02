@@ -2535,9 +2535,30 @@ public static class ScrimEndpoints
         if (!from.Contains(row.Status))
             return Results.BadRequest(new { error = $"Cannot transition from '{row.Status}' to '{target}'." });
 
+        // A team-initiated cancel records who cancelled, so reliability stats can
+        // tell it apart from a check-in timeout (no-show).
+        var cancelledByTeamId = target == "cancelled"
+            ? await conn.ExecuteScalarAsync<Guid?>(
+                """
+                SELECT tm.team_id FROM public.team_members tm
+                WHERE tm.team_id IN (@t1, @t2) AND tm.user_id = @userId
+                  AND tm.role IN ('captain', 'manager') AND tm.is_active = TRUE
+                LIMIT 1
+                """,
+                new { t1 = row.Team1Id, t2 = row.Team2Id, userId = userCtx.UserIdGuid })
+            : null;
+
         var updated = await conn.QuerySingleOrDefaultAsync<ScrimSessionRow>(
-            "UPDATE public.scrim_sessions SET status = @target::scrim_session_status, updated_at = now() WHERE id = @id RETURNING *",
-            new { id, target });
+            """
+            UPDATE public.scrim_sessions
+            SET status               = @target::scrim_session_status,
+                cancelled_reason     = CASE WHEN @target = 'cancelled' THEN 'cancelled_by_team' ELSE cancelled_reason END,
+                cancelled_by_team_id = CASE WHEN @target = 'cancelled' THEN @cancelledByTeamId ELSE cancelled_by_team_id END,
+                updated_at           = now()
+            WHERE id = @id
+            RETURNING *
+            """,
+            new { id, target, cancelledByTeamId });
         return updated is null ? Results.NotFound() : Results.Ok(updated);
     }
 
@@ -2889,7 +2910,8 @@ public static class ScrimEndpoints
         string? VetoTeam2Token,
         string? Team1Name = null, string? Team1Logo = null,
         string? Team2Name = null, string? Team2Logo = null,
-        string? MyRole = null, int BestOf = 1)
+        string? MyRole = null, int BestOf = 1,
+        string? CancelledReason = null, Guid? CancelledByTeamId = null)
     {
         public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new()
         {
@@ -2924,6 +2946,8 @@ public static class ScrimEndpoints
             MyRole = MyRole,
             Dispute = dispute,
             BestOf = BestOf,
+            CancelledReason = CancelledReason,
+            CancelledByTeamId = CancelledByTeamId,
         };
     }
 }
