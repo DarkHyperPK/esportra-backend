@@ -2,7 +2,7 @@ using Esportra.Contracts.Competitive;
 
 namespace Esportra.Api.Services;
 
-public sealed record InboxOfferRow
+public sealed record UpNextOfferRow
 {
     public Guid Id { get; init; }
     public Guid ListingId { get; init; }
@@ -15,7 +15,7 @@ public sealed record InboxOfferRow
     public DateTime CreatedAt { get; init; }
 }
 
-public sealed record InboxSessionRow
+public sealed record UpNextSessionRow
 {
     public Guid Id { get; init; }
     public Guid Team1Id { get; init; }
@@ -43,7 +43,7 @@ public sealed record InboxSessionRow
 /// Windows mirror the schedule in AcceptOfferAsync: check-in opens at T-15 min and the
 /// timeout job cancels at T+15 min.
 /// </summary>
-public static class ScrimInboxBuilder
+public static class ScrimUpNextBuilder
 {
     public const int CheckinOpensBeforeMinutes = 15;
     public const int CheckinClosesAfterMinutes = 15;
@@ -62,19 +62,19 @@ public static class ScrimInboxBuilder
         ["offer_received"] = 6,
     };
 
-    public static ScrimInboxResponse Build(
-        IEnumerable<InboxOfferRow> offers,
-        IEnumerable<InboxSessionRow> sessions,
+    public static ScrimUpNextResponse Build(
+        IEnumerable<UpNextOfferRow> offers,
+        IEnumerable<UpNextSessionRow> sessions,
         IReadOnlySet<Guid> myTeamIds,
         DateTime nowUtc)
     {
-        var items = new List<ScrimInboxItem>();
+        var items = new List<ScrimUpNextItem>();
 
         foreach (var o in offers.Where(o => myTeamIds.Contains(o.ListingTeamId)))
         {
             var deadline = o.CreatedAt.AddHours(OfferLifetimeHours);
             if (deadline <= nowUtc) continue; // the expiry job just hasn't run yet
-            items.Add(new ScrimInboxItem
+            items.Add(new ScrimUpNextItem
             {
                 Type = "offer_received",
                 TeamId = o.ListingTeamId,
@@ -104,10 +104,10 @@ public static class ScrimInboxBuilder
             .ThenBy(i => i.Deadline ?? DateTime.MaxValue)
             .ToList();
 
-        return new ScrimInboxResponse { Items = ordered.Take(MaxItems).ToList(), Total = ordered.Count };
+        return new ScrimUpNextResponse { Items = ordered.Take(MaxItems).ToList(), Total = ordered.Count };
     }
 
-    private static ScrimInboxItem? ForSide(InboxSessionRow s, bool isTeam1, DateTime now)
+    private static ScrimUpNextItem? ForSide(UpNextSessionRow s, bool isTeam1, DateTime now)
     {
         var myId = isTeam1 ? s.Team1Id : s.Team2Id;
         var oppName = isTeam1 ? s.Team2Name : s.Team1Name;
@@ -116,7 +116,7 @@ public static class ScrimInboxBuilder
         var iReported = isTeam1 ? s.ResultReportedByTeam1 : s.ResultReportedByTeam2;
         var theyReported = isTeam1 ? s.ResultReportedByTeam2 : s.ResultReportedByTeam1;
 
-        ScrimInboxItem Make(string type, DateTime? deadline = null) => new()
+        ScrimUpNextItem Make(string type, DateTime? deadline = null) => new()
         {
             Type = type,
             TeamId = myId,

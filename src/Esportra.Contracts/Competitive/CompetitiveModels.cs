@@ -382,7 +382,7 @@ public sealed record ScoutingNoteRow(
     string? GameSlug, string Content, DateTime CreatedAt, DateTime UpdatedAt);
 
 /// <summary>One thing a team's staff needs to act on, across offers and sessions.</summary>
-public sealed record ScrimInboxItem
+public sealed record ScrimUpNextItem
 {
     /// <summary>checkin_open | veto_ready | result_to_confirm | evidence_due | result_to_report | offer_received</summary>
     public string Type { get; init; } = null!;
@@ -399,9 +399,9 @@ public sealed record ScrimInboxItem
     public DateTime? Deadline { get; init; }
 }
 
-public sealed record ScrimInboxResponse
+public sealed record ScrimUpNextResponse
 {
-    public IReadOnlyList<ScrimInboxItem> Items { get; init; } = [];
+    public IReadOnlyList<ScrimUpNextItem> Items { get; init; } = [];
     /// <summary>Total before the response cap.</summary>
     public int Total { get; init; }
 }

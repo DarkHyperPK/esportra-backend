@@ -83,7 +83,7 @@ public static class ScrimEndpoints
         app.MapPost("/api/scrims/offers/{id:guid}/withdraw", WithdrawOfferAsync).RequireAuthorization("Authenticated");
 
         // ── Scrim Sessions ──────────────────────────────────────────────────────
-        app.MapGet("/api/scrims/inbox", GetInboxAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/scrims/up-next", GetUpNextAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/sessions", GetTeamSessionsAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/sessions/{id:guid}", GetSessionAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/start", StartSessionAsync).RequireAuthorization("Authenticated");
@@ -944,12 +944,12 @@ public static class ScrimEndpoints
 
     // ── GET /api/scrims/sessions ───────────────────────────────────────────────
 
-    // ── GET /api/scrims/inbox ──────────────────────────────────────────────────
+    // ── GET /api/scrims/up-next ──────────────────────────────────────────────────
     // What needs the caller's attention across all teams they captain/manage:
     // pending offers, open check-ins, veto, results to report/confirm, evidence due.
     // Optional team_id narrows to one team; a team the caller does not staff is 403.
 
-    private static async Task<IResult> GetInboxAsync(
+    private static async Task<IResult> GetUpNextAsync(
         [FromQuery] Guid? team_id,
         HttpContext ctx,
         IDbConnectionFactory db,
@@ -972,9 +972,9 @@ public static class ScrimEndpoints
             new { userId = userCtx.UserIdGuid, teamId = team_id })).ToArray();
 
         if (teamIds.Length == 0)
-            return team_id.HasValue ? Results.Forbid() : Results.Ok(new ScrimInboxResponse());
+            return team_id.HasValue ? Results.Forbid() : Results.Ok(new ScrimUpNextResponse());
 
-        var offers = await conn.QueryAsync<InboxOfferRow>(
+        var offers = await conn.QueryAsync<UpNextOfferRow>(
             """
             SELECT o.id, o.listing_id, l.team_id AS listing_team_id, o.offering_team_id,
                    t.name AS offering_team_name, t.logo_url AS offering_team_logo,
@@ -988,10 +988,10 @@ public static class ScrimEndpoints
             ORDER BY o.created_at
             LIMIT 100
             """,
-            new { teamIds, lifetimeHours = ScrimInboxBuilder.OfferLifetimeHours });
+            new { teamIds, lifetimeHours = ScrimUpNextBuilder.OfferLifetimeHours });
 
         // Scheduled sessions only matter inside the check-in window (T-15 .. T+15).
-        var sessions = await conn.QueryAsync<InboxSessionRow>(
+        var sessions = await conn.QueryAsync<UpNextSessionRow>(
             """
             SELECT ss.id, ss.team1_id, ss.team2_id,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
@@ -1027,11 +1027,11 @@ public static class ScrimEndpoints
             new
             {
                 teamIds,
-                opensBefore = ScrimInboxBuilder.CheckinOpensBeforeMinutes,
-                closesAfter = ScrimInboxBuilder.CheckinClosesAfterMinutes,
+                opensBefore = ScrimUpNextBuilder.CheckinOpensBeforeMinutes,
+                closesAfter = ScrimUpNextBuilder.CheckinClosesAfterMinutes,
             });
 
-        return Results.Ok(ScrimInboxBuilder.Build(offers, sessions, teamIds.ToHashSet(), DateTime.UtcNow));
+        return Results.Ok(ScrimUpNextBuilder.Build(offers, sessions, teamIds.ToHashSet(), DateTime.UtcNow));
     }
 
     private static async Task<IResult> GetTeamSessionsAsync(
