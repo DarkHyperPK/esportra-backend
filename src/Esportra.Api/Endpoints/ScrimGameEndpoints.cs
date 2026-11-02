@@ -23,7 +23,7 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class ScrimGameEndpoints
 {
-    private const int MaxMatchDataBytes = 400_000;
+    private const int MaxMatchDataBytes = 4_000_000;
     private const int MaxScreenshots = 5;
 
     public static void MapScrimGameEndpoints(this WebApplication app)
@@ -80,12 +80,14 @@ public static class ScrimGameEndpoints
         public Guid? ConfirmedByTeamId { get; init; }
         public DateTime? ConfirmedAt { get; init; }
         public Guid? DisputedByTeamId { get; init; }
+        public DateTime? AcceptBy { get; init; }
+        public bool AutoConfirmed { get; init; }
     }
 
     private const string GameColumns = """
         game_number, status, map_name, map_id, team1_score, team2_score, winner_slot, source, riot_match_id,
         match_data::text AS match_data, screenshot_urls, notes, reported_by_team_id, reported_at,
-        confirmed_by_team_id, confirmed_at, disputed_by_team_id
+        confirmed_by_team_id, confirmed_at, disputed_by_team_id, accept_by, auto_confirmed
         """;
 
     private static object Shape(GameRow g) => new
@@ -107,6 +109,8 @@ public static class ScrimGameEndpoints
         confirmed_by_team_id = g.ConfirmedByTeamId,
         confirmed_at = g.ConfirmedAt,
         disputed_by_team_id = g.DisputedByTeamId,
+        accept_by = g.AcceptBy,
+        auto_confirmed = g.AutoConfirmed,
     };
 
     private static async Task<SessionRow?> LoadSessionAsync(IDbConnection conn, Guid id, IDbTransaction? tx = null) =>
@@ -189,7 +193,7 @@ public static class ScrimGameEndpoints
 
     private static async Task<IResult> ReportAsync(
         Guid id, int n, [FromBody] ReportGameRequest req, HttpContext ctx, IDbConnectionFactory db,
-        IHubContext<NotificationHub> hub)
+        IHubContext<NotificationHub> hub, IConfiguration config)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
@@ -224,13 +228,13 @@ public static class ScrimGameEndpoints
             $"""
             INSERT INTO public.scrim_session_games
                 (session_id, game_number, status, map_name, map_id, team1_score, team2_score, source,
-                 riot_match_id, match_data, screenshot_urls, notes, reported_by_team_id)
+                 riot_match_id, match_data, screenshot_urls, notes, reported_by_team_id, accept_by)
             VALUES (@id, @n, 'reported', @mapName, @mapId, @t1, @t2, @source,
-                    @riotMatchId, @matchData::jsonb, @screenshots, @notes, @teamId)
+                    @riotMatchId, @matchData::jsonb, @screenshots, @notes, @teamId, @acceptBy)
             ON CONFLICT (session_id, game_number) DO UPDATE SET
                 map_name = @mapName, map_id = @mapId, team1_score = @t1, team2_score = @t2, source = @source,
                 riot_match_id = @riotMatchId, match_data = @matchData::jsonb, screenshot_urls = @screenshots,
-                notes = @notes, reported_at = now(), updated_at = now()
+                notes = @notes, reported_at = now(), accept_by = @acceptBy, updated_at = now()
             WHERE scrim_session_games.status = 'reported' AND scrim_session_games.reported_by_team_id = @teamId
             RETURNING {GameColumns}
             """,
@@ -248,6 +252,7 @@ public static class ScrimGameEndpoints
                 screenshots = req.ScreenshotUrls ?? [],
                 notes = req.Notes,
                 teamId = req.ReportedByTeamId,
+                acceptBy = ScrimSeries.AcceptDeadline(DateTime.UtcNow, config.GetValue("Scrims:GameAcceptWindowMinutes", ScrimSeries.DefaultAcceptWindowMinutes)),
             });
 
         if (row is null) return Results.Conflict(new { error = $"Game {n} was just changed. Refresh and try again." });

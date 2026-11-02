@@ -89,3 +89,30 @@ public class ScrimSeriesTests
         ScrimSeries.NextGameNumber(3, [G(1, "confirmed", 1), G(2, "confirmed", 1)]).Should().BeNull();
     }
 }
+
+public class ScrimSeriesDeadlineTests
+{
+    private static readonly DateTime T = new(2026, 11, 3, 12, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void AcceptDeadline_AddsTheWindow() =>
+        ScrimSeries.AcceptDeadline(T, 120).Should().Be(T.AddMinutes(120));
+
+    [Fact]
+    public void AcceptDeadline_NeverShorterThanFiveMinutes() =>
+        ScrimSeries.AcceptDeadline(T, 0).Should().Be(T.AddMinutes(5));
+
+    [Theory]
+    [InlineData("reported", true)]
+    [InlineData("disputed", false)]
+    [InlineData("confirmed", false)]
+    public void IsDue_OnlyForAnUnansweredReportPastItsDeadline(string status, bool expected) =>
+        ScrimSeries.IsDue(status, T.AddMinutes(-1), T).Should().Be(expected);
+
+    [Fact]
+    public void IsDue_IsFalse_BeforeTheDeadlineOrWithoutOne()
+    {
+        ScrimSeries.IsDue("reported", T.AddMinutes(1), T).Should().BeFalse();
+        ScrimSeries.IsDue("reported", null, T).Should().BeFalse();
+    }
+}

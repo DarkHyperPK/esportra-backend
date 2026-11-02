@@ -374,6 +374,7 @@ builder.Services.AddScoped<Esportra.Api.Services.IRiotMatchLookup, Esportra.Api.
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScoreboardRiotCheckJob>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.IScoreboardRiotCheckTrigger, Esportra.Api.ScheduledJobs.ScoreboardRiotCheckTrigger>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>();
+builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ScrimGameAutoConfirmJob>();
 builder.Services.AddScoped<Esportra.Api.Services.ValorantStatsSyncService>();
 builder.Services.AddScoped<Esportra.Api.Services.ValorantSyncRequestService>();
 builder.Services.AddScoped<Esportra.Api.ScheduledJobs.ValorantStatsSyncJob>();
@@ -571,6 +572,8 @@ using (var scope = app.Services.CreateScope())
         "riot-id-refresh", j => j.ExecuteAsync(CancellationToken.None), "20 * * * *");
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ReportAutoAcceptJob>(
         "report-auto-accept", j => j.SweepAsync(CancellationToken.None), "*/5 * * * *");
+    recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.ScrimGameAutoConfirmJob>(
+        "scrim-game-auto-confirm", j => j.SweepAsync(CancellationToken.None), "*/5 * * * *");
 
     recurringJobs.AddOrUpdate<Esportra.Api.ScheduledJobs.DiscordDmPollJob>(
         "discord-dm-poll", j => j.ExecuteAsync(CancellationToken.None), "* * * * *");

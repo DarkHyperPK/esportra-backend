@@ -14,6 +14,15 @@ public static class ScrimSeries
     public const string Disputed = "disputed";
     public const string Resolved = "resolved";
 
+    /// <summary>How long the other team has to confirm or dispute a reported map.</summary>
+    public const int DefaultAcceptWindowMinutes = 120;
+
+    public static DateTime AcceptDeadline(DateTime reportedAtUtc, int windowMinutes) =>
+        reportedAtUtc.AddMinutes(Math.Max(5, windowMinutes));
+
+    public static bool IsDue(string status, DateTime? acceptBy, DateTime nowUtc) =>
+        status == Reported && acceptBy is { } deadline && deadline <= nowUtc;
+
     public static int WinsNeeded(int bestOf) => (bestOf + 1) / 2;
 
     /// <summary>1 or 2 for the map's winner, null for a draw (never a valid report).</summary>
