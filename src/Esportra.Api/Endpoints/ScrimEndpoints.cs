@@ -139,31 +139,14 @@ public static class ScrimEndpoints
         if (req.Notes?.Length > 500) return Results.BadRequest(new { error = "notes max 500 chars." });
 
         var scheduleType = req.ScheduleType ?? "one_off";
-        if (scheduleType is not ("one_off" or "recurring"))
-            return Results.UnprocessableEntity(new { error = "schedule_type must be 'one_off' or 'recurring'." });
+        var scheduleError = ScrimListingRules.ValidateSchedule(scheduleType, req.ScheduleUntil, req.SlotDurationMinutes);
+        if (scheduleError is not null) return Results.UnprocessableEntity(new { error = scheduleError });
 
         // Best-of series format is fixed by the listing; together with availability it is
         // what offering teams see before they send an offer.
         var bestOf = req.BestOf ?? 1;
         if (bestOf is not (1 or 3 or 5))
             return Results.UnprocessableEntity(new { error = "best_of must be 1, 3 or 5." });
-
-        if (scheduleType == "recurring")
-        {
-            if (req.ScheduleUntil is null)
-                return Results.UnprocessableEntity(new { error = "schedule_until is required for recurring listings." });
-            if (req.SlotDurationMinutes is null)
-                return Results.UnprocessableEntity(new { error = "slot_duration_minutes is required for recurring listings." });
-            if (req.SlotDurationMinutes <= 0)
-                return Results.UnprocessableEntity(new { error = "slot_duration_minutes must be positive." });
-        }
-        else
-        {
-            if (req.ScheduleUntil is not null)
-                return Results.UnprocessableEntity(new { error = "schedule_until is only valid for recurring listings." });
-            if (req.SlotDurationMinutes is not null)
-                return Results.UnprocessableEntity(new { error = "slot_duration_minutes is only valid for recurring listings." });
-        }
 
         using var conn = db.CreateConnection();
 
@@ -200,8 +183,8 @@ public static class ScrimEndpoints
                 bestOf,
             });
 
-        // AC16: Auto-generate slots for recurring listings with preferred availability set.
-        if (scheduleType == "recurring")
+        // Slots are only generated for listings that ask for a booking window (older clients).
+        if (ScrimListingRules.GeneratesSlots(scheduleType, req.ScheduleUntil, req.SlotDurationMinutes))
             await GenerateSlotsAsync(conn, row.Id);
 
         return Results.Created($"/api/scrims/listings/{row.Id}", row);
@@ -2984,26 +2967,68 @@ public static class ScrimEndpoints
 
     // ── Private auth records ───────────────────────────────────────────────────
 
-    private sealed record ScrimSessionForOcr(Guid Team1Id, Guid Team2Id, string Status, string? GameSlug);
-    private sealed record ScrimHistoryRow(
-        Guid Id, DateTime? ScheduledAt, string? GameSlug,
-        Guid Team1Id, string? Team1Name, Guid Team2Id, string? Team2Name,
-        int? Team1Score, int? Team2Score,
-        DateTime CompletedAt, string? RawMapId);
-    private sealed record TeamPrivacyRow(bool ScrimHistoryPublic);
+    private sealed record ScrimSessionForOcr
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string Status { get; init; } = null!;
+        public string? GameSlug { get; init; }
+    }
+    private sealed record ScrimHistoryRow
+    {
+        public Guid Id { get; init; }
+        public DateTime? ScheduledAt { get; init; }
+        public string? GameSlug { get; init; }
+        public Guid Team1Id { get; init; }
+        public string? Team1Name { get; init; }
+        public Guid Team2Id { get; init; }
+        public string? Team2Name { get; init; }
+        public int? Team1Score { get; init; }
+        public int? Team2Score { get; init; }
+        public DateTime CompletedAt { get; init; }
+        public string? RawMapId { get; init; }
+    }
+    private sealed record TeamPrivacyRow
+    {
+        public bool ScrimHistoryPublic { get; init; }
+    }
 
-    private sealed record ScrimListingRef(Guid TeamId, string Status);
-    private sealed record ScrimSessionRef(Guid Team1Id, Guid Team2Id, string Status);
+    private sealed record ScrimListingRef
+    {
+        public Guid TeamId { get; init; }
+        public string Status { get; init; } = null!;
+    }
+    private sealed record ScrimSessionRef
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string Status { get; init; } = null!;
+    }
     /// <summary>Dedicated projection for ReportResultAsync — includes the series format.</summary>
-    private sealed record ScrimSessionBestOfRef(Guid Team1Id, Guid Team2Id, string Status, int BestOf);
-    private sealed record ScrimSessionParties(Guid Team1Id, Guid Team2Id);
-    private sealed record ScrimSessionCheckinRef(
-        Guid Team1Id, Guid Team2Id, string Status,
-        DateTimeOffset? Team1CheckedInAt, DateTimeOffset? Team2CheckedInAt,
-        DateTimeOffset? CheckinWindowOpenedAt = null,
-        string? GameSlug = null,
-        string? Team1Name = null,
-        string? Team2Name = null);
+    private sealed record ScrimSessionBestOfRef
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string Status { get; init; } = null!;
+        public int BestOf { get; init; }
+    }
+    private sealed record ScrimSessionParties
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+    }
+    private sealed record ScrimSessionCheckinRef
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string Status { get; init; } = null!;
+        public DateTime? Team1CheckedInAt { get; init; }
+        public DateTime? Team2CheckedInAt { get; init; }
+        public DateTime? CheckinWindowOpenedAt { get; init; }
+        public string? GameSlug { get; init; }
+        public string? Team1Name { get; init; }
+        public string? Team2Name { get; init; }
+    }
     /// <summary>
     /// Property-based projection for AcceptOfferAsync.
     /// Dapper matches positional record constructors against the raw reader types, so the
@@ -3024,10 +3049,30 @@ public static class ScrimEndpoints
     }
     private sealed record AcceptOfferRequest(
         [property: JsonPropertyName("scheduled_at")] DateTime? ScheduledAt = null);
-    private sealed record CancelNoticeRow(Guid Team1Id, Guid Team2Id, Guid? CancelledByTeamId, string? CancellerName);
-    private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
-    private sealed record PracticeSessionRef(Guid TeamId, string Status);
-    private sealed record ScrimListingTypeRef(Guid TeamId, string Status, string ScheduleType);
+    private sealed record CancelNoticeRow
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public Guid? CancelledByTeamId { get; init; }
+        public string? CancellerName { get; init; }
+    }
+    private sealed record ScrimOfferRef
+    {
+        public Guid ListingId { get; init; }
+        public Guid OfferingTeamId { get; init; }
+        public Guid ListingTeamId { get; init; }
+    }
+    private sealed record PracticeSessionRef
+    {
+        public Guid TeamId { get; init; }
+        public string Status { get; init; } = null!;
+    }
+    private sealed record ScrimListingTypeRef
+    {
+        public Guid TeamId { get; init; }
+        public string Status { get; init; } = null!;
+        public string ScheduleType { get; init; } = null!;
+    }
 
     /// <summary>
     /// Projection for GetSessionAsync that includes raw veto tokens.

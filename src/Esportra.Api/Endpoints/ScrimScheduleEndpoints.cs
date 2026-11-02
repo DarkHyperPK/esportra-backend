@@ -33,12 +33,28 @@ public static class ScrimScheduleEndpoints
         [property: JsonPropertyName("proposed_at")] DateTime ProposedAt,
         [property: JsonPropertyName("note")] string? Note = null);
 
-    private sealed record SessionTimeRow(
-        Guid Team1Id, Guid Team2Id, string Status, DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt);
+    private sealed record SessionTimeRow
+    {
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string Status { get; init; } = null!;
+        public DateTime? Team1CheckedInAt { get; init; }
+        public DateTime? Team2CheckedInAt { get; init; }
+    }
 
-    private sealed record ProposalRow(
-        Guid Id, Guid SessionId, Guid ProposedByTeamId, DateTime ProposedAt, string Status,
-        Guid Team1Id, Guid Team2Id, string SessionStatus, DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt);
+    private sealed record ProposalRow
+    {
+        public Guid Id { get; init; }
+        public Guid SessionId { get; init; }
+        public Guid ProposedByTeamId { get; init; }
+        public DateTime ProposedAt { get; init; }
+        public string Status { get; init; } = null!;
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string SessionStatus { get; init; } = null!;
+        public DateTime? Team1CheckedInAt { get; init; }
+        public DateTime? Team2CheckedInAt { get; init; }
+    }
 
     /// <summary>The captain/manager's team among the two, or null if they staff neither.</summary>
     private static async Task<Guid?> StaffTeamAsync(IDbConnection conn, Guid userId, params Guid[] teamIds) =>

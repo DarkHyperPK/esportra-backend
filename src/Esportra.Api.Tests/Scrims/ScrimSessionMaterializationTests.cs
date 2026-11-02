@@ -1,6 +1,7 @@
 using System.Data;
 using Dapper;
 using Esportra.Api.Endpoints;
+using Esportra.Api.Services;
 using FluentAssertions;
 using Xunit;
 
@@ -91,5 +92,47 @@ public sealed class ScrimSessionMaterializationTests
         var session = Parse(Reader(QueryColumns, nulls: false));
         SessionType().GetProperty("CancelledReason")!.GetValue(session).Should().Be("x");
         SessionType().GetProperty("CancelledByTeamId")!.GetValue(session).Should().NotBeNull();
+    }
+
+    // ── Every other query projection in the scrim endpoints ─────────────────────
+
+    [Fact]
+    public void CheckIn_SessionLookup_CanBeBuilt_FromTheColumnsCheckInAsyncReturns()
+    {
+        // timestamptz columns arrive as DateTime; a DateTimeOffset constructor parameter cannot bind to them.
+        (string, Type)[] columns =
+        [
+            ("team1_id", typeof(Guid)), ("team2_id", typeof(Guid)), ("status", typeof(string)),
+            ("team1_checked_in_at", typeof(DateTime)), ("team2_checked_in_at", typeof(DateTime)),
+            ("checkin_window_opened_at", typeof(DateTime)), ("game_slug", typeof(string)),
+            ("team1_name", typeof(string)), ("team2_name", typeof(string)),
+        ];
+        var type = typeof(ScrimEndpoints).GetNestedType("ScrimSessionCheckinRef", System.Reflection.BindingFlags.NonPublic)!;
+        foreach (var nulls in new[] { false, true })
+        {
+            var reader = Reader(columns, nulls);
+            reader.Read();
+            var act = () => reader.GetRowParser(type)(reader);
+            act.Should().NotThrow();
+        }
+    }
+
+    [Fact]
+    public void EveryQueryProjection_IsMappedByName_NotByConstructorPosition()
+    {
+        // A positional record only binds when the query returns exactly its columns, in order, with
+        // exact types. That has taken the scrim room and check-in down. Row types must have a
+        // parameterless constructor so Dapper maps by column name. Request DTOs are exempt.
+        var offenders = new List<string>();
+        foreach (var host in new[] { typeof(ScrimEndpoints), typeof(ScrimScheduleEndpoints) })
+        {
+            foreach (var nested in host.GetNestedTypes(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public))
+            {
+                if (nested.Name.EndsWith("Request", StringComparison.Ordinal) || nested.Name.StartsWith('<')) continue;
+                if (nested.GetConstructor(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic, Type.EmptyTypes) is null)
+                    offenders.Add($"{host.Name}.{nested.Name}");
+            }
+        }
+        offenders.Should().BeEmpty("these row types would break when a column is added or reordered");
     }
 }
