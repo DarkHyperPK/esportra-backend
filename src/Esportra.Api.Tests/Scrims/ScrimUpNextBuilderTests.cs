@@ -20,6 +20,7 @@ public sealed class ScrimUpNextBuilderTests
         Team2Name = "Them",
         Status = "scheduled",
         ScheduledAt = Start,
+        CheckinWindowOpenedAt = Start.AddMinutes(-15),
     });
 
     private static string[] Types(params UpNextSessionRow[] sessions) =>
@@ -36,6 +37,13 @@ public sealed class ScrimUpNextBuilderTests
         var now = Start.AddMinutes(minutesFromStart);
         var items = ScrimUpNextBuilder.Build([], [S(s => s)], Mine, now).Items;
         items.Any(i => i.Type == "checkin_open").Should().Be(expected);
+    }
+
+    [Fact]
+    public void CheckinOpen_IsNotOffered_UntilTheServerHasOpenedTheWindow()
+    {
+        // Inside T-15..T+15 by the clock, but the window job has not run: check-in would be rejected.
+        Types(S(s => s with { CheckinWindowOpenedAt = null })).Should().BeEmpty();
     }
 
     [Fact]

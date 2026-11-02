@@ -997,7 +997,7 @@ public static class ScrimEndpoints
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
                    t2.name AS team2_name, t2.logo_url AS team2_logo,
                    ss.game_slug, ss.status::text AS status, ss.scheduled_at,
-                   ss.team1_checked_in_at, ss.team2_checked_in_at,
+                   ss.team1_checked_in_at, ss.team2_checked_in_at, ss.checkin_window_opened_at,
                    ss.result_reported_by_team1, ss.result_reported_by_team2,
                    COALESCE(pvs.status = 'in_progress', FALSE) AS veto_open,
                    d.status::text AS dispute_status,

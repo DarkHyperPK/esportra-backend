@@ -29,6 +29,8 @@ public sealed record UpNextSessionRow
     public DateTime? ScheduledAt { get; init; }
     public DateTime? Team1CheckedInAt { get; init; }
     public DateTime? Team2CheckedInAt { get; init; }
+    /// <summary>Set by the check-in window job; the server rejects check-in until it is set.</summary>
+    public DateTime? CheckinWindowOpenedAt { get; init; }
     public bool ResultReportedByTeam1 { get; init; }
     public bool ResultReportedByTeam2 { get; init; }
     public bool VetoOpen { get; init; }
@@ -133,7 +135,9 @@ public static class ScrimUpNextBuilder
             case "scheduled" when s.ScheduledAt is { } start:
                 var opens = start.AddMinutes(-CheckinOpensBeforeMinutes);
                 var closes = start.AddMinutes(CheckinClosesAfterMinutes);
-                return now >= opens && now <= closes && myCheckin is null
+                // The server only accepts check-in once the window job has opened it, so the
+                // queue must not send anyone to a check-in that would be rejected.
+                return s.CheckinWindowOpenedAt is not null && now >= opens && now <= closes && myCheckin is null
                     ? Make("checkin_open", closes)
                     : null;
 
