@@ -118,11 +118,7 @@ public static class IntegrationEndpoints
             var tokenBody = await tokenRes.Content.ReadAsStringAsync(ct);
             using var tokenDoc = JsonDocument.Parse(tokenBody);
             var accessToken = tokenDoc.RootElement.GetProperty("access_token").GetString()!;
-            var refreshToken = tokenDoc.RootElement.TryGetProperty("refresh_token", out var rt)
-                ? rt.GetString() : null;
-            var expiresIn = tokenDoc.RootElement.TryGetProperty("expires_in", out var ei)
-                ? ei.GetInt32() : 3600;
-            var expiresAt = DateTime.UtcNow.AddSeconds(expiresIn);
+            // The RSO tokens are used once to read the account and are never stored.
 
             // Fetch account info
             var infoReq = new HttpRequestMessage(HttpMethod.Get,
@@ -155,17 +151,14 @@ public static class IntegrationEndpoints
             // Upsert riot_accounts
             await conn.ExecuteAsync("""
                 INSERT INTO public.riot_accounts
-                    (user_id, puuid, game_name, tag_line, access_token, refresh_token, token_expires_at, name_checked_at)
-                VALUES (@userId, @puuid, @gameName, @tagLine, @accessToken, @refreshToken, @expiresAt, now())
+                    (user_id, puuid, game_name, tag_line, name_checked_at)
+                VALUES (@userId, @puuid, @gameName, @tagLine, now())
                 ON CONFLICT (user_id) DO UPDATE SET
                     puuid = EXCLUDED.puuid,
                     game_name = EXCLUDED.game_name,
                     tag_line = EXCLUDED.tag_line,
-                    access_token = EXCLUDED.access_token,
-                    refresh_token = EXCLUDED.refresh_token,
-                    token_expires_at = EXCLUDED.token_expires_at,
                     name_checked_at = now()
-                """, new { userId = userGuid, puuid, gameName, tagLine, accessToken, refreshToken, expiresAt });
+                """, new { userId = userGuid, puuid, gameName, tagLine });
 
             // Dual-write to player_riot_accounts for competitive feature compatibility
             await conn.ExecuteAsync(
@@ -265,6 +258,8 @@ public static class IntegrationEndpoints
             await conn.ExecuteAsync(
                 "DELETE FROM public.riot_accounts WHERE user_id = @userId", new { userId = userCtx.UserIdGuid });
             await conn.ExecuteAsync(
+                "DELETE FROM public.player_riot_accounts WHERE user_id = @userId", new { userId = userCtx.UserIdGuid });
+            await conn.ExecuteAsync(
                 "UPDATE public.profiles SET riot_tag = NULL WHERE id = @userId", new { userId = userCtx.UserIdGuid });
 
             return Results.Ok(new { success = true });
@@ -282,19 +277,33 @@ public static class IntegrationEndpoints
         {
             var (status, body) = await riot.ProxyAsync(req.Region, req.Endpoint, ct);
             return Results.Content(body, "application/json", statusCode: status);
-        }).RequireAuthorization("Authenticated");
+        }).RequireAuthorization("Admin"); // raw passthrough on Esportra's Riot key: staff debugging only
 
         // ── POST /api/integrations/riot/enriched-match ────────────────────────
         // Fetches a Valorant match from Riot and attaches parsed analytics fields.
         app.MapPost("/api/integrations/riot/enriched-match", async (
             [FromBody] RiotEnrichedMatchRequest req,
+            HttpContext ctx,
+            IDbConnectionFactory db,
             RiotApiClient riot,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(req.MatchId))
+            if (ctx.Items["UserContext"] is not UserContext caller) return Results.Unauthorized();
+            if (!RiotMatchAccess.IsWellFormedMatchId(req.MatchId))
             {
                 return Results.BadRequest(new { error = "matchId is required" });
             }
+
+            var isStaff = caller.AdminRoles.Length > 0;
+            using var conn = db.CreateConnection();
+            var visibleViaEsportra = isStaff
+                || await RiotMatchAccess.IsReportedAndVisibleAsync(conn, req.MatchId, caller.UserIdGuid);
+            IReadOnlyList<string> callerPuuids = visibleViaEsportra
+                ? Array.Empty<string>()
+                : await RiotMatchAccess.LinkedPuuidsAsync(conn, caller.UserIdGuid);
+            // Not reported on Esportra and no linked account of ours: nothing to show, and no call on our key.
+            if (!visibleViaEsportra && callerPuuids.Count == 0)
+                return Results.Json(new { error = "forbidden" }, statusCode: StatusCodes.Status403Forbidden);
 
             var (status, body) = await riot.ProxyAsync(
                 req.Region,
@@ -307,6 +316,8 @@ public static class IntegrationEndpoints
             }
 
             using var doc = JsonDocument.Parse(body);
+            if (!visibleViaEsportra && !RiotMatchAccess.CallerPlayed(doc.RootElement, callerPuuids))
+                return Results.Json(new { error = "forbidden" }, statusCode: StatusCodes.Status403Forbidden);
             var emptyTeams = new HashSet<string>(StringComparer.Ordinal);
             var parsed = RiotMatchDetailsParser.Parse(doc.RootElement, emptyTeams, emptyTeams);
             if (parsed is null)

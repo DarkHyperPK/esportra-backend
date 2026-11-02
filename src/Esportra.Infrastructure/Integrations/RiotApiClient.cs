@@ -40,6 +40,9 @@ public sealed class RiotApiClient(HttpClient http, IConfiguration config)
         if (!AllowedPrefixes.Any(p => endpoint.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
             return (403, """{"error":"Endpoint not allowlisted"}""");
 
+        if (HasPathTraversal(endpoint))
+            return (403, """{"error":"Endpoint not allowlisted"}""");
+
         var url = $"https://{region}.api.riotgames.com{endpoint}";
         var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Add("X-Riot-Token", _apiKey);
@@ -47,6 +50,14 @@ public sealed class RiotApiClient(HttpClient http, IConfiguration config)
         var res = await http.SendAsync(req, ct);
         var body = await res.Content.ReadAsStringAsync(ct);
         return ((int)res.StatusCode, body);
+    }
+
+    /// <summary>Rejects dot segments, encoded dots/slashes, backslashes and control characters.</summary>
+    internal static bool HasPathTraversal(string endpoint)
+    {
+        if (endpoint.Contains("..") || endpoint.Contains('\\') || endpoint.Any(char.IsControl)) return true;
+        var lower = endpoint.ToLowerInvariant();
+        return lower.Contains("%2e") || lower.Contains("%2f") || lower.Contains("%5c");
     }
 
     /// <summary>
