@@ -37,6 +37,8 @@ public sealed record ScrimListingRow
     public string? MembersPreview { get; init; }
     public int? ScrimsCompleted { get; init; }
     public string? CaptainCardUrl { get; init; }
+    /// <summary>JSON array of the next open slots ({id, starts_at}, up to 3); discover only.</summary>
+    public string? NextSlots { get; init; }
     /// <summary>Null when the team keeps its scrim history private.</summary>
     public ScrimTeamRecord? Record { get; init; }
 }

@@ -429,7 +429,17 @@ public static class ScrimEndpoints
                       AND sl.game_slug = 'valorant'
                       AND pgs.player_card_id IS NOT NULL
                     LIMIT 1
-                   ) AS captain_card_url
+                   ) AS captain_card_url,
+                   (SELECT json_agg(json_build_object('id', s.id, 'starts_at', s.starts_at) ORDER BY s.starts_at)
+                    FROM (
+                        SELECT sn.id, sn.starts_at
+                        FROM public.scrim_slots sn
+                        WHERE sn.listing_id = sl.id
+                          AND sn.status = 'available'
+                          AND sn.starts_at > now()
+                        ORDER BY sn.starts_at
+                        LIMIT 3
+                    ) s) AS next_slots
             FROM public.scrim_listings sl
             JOIN public.teams t ON t.id = sl.team_id
             LEFT JOIN public.game_catalog_rank_tiers min_rt
