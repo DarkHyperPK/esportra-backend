@@ -380,3 +380,28 @@ public sealed record ShortlistEntryRow(
 public sealed record ScoutingNoteRow(
     Guid Id, Guid ScoutUserId, Guid SubjectUserId,
     string? GameSlug, string Content, DateTime CreatedAt, DateTime UpdatedAt);
+
+/// <summary>One thing a team's staff needs to act on, across offers and sessions.</summary>
+public sealed record ScrimInboxItem
+{
+    /// <summary>checkin_open | veto_ready | result_to_confirm | evidence_due | result_to_report | offer_received</summary>
+    public string Type { get; init; } = null!;
+    /// <summary>The caller's team this item is for.</summary>
+    public Guid TeamId { get; init; }
+    public Guid? SessionId { get; init; }
+    public Guid? OfferId { get; init; }
+    public Guid? ListingId { get; init; }
+    public string? OpponentName { get; init; }
+    public string? OpponentLogo { get; init; }
+    public string? GameSlug { get; init; }
+    public DateTime? ScheduledAt { get; init; }
+    /// <summary>When the action stops being possible (check-in close, offer expiry); null if open-ended.</summary>
+    public DateTime? Deadline { get; init; }
+}
+
+public sealed record ScrimInboxResponse
+{
+    public IReadOnlyList<ScrimInboxItem> Items { get; init; } = [];
+    /// <summary>Total before the response cap.</summary>
+    public int Total { get; init; }
+}

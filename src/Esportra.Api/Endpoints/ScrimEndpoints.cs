@@ -83,6 +83,7 @@ public static class ScrimEndpoints
         app.MapPost("/api/scrims/offers/{id:guid}/withdraw", WithdrawOfferAsync).RequireAuthorization("Authenticated");
 
         // ── Scrim Sessions ──────────────────────────────────────────────────────
+        app.MapGet("/api/scrims/inbox", GetInboxAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/sessions", GetTeamSessionsAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/sessions/{id:guid}", GetSessionAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/start", StartSessionAsync).RequireAuthorization("Authenticated");
@@ -942,6 +943,96 @@ public static class ScrimEndpoints
         => await ChangeOfferStatusAsync(id, ctx, db, hub, "withdrawn", requiresListingTeam: false);
 
     // ── GET /api/scrims/sessions ───────────────────────────────────────────────
+
+    // ── GET /api/scrims/inbox ──────────────────────────────────────────────────
+    // What needs the caller's attention across all teams they captain/manage:
+    // pending offers, open check-ins, veto, results to report/confirm, evidence due.
+    // Optional team_id narrows to one team; a team the caller does not staff is 403.
+
+    private static async Task<IResult> GetInboxAsync(
+        [FromQuery] Guid? team_id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        CancellationToken ct)
+    {
+        var userCtx = ctx.Items["UserContext"] as UserContext;
+        if (userCtx is null) return Results.Unauthorized();
+
+        using var conn = db.CreateConnection();
+
+        var teamIds = (await conn.QueryAsync<Guid>(
+            """
+            SELECT DISTINCT tm.team_id
+            FROM public.team_members tm
+            WHERE tm.user_id = @userId
+              AND tm.role IN ('captain', 'manager')
+              AND tm.is_active = TRUE
+              AND (@teamId::uuid IS NULL OR tm.team_id = @teamId::uuid)
+            """,
+            new { userId = userCtx.UserIdGuid, teamId = team_id })).ToArray();
+
+        if (teamIds.Length == 0)
+            return team_id.HasValue ? Results.Forbid() : Results.Ok(new ScrimInboxResponse());
+
+        var offers = await conn.QueryAsync<InboxOfferRow>(
+            """
+            SELECT o.id, o.listing_id, l.team_id AS listing_team_id, o.offering_team_id,
+                   t.name AS offering_team_name, t.logo_url AS offering_team_logo,
+                   l.game_slug, o.proposed_at, o.created_at
+            FROM public.scrim_offers o
+            JOIN public.scrim_listings l ON l.id = o.listing_id
+            JOIN public.teams t ON t.id = o.offering_team_id
+            WHERE o.status = 'pending'
+              AND l.team_id = ANY(@teamIds)
+              AND o.created_at > now() - make_interval(hours => @lifetimeHours)
+            ORDER BY o.created_at
+            LIMIT 100
+            """,
+            new { teamIds, lifetimeHours = ScrimInboxBuilder.OfferLifetimeHours });
+
+        // Scheduled sessions only matter inside the check-in window (T-15 .. T+15).
+        var sessions = await conn.QueryAsync<InboxSessionRow>(
+            """
+            SELECT ss.id, ss.team1_id, ss.team2_id,
+                   t1.name AS team1_name, t1.logo_url AS team1_logo,
+                   t2.name AS team2_name, t2.logo_url AS team2_logo,
+                   ss.game_slug, ss.status::text AS status, ss.scheduled_at,
+                   ss.team1_checked_in_at, ss.team2_checked_in_at,
+                   ss.result_reported_by_team1, ss.result_reported_by_team2,
+                   COALESCE(pvs.status = 'in_progress', FALSE) AS veto_open,
+                   d.status::text AS dispute_status,
+                   d.raised_by_team_id AS dispute_raised_by_team_id,
+                   COALESCE(cardinality(d.responder_evidence_urls), 0) AS dispute_responder_evidence_count
+            FROM public.scrim_sessions ss
+            JOIN public.teams t1 ON t1.id = ss.team1_id
+            JOIN public.teams t2 ON t2.id = ss.team2_id
+            LEFT JOIN public.public_veto_sessions pvs ON pvs.id = ss.veto_session_id
+            LEFT JOIN LATERAL (
+                SELECT sd.status, sd.raised_by_team_id, sd.responder_evidence_urls
+                FROM public.scrim_disputes sd
+                WHERE sd.session_id = ss.id
+                ORDER BY sd.created_at DESC
+                LIMIT 1
+            ) d ON TRUE
+            WHERE (ss.team1_id = ANY(@teamIds) OR ss.team2_id = ANY(@teamIds))
+              AND (
+                    (ss.status = 'scheduled'
+                       AND ss.scheduled_at BETWEEN now() - make_interval(mins => @closesAfter)
+                                               AND now() + make_interval(mins => @opensBefore))
+                 OR ss.status IN ('in_progress', 'disputed')
+              )
+            ORDER BY ss.scheduled_at NULLS LAST
+            LIMIT 100
+            """,
+            new
+            {
+                teamIds,
+                opensBefore = ScrimInboxBuilder.CheckinOpensBeforeMinutes,
+                closesAfter = ScrimInboxBuilder.CheckinClosesAfterMinutes,
+            });
+
+        return Results.Ok(ScrimInboxBuilder.Build(offers, sessions, teamIds.ToHashSet(), DateTime.UtcNow));
+    }
 
     private static async Task<IResult> GetTeamSessionsAsync(
         [FromQuery] Guid? team_id,
