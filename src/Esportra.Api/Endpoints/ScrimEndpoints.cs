@@ -1155,7 +1155,8 @@ public static class ScrimEndpoints
         => TransitionSessionAsync(id, ctx, db, "completed", ["in_progress"]);
 
     private static async Task<IResult> CancelSessionAsync(
-        Guid id, HttpContext ctx, IDbConnectionFactory db, IBackgroundJobClient backgroundJobs, CancellationToken ct)
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IBackgroundJobClient backgroundJobs,
+        IHubContext<NotificationHub> hub, CancellationToken ct)
     {
         var result = await TransitionSessionAsync(id, ctx, db, "cancelled", ["scheduled", "in_progress"]);
 
@@ -1183,9 +1184,60 @@ public static class ScrimEndpoints
                     // Non-critical: if deletion fails, jobs are idempotent and will no-op.
                 }
             }
+
+            await NotifyOpponentOfCancelAsync(conn, hub, id);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Best-effort: tell the other team's staff the scrim was cancelled, so their room
+    /// and agenda update without a refresh. Failures must never undo the cancel.
+    /// </summary>
+    private static async Task NotifyOpponentOfCancelAsync(
+        System.Data.IDbConnection conn, IHubContext<NotificationHub> hub, Guid sessionId)
+    {
+        try
+        {
+            var row = await conn.QuerySingleOrDefaultAsync<CancelNoticeRow>(
+                """
+                SELECT ss.team1_id, ss.team2_id, ss.cancelled_by_team_id,
+                       t.name AS canceller_name
+                FROM public.scrim_sessions ss
+                LEFT JOIN public.teams t ON t.id = ss.cancelled_by_team_id
+                WHERE ss.id = @sessionId
+                """,
+                new { sessionId });
+            if (row is null) return;
+
+            var notice = ScrimCancelNotice.For(row.Team1Id, row.Team2Id, row.CancelledByTeamId, row.CancellerName);
+            if (notice is null) return;
+
+            var staffIds = (await conn.QueryAsync<Guid>(
+                """
+                SELECT user_id FROM public.team_members
+                WHERE team_id = @teamId AND role IN ('captain', 'manager') AND is_active = TRUE
+                """,
+                new { teamId = notice.RecipientTeamId })).ToList();
+            if (staffIds.Count == 0) return;
+
+            await conn.ExecuteAsync(
+                """
+                INSERT INTO public.notifications (user_id, type, title, message, link, data, is_read)
+                SELECT uid, @Type::notification_type, @Title, @Message,
+                       '/competitive/scrims/sessions/' || @SessionId::text,
+                       jsonb_build_object('session_id', @SessionId::uuid), FALSE
+                FROM UNNEST(@UserIds::uuid[]) AS uid
+                """,
+                new { notice.Type, notice.Title, notice.Message, SessionId = sessionId, UserIds = staffIds.ToArray() });
+
+            await TeamNotifications.PushAsync(hub, staffIds, notice.Type, notice.Title, notice.Message);
+        }
+        catch
+        {
+            // Non-critical: the cancel already committed.
+        }
     }
 
     // ── POST /api/scrims/sessions/{id}/report-result ───────────────────────────
@@ -2986,6 +3038,7 @@ public static class ScrimEndpoints
     }
     private sealed record AcceptOfferRequest(
         [property: JsonPropertyName("scheduled_at")] DateTime? ScheduledAt = null);
+    private sealed record CancelNoticeRow(Guid Team1Id, Guid Team2Id, Guid? CancelledByTeamId, string? CancellerName);
     private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
     private sealed record PracticeSessionRef(Guid TeamId, string Status);
     private sealed record ScrimListingTypeRef(Guid TeamId, string Status, string ScheduleType);
