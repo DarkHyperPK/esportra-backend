@@ -52,6 +52,10 @@ public sealed class ScrimVetoService(
         var existing = await conn.ExecuteScalarAsync<Guid?>(
             "SELECT veto_session_id FROM public.scrim_sessions WHERE id = @sessionId",
             new { sessionId });
+        // The veto follows the format the listing promised (Bo1/Bo3/Bo5).
+        var sessionBestOf = await conn.ExecuteScalarAsync<int?>(
+            "SELECT best_of FROM public.scrim_sessions WHERE id = @sessionId",
+            new { sessionId });
 
         if (existing is not null)
         {
@@ -83,8 +87,7 @@ public sealed class ScrimVetoService(
             var team2Token = GenerateToken();
             var overlayToken = GenerateToken();
 
-            // best_of=1 for scrim veto (standard single-map pick).
-            const int bestOf = 1;
+            var bestOf = sessionBestOf is 1 or 3 or 5 ? sessionBestOf.Value : 1;
 
             await conn.ExecuteAsync(
                 """
