@@ -1993,7 +1993,8 @@ public static class ScrimEndpoints
         RiotApiClient riotApi,
         HybridCache cache,
         ILoggerFactory loggerFactory,
-        CancellationToken ct)
+        CancellationToken ct,
+        [FromQuery] Guid? team_id = null)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -2019,12 +2020,16 @@ public static class ScrimEndpoints
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
         if (!isStaff) return Results.Forbid();
 
+        // A person on both teams (or testing with one account) says which side they are reporting for,
+        // so the games come back from that team's point of view.
         var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
             """
             SELECT team_id FROM public.team_members
-            WHERE user_id = @userId AND team_id IN (@t1, @t2) AND is_active = TRUE LIMIT 1
+            WHERE user_id = @userId AND team_id IN (@t1, @t2) AND is_active = TRUE
+              AND (@wanted::uuid IS NULL OR team_id = @wanted::uuid)
+            LIMIT 1
             """,
-            new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id });
+            new { userId = userCtx.UserIdGuid, t1 = session.Team1Id, t2 = session.Team2Id, wanted = team_id });
         if (callerTeamId is null) return Results.Forbid();
 
         var callerAccounts = (await conn.QueryAsync<dynamic>(
@@ -2066,6 +2071,8 @@ public static class ScrimEndpoints
             try
             {
                 using var doc = JsonDocument.Parse(detBody);
+                // A scrim is played as a custom game: ranked, unrated and the other queues are not offered.
+                if (!RiotMatchCandidates.IsCustomGame(doc.RootElement)) continue;
                 var candidate = BuildScrimCandidate(doc.RootElement, riotMatchId, callerAccounts, team1Puuids, team2Puuids);
                 if (candidate is not null) candidates.Add(candidate);
             }

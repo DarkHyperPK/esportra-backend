@@ -9,6 +9,18 @@ namespace Esportra.Api.Services;
 /// </summary>
 public static class RiotMatchCandidates
 {
+    /// <summary>
+    /// Whether the Riot match is a custom game. Riot reports custom games with an empty queue id; every
+    /// matchmade queue (competitive, unrated, swiftplay, premier…) carries its own name.
+    /// </summary>
+    public static bool IsCustomGame(JsonElement root)
+    {
+        if (!root.TryGetProperty("matchInfo", out var info)) return false;
+        if (info.TryGetProperty("isRanked", out var ranked) && ranked.ValueKind == JsonValueKind.True) return false;
+        var queue = info.TryGetProperty("queueId", out var q) && q.ValueKind == JsonValueKind.String ? q.GetString() : null;
+        return string.IsNullOrWhiteSpace(queue) || queue.Equals("custom", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>The candidate as seen by <paramref name="scannerPuuid"/>; null when that player isn't in the game.</summary>
     public static object? Build(
         JsonElement root, string riotMatchId, string scannerPuuid,
