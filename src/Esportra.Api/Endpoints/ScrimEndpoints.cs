@@ -1125,8 +1125,16 @@ public static class ScrimEndpoints
             """,
             new { id });
 
+        var clearRequest = await conn.QuerySingleOrDefaultAsync<ScrimTimeClearRequestRow>(
+            """
+            SELECT id, session_id, requested_by_team_id, status, created_at
+            FROM public.scrim_time_clear_requests
+            WHERE session_id = @id AND status = 'pending'
+            """,
+            new { id });
+
         // Return session row with derived VetoMyToken (raw tokens excluded) + dispute + proposal.
-        var response = row.ToSessionRow(vetoMyToken, dispute) with { TimeProposal = proposal };
+        var response = row.ToSessionRow(vetoMyToken, dispute) with { TimeProposal = proposal, TimeClearRequest = clearRequest };
         return Results.Ok(response);
     }
 

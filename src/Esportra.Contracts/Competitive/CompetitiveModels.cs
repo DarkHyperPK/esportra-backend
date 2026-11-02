@@ -145,6 +145,8 @@ public sealed record ScrimSessionRow
     public ScrimDisputeRow? Dispute { get; init; }
     /// <summary>The proposed time awaiting a response, if any (GET session only).</summary>
     public ScrimTimeProposalRow? TimeProposal { get; init; }
+    /// <summary>A request to clear the agreed time awaiting the other team's agreement (GET session only).</summary>
+    public ScrimTimeClearRequestRow? TimeClearRequest { get; init; }
     public int BestOf { get; init; } = 1;
     /// <summary>checkin_timeout | cancelled_by_team | listing_closed | admin; null = unknown/legacy.</summary>
     public string? CancelledReason { get; init; }
@@ -414,6 +416,17 @@ public sealed record ScrimUpNextResponse
     public IReadOnlyList<ScrimUpNextItem> Items { get; init; } = [];
     /// <summary>Total before the response cap.</summary>
     public int Total { get; init; }
+}
+
+/// <summary>A team's request to clear the agreed time. Pending until the other team agrees or declines.</summary>
+public sealed record ScrimTimeClearRequestRow
+{
+    public Guid Id { get; init; }
+    public Guid SessionId { get; init; }
+    public Guid RequestedByTeamId { get; init; }
+    /// <summary>pending | accepted | declined | withdrawn | superseded</summary>
+    public string Status { get; init; } = "pending";
+    public DateTime CreatedAt { get; init; }
 }
 
 /// <summary>A proposed match time. Pending until the other team accepts or declines.</summary>

@@ -17,6 +17,9 @@ public static class ScrimTimeReset
             "UPDATE public.scrim_time_proposals SET status = 'superseded', responded_at = now() WHERE session_id = @sessionId AND status = 'pending'",
             new { sessionId }, tx);
         await conn.ExecuteAsync(
+            "UPDATE public.scrim_time_clear_requests SET status = 'superseded', responded_at = now() WHERE session_id = @sessionId AND status = 'pending'",
+            new { sessionId }, tx);
+        await conn.ExecuteAsync(
             """
             UPDATE public.scrim_sessions
             SET scheduled_at = NULL,

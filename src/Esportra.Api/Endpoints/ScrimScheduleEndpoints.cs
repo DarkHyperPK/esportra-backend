@@ -20,7 +20,9 @@ namespace Esportra.Api.Endpoints;
 /// POST /api/scrims/time-proposals/{id}/accept     — the OTHER team accepts: sets the match time
 /// POST /api/scrims/time-proposals/{id}/decline    — the OTHER team declines
 /// POST /api/scrims/time-proposals/{id}/withdraw   — the proposing team takes its own proposal back
-/// POST /api/scrims/sessions/{id}/time/reset       — either team clears the agreed time (before check-in)
+/// POST /api/scrims/sessions/{id}/time/clear-request — a team asks to clear the agreed time (before check-in)
+/// POST /api/scrims/time-clear-requests/{id}/accept|decline — the OTHER team agrees or keeps the time
+/// POST /api/scrims/time-clear-requests/{id}/withdraw — the asking team takes the request back
 /// </summary>
 public static class ScrimScheduleEndpoints
 {
@@ -30,7 +32,10 @@ public static class ScrimScheduleEndpoints
         app.MapPost("/api/scrims/time-proposals/{id:guid}/accept", AcceptAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/time-proposals/{id:guid}/decline", DeclineAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/time-proposals/{id:guid}/withdraw", WithdrawAsync).RequireAuthorization("Authenticated");
-        app.MapPost("/api/scrims/sessions/{id:guid}/time/reset", ResetAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/time/clear-request", RequestClearAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/time-clear-requests/{id:guid}/accept", AcceptClearAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/time-clear-requests/{id:guid}/decline", DeclineClearAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/time-clear-requests/{id:guid}/withdraw", WithdrawClearAsync).RequireAuthorization("Authenticated");
     }
 
     private sealed record ProposeTimeRequest(
@@ -107,6 +112,10 @@ public static class ScrimScheduleEndpoints
         using var tx = conn.BeginTransaction();
         await conn.ExecuteAsync(
             "UPDATE public.scrim_time_proposals SET status = 'superseded', responded_at = now() WHERE session_id = @id AND status = 'pending'",
+            new { id }, tx);
+        // Proposing a different time answers any open request to clear the old one.
+        await conn.ExecuteAsync(
+            "UPDATE public.scrim_time_clear_requests SET status = 'superseded', responded_at = now() WHERE session_id = @id AND status = 'pending'",
             new { id }, tx);
         var proposal = await conn.QuerySingleAsync<ScrimTimeProposalRow>(
             """
@@ -241,10 +250,37 @@ public static class ScrimScheduleEndpoints
         return Results.Ok(new { proposal_id = id, session_id = p.SessionId });
     }
 
-    /// <summary>Clears an agreed time so the captains can start again (a mis-click on accept, a mistaken date).</summary>
-    private static async Task<IResult> ResetAsync(
-        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub,
-        IBackgroundJobClient jobs, CancellationToken ct)
+    private sealed record ClearRequestRow
+    {
+        public Guid Id { get; init; }
+        public Guid SessionId { get; init; }
+        public Guid RequestedByTeamId { get; init; }
+        public string Status { get; init; } = null!;
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string SessionStatus { get; init; } = null!;
+        public DateTime? Team1CheckedInAt { get; init; }
+        public DateTime? Team2CheckedInAt { get; init; }
+    }
+
+    private static async Task<ClearRequestRow?> LoadClearRequestAsync(IDbConnection conn, Guid id) =>
+        await conn.QuerySingleOrDefaultAsync<ClearRequestRow>(
+            """
+            SELECT r.id, r.session_id, r.requested_by_team_id, r.status,
+                   s.team1_id, s.team2_id, s.status::text AS session_status,
+                   s.team1_checked_in_at, s.team2_checked_in_at
+            FROM public.scrim_time_clear_requests r
+            JOIN public.scrim_sessions s ON s.id = r.session_id
+            WHERE r.id = @id
+            """,
+            new { id });
+
+    /// <summary>
+    /// Clearing an agreed time is mutual: one team asks, the other agrees. Nothing changes until then,
+    /// so a stray click can't pull the match out from under the other team.
+    /// </summary>
+    private static async Task<IResult> RequestClearAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
         using var conn = db.CreateConnection();
@@ -260,12 +296,106 @@ public static class ScrimScheduleEndpoints
 
         var frozen = Frozen(session.Status, session.Team1CheckedInAt, session.Team2CheckedInAt);
         if (frozen is not null) return Results.Conflict(new { error = frozen });
+        var hasTime = await conn.ExecuteScalarAsync<bool>(
+            "SELECT scheduled_at IS NOT NULL FROM public.scrim_sessions WHERE id = @id", new { id });
+        if (!hasTime) return Results.Conflict(new { error = "There is no agreed time to clear." });
 
-        await ScrimTimeReset.ApplyAsync(conn, jobs, id, clearCheckins: false);
+        ScrimTimeClearRequestRow request;
+        try
+        {
+            request = await conn.QuerySingleAsync<ScrimTimeClearRequestRow>(
+                """
+                INSERT INTO public.scrim_time_clear_requests (session_id, requested_by_team_id)
+                VALUES (@id, @myTeam)
+                RETURNING id, session_id, requested_by_team_id, status, created_at
+                """,
+                new { id, myTeam });
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "23505")
+        {
+            return Results.Conflict(new { error = "A request to clear the time is already waiting for an answer." });
+        }
 
         var other = myTeam == session.Team1Id ? session.Team2Id : session.Team1Id;
-        await ScrimTeamNotifier.SendAsync(conn, hub, other, id, "scrim_time_reset",
-            "Match time cleared", "The other team cleared the agreed time. Propose a new one.");
-        return Results.Ok(new { session_id = id });
+        await ScrimTeamNotifier.SendAsync(conn, hub, other, id, "scrim_time_proposed",
+            "Clear the match time?", "The other team asked to clear the agreed time. Agree, or keep it.");
+        return Results.Ok(request);
+    }
+
+    private static async Task<IResult> AcceptClearAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub,
+        IBackgroundJobClient jobs, CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var r = await LoadClearRequestAsync(conn, id);
+        if (r is null) return Results.NotFound();
+        var responder = r.RequestedByTeamId == r.Team1Id ? r.Team2Id : r.Team1Id;
+        if (await StaffTeamAsync(conn, user.UserIdGuid, responder) is null) return Results.Forbid();
+        if (r.Status != "pending")
+            return Results.Conflict(new { error = "This request has already been answered or withdrawn." });
+        var frozen = Frozen(r.SessionStatus, r.Team1CheckedInAt, r.Team2CheckedInAt);
+        if (frozen is not null) return Results.Conflict(new { error = frozen });
+
+        var accepted = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            UPDATE public.scrim_time_clear_requests
+            SET status = 'accepted', responded_at = now(), responded_by = @userId
+            WHERE id = @id AND status = 'pending' RETURNING id
+            """,
+            new { id, userId = user.UserIdGuid });
+        if (accepted is null)
+            return Results.Conflict(new { error = "This request has already been answered or withdrawn." });
+
+        await ScrimTimeReset.ApplyAsync(conn, jobs, r.SessionId, clearCheckins: false);
+        await ScrimTeamNotifier.SendAsync(conn, hub, r.RequestedByTeamId, r.SessionId, "scrim_time_reset",
+            "Match time cleared", "The other team agreed. Propose a new time in the room.");
+        return Results.Ok(new { request_id = id, session_id = r.SessionId });
+    }
+
+    private static async Task<IResult> DeclineClearAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var r = await LoadClearRequestAsync(conn, id);
+        if (r is null) return Results.NotFound();
+        var responder = r.RequestedByTeamId == r.Team1Id ? r.Team2Id : r.Team1Id;
+        if (await StaffTeamAsync(conn, user.UserIdGuid, responder) is null) return Results.Forbid();
+
+        var declined = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            UPDATE public.scrim_time_clear_requests
+            SET status = 'declined', responded_at = now(), responded_by = @userId
+            WHERE id = @id AND status = 'pending' RETURNING id
+            """,
+            new { id, userId = user.UserIdGuid });
+        if (declined is null)
+            return Results.Conflict(new { error = "This request has already been answered or withdrawn." });
+
+        await ScrimTeamNotifier.SendAsync(conn, hub, r.RequestedByTeamId, r.SessionId, "scrim_time_declined",
+            "Time kept", "The other team wants to keep the agreed time.");
+        return Results.Ok(new { request_id = id, session_id = r.SessionId });
+    }
+
+    private static async Task<IResult> WithdrawClearAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var r = await LoadClearRequestAsync(conn, id);
+        if (r is null) return Results.NotFound();
+        if (await StaffTeamAsync(conn, user.UserIdGuid, r.RequestedByTeamId) is null) return Results.Forbid();
+
+        var withdrawn = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            UPDATE public.scrim_time_clear_requests
+            SET status = 'withdrawn', responded_at = now(), responded_by = @userId
+            WHERE id = @id AND status = 'pending' RETURNING id
+            """,
+            new { id, userId = user.UserIdGuid });
+        if (withdrawn is null)
+            return Results.Conflict(new { error = "This request has already been answered or withdrawn." });
+        return Results.Ok(new { request_id = id, session_id = r.SessionId });
     }
 }
