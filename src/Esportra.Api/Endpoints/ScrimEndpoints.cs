@@ -3046,24 +3046,43 @@ public static class ScrimEndpoints
     /// <summary>
     /// Projection for GetSessionAsync that includes raw veto tokens.
     /// Tokens are never returned in API responses — VetoMyToken is derived per caller.
-    /// Column order matches scrim_sessions DB creation order for Dapper positional materialization.
+    /// Mapped by column name (parameterless constructor), so adding a column to scrim_sessions
+    /// cannot break the scrim room; a positional constructor would depend on column order.
     /// </summary>
-    private sealed record ScrimSessionWithTokens(
-        Guid Id, Guid Team1Id, Guid Team2Id, string? GameSlug,
-        string? ModeKey, DateTime? ScheduledAt, int? DurationMinutes,
-        string? ServerInfo, string? LobbyCode, string Status,
-        bool ResultReportedByTeam1, bool ResultReportedByTeam2,
-        int? Team1Score, int? Team2Score, DateTime CreatedAt, DateTime UpdatedAt,
-        DateTime? Team1CheckedInAt, DateTime? Team2CheckedInAt,
-        string? HangfireJobIds, DateTime? CheckinWindowOpenedAt,
-        Guid? VetoSessionId,
-        string? VetoTeam1Token,
-        string? VetoTeam2Token,
-        string? Team1Name = null, string? Team1Logo = null,
-        string? Team2Name = null, string? Team2Logo = null,
-        string? MyRole = null, int BestOf = 1,
-        string? CancelledReason = null, Guid? CancelledByTeamId = null)
+    private sealed record ScrimSessionWithTokens
     {
+        public Guid Id { get; init; }
+        public Guid Team1Id { get; init; }
+        public Guid Team2Id { get; init; }
+        public string? GameSlug { get; init; }
+        public string? ModeKey { get; init; }
+        public DateTime? ScheduledAt { get; init; }
+        public int? DurationMinutes { get; init; }
+        public string? ServerInfo { get; init; }
+        public string? LobbyCode { get; init; }
+        public string Status { get; init; } = null!;
+        public bool ResultReportedByTeam1 { get; init; }
+        public bool ResultReportedByTeam2 { get; init; }
+        public int? Team1Score { get; init; }
+        public int? Team2Score { get; init; }
+        public DateTime CreatedAt { get; init; }
+        public DateTime UpdatedAt { get; init; }
+        public DateTime? Team1CheckedInAt { get; init; }
+        public DateTime? Team2CheckedInAt { get; init; }
+        public string? HangfireJobIds { get; init; }
+        public DateTime? CheckinWindowOpenedAt { get; init; }
+        public Guid? VetoSessionId { get; init; }
+        public string? VetoTeam1Token { get; init; }
+        public string? VetoTeam2Token { get; init; }
+        public string? Team1Name { get; init; }
+        public string? Team1Logo { get; init; }
+        public string? Team2Name { get; init; }
+        public string? Team2Logo { get; init; }
+        public string? MyRole { get; init; }
+        public int BestOf { get; init; } = 1;
+        public string? CancelledReason { get; init; }
+        public Guid? CancelledByTeamId { get; init; }
+
         public ScrimSessionRow ToSessionRow(string? vetoMyToken, ScrimDisputeRow? dispute = null) => new()
         {
             Id = Id,
