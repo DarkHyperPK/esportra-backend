@@ -568,6 +568,9 @@ public static class TeamEndpoints
             if (isOwner)
                 return Results.BadRequest(new { error = "Transfer captaincy before leaving." });
 
+            if (await IsRosterLockedAsync(conn, id))
+                return Results.Conflict(new { error = "Roster is locked: the team has active scrim listings or a tournament registration. Withdraw from both before changing the roster." });
+
             using var tx = conn.BeginTransaction();
             List<Guid> memberIds;
             string? teamName;
@@ -650,6 +653,9 @@ public static class TeamEndpoints
 
             using var conn = db.CreateConnection();
             await AssertCaptain(conn, id, userCtx.UserIdGuid);
+
+            if (await IsRosterLockedAsync(conn, id))
+                return Results.Conflict(new { error = "Roster is locked: the team has active scrim listings or a tournament registration. Withdraw from both before changing the roster." });
 
             var ownerId = await conn.QuerySingleOrDefaultAsync<Guid?>(
                 "SELECT owner_id FROM teams WHERE id = @id", new { id });
@@ -2149,6 +2155,29 @@ public static class TeamEndpoints
             new { teamId, userId });
         if (!isCaptain)
             throw new UnauthorizedAccessException("Only a team captain can perform this action.");
+    }
+
+    /// <summary>
+    /// Returns true when the team has open scrim listings or an active tournament registration.
+    /// Roster changes are blocked while either condition holds to prevent manipulation.
+    /// </summary>
+    private static async Task<bool> IsRosterLockedAsync(IDbConnection conn, Guid teamId)
+    {
+        return await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT
+                EXISTS(
+                    SELECT 1 FROM public.scrim_listings
+                    WHERE team_id = @teamId AND status = 'open'
+                )
+                OR EXISTS(
+                    SELECT 1 FROM public.tournament_participants
+                    WHERE team_id = @teamId
+                      AND participant_type = 'team'
+                      AND status NOT IN ('cancelled', 'rejected', 'disqualified')
+                )
+            """,
+            new { teamId });
     }
 
     /// <summary>
