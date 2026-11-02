@@ -170,6 +170,8 @@ public sealed record ScrimDisputeRow
 {
     public Guid Id { get; init; }
     public Guid SessionId { get; init; }
+    /// <summary>Set when the dispute is about one map of the series.</summary>
+    public int? GameNumber { get; init; }
     public Guid RaisedByTeamId { get; init; }
     public string Reason { get; init; } = null!;
     public string? Status { get; init; }
