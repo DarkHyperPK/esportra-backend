@@ -4,7 +4,9 @@ using Esportra.Api.Helpers;
 using Esportra.Api.Hubs;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Competitive;
+using Esportra.Api.Services;
 using Esportra.Contracts.Database;
+using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 
@@ -15,6 +17,7 @@ namespace Esportra.Api.Endpoints;
 ///
 /// GET  /api/admin/scrims/disputes?status=open&amp;page=1&amp;pageSize=20 — paginated list (requires disputes:view)
 /// POST /api/admin/scrims/disputes/{id}/resolve                      — resolve dispute (requires disputes:resolve)
+/// POST /api/admin/scrims/sessions/{id}/reset-time                   — clear a scrim's time at any stage (requires disputes:resolve)
 /// </summary>
 public static class ScrimAdminEndpoints
 {
@@ -24,6 +27,9 @@ public static class ScrimAdminEndpoints
             .RequireAuthorization("Authenticated");
 
         app.MapPost("/api/admin/scrims/disputes/{id:guid}/resolve", ResolveDisputeAsync)
+            .RequireAuthorization("Authenticated");
+
+        app.MapPost("/api/admin/scrims/sessions/{id:guid}/reset-time", ResetTimeAsync)
             .RequireAuthorization("Authenticated");
     }
 
@@ -61,7 +67,7 @@ public static class ScrimAdminEndpoints
             SELECT sd.id, sd.session_id, sd.raised_by_team_id, sd.reason, sd.status,
                    sd.evidence_urls, sd.responder_evidence_urls, sd.responder_notes,
                    sd.resolved_by, sd.outcome, sd.resolution_notes,
-                   sd.resolved_at, sd.created_at,
+                   sd.resolved_at, sd.created_at, sd.game_number,
                    rt.name AS raised_by_team_name,
                    ss.team1_id, ss.team2_id, ss.game_slug, ss.scheduled_at,
                    t1.name AS team1_name, t2.name AS team2_name
@@ -203,13 +209,45 @@ public static class ScrimAdminEndpoints
         }
     }
 
+    // ── POST /api/admin/scrims/sessions/{id}/reset-time ────────────────────────
+
+    /// <summary>
+    /// Platform staff clear a scrim's time even after check-in started (a stuck or mistaken schedule).
+    /// Check-ins are cleared too, so both teams start the time agreement again.
+    /// </summary>
+    private static async Task<IResult> ResetTimeAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        IHubContext<NotificationHub> hub,
+        IBackgroundJobClient jobs,
+        CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
+        if (!userCtx.IsSuperAdmin && !userCtx.Permissions.Contains(Permissions.DisputesResolve))
+            return Results.Forbid();
+
+        using var conn = db.CreateConnection();
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
+            "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id AND status IN ('scheduled', 'in_progress')",
+            new { id });
+        if (session is null) return Results.NotFound(new { error = "Only a scheduled or in-progress scrim can be reset." });
+
+        await ScrimTimeReset.ApplyAsync(conn, jobs, id, clearCheckins: true);
+
+        foreach (var team in new[] { session.Team1Id, session.Team2Id })
+            await ScrimTeamNotifier.SendAsync(conn, hub, team, id, "scrim_time_reset",
+                "Match time cleared", "Staff cleared the time of your scrim. Agree a new time in the room.");
+        return Results.Ok(new { session_id = id });
+    }
+
     // ── Private projections ────────────────────────────────────────────────────
 
     private sealed record ScrimDisputeAdminRow(
         Guid Id, Guid SessionId, Guid RaisedByTeamId, string Reason, string Status,
         string[]? EvidenceUrls, string[]? ResponderEvidenceUrls, string? ResponderNotes,
         Guid? ResolvedBy, string? Outcome, string? ResolutionNotes,
-        DateTime? ResolvedAt, DateTime CreatedAt,
+        DateTime? ResolvedAt, DateTime CreatedAt, int? GameNumber,
         string? RaisedByTeamName,
         Guid Team1Id, Guid Team2Id, string? GameSlug, DateTime? ScheduledAt,
         string? Team1Name, string? Team2Name);

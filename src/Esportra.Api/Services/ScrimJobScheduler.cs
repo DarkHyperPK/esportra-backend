@@ -28,6 +28,14 @@ public static class ScrimJobScheduler
             new { jobIds, sessionId });
     }
 
+    /// <summary>Drops the scheduled jobs of a scrim whose time was cleared.</summary>
+    public static async Task CancelAsync(IDbConnection conn, IBackgroundJobClient jobs, Guid sessionId)
+    {
+        await DeleteExistingAsync(conn, jobs, sessionId);
+        await conn.ExecuteAsync(
+            "UPDATE public.scrim_sessions SET hangfire_job_ids = NULL WHERE id = @sessionId", new { sessionId });
+    }
+
     private static async Task DeleteExistingAsync(IDbConnection conn, IBackgroundJobClient jobs, Guid sessionId)
     {
         var existing = await conn.ExecuteScalarAsync<string?>(

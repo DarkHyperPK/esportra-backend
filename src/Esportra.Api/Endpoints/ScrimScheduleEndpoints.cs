@@ -19,6 +19,8 @@ namespace Esportra.Api.Endpoints;
 /// POST /api/scrims/sessions/{id}/time-proposals   — propose (supersedes any pending proposal)
 /// POST /api/scrims/time-proposals/{id}/accept     — the OTHER team accepts: sets the match time
 /// POST /api/scrims/time-proposals/{id}/decline    — the OTHER team declines
+/// POST /api/scrims/time-proposals/{id}/withdraw   — the proposing team takes its own proposal back
+/// POST /api/scrims/sessions/{id}/time/reset       — either team clears the agreed time (before check-in)
 /// </summary>
 public static class ScrimScheduleEndpoints
 {
@@ -27,6 +29,8 @@ public static class ScrimScheduleEndpoints
         app.MapPost("/api/scrims/sessions/{id:guid}/time-proposals", ProposeAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/time-proposals/{id:guid}/accept", AcceptAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/time-proposals/{id:guid}/decline", DeclineAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/time-proposals/{id:guid}/withdraw", WithdrawAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/time/reset", ResetAsync).RequireAuthorization("Authenticated");
     }
 
     private sealed record ProposeTimeRequest(
@@ -211,5 +215,57 @@ public static class ScrimScheduleEndpoints
         await ScrimTeamNotifier.SendAsync(conn, hub, p.ProposedByTeamId, p.SessionId, "scrim_time_declined",
             "Match time declined", "The other team can't make that time. Propose another.");
         return Results.Ok(new { proposal_id = id, session_id = p.SessionId });
+    }
+
+    private static async Task<IResult> WithdrawAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub, CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var p = await LoadProposalAsync(conn, id);
+        if (p is null) return Results.NotFound();
+        // Only the team that made the proposal can take it back; the other team declines instead.
+        if (await StaffTeamAsync(conn, user.UserIdGuid, p.ProposedByTeamId) is null) return Results.Forbid();
+        if (p.Status != "pending")
+            return Results.Conflict(new { error = "This proposal has already been answered or replaced." });
+
+        var withdrawn = await conn.ExecuteScalarAsync<Guid?>(
+            "UPDATE public.scrim_time_proposals SET status = 'superseded', responded_at = now(), responded_by = @userId WHERE id = @id AND status = 'pending' RETURNING id",
+            new { id, userId = user.UserIdGuid });
+        if (withdrawn is null)
+            return Results.Conflict(new { error = "This proposal has already been answered or replaced." });
+
+        var other = p.ProposedByTeamId == p.Team1Id ? p.Team2Id : p.Team1Id;
+        await ScrimTeamNotifier.SendAsync(conn, hub, other, p.SessionId, "scrim_time_declined",
+            "Proposal withdrawn", "The other team took their proposed time back. A new one may follow.");
+        return Results.Ok(new { proposal_id = id, session_id = p.SessionId });
+    }
+
+    /// <summary>Clears an agreed time so the captains can start again (a mis-click on accept, a mistaken date).</summary>
+    private static async Task<IResult> ResetAsync(
+        Guid id, HttpContext ctx, IDbConnectionFactory db, IHubContext<NotificationHub> hub,
+        IBackgroundJobClient jobs, CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var session = await conn.QuerySingleOrDefaultAsync<SessionTimeRow>(
+            """
+            SELECT team1_id, team2_id, status::text AS status, team1_checked_in_at, team2_checked_in_at
+            FROM public.scrim_sessions WHERE id = @id
+            """,
+            new { id });
+        if (session is null) return Results.NotFound();
+        var myTeam = await StaffTeamAsync(conn, user.UserIdGuid, session.Team1Id, session.Team2Id);
+        if (myTeam is null) return Results.Forbid();
+
+        var frozen = Frozen(session.Status, session.Team1CheckedInAt, session.Team2CheckedInAt);
+        if (frozen is not null) return Results.Conflict(new { error = frozen });
+
+        await ScrimTimeReset.ApplyAsync(conn, jobs, id, clearCheckins: false);
+
+        var other = myTeam == session.Team1Id ? session.Team2Id : session.Team1Id;
+        await ScrimTeamNotifier.SendAsync(conn, hub, other, id, "scrim_time_reset",
+            "Match time cleared", "The other team cleared the agreed time. Propose a new one.");
+        return Results.Ok(new { session_id = id });
     }
 }

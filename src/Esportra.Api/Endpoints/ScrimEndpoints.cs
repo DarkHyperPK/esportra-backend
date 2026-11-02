@@ -93,6 +93,10 @@ public static class ScrimEndpoints
         app.MapGet("/api/scrims/sessions/{id:guid}/results", GetSessionResultsAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/dispute", OpenDisputeAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/sessions/{id:guid}/dispute/evidence", SubmitEvidenceAsync).RequireAuthorization("Authenticated");
+        app.MapPost("/api/scrims/sessions/{id:guid}/dispute/evidence/upload", UploadEvidenceAsync)
+            .RequireAuthorization("Authenticated")
+            .DisableAntiforgery()
+            .WithMetadata(new RateLimitPolicyMetadata("screenshotOcr"));
 
         // ── Scrim Sessions — PROJ-077 new endpoints ─────────────────────────────
         app.MapPatch("/api/scrims/sessions/{id:guid}/lobby", UpdateLobbyAsync).RequireAuthorization("Authenticated");
@@ -1460,9 +1464,12 @@ public static class ScrimEndpoints
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
 
-        var urls = req.ResponderEvidenceUrls ?? Array.Empty<string>();
+        // Either name is accepted: the client sends evidence_urls, older callers responder_evidence_urls.
+        var urls = req.EvidenceUrls ?? req.ResponderEvidenceUrls ?? Array.Empty<string>();
+        if (urls.Length == 0)
+            return Results.UnprocessableEntity(new { error = "Add at least one screenshot or link." });
         if (urls.Length > 5)
-            return Results.UnprocessableEntity(new { error = "responder_evidence_urls max 5 URLs." });
+            return Results.UnprocessableEntity(new { error = "At most 5 links at a time." });
         foreach (var url in urls)
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
@@ -1490,20 +1497,77 @@ public static class ScrimEndpoints
             new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
         if (!isStaff) return Results.Forbid();
 
+        var callerTeamId = await conn.ExecuteScalarAsync<Guid?>(
+            """
+            SELECT team_id FROM public.team_members
+            WHERE team_id IN (@t1, @t2) AND user_id = @userId
+              AND role IN ('captain', 'manager') AND is_active = TRUE
+            LIMIT 1
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (callerTeamId is null) return Results.Forbid();
+
+        // The team that raised the dispute adds to its own evidence; the other team to its response.
+        // A map dispute is picked by game number; otherwise the latest open dispute.
         var updated = await conn.QuerySingleOrDefaultAsync<ScrimDisputeRow>(
             """
-            UPDATE public.scrim_disputes
-            SET responder_evidence_urls = @urls
-            WHERE session_id = @sessionId
-              AND status IN ('open', 'escalated')
-            RETURNING *
+            UPDATE public.scrim_disputes d
+            SET evidence_urls = CASE WHEN d.raised_by_team_id = @team
+                    THEN (COALESCE(d.evidence_urls, ARRAY[]::text[]) || @urls)[1:8] ELSE d.evidence_urls END,
+                responder_evidence_urls = CASE WHEN d.raised_by_team_id <> @team
+                    THEN (COALESCE(d.responder_evidence_urls, ARRAY[]::text[]) || @urls)[1:8] ELSE d.responder_evidence_urls END
+            WHERE d.id = (
+                SELECT x.id FROM public.scrim_disputes x
+                WHERE x.session_id = @sessionId AND x.status IN ('open', 'escalated')
+                  AND (@game::int IS NULL OR x.game_number = @game::int)
+                ORDER BY x.created_at DESC LIMIT 1)
+            RETURNING d.*
             """,
-            new { sessionId = id, urls });
+            new { sessionId = id, urls, team = callerTeamId, game = req.GameNumber });
 
         if (updated is null)
             return Results.NotFound(new { error = "No open dispute found for this session." });
 
         return Results.Ok(updated);
+    }
+
+    // ── POST /api/scrims/sessions/{id}/dispute/evidence/upload ────────────────
+
+    private static async Task<IResult> UploadEvidenceAsync(
+        Guid id,
+        HttpContext ctx,
+        IDbConnectionFactory db,
+        ScoreboardScreenshotStore store,
+        CancellationToken ct)
+    {
+        if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
+        if (!ctx.Request.HasFormContentType) return Results.BadRequest(new { error = "Send the screenshot as multipart form data." });
+        var form = await ctx.Request.ReadFormAsync(ct);
+        var file = form.Files.GetFile("file");
+        if (file is null || file.Length is 0 or > ScreenshotValidator.MaxBytes)
+            return Results.BadRequest(new { error = "Upload one image of 10 MB or less." });
+
+        using var conn = db.CreateConnection();
+        var session = await conn.QuerySingleOrDefaultAsync<ScrimSessionParties>(
+            "SELECT team1_id, team2_id FROM public.scrim_sessions WHERE id = @id", new { id });
+        if (session is null) return Results.NotFound();
+        var isStaff = await conn.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS(SELECT 1 FROM public.team_members
+                          WHERE team_id IN (@t1, @t2) AND user_id = @userId
+                            AND role IN ('captain', 'manager') AND is_active = TRUE)
+            """,
+            new { t1 = session.Team1Id, t2 = session.Team2Id, userId = userCtx.UserIdGuid });
+        if (!isStaff) return Results.Forbid();
+
+        var bytes = await ScoreboardOcrEndpoints.ReadAllAsync(file, ct);
+        var check = ScreenshotValidator.Validate(file.FileName, bytes);
+        if (!check.Ok) return Results.BadRequest(new { error = check.Error });
+
+        var path = ScoreboardScreenshotStore.BuildPath(id, Guid.NewGuid(), check.Extension);
+        if (!await store.UploadAsync(path, bytes, check.ContentType, ct))
+            return Results.Json(new { error = "Could not store the image. Please try again." }, statusCode: 502);
+        return Results.Ok(new { url = store.PublicUrl(path) });
     }
 
     // ── PATCH /api/scrims/sessions/{id}/lobby ─────────────────────────────────
@@ -1530,7 +1594,8 @@ public static class ScrimEndpoints
             new { id });
         if (session is null) return Results.NotFound();
 
-        if (session.Status is "in_progress" or "completed" or "cancelled" or "disputed")
+        // The party code is shared once the scrim is live, so in_progress must stay editable.
+        if (session.Status is "completed" or "cancelled")
             return Results.Conflict(new { error = $"Lobby cannot be updated when session is '{session.Status}'." });
 
         var isStaff = await conn.ExecuteScalarAsync<bool>(
@@ -3222,7 +3287,9 @@ public sealed record OpenDisputeRequest(
     [property: JsonPropertyName("evidence_urls")] string[]? EvidenceUrls = null);
 
 public sealed record SubmitScrimEvidenceRequest(
-    [property: JsonPropertyName("responder_evidence_urls")] string[]? ResponderEvidenceUrls = null);
+    [property: JsonPropertyName("responder_evidence_urls")] string[]? ResponderEvidenceUrls = null,
+    [property: JsonPropertyName("evidence_urls")] string[]? EvidenceUrls = null,
+    [property: JsonPropertyName("game_number")] int? GameNumber = null);
 
 public sealed record CreatePracticeSessionRequest(
     [property: JsonPropertyName("team_id")] Guid TeamId,
