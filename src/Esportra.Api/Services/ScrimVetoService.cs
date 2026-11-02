@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Dapper;
 using Esportra.Api.ScheduledJobs;
 using Esportra.Contracts.Database;
@@ -90,10 +91,12 @@ public sealed class ScrimVetoService(
                 INSERT INTO public.public_veto_sessions
                     (id, game, best_of, team1_name, team2_name, team1_id, team2_id,
                      current_action_number, status,
+                     toss_winner_team_id, toss_completed_at,
                      selected_map_pool, host_token, team1_token, team2_token, overlay_token)
                 VALUES
                     (@id, @game, @bestOf, @team1Name, @team2Name, @team1Id, @team2Id,
-                     1, 'pending_toss',
+                     1, 'toss_choice_pending',
+                     @tossWinnerId, now(),
                      @mapPool, @hostToken, @team1Token, @team2Token, @overlayToken)
                 """,
                 new
@@ -105,6 +108,8 @@ public sealed class ScrimVetoService(
                     team2Name,
                     team1Id,
                     team2Id,
+                    // Scrims have no host to flip the coin, so the toss is resolved here.
+                    tossWinnerId = (RandomNumberGenerator.GetBytes(1)[0] & 1) == 0 ? team1Id : team2Id,
                     mapPool,
                     hostToken,
                     team1Token,
