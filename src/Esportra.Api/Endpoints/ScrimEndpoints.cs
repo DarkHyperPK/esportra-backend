@@ -640,8 +640,35 @@ public static class ScrimEndpoints
 
         var rows = await conn.QueryAsync<ScrimOfferRow>(
             """
-            SELECT so.*, t.name AS offering_team_name, t.logo_url AS offering_team_logo
-            FROM public.scrim_offers so JOIN public.teams t ON t.id = so.offering_team_id
+            SELECT so.*,
+                   t.name AS offering_team_name, t.logo_url AS offering_team_logo, t.tag AS offering_team_tag,
+                   sl.preferred_days AS listing_preferred_days,
+                   sl.preferred_time_start AS listing_preferred_time_start,
+                   sl.preferred_time_end AS listing_preferred_time_end,
+                   sl.timezone AS listing_timezone,
+                   (SELECT count(*)
+                    FROM public.team_members tm
+                    WHERE tm.team_id = so.offering_team_id AND tm.is_active = TRUE) AS offering_active_member_count,
+                   (SELECT json_agg(sub ORDER BY sub.role_ord, sub.username)
+                    FROM (
+                        SELECT p.username, p.avatar_seed,
+                               CASE tm2.role WHEN 'captain' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END AS role_ord,
+                               pgp.rank_tier_key
+                        FROM public.team_members tm2
+                        JOIN public.profiles p ON p.id = tm2.user_id
+                        LEFT JOIN public.player_game_profiles pgp
+                            ON pgp.user_id = tm2.user_id AND pgp.game_slug = sl.game_slug
+                        WHERE tm2.team_id = so.offering_team_id AND tm2.is_active = TRUE
+                        LIMIT 6
+                    ) sub
+                   ) AS offering_members_preview,
+                   (SELECT count(*)
+                    FROM public.scrim_sessions ss
+                    WHERE (ss.team1_id = so.offering_team_id OR ss.team2_id = so.offering_team_id)
+                      AND ss.status = 'completed') AS offering_scrims_completed
+            FROM public.scrim_offers so
+            JOIN public.teams t ON t.id = so.offering_team_id
+            JOIN public.scrim_listings sl ON sl.id = so.listing_id
             WHERE so.listing_id = @listingId
             ORDER BY so.created_at DESC
             """,
@@ -694,6 +721,10 @@ public static class ScrimEndpoints
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
 
+        AcceptOfferRequest? req = null;
+        if (ctx.Request.ContentLength > 0)
+            req = await ctx.Request.ReadFromJsonAsync<AcceptOfferRequest>(ct);
+
         using var conn = db.CreateConnection();
 
         using var tx = conn.BeginTransaction();
@@ -705,7 +736,11 @@ public static class ScrimEndpoints
                 """
                 SELECT so.id, so.listing_id, so.offering_team_id,
                        so.proposed_at, so.proposed_duration_minutes, so.status,
-                       sl.team_id AS listing_team_id, sl.schedule_type, so.slot_id
+                       sl.team_id AS listing_team_id, sl.schedule_type, so.slot_id,
+                       sl.preferred_days AS listing_preferred_days,
+                       sl.preferred_time_start AS listing_preferred_time_start,
+                       sl.preferred_time_end AS listing_preferred_time_end,
+                       sl.timezone AS listing_timezone
                 FROM public.scrim_offers so
                 JOIN public.scrim_listings sl ON sl.id = so.listing_id
                 WHERE so.id = @id
@@ -734,6 +769,33 @@ public static class ScrimEndpoints
             if (accepted is null)
                 return Results.BadRequest(new { error = "Offer not found or already processed." });
 
+            // Resolve scheduled time: accept body > offer proposed > now.
+            var resolvedScheduledAt = req?.ScheduledAt ?? offerRow.ProposedAt ?? DateTime.UtcNow;
+
+            // Validate proposed time against listing availability window (if constraints exist).
+            if (req?.ScheduledAt.HasValue == true)
+            {
+                var dt = req.ScheduledAt.Value;
+                if (offerRow.ListingPreferredDays?.Length > 0)
+                {
+                    var dow = (int)dt.DayOfWeek;
+                    if (!offerRow.ListingPreferredDays.Contains(dow))
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = "The selected day is outside the listing's available days." });
+                    }
+                }
+                if (offerRow.ListingPreferredTimeStart.HasValue && offerRow.ListingPreferredTimeEnd.HasValue)
+                {
+                    var t = TimeOnly.FromDateTime(dt);
+                    if (t < offerRow.ListingPreferredTimeStart.Value || t > offerRow.ListingPreferredTimeEnd.Value)
+                    {
+                        tx.Rollback();
+                        return Results.BadRequest(new { error = $"The selected time must be between {offerRow.ListingPreferredTimeStart.Value:HH:mm} and {offerRow.ListingPreferredTimeEnd.Value:HH:mm}." });
+                    }
+                }
+            }
+
             // Create scrim session.
             // best_of is fixed by the listing: the offering team saw the format before offering,
             // so acceptance inherits it (series length drives result reporting validation).
@@ -750,7 +812,7 @@ public static class ScrimEndpoints
                 {
                     team2Id = offerRow.OfferingTeamId,
                     listingId = offerRow.ListingId,
-                    scheduledAt = offerRow.ProposedAt ?? DateTime.UtcNow,
+                    scheduledAt = resolvedScheduledAt,
                     durationMinutes = offerRow.ProposedDurationMinutes,
                 }, tx);
 
@@ -845,9 +907,9 @@ public static class ScrimEndpoints
                     """
                     INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                     VALUES (@userId, 'scrim_offer_accepted', 'Scrim Offer Accepted', @message,
-                            '/competitive/scrims/workspace', FALSE)
+                            @link, FALSE)
                     """,
-                    new { userId = staffId, message = $"{listingTeamName ?? "A team"} accepted your scrim offer." });
+                    new { userId = staffId, message = $"{listingTeamName ?? "A team"} accepted your scrim offer.", link = $"/competitive/scrims/sessions/{session.Id}" });
             }
 
             // Gap 1: real-time push after commit.
@@ -929,7 +991,6 @@ public static class ScrimEndpoints
             SELECT ss.*,
                    t1.name AS team1_name, t1.logo_url AS team1_logo,
                    t2.name AS team2_name, t2.logo_url AS team2_logo,
-                   ss.veto_team1_token, ss.veto_team2_token,
                    (SELECT tm.role FROM public.team_members tm
                     WHERE tm.team_id IN (ss.team1_id, ss.team2_id)
                       AND tm.user_id = @userId
@@ -1118,9 +1179,9 @@ public static class ScrimEndpoints
                     INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                     VALUES (@userId, 'scrim_result_submitted'::notification_type, 'Scrim Result Submitted',
                             'The opposing team submitted a result report.',
-                            '/competitive/scrims/workspace', FALSE)
+                            @link, FALSE)
                     """,
-                    new { userId = staffId });
+                    new { userId = staffId, link = $"/competitive/scrims/sessions/{id}" });
             }
 
             await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_result_submitted", "Scrim Result Submitted", "The opposing team submitted a result report.");
@@ -1247,9 +1308,9 @@ public static class ScrimEndpoints
                 INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_dispute_raised'::notification_type, 'Scrim Dispute Raised',
                         'The opposing team raised a dispute on your scrim session.',
-                        '/competitive/scrims/workspace', FALSE)
+                        @link, FALSE)
                 """,
-                new { userId = staffId });
+                new { userId = staffId, link = $"/competitive/scrims/sessions/{id}" });
         }
 
         await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_dispute_raised", "Scrim Dispute Raised", "The opposing team raised a dispute on your scrim session.");
@@ -1394,9 +1455,9 @@ public static class ScrimEndpoints
                 INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_lobby_updated'::notification_type,
                         'Lobby Updated', 'The opposing team updated the lobby details.',
-                        '/competitive/scrims/workspace', FALSE)
+                        @link, FALSE)
                 """,
-                new { userId = staffId });
+                new { userId = staffId, link = $"/competitive/scrims/sessions/{id}" });
         }
 
         await TeamNotifications.PushAsync(hub, otherStaffIds, "scrim_lobby_updated",
@@ -1519,9 +1580,9 @@ public static class ScrimEndpoints
                     INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                     VALUES (@userId, 'scrim_result_confirmed'::notification_type,
                             'Result Confirmed', 'The scrim result has been confirmed by both teams.',
-                            '/competitive/scrims/workspace', FALSE)
+                            @link, FALSE)
                     """,
-                    new { userId = staffId });
+                    new { userId = staffId, link = $"/competitive/scrims/sessions/{id}" });
             }
 
             await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_result_confirmed",
@@ -1654,9 +1715,9 @@ public static class ScrimEndpoints
                 INSERT INTO public.notifications (user_id, type, title, message, link, is_read)
                 VALUES (@userId, 'scrim_checkin_updated'::notification_type,
                         'Check-in Update', 'A team checked in for the scrim session.',
-                        '/competitive/scrims/workspace', FALSE)
+                        @link, FALSE)
                 """,
-                new { userId = staffId });
+                new { userId = staffId, link = $"/competitive/scrims/sessions/{id}" });
         }
 
         await TeamNotifications.PushAsync(hub, allStaffIds, "scrim_checkin_updated",
@@ -2799,7 +2860,13 @@ public static class ScrimEndpoints
         public Guid ListingTeamId { get; init; }
         public string ScheduleType { get; init; } = "one_off";
         public Guid? SlotId { get; init; }
+        public int[]? ListingPreferredDays { get; init; }
+        public TimeOnly? ListingPreferredTimeStart { get; init; }
+        public TimeOnly? ListingPreferredTimeEnd { get; init; }
+        public string? ListingTimezone { get; init; }
     }
+    private sealed record AcceptOfferRequest(
+        [property: JsonPropertyName("scheduled_at")] DateTime? ScheduledAt = null);
     private sealed record ScrimOfferRef(Guid ListingId, Guid OfferingTeamId, Guid ListingTeamId);
     private sealed record PracticeSessionRef(Guid TeamId, string Status);
     private sealed record ScrimListingTypeRef(Guid TeamId, string Status, string ScheduleType);

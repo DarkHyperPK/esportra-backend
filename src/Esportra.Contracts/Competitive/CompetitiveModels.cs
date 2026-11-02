@@ -70,8 +70,18 @@ public sealed record ScrimOfferRow
     public Guid? SlotId { get; init; }
     public string? OfferingTeamName { get; init; }
     public string? OfferingTeamLogo { get; init; }
+    public string? OfferingTeamTag { get; init; }
     public string? ListingGameSlug { get; init; }
     public string? ListingTeamName { get; init; }
+    // Listing availability — populated by GetListingOffersAsync (via JOIN); null from RETURNING *.
+    public int[]? ListingPreferredDays { get; init; }
+    public TimeOnly? ListingPreferredTimeStart { get; init; }
+    public TimeOnly? ListingPreferredTimeEnd { get; init; }
+    public string? ListingTimezone { get; init; }
+    // Offering team enrichment — populated by GetListingOffersAsync only.
+    public int? OfferingActiveMemberCount { get; init; }
+    public string? OfferingMembersPreview { get; init; }
+    public int? OfferingScrimsCompleted { get; init; }
 }
 
 public sealed record ScrimSessionRow
