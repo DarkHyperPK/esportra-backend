@@ -148,6 +148,15 @@ public static class ScrimGameEndpoints
             """,
             new { userId, t1 = s.Team1Id, t2 = s.Team2Id });
 
+    /// <summary>
+    /// Mirrors "a report waits for the other team" onto the session flags the room, the queue and the
+    /// workspace already read: set for the reporting team while its map is unconfirmed, cleared otherwise.
+    /// </summary>
+    private static Task SetPendingFlagsAsync(IDbConnection conn, Guid sessionId, bool team1Pending, bool team2Pending, IDbTransaction? tx = null) =>
+        conn.ExecuteAsync(
+            "UPDATE public.scrim_sessions SET result_reported_by_team1 = @team1Pending, result_reported_by_team2 = @team2Pending, updated_at = now() WHERE id = @sessionId",
+            new { sessionId, team1Pending, team2Pending }, tx);
+
     private static async Task<IResult> ListAsync(Guid id, HttpContext ctx, IDbConnectionFactory db)
     {
         if (ctx.Items["UserContext"] is not UserContext user) return Results.Unauthorized();
@@ -243,6 +252,9 @@ public static class ScrimGameEndpoints
 
         if (row is null) return Results.Conflict(new { error = $"Game {n} was just changed. Refresh and try again." });
 
+        var reportedByTeam1 = req.ReportedByTeamId == session.Team1Id;
+        await SetPendingFlagsAsync(conn, id, reportedByTeam1, !reportedByTeam1);
+
         var otherTeam = req.ReportedByTeamId == session.Team1Id ? session.Team2Id : session.Team1Id;
         await ScrimTeamNotifier.SendAsync(conn, hub, otherTeam, id, "scrim_result_submitted",
             "Map result to confirm", $"Game {n} was reported. Confirm it or open a dispute.");
@@ -315,6 +327,7 @@ public static class ScrimGameEndpoints
             """,
             new { id, n, winner, caller }, tx);
         var (t1, t2, decided) = await SettleSeriesAsync(conn, tx, id, session.BestOf);
+        await SetPendingFlagsAsync(conn, id, false, false, tx);
         tx.Commit();
 
         var message = decided
@@ -367,6 +380,7 @@ public static class ScrimGameEndpoints
             VALUES (@id, @team, @reason, @evidence, @n)
             """,
             new { id, n, team = req.RaisedByTeamId, reason = req.Reason, evidence = req.EvidenceUrls ?? [] }, tx);
+        await SetPendingFlagsAsync(conn, id, false, false, tx);
         tx.Commit();
 
         await ScrimTeamNotifier.SendAsync(conn, hub, game.ReportedByTeamId, id, "scrim_dispute_raised",
