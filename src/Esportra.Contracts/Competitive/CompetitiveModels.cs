@@ -143,6 +143,8 @@ public sealed record ScrimSessionRow
     public string? VetoMyToken { get; init; }
     public string? MyRole { get; init; }
     public ScrimDisputeRow? Dispute { get; init; }
+    /// <summary>The proposed time awaiting a response, if any (GET session only).</summary>
+    public ScrimTimeProposalRow? TimeProposal { get; init; }
     public int BestOf { get; init; } = 1;
     /// <summary>checkin_timeout | cancelled_by_team | listing_closed | admin; null = unknown/legacy.</summary>
     public string? CancelledReason { get; init; }
@@ -410,4 +412,17 @@ public sealed record ScrimUpNextResponse
     public IReadOnlyList<ScrimUpNextItem> Items { get; init; } = [];
     /// <summary>Total before the response cap.</summary>
     public int Total { get; init; }
+}
+
+/// <summary>A proposed match time. Pending until the other team accepts or declines.</summary>
+public sealed record ScrimTimeProposalRow
+{
+    public Guid Id { get; init; }
+    public Guid SessionId { get; init; }
+    public Guid ProposedByTeamId { get; init; }
+    public DateTime ProposedAt { get; init; }
+    public string? Note { get; init; }
+    /// <summary>pending | accepted | declined | superseded</summary>
+    public string Status { get; init; } = "pending";
+    public DateTime CreatedAt { get; init; }
 }

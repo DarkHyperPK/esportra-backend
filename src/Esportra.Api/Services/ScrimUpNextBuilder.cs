@@ -34,6 +34,8 @@ public sealed record UpNextSessionRow
     public bool ResultReportedByTeam1 { get; init; }
     public bool ResultReportedByTeam2 { get; init; }
     public bool VetoOpen { get; init; }
+    /// <summary>Team that made the pending time proposal, if one is awaiting a response.</summary>
+    public Guid? PendingProposalByTeamId { get; init; }
     public string? DisputeStatus { get; init; }
     public Guid? DisputeRaisedByTeamId { get; init; }
     public int DisputeResponderEvidenceCount { get; init; }
@@ -59,9 +61,11 @@ public static class ScrimUpNextBuilder
         ["checkin_open"] = 1,
         ["veto_ready"] = 2,
         ["result_to_confirm"] = 3,
-        ["evidence_due"] = 4,
-        ["result_to_report"] = 5,
-        ["offer_received"] = 6,
+        ["time_to_respond"] = 4,
+        ["evidence_due"] = 5,
+        ["result_to_report"] = 6,
+        ["time_to_propose"] = 7,
+        ["offer_received"] = 8,
     };
 
     public static ScrimUpNextResponse Build(
@@ -109,6 +113,13 @@ public static class ScrimUpNextBuilder
         return new ScrimUpNextResponse { Items = ordered.Take(MaxItems).ToList(), Total = ordered.Count };
     }
 
+    /// <summary>The time still has to be agreed: answer their proposal, or make one. Waiting on them is not an item.</summary>
+    private static ScrimUpNextItem? SchedulingItem(UpNextSessionRow s, Guid myId, Func<string, DateTime?, ScrimUpNextItem> make)
+    {
+        if (s.PendingProposalByTeamId is { } by) return by != myId ? make("time_to_respond", null) : null;
+        return s.ScheduledAt is null ? make("time_to_propose", null) : null;
+    }
+
     private static ScrimUpNextItem? ForSide(UpNextSessionRow s, bool isTeam1, DateTime now)
     {
         var myId = isTeam1 ? s.Team1Id : s.Team2Id;
@@ -132,14 +143,17 @@ public static class ScrimUpNextBuilder
 
         switch (s.Status)
         {
-            case "scheduled" when s.ScheduledAt is { } start:
-                var opens = start.AddMinutes(-CheckinOpensBeforeMinutes);
-                var closes = start.AddMinutes(CheckinClosesAfterMinutes);
-                // The server only accepts check-in once the window job has opened it, so the
-                // queue must not send anyone to a check-in that would be rejected.
-                return s.CheckinWindowOpenedAt is not null && now >= opens && now <= closes && myCheckin is null
-                    ? Make("checkin_open", closes)
-                    : null;
+            case "scheduled":
+                // Check-in wins when it is open; the server only accepts it once the window job opened it,
+                // so the queue must not send anyone to a check-in that would be rejected.
+                if (s.ScheduledAt is { } start)
+                {
+                    var opens = start.AddMinutes(-CheckinOpensBeforeMinutes);
+                    var closes = start.AddMinutes(CheckinClosesAfterMinutes);
+                    if (s.CheckinWindowOpenedAt is not null && now >= opens && now <= closes && myCheckin is null)
+                        return Make("checkin_open", closes);
+                }
+                return SchedulingItem(s, myId, Make);
 
             case "in_progress":
                 if (theyReported && !iReported) return Make("result_to_confirm");

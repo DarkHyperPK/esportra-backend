@@ -754,11 +754,7 @@ public static class ScrimEndpoints
                 """
                 SELECT so.id, so.listing_id, so.offering_team_id,
                        so.proposed_at, so.proposed_duration_minutes, so.status,
-                       sl.team_id AS listing_team_id, sl.schedule_type, so.slot_id,
-                       sl.preferred_days AS listing_preferred_days,
-                       sl.preferred_time_start AS listing_preferred_time_start,
-                       sl.preferred_time_end AS listing_preferred_time_end,
-                       sl.timezone AS listing_timezone
+                       sl.team_id AS listing_team_id, sl.schedule_type, so.slot_id
                 FROM public.scrim_offers so
                 JOIN public.scrim_listings sl ON sl.id = so.listing_id
                 WHERE so.id = @id
@@ -787,32 +783,10 @@ public static class ScrimEndpoints
             if (accepted is null)
                 return Results.BadRequest(new { error = "Offer not found or already processed." });
 
-            // Resolve scheduled time: accept body > offer proposed > now.
-            var resolvedScheduledAt = req?.ScheduledAt ?? offerRow.ProposedAt ?? DateTime.UtcNow;
-
-            // Validate proposed time against listing availability window (if constraints exist).
-            if (req?.ScheduledAt.HasValue == true)
-            {
-                var dt = req.ScheduledAt.Value;
-                if (offerRow.ListingPreferredDays?.Length > 0)
-                {
-                    var dow = (int)dt.DayOfWeek;
-                    if (!offerRow.ListingPreferredDays.Contains(dow))
-                    {
-                        tx.Rollback();
-                        return Results.BadRequest(new { error = "The selected day is outside the listing's available days." });
-                    }
-                }
-                if (offerRow.ListingPreferredTimeStart.HasValue && offerRow.ListingPreferredTimeEnd.HasValue)
-                {
-                    var t = TimeOnly.FromDateTime(dt);
-                    if (t < offerRow.ListingPreferredTimeStart.Value || t > offerRow.ListingPreferredTimeEnd.Value)
-                    {
-                        tx.Rollback();
-                        return Results.BadRequest(new { error = $"The selected time must be between {offerRow.ListingPreferredTimeStart.Value:HH:mm} and {offerRow.ListingPreferredTimeEnd.Value:HH:mm}." });
-                    }
-                }
-            }
+            // Accepting does not fix a time: the captains agree one in the scrim room. The exceptions are a
+            // booked slot (the owner published it) and an explicit time from an older client.
+            var plan = ScrimAcceptPlan.For(
+                offerRow.SlotId, req?.ScheduledAt?.ToUniversalTime(), offerRow.ProposedAt, DateTime.UtcNow);
 
             // Create scrim session.
             // best_of is fixed by the listing: the offering team saw the format before offering,
@@ -822,7 +796,7 @@ public static class ScrimEndpoints
                 INSERT INTO public.scrim_sessions
                     (team1_id, team2_id, game_slug, scheduled_at, duration_minutes, best_of, status)
                 SELECT sl.team_id, @team2Id, sl.game_slug,
-                       @scheduledAt, @durationMinutes, COALESCE(sl.best_of, 1), 'scheduled'
+                       @scheduledAt::timestamptz, @durationMinutes::int, COALESCE(sl.best_of, 1), 'scheduled'
                 FROM public.scrim_listings sl WHERE sl.id = @listingId
                 RETURNING *
                 """,
@@ -830,9 +804,19 @@ public static class ScrimEndpoints
                 {
                     team2Id = offerRow.OfferingTeamId,
                     listingId = offerRow.ListingId,
-                    scheduledAt = resolvedScheduledAt,
+                    scheduledAt = plan.ScheduledAt,
                     durationMinutes = offerRow.ProposedDurationMinutes,
                 }, tx);
+
+            if (plan.InitialProposalAt is { } suggested)
+            {
+                await conn.ExecuteAsync(
+                    """
+                    INSERT INTO public.scrim_time_proposals (session_id, proposed_by_team_id, proposed_at)
+                    VALUES (@sessionId, @teamId, @suggested)
+                    """,
+                    new { sessionId = session.Id, teamId = offerRow.OfferingTeamId, suggested }, tx);
+            }
 
             // D7: Recurring listings stay 'open' so more sessions can be created.
             // One-off listings close on acceptance (existing behaviour).
@@ -875,32 +859,10 @@ public static class ScrimEndpoints
 
             tx.Commit();
 
-            // D3: Enqueue Hangfire delayed jobs for session lifecycle automation.
-            // Jobs are enqueued post-commit so they only fire for committed sessions.
+            // Lifecycle jobs (reminder, check-in window, no-show timeout) only exist once a time is agreed.
+            // Enqueued post-commit so they only fire for committed sessions.
             if (session.ScheduledAt.HasValue)
-            {
-                var scheduledAt = new DateTimeOffset(session.ScheduledAt.Value, TimeSpan.Zero);
-                var reminderId = backgroundJobs.Schedule<ScrimReminderJob>(
-                    j => j.RunAsync(session.Id, CancellationToken.None),
-                    scheduledAt.AddMinutes(-30));
-                var windowId = backgroundJobs.Schedule<ScrimCheckinWindowJob>(
-                    j => j.RunAsync(session.Id, CancellationToken.None),
-                    scheduledAt.AddMinutes(-15));
-                var timeoutId = backgroundJobs.Schedule<ScrimCheckinTimeoutJob>(
-                    j => j.RunAsync(session.Id, CancellationToken.None),
-                    scheduledAt.AddMinutes(15));
-
-                // Store job IDs so they can be deleted if the session is cancelled.
-                var jobIds = System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    reminder = reminderId,
-                    window = windowId,
-                    timeout = timeoutId,
-                });
-                await conn.ExecuteAsync(
-                    "UPDATE public.scrim_sessions SET hangfire_job_ids = @jobIds::jsonb WHERE id = @sessionId",
-                    new { jobIds, sessionId = session.Id });
-            }
+                await ScrimJobScheduler.ScheduleAsync(conn, backgroundJobs, session.Id, session.ScheduledAt.Value);
 
             // M5: open inbox conversation between team captains (best-effort, post-commit).
             await OpenScrimConversationAsync(
@@ -927,7 +889,7 @@ public static class ScrimEndpoints
                     VALUES (@userId, 'scrim_offer_accepted', 'Scrim Offer Accepted', @message,
                             @link, FALSE)
                     """,
-                    new { userId = staffId, message = $"{listingTeamName ?? "A team"} accepted your scrim offer.", link = $"/competitive/scrims/sessions/{session.Id}" });
+                    new { userId = staffId, message = $"{listingTeamName ?? "A team"} accepted your scrim offer.{(session.ScheduledAt is null ? " Agree a time in the scrim room." : "")}", link = $"/competitive/scrims/sessions/{session.Id}" });
             }
 
             // Gap 1: real-time push after commit.
@@ -1010,6 +972,7 @@ public static class ScrimEndpoints
                    ss.team1_checked_in_at, ss.team2_checked_in_at, ss.checkin_window_opened_at,
                    ss.result_reported_by_team1, ss.result_reported_by_team2,
                    COALESCE(pvs.status = 'in_progress', FALSE) AS veto_open,
+                   pp.proposed_by_team_id AS pending_proposal_by_team_id,
                    d.status::text AS dispute_status,
                    d.raised_by_team_id AS dispute_raised_by_team_id,
                    COALESCE(cardinality(d.responder_evidence_urls), 0) AS dispute_responder_evidence_count
@@ -1017,6 +980,12 @@ public static class ScrimEndpoints
             JOIN public.teams t1 ON t1.id = ss.team1_id
             JOIN public.teams t2 ON t2.id = ss.team2_id
             LEFT JOIN public.public_veto_sessions pvs ON pvs.id = ss.veto_session_id
+            LEFT JOIN LATERAL (
+                SELECT tp.proposed_by_team_id
+                FROM public.scrim_time_proposals tp
+                WHERE tp.session_id = ss.id AND tp.status = 'pending'
+                LIMIT 1
+            ) pp ON TRUE
             LEFT JOIN LATERAL (
                 SELECT sd.status, sd.raised_by_team_id, sd.responder_evidence_urls
                 FROM public.scrim_disputes sd
@@ -1027,8 +996,10 @@ public static class ScrimEndpoints
             WHERE (ss.team1_id = ANY(@teamIds) OR ss.team2_id = ANY(@teamIds))
               AND (
                     (ss.status = 'scheduled'
-                       AND ss.scheduled_at BETWEEN now() - make_interval(mins => @closesAfter)
-                                               AND now() + make_interval(mins => @opensBefore))
+                       AND (ss.scheduled_at IS NULL
+                            OR pp.proposed_by_team_id IS NOT NULL
+                            OR ss.scheduled_at BETWEEN now() - make_interval(mins => @closesAfter)
+                                                   AND now() + make_interval(mins => @opensBefore)))
                  OR ss.status IN ('in_progress', 'disputed')
               )
             ORDER BY ss.scheduled_at NULLS LAST
@@ -1151,8 +1122,17 @@ public static class ScrimEndpoints
             """,
             new { id });
 
-        // Return session row with derived VetoMyToken (raw tokens excluded) + dispute.
-        var response = row.ToSessionRow(vetoMyToken, dispute);
+        // The proposed time awaiting a response, if the captains are still agreeing one.
+        var proposal = await conn.QuerySingleOrDefaultAsync<ScrimTimeProposalRow>(
+            """
+            SELECT id, session_id, proposed_by_team_id, proposed_at, note, status, created_at
+            FROM public.scrim_time_proposals
+            WHERE session_id = @id AND status = 'pending'
+            """,
+            new { id });
+
+        // Return session row with derived VetoMyToken (raw tokens excluded) + dispute + proposal.
+        var response = row.ToSessionRow(vetoMyToken, dispute) with { TimeProposal = proposal };
         return Results.Ok(response);
     }
 
@@ -3041,10 +3021,6 @@ public static class ScrimEndpoints
         public Guid ListingTeamId { get; init; }
         public string ScheduleType { get; init; } = "one_off";
         public Guid? SlotId { get; init; }
-        public int[]? ListingPreferredDays { get; init; }
-        public TimeOnly? ListingPreferredTimeStart { get; init; }
-        public TimeOnly? ListingPreferredTimeEnd { get; init; }
-        public string? ListingTimezone { get; init; }
     }
     private sealed record AcceptOfferRequest(
         [property: JsonPropertyName("scheduled_at")] DateTime? ScheduledAt = null);

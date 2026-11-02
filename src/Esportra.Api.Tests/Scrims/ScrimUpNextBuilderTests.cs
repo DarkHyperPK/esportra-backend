@@ -168,4 +168,54 @@ public sealed class ScrimUpNextBuilderTests
         result.Items.Should().HaveCount(ScrimUpNextBuilder.MaxItems);
         result.Total.Should().Be(ScrimUpNextBuilder.MaxItems + 5);
     }
+
+    // ── Agreeing a time ─────────────────────────────────────────────────────────
+
+    private static string[] TypesAt(DateTime now, params UpNextSessionRow[] sessions) =>
+        ScrimUpNextBuilder.Build([], sessions, Mine, now).Items.Select(i => i.Type).ToArray();
+
+    [Fact]
+    public void UnscheduledMatch_AsksMeToProposeATime()
+    {
+        Types(S(s => s with { ScheduledAt = null, CheckinWindowOpenedAt = null })).Should().Equal("time_to_propose");
+    }
+
+    [Fact]
+    public void TheirProposal_AsksMeToRespond_AndMineDoesNotNagMe()
+    {
+        Types(S(s => s with { ScheduledAt = null, PendingProposalByTeamId = Them })).Should().Equal("time_to_respond");
+        Types(S(s => s with { ScheduledAt = null, PendingProposalByTeamId = Me })).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ARescheduleProposalFromThem_IsShown_EvenThoughTheMatchHasATime()
+    {
+        var later = Start.AddDays(3);
+        TypesAt(Start, S(s => s with { ScheduledAt = later, CheckinWindowOpenedAt = null, PendingProposalByTeamId = Them }))
+            .Should().Equal("time_to_respond");
+    }
+
+    [Fact]
+    public void OpenCheckin_StillWinsOverAProposal()
+    {
+        Types(S(s => s with { PendingProposalByTeamId = Them })).Should().Equal("checkin_open");
+    }
+
+    [Fact]
+    public void ScheduledMatchWithNothingPending_AndOutsideTheWindow_IsNotAnItem()
+    {
+        TypesAt(Start.AddDays(-2), S(s => s)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TimeItems_SortAfterTheTimeCriticalOnes_ButBeforeOffers()
+    {
+        var offer = new UpNextOfferRow { Id = Guid.NewGuid(), ListingId = Guid.NewGuid(), ListingTeamId = Me, CreatedAt = Start.AddHours(-1), ProposedAt = Start };
+        var respond = S(s => s with { Id = Guid.NewGuid(), ScheduledAt = null, PendingProposalByTeamId = Them });
+        var propose = S(s => s with { Id = Guid.NewGuid(), ScheduledAt = null });
+        var confirm = S(s => s with { Id = Guid.NewGuid(), Status = "in_progress", ResultReportedByTeam2 = true });
+
+        ScrimUpNextBuilder.Build([offer], [propose, respond, confirm], Mine, Start).Items.Select(i => i.Type)
+            .Should().Equal("result_to_confirm", "time_to_respond", "time_to_propose", "offer_received");
+    }
 }
