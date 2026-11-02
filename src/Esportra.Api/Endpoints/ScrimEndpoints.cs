@@ -469,7 +469,9 @@ public static class ScrimEndpoints
                 actualOffset,
             });
 
-        return Results.Ok(rows);
+        var list = rows.ToList();
+        var records = await ScrimTeamStatsService.LoadAsync(conn, list.Select(r => r.TeamId));
+        return Results.Ok(list.Select(r => r with { Record = ScrimTeamStatsService.Find(records, r.TeamId) }));
     }
 
     // ── GET /api/scrims/listings/{id}/detail ─────────────────────────────────
@@ -549,6 +551,9 @@ public static class ScrimEndpoints
                 """,
                 new { id })
             : Enumerable.Empty<ScrimSlotRow>();
+
+        var records = await ScrimTeamStatsService.LoadAsync(conn, [listing.TeamId]);
+        listing = listing with { Record = ScrimTeamStatsService.Find(records, listing.TeamId) };
 
         return Results.Ok(new { listing, members, slots });
     }
@@ -674,7 +679,9 @@ public static class ScrimEndpoints
             """,
             new { listingId = id });
 
-        return Results.Ok(rows);
+        var offers = rows.ToList();
+        var records = await ScrimTeamStatsService.LoadAsync(conn, offers.Select(o => o.OfferingTeamId));
+        return Results.Ok(offers.Select(o => o with { OfferingRecord = ScrimTeamStatsService.Find(records, o.OfferingTeamId) }));
     }
 
     // ── GET /api/scrims/offers/mine ────────────────────────────────────────────

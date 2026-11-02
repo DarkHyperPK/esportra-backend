@@ -37,6 +37,25 @@ public sealed record ScrimListingRow
     public string? MembersPreview { get; init; }
     public int? ScrimsCompleted { get; init; }
     public string? CaptainCardUrl { get; init; }
+    /// <summary>Null when the team keeps its scrim history private.</summary>
+    public ScrimTeamRecord? Record { get; init; }
+}
+
+/// <summary>Scrim record + reliability for a team. Only exposed when the team's history is public.</summary>
+public sealed record ScrimTeamRecord
+{
+    public int Wins { get; init; }
+    public int Losses { get; init; }
+    public int Draws { get; init; }
+    public int Completed { get; init; }
+    public int NoShows { get; init; }
+    /// <summary>completed / (completed + no_shows); null when there is nothing to base it on.</summary>
+    public decimal? ShowRate { get; init; }
+    public DateTime? LastPlayedAt { get; init; }
+    /// <summary>Most recent first: W / L / D.</summary>
+    public string[] Last5 { get; init; } = [];
+    /// <summary>+n straight wins, -n straight losses, 0 otherwise.</summary>
+    public int Streak { get; init; }
 }
 
 public sealed record ScrimTeamMemberDetail
@@ -82,6 +101,8 @@ public sealed record ScrimOfferRow
     public int? OfferingActiveMemberCount { get; init; }
     public string? OfferingMembersPreview { get; init; }
     public int? OfferingScrimsCompleted { get; init; }
+    /// <summary>Null when the offering team keeps its scrim history private.</summary>
+    public ScrimTeamRecord? OfferingRecord { get; init; }
 }
 
 public sealed record ScrimSessionRow
