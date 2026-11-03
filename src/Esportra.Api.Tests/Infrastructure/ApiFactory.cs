@@ -35,6 +35,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
                 .WithDatabase("esportra_test")
                 .WithUsername("postgres")
                 .WithPassword("test")
+                // Every host a test builds keeps a Hangfire server and connections until it is disposed; the default of 100 is easy to reach.
+                .WithCommand("-c", "max_connections=300")
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(5432))
                 .Build();
         }

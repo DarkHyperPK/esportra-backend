@@ -97,7 +97,9 @@ public sealed partial class GameCatalogService(
         }
         catch (Exception ex)
         {
-            tx.Rollback();
+            // The failure may come after Commit (the banner backfill opens its own connection). A completed
+            // transaction cannot roll back, and its error must not replace the real one.
+            try { tx.Rollback(); } catch (InvalidOperationException) { }
             logger.LogError(ex, "Game catalog import failed.");
             throw;
         }

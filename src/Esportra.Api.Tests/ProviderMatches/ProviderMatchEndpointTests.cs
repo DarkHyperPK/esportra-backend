@@ -23,6 +23,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
         public void Queue(Guid associationId) => Queued.Add(associationId);
     }
 
+    /// <summary>A host with a recording trigger. Callers dispose it: an undisposed host keeps its Hangfire server and database connections for the rest of the run.</summary>
     private (WebApplicationFactory<Program> Host, RecordingTrigger Trigger) HostWithRecorder()
     {
         var trigger = new RecordingTrigger();
@@ -75,6 +76,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
     public async Task Reporting_a_riot_scrim_map_registers_the_match_and_never_fails_the_report()
     {
         var (host, trigger) = HostWithRecorder();
+        using var disposeHost = host;
         var s = await SeedScrimAsync();
         var matchId = Guid.NewGuid().ToString();
         var client = As(host, s.Captain1);
@@ -117,6 +119,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
     public async Task Scrim_members_read_the_verified_scoreboard_and_outsiders_cannot()
     {
         var (host, _) = HostWithRecorder();
+        using var disposeHost = host;
         var s = await SeedScrimAsync();
         var matchId = Guid.NewGuid().ToString();
         await using var conn = factory.Seeder.OpenConnection();
@@ -146,6 +149,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
     public async Task A_game_without_riot_data_reports_status_none()
     {
         var (host, _) = HostWithRecorder();
+        using var disposeHost = host;
         var s = await SeedScrimAsync();
         await using var conn = factory.Seeder.OpenConnection();
         await conn.ExecuteAsync(
@@ -164,6 +168,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
     public async Task Analytics_visibility_defaults_to_private_and_is_per_player()
     {
         var (host, _) = HostWithRecorder();
+        using var disposeHost = host;
         var a = Guid.NewGuid();
         var b = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(a);
@@ -186,6 +191,7 @@ public sealed class ProviderMatchEndpointTests(ApiFactory factory)
     public async Task Manual_association_and_backfill_are_staff_only_and_audited()
     {
         var (host, trigger) = HostWithRecorder();
+        using var disposeHost = host;
         var s = await SeedScrimAsync();
         var admin = Guid.NewGuid();
         await factory.Seeder.SeedAuthUserAsync(admin);
