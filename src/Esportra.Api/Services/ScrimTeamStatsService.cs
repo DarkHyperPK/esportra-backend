@@ -11,8 +11,9 @@ namespace Esportra.Api.Services;
 /// </summary>
 public static class ScrimTeamStatsService
 {
+    /// <summary>Records for one game only (a team's VALORANT history never shows on another game's listing). Null game = every game.</summary>
     public static async Task<IReadOnlyDictionary<Guid, ScrimTeamRecord>> LoadAsync(
-        IDbConnection conn, IEnumerable<Guid> teamIds)
+        IDbConnection conn, IEnumerable<Guid> teamIds, string? gameSlug = null)
     {
         var ids = teamIds.Where(id => id != Guid.Empty).Distinct().ToArray();
         if (ids.Length == 0) return new Dictionary<Guid, ScrimTeamRecord>();
@@ -21,9 +22,9 @@ public static class ScrimTeamStatsService
             """
             SELECT team_id, wins, losses, draws, completed, no_shows,
                    show_rate, last_played_at, last5, streak
-            FROM public.team_scrim_stats(@ids)
+            FROM public.team_scrim_stats(@ids, @gameSlug)
             """,
-            new { ids });
+            new { ids, gameSlug = string.IsNullOrWhiteSpace(gameSlug) ? null : gameSlug.Trim() });
 
         return rows.ToDictionary(r => r.TeamId, r => new ScrimTeamRecord
         {
@@ -37,6 +38,19 @@ public static class ScrimTeamStatsService
             Last5 = r.Last5 ?? [],
             Streak = r.Streak,
         });
+    }
+
+    /// <summary>Records keyed by team and game, for a list that mixes games: one read per game present.</summary>
+    public static async Task<IReadOnlyDictionary<(Guid Team, string Game), ScrimTeamRecord>> LoadByGameAsync(
+        IDbConnection conn, IEnumerable<(Guid Team, string Game)> pairs)
+    {
+        var result = new Dictionary<(Guid, string), ScrimTeamRecord>();
+        foreach (var group in pairs.GroupBy(p => p.Game.ToLowerInvariant()))
+        {
+            var records = await LoadAsync(conn, group.Select(p => p.Team), group.Key);
+            foreach (var (team, record) in records) result[(team, group.Key)] = record;
+        }
+        return result;
     }
 
     public static ScrimTeamRecord? Find(IReadOnlyDictionary<Guid, ScrimTeamRecord> map, Guid teamId) =>

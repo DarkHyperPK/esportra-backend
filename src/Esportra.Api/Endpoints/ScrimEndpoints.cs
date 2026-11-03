@@ -65,6 +65,7 @@ public static class ScrimEndpoints
     {
         // ── Scrim Listings ──────────────────────────────────────────────────────
         app.MapPost("/api/scrims/listings", CreateListingAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/scrims/teams/{teamId:guid}/eligible-games", EligibleGamesAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/listings", GetTeamListingsAsync).RequireAuthorization("Authenticated");
         app.MapPut("/api/scrims/listings/{id:guid}", UpdateListingAsync).RequireAuthorization("Authenticated");
         app.MapPost("/api/scrims/listings/{id:guid}/pause", PauseListingAsync).RequireAuthorization("Authenticated");
@@ -131,6 +132,15 @@ public static class ScrimEndpoints
 
     // ── POST /api/scrims/listings ──────────────────────────────────────────────
 
+    /// <summary>The games the team has a full roster for, so the listing form only offers those. Team members only.</summary>
+    private static async Task<IResult> EligibleGamesAsync(Guid teamId, HttpContext ctx, IDbConnectionFactory db)
+    {
+        if (ctx.Items["UserContext"] is not UserContext userCtx) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        if (!await IsTeamMemberAsync(conn, teamId, userCtx.UserIdGuid)) return Results.Forbid();
+        return Results.Ok(new { team_id = teamId, games = await ScrimRosterEligibility.EligibleGamesAsync(conn, teamId) });
+    }
+
     private static async Task<IResult> CreateListingAsync(
         [FromBody] CreateScrimListingRequest req,
         HttpContext ctx,
@@ -155,6 +165,8 @@ public static class ScrimEndpoints
         using var conn = db.CreateConnection();
 
         if (!await IsTeamStaffAsync(conn, req.TeamId, userCtx.UserIdGuid)) return Results.Forbid();
+        if (!await ScrimRosterEligibility.IsEligibleAsync(conn, req.TeamId, req.GameSlug))
+            return Results.UnprocessableEntity(new { error = "Your team needs a full roster for this game before it can post a scrim listing." });
 
         var row = await conn.QuerySingleAsync<ScrimListingRow>(
             """
@@ -348,8 +360,9 @@ public static class ScrimEndpoints
         IDbConnectionFactory db,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(game))
-            return Results.BadRequest(new { error = "game query parameter is required." });
+        // No game = every game. Rank filters only make sense within one game's ladder.
+        game = string.IsNullOrWhiteSpace(game) ? null : game.Trim();
+        if (game is null) { min_rank_sort_order = null; max_rank_sort_order = null; }
 
         var actualLimit = Math.Clamp(limit is null or 0 ? 20 : limit.Value, 1, 50);
         var actualOffset = Math.Max(offset ?? 0, 0);
@@ -405,7 +418,7 @@ public static class ScrimEndpoints
                    ) AS members_preview,
                    (SELECT count(*) FROM public.scrim_sessions ss
                     WHERE (ss.team1_id = sl.team_id OR ss.team2_id = sl.team_id)
-                      AND ss.status = 'completed') AS scrims_completed,
+                      AND ss.status = 'completed' AND lower(ss.game_slug) = lower(sl.game_slug)) AS scrims_completed,
                    (SELECT 'https://media.valorant-api.com/playercards/' || pgs.player_card_id || '/wideart.png'
                     FROM public.team_members tm3
                     JOIN public.player_game_stats pgs
@@ -451,7 +464,7 @@ public static class ScrimEndpoints
                   AND tm_cap.is_active = TRUE
                 LIMIT 1
             ) cap_rank ON TRUE
-            WHERE sl.status = 'open' AND sl.game_slug = @game
+            WHERE sl.status = 'open' AND (@game::text IS NULL OR sl.game_slug = @game)
               AND (@modeKey IS NULL OR sl.mode_key = @modeKey)
               AND (@regionKey IS NULL OR sl.region_key = @regionKey){rankConditions}
             ORDER BY sl.created_at DESC LIMIT @actualLimit OFFSET @actualOffset
@@ -468,8 +481,8 @@ public static class ScrimEndpoints
             });
 
         var list = rows.ToList();
-        var records = await ScrimTeamStatsService.LoadAsync(conn, list.Select(r => r.TeamId));
-        return Results.Ok(list.Select(r => r with { Record = ScrimTeamStatsService.Find(records, r.TeamId) }));
+        var records = await ScrimTeamStatsService.LoadByGameAsync(conn, list.Select(r => (r.TeamId, r.GameSlug ?? "")));
+        return Results.Ok(list.Select(r => r with { Record = records.GetValueOrDefault((r.TeamId, (r.GameSlug ?? "").ToLowerInvariant())) }));
     }
 
     // ── GET /api/scrims/listings/{id}/detail ─────────────────────────────────
@@ -550,7 +563,7 @@ public static class ScrimEndpoints
                 new { id })
             : Enumerable.Empty<ScrimSlotRow>();
 
-        var records = await ScrimTeamStatsService.LoadAsync(conn, [listing.TeamId]);
+        var records = await ScrimTeamStatsService.LoadAsync(conn, [listing.TeamId], listing.GameSlug);
         listing = listing with { Record = ScrimTeamStatsService.Find(records, listing.TeamId) };
 
         return Results.Ok(new { listing, members, slots });
@@ -668,7 +681,7 @@ public static class ScrimEndpoints
                    (SELECT count(*)
                     FROM public.scrim_sessions ss
                     WHERE (ss.team1_id = so.offering_team_id OR ss.team2_id = so.offering_team_id)
-                      AND ss.status = 'completed') AS offering_scrims_completed
+                      AND ss.status = 'completed' AND lower(ss.game_slug) = lower(sl.game_slug)) AS offering_scrims_completed
             FROM public.scrim_offers so
             JOIN public.teams t ON t.id = so.offering_team_id
             JOIN public.scrim_listings sl ON sl.id = so.listing_id
@@ -678,7 +691,8 @@ public static class ScrimEndpoints
             new { listingId = id });
 
         var offers = rows.ToList();
-        var records = await ScrimTeamStatsService.LoadAsync(conn, offers.Select(o => o.OfferingTeamId));
+        var listingGame = await conn.ExecuteScalarAsync<string?>("SELECT game_slug FROM public.scrim_listings WHERE id = @id", new { id });
+        var records = await ScrimTeamStatsService.LoadAsync(conn, offers.Select(o => o.OfferingTeamId), listingGame);
         return Results.Ok(offers.Select(o => o with { OfferingRecord = ScrimTeamStatsService.Find(records, o.OfferingTeamId) }));
     }
 
