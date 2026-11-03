@@ -78,7 +78,9 @@ public static class ScrimReportEndpoints
         var heads = await ScrimReportQueries.HeadsAsync(conn, teamId);
         var all = heads.Take(ScrimReportQueries.MapCap).Select(h => (Head: h, Map: MapName(h))).ToList();
         var available = all.Where(x => x.Map is not null).GroupBy(x => x.Map!).Select(g => new { map = g.Key, maps = g.Count() }).OrderByDescending(a => a.maps).ThenBy(a => a.map, StringComparer.Ordinal).ToList();
-        var chosen = all.Where(x => map is null || string.Equals(x.Map, map, StringComparison.OrdinalIgnoreCase)).ToList();
+        // No map named: the team's most-played one, so a picture is never drawn from every map at once.
+        map ??= available.FirstOrDefault()?.map;
+        var chosen = all.Where(x => string.Equals(x.Map, map, StringComparison.OrdinalIgnoreCase)).ToList();
         var (matches, _) = chosen.Count == 0 ? ([], []) : await ScrimReportQueries.LoadAsync(conn, chosen.Select(x => x.Head).ToList());
         var needsLocations = kind is "kills" or "opening_kills";
         var locations = needsLocations && chosen.Count > 0 ? await HeatmapQueries.LocationsAsync(conn, chosen.Select(x => x.Head.MatchId).ToList()) : [];

@@ -154,6 +154,9 @@ public sealed class ScrimReportEndpointTests(ApiFactory factory)
 
         (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=deaths&side=defense")).Body.GetProperty("points").GetArrayLength().Should().Be(0);
         (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=deaths&map=Nowhere")).Body.GetProperty("maps").GetInt32().Should().Be(0);
+        var defaulted = (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=deaths")).Body;
+        defaulted.GetProperty("map").GetString().Should().Be("Ascent");   // no map named: the most-played one, never all maps at once
+        defaulted.GetProperty("points").GetArrayLength().Should().Be(2);
         (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=bogus")).Status.Should().Be(HttpStatusCode.BadRequest);
         (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?side=middle")).Status.Should().Be(HttpStatusCode.BadRequest);
 

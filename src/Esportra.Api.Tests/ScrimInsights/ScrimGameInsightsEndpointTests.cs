@@ -133,4 +133,33 @@ public sealed class ScrimGameInsightsEndpointTests(ApiFactory factory)
         (await GetAsync(w.Users[1], w.Session, 1, Guid.NewGuid())).Status.Should().Be(HttpStatusCode.BadRequest);
         (await factory.CreateClient().GetAsync($"/api/scrims/sessions/{w.Session}/games/1/insights")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task The_timeline_gives_rounds_with_kills_for_members_and_a_reason_when_there_is_no_riot_data()
+    {
+        var w = await SeedAsync();
+        var matchId = Guid.NewGuid().ToString();
+        await RiotAsync(w, await GameAsync(w, 1, "riot", matchId), matchId);
+        await GameAsync(w, 2, "manual", null);
+
+        var ok = await factory.CreateAuthenticatedClient(w.Users[1]).GetAsync($"/api/scrims/sessions/{w.Session}/games/1/timeline");
+        var text = await ok.Content.ReadAsStringAsync();
+        ok.StatusCode.Should().Be(HttpStatusCode.OK, text);
+        text.Should().NotContain($"{w.Prefix}p", "PUUIDs never leave the server");
+        var json = JsonDocument.Parse(text).RootElement;
+        json.GetProperty("map").GetString().Should().Be("Ascent");
+        var timeline = json.GetProperty("timeline");
+        timeline.GetProperty("players").GetArrayLength().Should().Be(10);
+        timeline.GetProperty("rounds").GetArrayLength().Should().Be(2);
+        timeline.GetProperty("rounds")[0].GetProperty("kills").GetArrayLength().Should().Be(2);
+
+        var none = JsonDocument.Parse(await factory.CreateAuthenticatedClient(w.Users[1]).GetStringAsync($"/api/scrims/sessions/{w.Session}/games/2/timeline")).RootElement;
+        none.GetProperty("timeline").ValueKind.Should().Be(JsonValueKind.Null);
+        none.GetProperty("reason").GetString().Should().Contain("not reported from a Riot match");
+
+        var stranger = Guid.NewGuid();
+        await factory.Seeder.SeedAuthUserAsync(stranger);
+        (await factory.CreateAuthenticatedClient(stranger).GetAsync($"/api/scrims/sessions/{w.Session}/games/1/timeline")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await factory.CreateAuthenticatedClient(w.Users[1]).GetAsync($"/api/scrims/sessions/{w.Session}/games/9/timeline")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

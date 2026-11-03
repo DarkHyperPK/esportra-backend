@@ -40,7 +40,7 @@ public static class HeatmapMath
         var points = new List<HeatPoint>();
         void Add(int? x, int? y, int round)
         {
-            if (x is null || y is null) return;
+            if (x is null || y is null || (Math.Abs(x.Value) < 1 && Math.Abs(y.Value) < 1)) return;
             var s = m.Rounds.Any(r => r.Num == round) ? SideOf(round) : null;
             if (side is not null && s != side) return;
             points.Add(new HeatPoint(x.Value, y.Value, round, s));

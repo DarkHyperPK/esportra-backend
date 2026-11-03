@@ -76,4 +76,12 @@ public sealed class HeatmapMathTests
     {
         HeatmapMath.LocationOf(json, puuid).Should().BeNull();
     }
+
+    [Fact]
+    public void A_point_at_the_origin_is_an_unrecorded_location_not_a_position()
+    {
+        var m = Sample();
+        var zeroed = m with { Kills = m.Kills.Select(k => k with { X = 0, Y = 0 }).ToList() };
+        HeatmapMath.Points(zeroed, new Dictionary<(int, int), string?>(), "deaths", null).Should().BeEmpty();
+    }
 }

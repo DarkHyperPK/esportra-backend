@@ -2,6 +2,7 @@ using System.Text.Json;
 using Esportra.Api.Services;
 using Esportra.Api.Services.ProviderMatches;
 using Esportra.Api.Services.ScrimInsights;
+using Esportra.Api.Services.ScrimReports;
 using Esportra.Contracts.Auth;
 using Esportra.Contracts.Database;
 using Microsoft.AspNetCore.Mvc;
@@ -19,8 +20,11 @@ public static class ScrimGameInsightsEndpoints
 {
     private static readonly JsonSerializerOptions Snake = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
-    public static void MapScrimGameInsightsEndpoints(this WebApplication app) =>
+    public static void MapScrimGameInsightsEndpoints(this WebApplication app)
+    {
         app.MapGet("/api/scrims/sessions/{id:guid}/games/{n:int}/insights", InsightsAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/scrims/sessions/{id:guid}/games/{n:int}/timeline", TimelineAsync).RequireAuthorization("Authenticated");
+    }
 
     private static async Task<IResult> InsightsAsync(Guid id, int n, HttpContext ctx, IDbConnectionFactory db, [FromQuery] Guid? team_id = null)
     {
@@ -47,6 +51,41 @@ public static class ScrimGameInsightsEndpoints
         if (mySide is null) return Json(common(null, Fallback(game, head)));
         var match = await ScrimInsightsQueries.LoadMatchAsync(conn, head, mySide);
         return Json(common(ScrimInsightsBuilder.Build(match), null));
+    }
+
+    private static async Task<IResult> TimelineAsync(Guid id, int n, HttpContext ctx, IDbConnectionFactory db, [FromQuery] Guid? team_id = null)
+    {
+        if (ctx.Items["UserContext"] is not UserContext viewer) return Results.Unauthorized();
+        using var conn = db.CreateConnection();
+        var game = await ScrimInsightsQueries.GameAsync(conn, id, n);
+        if (game is null) return Results.NotFound();
+        var admin = viewer.AdminRoles.Length > 0;
+        var memberTeams = await ScrimInsightsQueries.MemberTeamsAsync(conn, viewer.UserIdGuid, game.Team1Id, game.Team2Id);
+        if (!admin && memberTeams.Length == 0) return Results.Forbid();
+        var myTeam = Pick(team_id, memberTeams, game);
+        if (myTeam is null) return Results.BadRequest(new { error = "team_id must be one of the two teams in this scrim." });
+        var mySlot = myTeam == game.Team1Id ? 1 : 2;
+
+        var head = await ScrimInsightsQueries.HeadAsync(conn, game.GameId);
+        var usable = head is { Verification: "verified" or "partially_verified", DataStatus: "retrieved", IsCompleted: true };
+        var mySide = head is null ? null : mySlot == 1 ? head.Team1Side : head.Team2Side;
+        if (!usable || mySide is null)
+            return Json(new { session_id = id, game_number = n, timeline = (object?)null, reason = Fallback(game, head).Reason });
+
+        var match = await ScrimInsightsQueries.LoadMatchAsync(conn, head!, mySide);
+        var locations = (await HeatmapQueries.LocationsAsync(conn, [head!.MatchId])).GetValueOrDefault(head.MatchId) ?? [];
+        var map = ProviderMatchVerifier.DisplayMap(head.MapId) ?? ValorantMaps.Resolve(game.MapName);
+        return Json(new
+        {
+            session_id = id,
+            game_number = n,
+            reason = (string?)null,
+            map = string.IsNullOrEmpty(map) ? null : map,
+            map_path = head.MapId,
+            result = game.WinnerSlot is { } w ? (w == mySlot ? "win" : "loss") : "draw",
+            score = new { mine = mySlot == 1 ? game.Team1Score : game.Team2Score, theirs = mySlot == 1 ? game.Team2Score : game.Team1Score },
+            timeline = TimelineBuilder.Build(match, locations),
+        });
     }
 
     private static Guid? Pick(Guid? requested, Guid[] memberTeams, ScrimInsightsQueries.GameRef game)
