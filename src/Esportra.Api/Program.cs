@@ -752,6 +752,7 @@ app.MapScrimGameEndpoints();
 app.MapScrimRoomChatEndpoints();
 app.MapProviderMatchEndpoints();
 app.MapScrimDataEndpoints();
+app.MapScrimGameInsightsEndpoints();
 app.MapScrimAdminEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
 app.MapScoutingEndpoints();
