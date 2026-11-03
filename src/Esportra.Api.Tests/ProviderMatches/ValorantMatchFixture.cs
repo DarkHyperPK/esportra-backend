@@ -23,7 +23,8 @@ internal static class ValorantMatchFixture
         int blueRounds = 13,
         int redRounds = 7,
         IEnumerable<Round>? rounds = null,
-        IEnumerable<int>? observers = null)
+        IEnumerable<int>? observers = null,
+        long startMillis = 1_761_000_000_000L)
     {
         var roundList = (rounds ?? []).ToList();
         var obs = observers?.ToHashSet() ?? [];
@@ -62,7 +63,7 @@ internal static class ValorantMatchFixture
                 ["gameVersion"] = "release-10.00",
                 ["gameLengthMillis"] = 2_000_000,
                 ["region"] = "eu",
-                ["gameStartMillis"] = 1_761_000_000_000L,
+                ["gameStartMillis"] = startMillis,
                 ["provisioningFlowId"] = provisioningFlowId,
                 ["isCompleted"] = isCompleted,
                 ["customGameName"] = "",
