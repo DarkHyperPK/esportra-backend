@@ -10,7 +10,8 @@ public static class ScrimCancelReasons
     public const string CancelledByTeam = "cancelled_by_team";
     public const string ListingClosed = "listing_closed";
     public const string Admin = "admin";
+    public const string VetoAbandoned = "veto_abandoned";
 
     public static readonly IReadOnlyList<string> All =
-        [CheckinTimeout, CancelledByTeam, ListingClosed, Admin];
+        [CheckinTimeout, CancelledByTeam, ListingClosed, Admin, VetoAbandoned];
 }

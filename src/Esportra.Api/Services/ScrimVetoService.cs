@@ -133,11 +133,10 @@ public sealed class ScrimVetoService(
                 """,
                 new { sessionId, vetoId, team1Token, team2Token });
 
-            // Schedule the veto-abandon job 10 minutes after veto creation.
-            // Job checks veto completion and cancels the session if both teams abandoned it.
+            // First abandon check after one inactivity window; the job re-arms itself while the veto is still being acted on.
             var abandonJobId = backgroundJobs.Schedule<ScrimVetoAbandonJob>(
                 j => j.RunAsync(sessionId, vetoId, CancellationToken.None),
-                TimeSpan.FromMinutes(10));
+                TimeSpan.FromMinutes(Math.Max(1, options.Value.VetoInactivityMinutes)));
 
             // Merge the abandon job ID into hangfire_job_ids so CancelSessionAsync deletes it.
             var vetoJobJson = System.Text.Json.JsonSerializer.Serialize(new { vetoAbandon = abandonJobId });

@@ -20,10 +20,16 @@ public sealed class ScrimCancelReasonContractTests
         throw new InvalidOperationException("Migration scripts directory not found.");
     }
 
+    /// <summary>The newest migration that defines the constraint is the one in force.</summary>
+    private static string FindLatestConstraintMigration() =>
+        Directory.GetFiles(Path.GetDirectoryName(FindMigration())!, "*.sql")
+            .Where(f => File.ReadAllText(f).Contains("ADD CONSTRAINT chk_scrim_sessions_cancelled_reason"))
+            .OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal).Last();
+
     [Fact]
     public void Migration_CheckConstraint_MatchesScrimCancelReasons()
     {
-        var sql = File.ReadAllText(FindMigration());
+        var sql = File.ReadAllText(FindLatestConstraintMigration());
 
         var check = Regex.Match(sql, @"cancelled_reason IN \(([^)]*)\)");
         check.Success.Should().BeTrue("the migration must constrain cancelled_reason");
