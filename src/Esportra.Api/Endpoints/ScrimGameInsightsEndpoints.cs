@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Esportra.Api.Middleware;
 using Esportra.Api.Services;
 using Esportra.Api.Services.ProviderMatches;
 using Esportra.Api.Services.ScrimInsights;
@@ -23,6 +24,7 @@ public static class ScrimGameInsightsEndpoints
     public static void MapScrimGameInsightsEndpoints(this WebApplication app)
     {
         app.MapGet("/api/scrims/sessions/{id:guid}/games/{n:int}/insights", InsightsAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/valorant/maps", () => Results.Text(Esportra.Api.Services.ValorantMapCatalog.SlimJson, "application/json")).AllowAnonymous().WithMetadata(new RateLimitPolicyMetadata("fixed"));
         app.MapGet("/api/scrims/sessions/{id:guid}/games/{n:int}/timeline", TimelineAsync).RequireAuthorization("Authenticated");
     }
 

@@ -57,4 +57,15 @@ public sealed class ValorantMapCatalogTests
         ValorantMaps.Resolve("/Game/Maps/NeverHeardOf/NeverHeardOf").Should().Be("Unknown map");
         ValorantMaps.UnknownSeen.Should().BeTrue();
     }
+
+    [Fact]
+    public void Remember_keeps_only_what_the_pages_draw_with()
+    {
+        ValorantMapCatalog.Remember("{\"data\":[{\"displayName\":\"Test Summit\",\"mapUrl\":\"/Game/Maps/X/X\",\"displayIcon\":\"https://i/x.png\",\"xMultiplier\":0.5,\"coordinates\":\"secret\",\"splash\":null}]}");
+        var json = ValorantMapCatalog.SlimJson;
+        json.Should().Contain("Test Summit").And.Contain("displayIcon").And.Contain("xMultiplier");
+        json.Should().NotContain("coordinates").And.NotContain("splash");
+        ValorantMapCatalog.Remember("{\"data\":[]}");
+        ValorantMapCatalog.SlimJson.Should().Contain("Test Summit");
+    }
 }

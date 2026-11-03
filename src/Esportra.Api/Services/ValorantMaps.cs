@@ -43,6 +43,26 @@ public static class ValorantMaps
         _unknownSeen = false;
     }
 
+    /// <summary>
+    /// Adds maps the catalog pool names but Riot's list did not: a code seen on verified games whose map the teams recorded under one pool name.
+    /// Never overrides a built-in or already learned name, and keeps what was learned before.
+    /// </summary>
+    public static void LearnFromPool(IEnumerable<(string Code, string Name)> pairs)
+    {
+        var next = new Dictionary<string, (string, bool)>(_learned, StringComparer.OrdinalIgnoreCase);
+        var added = false;
+        foreach (var (code, name) in pairs)
+        {
+            if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name)) continue;
+            var key = code.Trim();
+            if (NameByCode.ContainsKey(key) || next.ContainsKey(key)) continue;
+            next[key] = (name.Trim(), true);
+            added = true;
+        }
+        if (!added) return;
+        _learned = next;
+    }
+
     /// <summary>Forgets everything learned (tests, and a clean start).</summary>
     public static void ForgetLearned()
     {

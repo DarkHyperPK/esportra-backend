@@ -30,5 +30,20 @@ public static class ValorantMapCatalog
         return maps;
     }
 
+    /// <summary>The latest published list reduced to what the pages draw maps with (names, minimap, splash, position conversion), as JSON; empty until the first successful fetch.</summary>
+    public static string SlimJson { get; private set; } = "{\"data\":[]}";
+
+    /// <summary>Keeps a slim copy of the published list so the web app reads it from this API, not from valorant-api.com (which browsers cannot always reach).</summary>
+    public static void Remember(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) return;
+        string[] keys = ["displayName", "mapUrl", "displayIcon", "listViewIcon", "splash", "xMultiplier", "yMultiplier", "xScalarToAdd", "yScalarToAdd"];
+        var rows = data.EnumerateArray().Where(m => m.ValueKind == JsonValueKind.Object).Select(m =>
+            keys.Where(k => m.TryGetProperty(k, out var v) && v.ValueKind != JsonValueKind.Null).ToDictionary(k => k, k => m.GetProperty(k).Clone())).ToList();
+        if (rows.Count == 0) return;
+        SlimJson = JsonSerializer.Serialize(new { data = rows });
+    }
+
     private static string? Str(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }
