@@ -24,7 +24,7 @@ public sealed record Opening(
     IReadOnlyList<OpeningPlayer> Players, Rate WinAfterFirstBlood, Rate WinAfterFirstDeath, Rate FirstBloodRounds,
     Rate AttackFirstBlood, Rate DefenseFirstBlood);
 
-public sealed record KillLine(int Round, int Ordinal, int? RoundMs, string? Killer, string Victim, string[] Assistants, bool KillerMine, string? Weapon, int? X, int? Y);
+public sealed record KillLine(int Round, int Ordinal, int? RoundMs, string? Killer, string Victim, string[] Assistants, bool KillerMine, string? Weapon, string? Type, int? X, int? Y);
 
 public sealed record BuyRow(string Buy, Rate RoundsWon);
 

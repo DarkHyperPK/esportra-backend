@@ -24,7 +24,7 @@ public static class ScrimInsightsBuilder
         var kills = m.Kills.OrderBy(k => k.Round).ThenBy(k => k.RoundMs ?? int.MaxValue).ThenBy(k => k.Ordinal)
             .Select(k => new KillLine(
                 k.Round, k.Ordinal, k.RoundMs, k.Killer is null ? null : keys.GetValueOrDefault(k.Killer), keys.GetValueOrDefault(k.Victim) ?? "?",
-                k.Assistants.Select(a => keys.GetValueOrDefault(a) ?? "?").ToArray(), InsightsCommon.SideOf(m, k.Killer) == m.MySide, k.Item, k.X, k.Y)).ToList();
+                k.Assistants.Select(a => keys.GetValueOrDefault(a) ?? "?").ToArray(), InsightsCommon.SideOf(m, k.Killer) == m.MySide, k.Item, k.Type, k.X, k.Y)).ToList();
         return new InsightsReport(
             PlayerMath.Lines(m, keys), rounds, RoundMath.StreaksOf(rounds), RoundMath.HalvesOf(rounds), OpeningMath.Build(m, keys),
             kills, EconomyMath.Build(m, rounds), PlayerMath.Abilities(m, keys), PlayerMath.ObjectivesOf(m, keys), Formulas);

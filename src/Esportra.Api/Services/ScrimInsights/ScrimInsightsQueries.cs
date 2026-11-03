@@ -69,7 +69,7 @@ public static class ScrimInsightsQueries
         var kills = (await conn.QueryAsync<InKill>(
             """
             SELECT round_num AS Round, kill_ordinal AS Ordinal, killer AS Killer, victim AS Victim, assistants AS Assistants,
-                   time_since_round_ms AS RoundMs, victim_x AS X, victim_y AS Y, damage_item AS Item
+                   time_since_round_ms AS RoundMs, victim_x AS X, victim_y AS Y, damage_item AS Item, damage_type AS Type
             FROM public.valorant_match_kills WHERE match_id = @matchId ORDER BY round_num, kill_ordinal
             """, new { matchId })).ToList();
         var economy = (await conn.QueryAsync<InEcon>(

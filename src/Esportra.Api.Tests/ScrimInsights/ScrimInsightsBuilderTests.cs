@@ -119,4 +119,10 @@ public sealed class ScrimInsightsBuilderTests
         shifted.Economy.Should().BeEquivalentTo(Report.Economy);
         shifted.Opening.Should().BeEquivalentTo(Report.Opening);
     }
+
+    [Fact]
+    public void Kill_lines_say_how_the_kill_was_made_so_the_page_can_show_the_right_icon()
+    {
+        Report.Kills.Should().OnlyContain(k => k.Type == "Weapon" && k.Weapon == "Vandal");
+    }
 }

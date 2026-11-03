@@ -18,7 +18,7 @@ internal static class InsightsFixture
         new(n, winner, role, "Elimination", planter, null, planter is null ? null : 30_000, planter is null ? null : "A", null, null, null, null, null);
 
     public static InKill Kill(int round, int ordinal, string killer, string victim, int ms, params string[] assists) =>
-        new(round, ordinal, killer, victim, assists, ms, 100, 200, "Vandal");
+        new(round, ordinal, killer, victim, assists, ms, 100, 200, "Vandal", "Weapon");
 
     public static InEcon Econ(int round, string puuid, int loadout, string weapon = "Vandal", string armor = "Heavy") =>
         new(round, puuid, loadout, weapon, armor, 0, 0);

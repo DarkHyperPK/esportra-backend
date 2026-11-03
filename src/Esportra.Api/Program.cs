@@ -484,6 +484,8 @@ builder.Services.AddScoped<Esportra.Api.ScheduledJobs.PublicVetoOverlayUsageSche
 builder.Services.AddHostedService<RedisBackgroundConnector>();
 builder.Services.AddHostedService<R6MapAssetSeedService>();
 builder.Services.AddHostedService<ValorantRoleIconSeedService>();
+builder.Services.AddHttpClient("ValorantMaps");
+builder.Services.AddHostedService<Esportra.Api.Services.ValorantMapCatalogRefresher>();
 builder.Services.AddScoped<Esportra.Core.Broadcast.IBroadcastEnrollmentRepository, BroadcastEnrollmentRepository>();
 builder.Services.AddHostedService<BroadcastEnrollmentJob>();
 
@@ -754,6 +756,7 @@ app.MapProviderMatchEndpoints();
 app.MapScrimDataEndpoints();
 app.MapScrimGameInsightsEndpoints();
 app.MapScrimMapPickEndpoints();
+app.MapScrimReportEndpoints();
 app.MapScrimAdminEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
 app.MapScoutingEndpoints();

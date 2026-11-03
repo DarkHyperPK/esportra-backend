@@ -85,6 +85,7 @@ public sealed class ScrimGameInsightsEndpointTests(ApiFactory factory)
         report.GetProperty("players").EnumerateArray().Count(p => p.GetProperty("mine").GetBoolean()).Should().Be(5);
         report.GetProperty("rounds").GetArrayLength().Should().Be(2);
         report.GetProperty("kills").GetArrayLength().Should().Be(3);
+        report.GetProperty("kills")[0].GetProperty("type").GetString().Should().Be("Weapon");
         report.GetProperty("objectives").GetProperty("by_player").EnumerateArray().Single().GetProperty("plants").GetInt32().Should().Be(1);
     }
 

@@ -33,7 +33,8 @@ public static class ScrimDataBuilder
     {
         if (ProviderMatchVerifier.DisplayMap(riotMapId) is { } fromRiot) return fromRiot;
         var name = typed?.Trim();
-        if (string.IsNullOrEmpty(name)) return null;
+        // A name saved while the map was not yet known: show nothing rather than "Unknown map" for a map that has since been learned.
+        if (string.IsNullOrEmpty(name) || string.Equals(name, ValorantMaps.Unknown, StringComparison.OrdinalIgnoreCase)) return null;
         return ValorantMaps.DisplayName(name) ?? ProviderMatchVerifier.KnownMapNames.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) ?? ValorantMaps.Resolve(name);
     }
 

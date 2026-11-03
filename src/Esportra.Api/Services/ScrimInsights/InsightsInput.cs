@@ -11,7 +11,7 @@ public sealed record InRound(
     int Num, string? WinnerSide, string? WinnerRole, string? ResultCode, string? Planter, string? Defuser,
     int? PlantMs, string? Site, int? PlantX, int? PlantY, int? DefuseMs, int? DefuseX, int? DefuseY);
 
-public sealed record InKill(int Round, int Ordinal, string? Killer, string Victim, string[] Assistants, int? RoundMs, int? X, int? Y, string? Item);
+public sealed record InKill(int Round, int Ordinal, string? Killer, string Victim, string[] Assistants, int? RoundMs, int? X, int? Y, string? Item, string? Type = null);
 
 public sealed record InEcon(int Round, string Puuid, int? Loadout, string? Weapon, string? Armor, int? Spent, int? Remaining);
 
