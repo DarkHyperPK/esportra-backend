@@ -27,6 +27,7 @@ public static class ScrimReportEndpoints
         app.MapGet("/api/scrims/teams/{teamId:guid}/players/{userId:guid}/report", PlayerReportAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/teams/{teamId:guid}/trends", TrendsAsync).RequireAuthorization("Authenticated");
         app.MapGet("/api/scrims/teams/{teamId:guid}/heatmap", HeatmapAsync).RequireAuthorization("Authenticated");
+        app.MapGet("/api/scrims/teams/{teamId:guid}/fights", FightsAsync).RequireAuthorization("Authenticated");
     }
 
     private static async Task<bool> IsStaffAsync(System.Data.IDbConnection conn, UserContext viewer, Guid teamId) =>
@@ -92,6 +93,30 @@ public static class ScrimReportEndpoints
             if (points.Count >= HeatmapMath.PointCap) break;
         }
         return Json(new { team_id = teamId, map, kind, side, maps = chosen.Count, available_maps = available, truncated = points.Count >= HeatmapMath.PointCap, points = points.Take(HeatmapMath.PointCap) });
+    }
+
+    private static async Task<IResult> FightsAsync(Guid teamId, HttpContext ctx, IDbConnectionFactory db, string? map = null, string? side = null)
+    {
+        if (ctx.Items["UserContext"] is not UserContext viewer) return Results.Unauthorized();
+        if (side is not (null or "attack" or "defense")) return Results.BadRequest(new { error = "side must be attack or defense" });
+        using var conn = db.CreateConnection();
+        if (!await ScrimDataQueries.TeamExistsAsync(conn, teamId)) return Results.NotFound();
+        if (!await ScrimDataQueries.CanViewAsync(conn, viewer, teamId)) return Results.Forbid();
+
+        var heads = await ScrimReportQueries.HeadsAsync(conn, teamId);
+        var all = heads.Take(ScrimReportQueries.MapCap).Select(h => (Head: h, Map: MapName(h))).ToList();
+        var available = all.Where(x => x.Map is not null).GroupBy(x => x.Map!).Select(g => new { map = g.Key, maps = g.Count() }).OrderByDescending(a => a.maps).ThenBy(a => a.map, StringComparer.Ordinal).ToList();
+        map ??= available.FirstOrDefault()?.map;
+        var chosen = all.Where(x => string.Equals(x.Map, map, StringComparison.OrdinalIgnoreCase)).ToList();
+        var (matches, _) = chosen.Count == 0 ? ([], []) : await ScrimReportQueries.LoadAsync(conn, chosen.Select(x => x.Head).ToList());
+        var locations = chosen.Count > 0 ? await HeatmapQueries.LocationsAsync(conn, chosen.Select(x => x.Head.MatchId).ToList()) : [];
+        var fights = new List<Fight>();
+        foreach (var (head, _) in chosen)
+        {
+            fights.AddRange(FightsMath.Build(matches[head.GameId], locations.GetValueOrDefault(head.MatchId) ?? [], side));
+            if (fights.Count >= FightsMath.Cap) break;
+        }
+        return Json(new { team_id = teamId, map, side, maps = chosen.Count, available_maps = available, truncated = fights.Count >= FightsMath.Cap, fights = fights.Take(FightsMath.Cap) });
     }
 
     private static string? MapName(ScrimReportQueries.Head h)

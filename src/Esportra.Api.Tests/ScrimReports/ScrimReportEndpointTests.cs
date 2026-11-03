@@ -166,5 +166,25 @@ public sealed class ScrimReportEndpointTests(ApiFactory factory)
         text(await factory.CreateAuthenticatedClient(w.Users[3]).GetStringAsync($"/api/scrims/teams/{w.A}/heatmap?kind=deaths")).Should().NotContain($"{w.Prefix}p");
     }
 
+    [Fact]
+    public async Task The_fights_view_gives_every_fight_with_spacing_for_team_members_only_and_never_a_puuid()
+    {
+        var w = await SeedAsync();
+        var (status, body) = await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/fights");
+        status.Should().Be(HttpStatusCode.OK);
+        body.GetProperty("map").GetString().Should().Be("Ascent");
+        var fights = body.GetProperty("fights");
+        fights.GetArrayLength().Should().Be(3);
+        fights.EnumerateArray().Count(f => f.GetProperty("won").GetBoolean()).Should().Be(1);
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/fights?side=defense")).Body.GetProperty("fights").GetArrayLength().Should().Be(0);   // both rounds were played attacking
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/fights?side=attack")).Body.GetProperty("fights").GetArrayLength().Should().Be(3);
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/fights?side=middle")).Status.Should().Be(HttpStatusCode.BadRequest);
+
+        var stranger = Guid.NewGuid();
+        await factory.Seeder.SeedAuthUserAsync(stranger);
+        (await GetAsync(stranger, $"/api/scrims/teams/{w.A}/fights")).Status.Should().Be(HttpStatusCode.Forbidden);
+        (await factory.CreateAuthenticatedClient(w.Users[3]).GetStringAsync($"/api/scrims/teams/{w.A}/fights")).Should().NotContain($"{w.Prefix}p");
+    }
+
     private static string text(string s) => s;
 }
