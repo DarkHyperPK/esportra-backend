@@ -11,7 +11,8 @@ public static class MapPickQueries
     public static async Task<List<VetoSessionRow>> SessionsAsync(IDbConnection conn, Guid teamId) =>
         (await conn.QueryAsync<VetoSessionRow>(
             """
-            SELECT s.id AS SessionId, v.id AS VetoId, CASE WHEN s.team1_id = @teamId THEN 1 ELSE 2 END AS MySlot, gm.map_name AS Decider
+            SELECT s.id AS SessionId, v.id AS VetoId, CASE WHEN s.team1_id = @teamId THEN 1 ELSE 2 END AS MySlot, gm.map_name AS Decider,
+                   CASE WHEN s.team1_id = @teamId THEN s.team2_id ELSE s.team1_id END AS OpponentId
             FROM public.scrim_sessions s
             JOIN public.public_veto_sessions v ON v.id = s.veto_session_id AND v.status = 'completed'
             LEFT JOIN public.game_maps gm ON gm.id::text = v.selected_map_id

@@ -757,6 +757,7 @@ app.MapScrimDataEndpoints();
 app.MapScrimGameInsightsEndpoints();
 app.MapScrimMapPickEndpoints();
 app.MapScrimReportEndpoints();
+app.MapScrimOpponentEndpoints();
 app.MapScrimAdminEndpoints();
 app.MapCompetitiveIntegrationEndpoints();
 app.MapScoutingEndpoints();

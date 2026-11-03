@@ -125,4 +125,43 @@ public sealed class ScrimReportEndpointTests(ApiFactory factory)
         text.Should().NotContain($"{w.Prefix}p");
         JsonDocument.Parse(text).RootElement.GetProperty("report").GetProperty("losses").GetInt32().Should().Be(1);
     }
+
+    [Fact]
+    public async Task Every_member_can_read_the_team_trends_and_strangers_cannot()
+    {
+        var w = await SeedAsync();
+        var (status, body) = await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/trends");
+        status.Should().Be(HttpStatusCode.OK);
+        body.GetProperty("has_data").GetBoolean().Should().BeTrue();
+        body.GetProperty("trends").GetProperty("series").GetArrayLength().Should().Be(1);
+        body.GetProperty("trends").GetProperty("windows").GetArrayLength().Should().Be(3);
+
+        var stranger = Guid.NewGuid();
+        await factory.Seeder.SeedAuthUserAsync(stranger);
+        (await GetAsync(stranger, $"/api/scrims/teams/{w.A}/trends")).Status.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task The_heatmap_lists_the_teams_recorded_event_positions_by_map_kind_and_side()
+    {
+        var w = await SeedAsync();
+        var (status, body) = await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=deaths&map=Ascent");
+        status.Should().Be(HttpStatusCode.OK);
+        body.GetProperty("available_maps")[0].GetProperty("map").GetString().Should().Be("Ascent");
+        var points = body.GetProperty("points");
+        points.GetArrayLength().Should().Be(2);
+        (points[0].GetProperty("x").GetInt32(), points[0].GetProperty("y").GetInt32()).Should().Be((100, 200));
+
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=deaths&side=defense")).Body.GetProperty("points").GetArrayLength().Should().Be(0);
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=deaths&map=Nowhere")).Body.GetProperty("maps").GetInt32().Should().Be(0);
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?kind=bogus")).Status.Should().Be(HttpStatusCode.BadRequest);
+        (await GetAsync(w.Users[3], $"/api/scrims/teams/{w.A}/heatmap?side=middle")).Status.Should().Be(HttpStatusCode.BadRequest);
+
+        var stranger = Guid.NewGuid();
+        await factory.Seeder.SeedAuthUserAsync(stranger);
+        (await GetAsync(stranger, $"/api/scrims/teams/{w.A}/heatmap")).Status.Should().Be(HttpStatusCode.Forbidden);
+        text(await factory.CreateAuthenticatedClient(w.Users[3]).GetStringAsync($"/api/scrims/teams/{w.A}/heatmap?kind=deaths")).Should().NotContain($"{w.Prefix}p");
+    }
+
+    private static string text(string s) => s;
 }

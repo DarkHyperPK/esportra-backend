@@ -18,7 +18,7 @@ public static class DataTier
 /// <summary>One confirmed scrim map, from the team's point of view, as stored.</summary>
 public sealed record ScrimMapRow(
     Guid GameId, Guid SessionId, int GameNumber, DateTime? PlayedAt, string Source, string? MapName, int Team1Score, int Team2Score,
-    int? WinnerSlot, int TeamSlot, string? OpponentName, string? AssociationStatus, string? MatchDataStatus, string? OcrMatchData, bool? IsCustom = null);
+    int? WinnerSlot, int TeamSlot, string? OpponentName, string? AssociationStatus, string? MatchDataStatus, string? OcrMatchData, bool? IsCustom = null, Guid? OpponentId = null);
 
 /// <summary>Riot-derived facts for the team's side of a verified scrim map.</summary>
 public sealed record RiotGameRow(

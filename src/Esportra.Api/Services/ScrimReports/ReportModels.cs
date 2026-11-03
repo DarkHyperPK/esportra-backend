@@ -2,6 +2,7 @@ using Esportra.Api.Services.ScrimInsights;
 
 namespace Esportra.Api.Services.ScrimReports;
 
+
 /// <summary>One verified scrim map of the team, with Riot's record of it and who on the roster was which Riot player.</summary>
 public sealed record ReportGame(
     Guid GameId, DateTime? StartedAt, string? Map, Guid OpponentId, string OpponentName, string Result, int RoundsWon, int RoundsLost);
@@ -34,4 +35,4 @@ public sealed record BuyAggregate(string Buy, Rate RoundsWon);
 public sealed record TeamReport(
     ReportSample Sample, int Wins, int Losses, double? WinRatePct, double? RoundWinPct, IReadOnlyList<SeriesPoint> Series, IReadOnlyList<TeamMapRow> Maps,
     Rate Attack, Rate Defense, Rate FirstBloodRounds, Rate WinAfterFirstBlood, Rate WinAfterFirstDeath, Rate Pistol,
-    IReadOnlyList<BuyAggregate> Buys, IReadOnlyList<PlayerRow> Players, IReadOnlyList<Highlight> Highlights);
+    IReadOnlyList<BuyAggregate> Buys, IReadOnlyList<PlayerRow> Players, CoachTeam Coach, IReadOnlyList<Highlight> Highlights);

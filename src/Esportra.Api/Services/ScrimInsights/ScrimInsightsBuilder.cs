@@ -13,6 +13,7 @@ public static class ScrimInsightsBuilder
         new("opening", "Opening duel = the first kill of a round. Duels won = opening kills ÷ (opening kills + opening deaths)."),
         new("buy", $"Buy = viewer's average loadout value per player: eco ≤ {RoundMath.EcoMax}, full ≥ {RoundMath.FullBuyMin}, otherwise force. Rounds 1 and 13 are pistol rounds."),
         new("share", "Damage / kill share = the player's total ÷ their team's total in this match."),
+        new("coach", "Trades: a death is traded when a teammate kills the killer within 5 s. Clutch: a player left alone against one or more enemies. Led / trailed: your team had more / fewer players alive at some point of the round. Post-plant and retake count rounds where your team / the opponent planted. Anti-eco: your full buy against their eco. Loadout edge: 1,000+ more or less loadout value per player."),
         new("abilities", "Ability figures are Riot's per-match cast totals; Riot does not give casts per round."),
     ];
 
@@ -27,7 +28,7 @@ public static class ScrimInsightsBuilder
                 k.Assistants.Select(a => keys.GetValueOrDefault(a) ?? "?").ToArray(), InsightsCommon.SideOf(m, k.Killer) == m.MySide, k.Item, k.Type, k.X, k.Y)).ToList();
         return new InsightsReport(
             PlayerMath.Lines(m, keys), rounds, RoundMath.StreaksOf(rounds), RoundMath.HalvesOf(rounds), OpeningMath.Build(m, keys),
-            kills, EconomyMath.Build(m, rounds), PlayerMath.Abilities(m, keys), PlayerMath.ObjectivesOf(m, keys), Formulas);
+            kills, EconomyMath.Build(m, rounds), PlayerMath.Abilities(m, keys), PlayerMath.ObjectivesOf(m, keys), CoachMath.Build(m, rounds, keys), Formulas);
     }
 
     /// <summary>The key for a PUUID, for callers that need to point at a player (the endpoint's name table).</summary>

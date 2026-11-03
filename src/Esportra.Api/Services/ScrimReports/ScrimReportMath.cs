@@ -29,8 +29,8 @@ public static class ScrimReportMath
             SideRate(rounds, "attack"), SideRate(rounds, "defense"),
             SumRates(ordered.Select(m => m.Report.Opening.FirstBloodRounds)), SumRates(ordered.Select(m => m.Report.Opening.WinAfterFirstBlood)),
             SumRates(ordered.Select(m => m.Report.Opening.WinAfterFirstDeath)), SumRates(ordered.Select(m => m.Report.Economy.PistolRounds)),
-            Buys(ordered), Players(ordered), []);
-        return report with { Highlights = ReportHighlights.Team(report) };
+            Buys(ordered), Players(ordered), CoachTeamMath.Aggregate(ordered), []);
+        return report with { Highlights = ReportHighlights.Team(report).Concat(CoachFindings.Build(report.Coach)).ToList() };
     }
 
     private static SeriesPoint Point(ReportMatch m, int index)

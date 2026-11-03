@@ -51,10 +51,11 @@ public sealed class ScrimReportMathTests
     {
         Two().Highlights.Should().BeEmpty();   // two maps support nothing
         var six = ScrimReportMath.Team(Six(), capped: false);
-        six.Highlights.Select(h => h.Kind).Should().BeEquivalentTo(["best_map", "weakest_map", "pistol", "top_acs"]);
+        six.Highlights.Select(h => h.Kind).Should().BeEquivalentTo(["best_map", "weakest_map", "pistol", "untraded_openers", "bonus", "clutches", "closer"]);
         six.Highlights.Single(h => h.Kind == "best_map").Detail.Should().Contain("3–0 over 3 maps");
         six.Highlights.Single(h => h.Kind == "weakest_map").Title.Should().Be("Weakest map: Bind");
-        six.Highlights.Single(h => h.Kind == "top_acs").PlayerId.Should().Be(Nova);
+        six.Highlights.Single(h => h.Kind == "untraded_openers").PlayerId.Should().Be(Nova);
+        six.Highlights.Single(h => h.Kind == "closer").Detail.Should().Be("6 of 6 clutch situations won.");
     }
 
     [Fact]

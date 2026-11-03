@@ -1,7 +1,7 @@
 namespace Esportra.Api.Services.ScrimData;
 
 /// <summary>A scrim of the team whose map veto finished. MySlot is the team's place in the scrim (1 or 2), which is also its side in the veto.</summary>
-public sealed record VetoSessionRow(Guid SessionId, Guid VetoId, int MySlot, string? Decider);
+public sealed record VetoSessionRow(Guid SessionId, Guid VetoId, int MySlot, string? Decider, Guid? OpponentId = null);
 
 /// <summary>One veto action. TeamSide is 'team1' or 'team2' (the veto's own team ids are random, so the side is the only link to a scrim team).</summary>
 public sealed record VetoActionRow(Guid VetoId, string TeamSide, string ActionType, string? MapName, int ActionNumber, string? Side);

@@ -12,7 +12,6 @@ public static class ReportHighlights
         AddMaps(r, list);
         AddSides(r, list);
         AddPistol(r, list);
-        AddPlayers(r, list);
         AddForm(r, list);
         return list;
     }
@@ -44,21 +43,6 @@ public static class ReportHighlights
         if (r.Pistol.Of < ScrimReportMath.MinPistolRounds || r.Pistol.Pct is null) return;
         if (r.Pistol.Pct >= 60) list.Add(new Highlight("pistol", "good", "Strong pistol rounds", $"{r.Pistol.Count} of {r.Pistol.Of} won ({r.Pistol.Pct}%).", null));
         else if (r.Pistol.Pct <= 40) list.Add(new Highlight("pistol", "watch", "Weak pistol rounds", $"{r.Pistol.Count} of {r.Pistol.Of} won ({r.Pistol.Pct}%).", null));
-    }
-
-    private static void AddPlayers(TeamReport r, List<Highlight> list)
-    {
-        var eligible = r.Players.Where(p => p.Maps >= ScrimReportMath.MinMapsForPlayerHighlight).ToList();
-        var fragger = eligible.Where(p => p.Acs is not null).OrderByDescending(p => p.Acs).FirstOrDefault();
-        if (fragger is not null) list.Add(new Highlight("top_acs", "good", $"Highest ACS: {fragger.Name ?? "a player"}", $"{fragger.Acs} ACS over {fragger.Maps} maps.", fragger.UserId));
-        var opener = eligible.Where(p => p.FirstKills + p.FirstDeaths >= ScrimReportMath.MinDuelsForOpeningHighlight)
-            .OrderByDescending(p => (double)p.FirstKills / (p.FirstKills + p.FirstDeaths)).FirstOrDefault();
-        if (opener is not null)
-            list.Add(new Highlight("best_opener", "good", $"Best opening duels: {opener.Name ?? "a player"}", $"{opener.FirstKills} first kills, {opener.FirstDeaths} first deaths over {opener.Maps} maps.", opener.UserId));
-        var risky = eligible.Where(p => p.FirstKills + p.FirstDeaths >= ScrimReportMath.MinDuelsForOpeningHighlight)
-            .OrderBy(p => (double)p.FirstKills / (p.FirstKills + p.FirstDeaths)).FirstOrDefault();
-        if (risky is not null && risky.UserId != opener?.UserId && (double)risky.FirstKills / (risky.FirstKills + risky.FirstDeaths) < 0.4)
-            list.Add(new Highlight("opening_deaths", "watch", $"Loses most opening duels: {risky.Name ?? "a player"}", $"{risky.FirstKills} first kills against {risky.FirstDeaths} first deaths over {risky.Maps} maps.", risky.UserId));
     }
 
     private static void AddForm(TeamReport r, List<Highlight> list)

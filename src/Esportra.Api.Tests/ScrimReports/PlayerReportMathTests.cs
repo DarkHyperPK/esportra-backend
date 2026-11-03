@@ -31,8 +31,10 @@ public sealed class PlayerReportMathTests
     public void Highlights_say_when_a_player_is_consistent_and_never_compare_equal_maps()
     {
         var r = PlayerReportMath.Build(Nova, Six(), capped: false)!;
-        r.Highlights.Select(h => h.Kind).Should().Equal("consistency");
-        r.Highlights.Single().Title.Should().Be("Consistent from map to map");
+        r.Highlights.Select(h => h.Kind).Should().Equal("consistency", "untraded_openers", "closer");
+        r.Highlights.First().Title.Should().Be("Consistent from map to map");
+        r.Coach!.UntradedFirstDeaths.Should().Be(6);
+        r.Coach.ClutchWins.Should().Be(6);
     }
 
     [Fact]

@@ -14,7 +14,7 @@ public sealed record PlayerComparison(double? TeamAcs, double? AcsVsTeam, double
 
 public sealed record PlayerReport(
     ReportSample Sample, PlayerRow Summary, IReadOnlyList<PlayerMapPoint> Series, IReadOnlyList<PlayerSlice> ByMap, IReadOnlyList<PlayerSlice> ByAgent,
-    HitShare Hits, PlayerComparison Comparison, IReadOnlyList<Highlight> Highlights);
+    HitShare Hits, PlayerComparison Comparison, CoachUserRow? Coach, IReadOnlyList<Highlight> Highlights);
 
 /// <summary>One player across the team's verified maps: the same aggregates as a row of the team report, plus their series, splits and how they compare with the team.</summary>
 public static class PlayerReportMath
@@ -42,8 +42,8 @@ public static class PlayerReportMath
         var report = new PlayerReport(
             new ReportSample(items.Count, items[0].Match.Game.StartedAt, items[^1].Match.Game.StartedAt, capped), summary, series,
             Slices(items, i => i.Match.Game.Map), Slices(items, i => i.Raw.Agent?.ToLowerInvariant()),
-            new HitShare(head, body, leg, Pct(head, shots), Pct(body, shots), Pct(leg, shots)), comparison, []);
-        return report with { Highlights = Highlights(report) };
+            new HitShare(head, body, leg, Pct(head, shots), Pct(body, shots), Pct(leg, shots)), comparison, CoachTeamMath.Players(matches).FirstOrDefault(u => u.UserId == userId), []);
+        return report with { Highlights = Highlights(report).Concat(CoachFindings.ForPlayer(report.Coach)).ToList() };
     }
 
     private static IReadOnlyList<PlayerSlice> Slices(List<(Guid User, string? Name, ReportMatch Match, InPlayer Raw, PlayerLine Line)> items, Func<(Guid User, string? Name, ReportMatch Match, InPlayer Raw, PlayerLine Line), string?> key) =>

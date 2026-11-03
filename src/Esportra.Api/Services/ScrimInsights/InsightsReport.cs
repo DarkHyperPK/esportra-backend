@@ -45,4 +45,4 @@ public sealed record Formula(string Id, string Text);
 
 public sealed record InsightsReport(
     IReadOnlyList<PlayerLine> Players, IReadOnlyList<RoundLine> Rounds, Streaks Streaks, Halves Halves, Opening Opening,
-    IReadOnlyList<KillLine> Kills, Economy Economy, IReadOnlyList<AbilityLine> Abilities, Objectives Objectives, IReadOnlyList<Formula> Formulas);
+    IReadOnlyList<KillLine> Kills, Economy Economy, IReadOnlyList<AbilityLine> Abilities, Objectives Objectives, CoachMap Coach, IReadOnlyList<Formula> Formulas);

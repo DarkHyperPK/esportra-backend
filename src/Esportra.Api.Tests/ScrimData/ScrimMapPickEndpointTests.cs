@@ -102,4 +102,24 @@ public sealed class ScrimMapPickEndpointTests(ApiFactory factory)
         (await GetAsync(w.Users[0], Guid.NewGuid())).Status.Should().Be(HttpStatusCode.NotFound);
         (await factory.CreateClient().GetAsync($"/api/scrims/teams/{w.A}/map-picks")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task The_opponents_endpoint_lists_the_partner_as_a_team_with_meetings_and_the_veto_against_them()
+    {
+        var w = await SeedAsync();
+        var response = await factory.CreateAuthenticatedClient(w.Users[0]).GetAsync($"/api/scrims/teams/{w.A}/opponents");
+        var text = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, text);
+        var body = JsonDocument.Parse(text).RootElement;
+        body.GetProperty("has_data").GetBoolean().Should().BeTrue();
+        var opponent = body.GetProperty("opponents")[0];
+        opponent.GetProperty("opponent_id").GetGuid().Should().Be(w.O);
+        (opponent.GetProperty("maps").GetInt32(), opponent.GetProperty("wins").GetInt32(), opponent.GetProperty("losses").GetInt32()).Should().Be((3, 2, 1));
+        opponent.GetProperty("meetings").GetArrayLength().Should().Be(3);
+        opponent.GetProperty("veto").GetProperty("vetoes").GetInt32().Should().Be(1);
+
+        var stranger = Guid.NewGuid();
+        await factory.Seeder.SeedAuthUserAsync(stranger);
+        (await factory.CreateAuthenticatedClient(stranger).GetAsync($"/api/scrims/teams/{w.A}/opponents")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
 }
