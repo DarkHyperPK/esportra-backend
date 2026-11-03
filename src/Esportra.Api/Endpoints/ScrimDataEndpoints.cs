@@ -15,7 +15,7 @@ namespace Esportra.Api.Endpoints;
 /// </summary>
 public static class ScrimDataEndpoints
 {
-    private const int RecentGames = 30;
+    private const int RecentGames = 100;
     private const int TopCompositions = 12;
     private const int TopLineups = 10;
     private static readonly JsonSerializerOptions Snake = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
