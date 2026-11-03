@@ -68,6 +68,11 @@ public sealed class ScrimReportEndpointTests(ApiFactory factory)
         report.GetProperty("players").GetArrayLength().Should().Be(5);
         report.GetProperty("series").GetArrayLength().Should().Be(1);
         report.GetProperty("wins").GetInt32().Should().Be(1);
+        var ratings = body.GetProperty("ratings");
+        ratings.GetProperty("team").GetProperty("value").ValueKind.Should().Be(JsonValueKind.Number);
+        ratings.GetProperty("players").GetArrayLength().Should().Be(5);
+        ratings.GetProperty("players")[0].GetProperty("rating").GetProperty("value").ValueKind.Should().Be(JsonValueKind.Null);   // one map: under the 3-map minimum
+        ratings.GetProperty("by_map").GetArrayLength().Should().Be(1);
     }
 
     [Fact]
@@ -81,6 +86,9 @@ public sealed class ScrimReportEndpointTests(ApiFactory factory)
         players.GetArrayLength().Should().Be(1);
         players[0].GetProperty("user_id").GetGuid().Should().Be(w.Users[2]);
         body.GetProperty("report").GetProperty("wins").GetInt32().Should().Be(1);
+        var ratedPlayers = body.GetProperty("ratings").GetProperty("players");
+        ratedPlayers.GetArrayLength().Should().Be(1);
+        ratedPlayers[0].GetProperty("user_id").GetGuid().Should().Be(w.Users[2]);
     }
 
     [Fact]

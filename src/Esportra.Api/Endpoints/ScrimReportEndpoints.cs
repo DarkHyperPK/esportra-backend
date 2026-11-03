@@ -45,7 +45,12 @@ public static class ScrimReportEndpoints
 
         var (matches, capped) = await ScrimReportLoader.LoadAsync(conn, teamId);
         var report = ScrimReportMath.Team(matches, capped);
-        if (!staff) report = Scope(report, viewer.UserIdGuid);
+        var ratings = RatingMath.Build(report, matches, capped);
+        if (!staff)
+        {
+            report = Scope(report, viewer.UserIdGuid);
+            ratings = ratings with { Players = ratings.Players.Where(p => p.UserId == viewer.UserIdGuid).ToList() };
+        }
         return Json(new
         {
             team_id = teamId,
@@ -54,6 +59,7 @@ public static class ScrimReportEndpoints
             viewer_user_id = viewer.UserIdGuid,
             max_maps = ScrimReportQueries.MapCap,
             report,
+            ratings,
         });
     }
 
