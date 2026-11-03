@@ -59,6 +59,8 @@ public static class ScrimDataEndpoints
             unplayed_maps = IntelligenceMath.Unplayed(await ScrimDataQueries.PoolMapsAsync(conn), maps),
             compositions = IntelligenceMath.Compositions(details).Take(TopCompositions),
             players = ScrimPlayerMath.Players(set.Games, people),
+            agents = ScrimAgentMath.Agents(set.Games),
+            player_agents = ScrimAgentMath.PlayerAgents(set.Games, people),
             roster = new
             {
                 lineups = lineups.Take(TopLineups),
