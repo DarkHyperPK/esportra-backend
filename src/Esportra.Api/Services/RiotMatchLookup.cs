@@ -206,36 +206,8 @@ public static class RiotShards
             cancellationToken: ct) ?? "eu";
 }
 
-/// <summary>Riot's internal map paths to display names.</summary>
+/// <summary>Riot's internal map paths to display names (see <see cref="ValorantMaps"/>).</summary>
 public static class ValorantMapIds
 {
-    public static string Resolve(string riotMapId)
-    {
-        // Riot uses internal paths like /Game/Maps/Triad/Triad
-        var map = Maps.GetValueOrDefault(riotMapId);
-        if (map is not null) return map;
-
-        // Fallback: extract last path segment
-        var lastSlash = riotMapId.LastIndexOf('/');
-        return lastSlash >= 0 ? riotMapId[(lastSlash + 1)..] : riotMapId;
-    }
-
-    private static readonly Dictionary<string, string> Maps = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["/Game/Maps/Ascent/Ascent"] = "Ascent",
-        ["/Game/Maps/Duality/Duality"] = "Bind",
-        ["/Game/Maps/Triad/Triad"] = "Haven",
-        ["/Game/Maps/Bonsai/Bonsai"] = "Split",
-        ["/Game/Maps/Port/Port"] = "Icebox",
-        ["/Game/Maps/Foxtrot/Foxtrot"] = "Breeze",
-        ["/Game/Maps/Canyon/Canyon"] = "Fracture",
-        ["/Game/Maps/Pitt/Pitt"] = "Pearl",
-        ["/Game/Maps/Jam/Jam"] = "Lotus",
-        ["/Game/Maps/Juliett/Juliett"] = "Sunset",
-        ["/Game/Maps/Infinity/Infinity"] = "Abyss",
-        ["/Game/Maps/Rook/Rook"] = "Corrode",
-        ["/Game/Maps/HURM/HURM_Alley/HURM_Alley"] = "District",
-        ["/Game/Maps/HURM/HURM_Bowl/HURM_Bowl"] = "Kasbah",
-        ["/Game/Maps/HURM/HURM_Yard/HURM_Yard"] = "Piazza",
-    };
+    public static string Resolve(string riotMapId) => ValorantMaps.Resolve(riotMapId);
 }

@@ -29,30 +29,10 @@ public static class ProviderMatchVerifier
     public const string Disputed = "disputed";
     public const string Pending = "pending";
 
-    // Riot's internal map names; unknown ones are not checked rather than guessed.
-    private static readonly Dictionary<string, string> MapNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Duality"] = "Bind",
-        ["Bonsai"] = "Split",
-        ["Ascent"] = "Ascent",
-        ["Port"] = "Icebox",
-        ["Triad"] = "Haven",
-        ["Foxtrot"] = "Breeze",
-        ["Canyon"] = "Fracture",
-        ["Pitt"] = "Pearl",
-        ["Jam"] = "Lotus",
-        ["Juliett"] = "Sunset",
-        ["Infinity"] = "Abyss",
-    };
-
     /// <summary>Display names of the competitive maps this project can identify from Riot's internal names.</summary>
-    public static IReadOnlyCollection<string> KnownMapNames => MapNames.Values;
+    public static IReadOnlyCollection<string> KnownMapNames => ValorantMaps.CompetitiveNames;
 
-    public static string? DisplayMap(string? mapId)
-    {
-        var code = mapId?.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
-        return code is not null && MapNames.TryGetValue(code, out var name) ? name : null;
-    }
+    public static string? DisplayMap(string? mapId) => ValorantMaps.DisplayName(mapId);
 
     public static VerificationResult Verify(VerificationInput input)
     {
@@ -125,7 +105,7 @@ public static class ProviderMatchVerifier
     {
         var actual = DisplayMap(match.Info.MapId);
         if (actual is null || string.IsNullOrWhiteSpace(reportedMap)) return;
-        if (!MapNames.ContainsValue(reportedMap.Trim())) return; // free text we cannot compare
+        if (!ValorantMaps.IsDisplayName(reportedMap)) return; // free text we cannot compare
         if (!string.Equals(actual, reportedMap.Trim(), StringComparison.OrdinalIgnoreCase))
         {
             reasons.Add("map_mismatch");

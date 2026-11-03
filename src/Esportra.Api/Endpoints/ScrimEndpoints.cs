@@ -2068,7 +2068,9 @@ public static class ScrimEndpoints
         ILoggerFactory loggerFactory,
         Microsoft.Extensions.Options.IOptions<Esportra.Api.Services.ProviderMatches.RiotMatchOptions> matchOptions,
         CancellationToken ct,
-        [FromQuery] Guid? team_id = null)
+        [FromQuery] Guid? team_id = null,
+        [FromQuery] int? game = null,
+        [FromQuery] bool all = false)
     {
         var userCtx = ctx.Items["UserContext"] as UserContext;
         if (userCtx is null) return Results.Unauthorized();
@@ -2137,7 +2139,10 @@ public static class ScrimEndpoints
             return Results.Ok(new { matches = Array.Empty<object>(), reason = "No recent matches in Riot history" });
 
         var log = loggerFactory.CreateLogger("ScrimEndpoints.RecentMatches");
+        var expected = game is { } g ? (await ScrimVetoMaps.LoadAsync(conn, id))?.ForGame(g) : null;
+        var expectedMap = expected?.MapName;
         var candidates = new List<object>();
+        var hiddenByVeto = 0;
         foreach (var riotMatchId in matchIds.Take(20))
         {
             var (detStatus, detBody) = await riotApi.ProxyAsync(shard, $"/val/match/v1/matches/{riotMatchId}", ct);
@@ -2147,7 +2152,10 @@ public static class ScrimEndpoints
                 using var doc = JsonDocument.Parse(detBody);
                 // A scrim is played as a custom game; matchmade queues are offered only where staging allows them.
                 if (!RiotMatchCandidates.Accepts(doc.RootElement, matchOptions.Value.AllowNonCustomMatches)) continue;
-                var candidate = BuildScrimCandidate(doc.RootElement, riotMatchId, callerAccounts, team1Puuids, team2Puuids);
+                var playedMap = ValorantMaps.DisplayName(doc.RootElement.GetProperty("matchInfo").GetProperty("mapId").GetString());
+                var (show, onVetoMap) = ScrimVetoMaps.Classify(expectedMap, playedMap, all);
+                if (!show) { hiddenByVeto++; continue; }
+                var candidate = BuildScrimCandidate(doc.RootElement, riotMatchId, callerAccounts, team1Puuids, team2Puuids, onVetoMap);
                 if (candidate is not null) candidates.Add(candidate);
             }
             catch (Exception ex)
@@ -2156,7 +2164,14 @@ public static class ScrimEndpoints
             }
         }
 
-        return Results.Ok(new { matches = candidates });
+        return Results.Ok(new
+        {
+            matches = candidates,
+            expected_map = expectedMap,
+            expected_picked_by_slot = expected?.PickedBySlot,
+            expected_is_decider = expected?.IsDecider,
+            hidden_by_veto = hiddenByVeto,
+        });
     }
 
     // ── POST /api/scrims/sessions/{id}/reports/parse-screenshot ───────────────
@@ -2340,11 +2355,16 @@ public static class ScrimEndpoints
                    ss.team2_id, t2.name AS team2_name,
                    ss.team1_score, ss.team2_score,
                    ss.updated_at AS completed_at,
-                   pvs.selected_map_id AS raw_map_id
+                   COALESCE(
+                       (SELECT g.map_name FROM public.scrim_session_games g
+                        WHERE g.session_id = ss.id AND g.map_name IS NOT NULL AND g.status IN ('confirmed', 'resolved')
+                        ORDER BY g.game_number LIMIT 1),
+                       gm.map_name) AS raw_map_id
             FROM public.scrim_sessions ss
             JOIN public.teams t1 ON t1.id = ss.team1_id
             JOIN public.teams t2 ON t2.id = ss.team2_id
             LEFT JOIN public.public_veto_sessions pvs ON pvs.id = ss.veto_session_id
+            LEFT JOIN public.game_maps gm ON gm.id::text = pvs.selected_map_id
             WHERE (ss.team1_id = @teamId OR ss.team2_id = @teamId)
               AND ss.status = 'completed'
             ORDER BY ss.updated_at DESC
@@ -2424,11 +2444,11 @@ public static class ScrimEndpoints
 
     private static object? BuildScrimCandidate(
         JsonElement root, string riotMatchId, List<dynamic> accounts,
-        HashSet<string> team1Puuids, HashSet<string> team2Puuids)
+        HashSet<string> team1Puuids, HashSet<string> team2Puuids, bool isExpectedMap = false)
     {
         foreach (var account in accounts)
         {
-            var result = RiotMatchCandidates.Build(root, riotMatchId, (string)account.puuid, team1Puuids, team2Puuids);
+            var result = RiotMatchCandidates.Build(root, riotMatchId, (string)account.puuid, team1Puuids, team2Puuids, isExpectedMap);
             if (result is not null) return result;
         }
         return null;

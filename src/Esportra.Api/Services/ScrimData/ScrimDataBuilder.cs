@@ -34,7 +34,7 @@ public static class ScrimDataBuilder
         if (ProviderMatchVerifier.DisplayMap(riotMapId) is { } fromRiot) return fromRiot;
         var name = typed?.Trim();
         if (string.IsNullOrEmpty(name)) return null;
-        return ProviderMatchVerifier.KnownMapNames.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) ?? name;
+        return ValorantMaps.DisplayName(name) ?? ProviderMatchVerifier.KnownMapNames.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) ?? ValorantMaps.Resolve(name);
     }
 
     private static ScrimGame BuildGame(ScrimMapRow row, RiotGameRow? riot, List<RiotPlayerRow> riotPlayers)

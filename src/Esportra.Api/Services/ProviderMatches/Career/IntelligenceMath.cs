@@ -79,7 +79,7 @@ public static class IntelligenceMath
                 int rw = list.Sum(g => g.RoundsWon ?? 0), rl = list.Sum(g => g.RoundsLost ?? 0);
                 var interval = Wilson(wins, list.Count);
                 return new MapIntel(
-                    group.Key, ProviderMatchVerifier.DisplayMap(group.Key) ?? group.Key.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? group.Key,
+                    group.Key, ValorantMaps.Resolve(group.Key),
                     list.Count, wins, Pct(wins, list.Count), interval?.Low, interval?.High, rw, rl, Pct(rw, rw + rl),
                     Side(list.Sum(g => g.AttackPlayed), list.Sum(g => g.AttackWon)), Side(list.Sum(g => g.DefensePlayed), list.Sum(g => g.DefenseWon)),
                     list.Max(g => g.StartedAt), SignalFor(list.Count, wins, overall));
@@ -102,7 +102,7 @@ public static class IntelligenceMath
                 var list = group.ToList();
                 var wins = list.Count(Won);
                 int rw = list.Sum(g => g.RoundsWon ?? 0), rl = list.Sum(g => g.RoundsLost ?? 0);
-                var maps = list.Where(g => g.MapId is not null).GroupBy(g => ProviderMatchVerifier.DisplayMap(g.MapId) ?? g.MapId!)
+                var maps = list.Where(g => g.MapId is not null).GroupBy(g => ValorantMaps.Resolve(g.MapId))
                     .Select(m => new CompositionMap(m.Key, m.Count(), m.Count(Won)))
                     .OrderByDescending(m => m.Games).ThenBy(m => m.Map, StringComparer.Ordinal).ToList();
                 return new CompositionIntel(
