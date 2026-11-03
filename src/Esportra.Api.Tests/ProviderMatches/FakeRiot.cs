@@ -39,6 +39,7 @@ internal sealed class FakeRiot : HttpMessageHandler, IBackgroundJobClient
         using var services = collection.BuildServiceProvider();
         var job = new ProviderMatchIngestJob(
             factory.Db, riot, services.GetRequiredService<HybridCache>(), this,
+            Microsoft.Extensions.Options.Options.Create(new Esportra.Api.Services.ProviderMatches.RiotMatchOptions()),
             NullLogger<ProviderMatchIngestJob>.Instance);
         await job.RunAsync(associationId, attempt, CancellationToken.None);
     }

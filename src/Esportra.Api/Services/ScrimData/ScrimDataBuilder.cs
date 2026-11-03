@@ -72,6 +72,7 @@ public static class ScrimDataBuilder
         var notVerified = fell.Count(r => (r.AssociationStatus is { } s && RiotNotVerified.Contains(s)) || r.MatchDataStatus is "failed" or "unavailable");
         return new Coverage(
             games.Count, games.Count(g => g.Tier == DataTier.Full), games.Count(g => g.Tier == DataTier.Screenshot),
-            games.Count(g => g.Tier == DataTier.ScoreOnly), fell.Count - notVerified, notVerified, awaiting, disputed);
+            games.Count(g => g.Tier == DataTier.ScoreOnly), fell.Count - notVerified, notVerified, awaiting, disputed,
+            games.Count(g => g.Tier == DataTier.Full && g.Row.IsCustom == false));
     }
 }

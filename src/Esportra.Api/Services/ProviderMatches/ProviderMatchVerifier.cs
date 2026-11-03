@@ -5,7 +5,7 @@ public sealed record RosterMember(Guid? UserId, int Slot, string? Puuid);
 
 public sealed record VerificationInput(
     NormalizedValorantMatch Match, int? ReportedTeam1Score, int? ReportedTeam2Score, string? ReportedMap,
-    IReadOnlyList<RosterMember> Roster);
+    IReadOnlyList<RosterMember> Roster, bool AllowNonCustom = false);
 
 public sealed record PlayerResolution(string Puuid, string RiotSide, int? Slot, Guid? UserId);
 
@@ -69,7 +69,11 @@ public static class ProviderMatchVerifier
             .ToList();
 
         var disputed = false;
-        if (!match.Info.IsCustom) { reasons.Add("not_custom_game"); disputed = true; }
+        if (!match.Info.IsCustom)
+        {
+            if (input.AllowNonCustom) reasons.Add("queue_not_custom");
+            else { reasons.Add("not_custom_game"); disputed = true; }
+        }
 
         var sideOf = new Dictionary<int, string>();
         foreach (var slot in new[] { 1, 2 })

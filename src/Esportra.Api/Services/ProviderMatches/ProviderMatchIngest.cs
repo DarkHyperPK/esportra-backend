@@ -18,7 +18,7 @@ public static class ProviderMatchIngest
     private sealed record SnapshotRow(Guid? UserId, int Slot, string? Puuid);
 
     public static async Task<IngestOutcome> ApplyAsync(
-        IDbConnection conn, Guid associationId, string payloadJson, string shard, bool storePayload)
+        IDbConnection conn, Guid associationId, string payloadJson, string shard, bool storePayload, bool allowNonCustom = false)
     {
         var assoc = await conn.QuerySingleAsync<AssociationRow>(
             """
@@ -52,7 +52,7 @@ public static class ProviderMatchIngest
             """, new { associationId }, tx))
             .Select(r => new RosterMember(r.UserId, r.Slot, r.Puuid)).ToList();
 
-        var result = ProviderMatchVerifier.Verify(new VerificationInput(match, assoc.Team1Score, assoc.Team2Score, assoc.Map, roster));
+        var result = ProviderMatchVerifier.Verify(new VerificationInput(match, assoc.Team1Score, assoc.Team2Score, assoc.Map, roster, allowNonCustom));
         await ProviderMatchStore.ApplyVerificationAsync(conn, tx, associationId, match, result);
         tx.Commit();
         return new IngestOutcome(result.Status, match.Info.IsCompleted, null);

@@ -356,6 +356,8 @@ builder.Services.AddOptions<Esportra.Api.Auth.RecoveryOptions>()
 
 // ── External API clients ──────────────────────────────────────────────────────
 builder.Services.AddHttpClient<RiotApiClient>();
+builder.Services.AddOptions<Esportra.Api.Services.ProviderMatches.RiotMatchOptions>()
+    .Bind(builder.Configuration.GetSection(Esportra.Api.Services.ProviderMatches.RiotMatchOptions.SectionName));
 builder.Services.AddHttpClient<RawgApiClient>();
 builder.Services.AddHttpClient<IgdbApiClient>();
 builder.Services.AddHttpClient<IDatHostService, DatHostService>();

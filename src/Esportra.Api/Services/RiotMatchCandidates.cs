@@ -21,6 +21,10 @@ public static class RiotMatchCandidates
         return string.IsNullOrWhiteSpace(queue) || queue.Equals("custom", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Whether Auto-fetch offers the match: custom games always, matchmade queues only when staging allows them.</summary>
+    public static bool Accepts(JsonElement root, bool allowNonCustom) =>
+        root.TryGetProperty("matchInfo", out _) && (allowNonCustom || IsCustomGame(root));
+
     /// <summary>The candidate as seen by <paramref name="scannerPuuid"/>; null when that player isn't in the game.</summary>
     public static object? Build(
         JsonElement root, string riotMatchId, string scannerPuuid,

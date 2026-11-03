@@ -130,6 +130,14 @@ public sealed class ScrimDataBuilderTests
     }
 
     [Fact]
+    public void A_matchmade_riot_map_is_counted_as_a_queue_game_and_a_custom_one_is_not()
+    {
+        var (riotRow, games, players) = RiotMap();
+        Build([riotRow with { IsCustom = false }], games, players).Coverage.QueueGames.Should().Be(1);
+        Build([riotRow with { IsCustom = true }], games, players).Coverage.QueueGames.Should().Be(0);
+    }
+
+    [Fact]
     public void The_same_map_is_one_map_whatever_the_source_called_it()
     {
         ScrimDataBuilder.CanonicalMap("ICEBOX", null).Should().Be("Icebox");

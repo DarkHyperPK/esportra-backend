@@ -2066,6 +2066,7 @@ public static class ScrimEndpoints
         RiotApiClient riotApi,
         HybridCache cache,
         ILoggerFactory loggerFactory,
+        Microsoft.Extensions.Options.IOptions<Esportra.Api.Services.ProviderMatches.RiotMatchOptions> matchOptions,
         CancellationToken ct,
         [FromQuery] Guid? team_id = null)
     {
@@ -2144,8 +2145,8 @@ public static class ScrimEndpoints
             try
             {
                 using var doc = JsonDocument.Parse(detBody);
-                // A scrim is played as a custom game: ranked, unrated and the other queues are not offered.
-                if (!RiotMatchCandidates.IsCustomGame(doc.RootElement)) continue;
+                // A scrim is played as a custom game; matchmade queues are offered only where staging allows them.
+                if (!RiotMatchCandidates.Accepts(doc.RootElement, matchOptions.Value.AllowNonCustomMatches)) continue;
                 var candidate = BuildScrimCandidate(doc.RootElement, riotMatchId, callerAccounts, team1Puuids, team2Puuids);
                 if (candidate is not null) candidates.Add(candidate);
             }

@@ -25,7 +25,8 @@ public sealed class ProviderMatchIngestTrigger(IBackgroundJobClient jobs) : IPro
 /// is looked for again after a delay; a stored payload is re-derived without calling Riot.
 /// </summary>
 public sealed class ProviderMatchIngestJob(
-    IDbConnectionFactory db, RiotApiClient riot, HybridCache cache, IBackgroundJobClient jobs, ILogger<ProviderMatchIngestJob> logger)
+    IDbConnectionFactory db, RiotApiClient riot, HybridCache cache, IBackgroundJobClient jobs,
+    Microsoft.Extensions.Options.IOptions<RiotMatchOptions> matchOptions, ILogger<ProviderMatchIngestJob> logger)
 {
     public static readonly TimeSpan[] RetryDelays =
         [TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(30), TimeSpan.FromHours(2)];
@@ -50,7 +51,7 @@ public sealed class ProviderMatchIngestJob(
             "SELECT payload::text FROM public.provider_match_payloads WHERE match_id = @MatchId", new { row.MatchId });
         if (stored is not null)
         {
-            await ProviderMatchIngest.ApplyAsync(conn, associationId, stored, row.Shard ?? "eu", storePayload: false);
+            await ProviderMatchIngest.ApplyAsync(conn, associationId, stored, row.Shard ?? "eu", storePayload: false, matchOptions.Value.AllowNonCustomMatches);
             return;
         }
 
@@ -69,7 +70,7 @@ public sealed class ProviderMatchIngestJob(
         var (status, body) = await riot.GetMatchAsync(row.ProviderMatchId, shard, ct);
         if (status == 200)
         {
-            var outcome = await ProviderMatchIngest.ApplyAsync(conn, associationId, body, shard, storePayload: true);
+            var outcome = await ProviderMatchIngest.ApplyAsync(conn, associationId, body, shard, storePayload: true, matchOptions.Value.AllowNonCustomMatches);
             if (outcome is { Failure: null, MatchCompleted: false }) RetryOrGiveUp(associationId, attempt);
             logger.LogInformation("Provider match {MatchId} ingested: {Status}", row.ProviderMatchId, outcome.VerificationStatus);
             return;

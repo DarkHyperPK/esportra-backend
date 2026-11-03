@@ -18,7 +18,7 @@ public static class DataTier
 /// <summary>One confirmed scrim map, from the team's point of view, as stored.</summary>
 public sealed record ScrimMapRow(
     Guid GameId, Guid SessionId, int GameNumber, DateTime? PlayedAt, string Source, string? MapName, int Team1Score, int Team2Score,
-    int? WinnerSlot, int TeamSlot, string? OpponentName, string? AssociationStatus, string? MatchDataStatus, string? OcrMatchData);
+    int? WinnerSlot, int TeamSlot, string? OpponentName, string? AssociationStatus, string? MatchDataStatus, string? OcrMatchData, bool? IsCustom = null);
 
 /// <summary>Riot-derived facts for the team's side of a verified scrim map.</summary>
 public sealed record RiotGameRow(
@@ -39,6 +39,6 @@ public sealed record ScrimGame(
 
 /// <summary>Why a map is not in the full-detail tier, so a team can tell "still loading" from "does not match".</summary>
 public sealed record Coverage(
-    int Maps, int Full, int Screenshot, int ScoreOnly, int RiotPending, int RiotNotVerified, int AwaitingConfirmation, int Disputed);
+    int Maps, int Full, int Screenshot, int ScoreOnly, int RiotPending, int RiotNotVerified, int AwaitingConfirmation, int Disputed, int QueueGames = 0);
 
 public sealed record ScrimDataSet(IReadOnlyList<ScrimGame> Games, Coverage Coverage);

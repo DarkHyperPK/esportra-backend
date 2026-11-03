@@ -19,6 +19,38 @@ public sealed class ProviderMatchVerifierTests
     private static VerificationInput Input(NormalizedValorantMatch m, List<RosterMember> roster, int? s1 = 13, int? s2 = 7, string? map = "Ascent") =>
         new(m, s1, s2, map, roster);
 
+    private static NormalizedValorantMatch Ranked() =>
+        ValorantMatchNormalizer.Normalize(Build(provisioningFlowId: "Matchmaking", queueId: "competitive"))!;
+
+    /// <summary>Team 1 = p1..p5 all rostered; the opposing lobby is strangers (not on any roster).</summary>
+    private static List<RosterMember> OwnTeamOnly() =>
+        Enumerable.Range(1, 5).Select(i => new RosterMember(Guid.NewGuid(), 1, Puuid(i))).ToList();
+
+    [Fact]
+    public void Ranked_Game_Is_Disputed_When_Not_Allowed()
+    {
+        var r = ProviderMatchVerifier.Verify(Input(Ranked(), OwnTeamOnly()));
+        r.Status.Should().Be("disputed");
+        r.Reasons.Should().Contain("not_custom_game");
+    }
+
+    [Fact]
+    public void Ranked_Game_Is_Partially_Verified_When_Allowed()
+    {
+        var r = ProviderMatchVerifier.Verify(Input(Ranked(), OwnTeamOnly()) with { AllowNonCustom = true });
+        r.Status.Should().Be("partially_verified");
+        r.Reasons.Should().Contain("queue_not_custom").And.Contain("unmatched_players:5");
+        r.Reasons.Should().NotContain("not_custom_game");
+    }
+
+    [Fact]
+    public void Ranked_Game_With_Wrong_Score_Is_Still_Disputed_When_Allowed()
+    {
+        var r = ProviderMatchVerifier.Verify(Input(Ranked(), OwnTeamOnly(), s1: 5, s2: 13) with { AllowNonCustom = true });
+        r.Status.Should().Be("disputed");
+        r.Reasons.Should().Contain("team1_score_mismatch");
+    }
+
     [Fact]
     public void All_Players_Linked_And_Report_Agrees_Is_Verified()
     {

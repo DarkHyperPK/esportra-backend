@@ -29,7 +29,8 @@ public static class ScrimDataQueries
                    g.source AS Source, g.map_name AS MapName, g.team1_score AS Team1Score, g.team2_score AS Team2Score,
                    g.winner_slot AS WinnerSlot, CASE WHEN s.team1_id = @teamId THEN 1 ELSE 2 END AS TeamSlot, ot.name AS OpponentName,
                    a.verification_status AS AssociationStatus, m.data_status AS MatchDataStatus,
-                   CASE WHEN g.source = 'ocr' THEN jsonb_build_object('players', g.match_data -> 'players')::text END AS OcrMatchData
+                   CASE WHEN g.source = 'ocr' THEN jsonb_build_object('players', g.match_data -> 'players')::text END AS OcrMatchData,
+                   m.is_custom AS IsCustom
             FROM public.scrim_session_games g
             JOIN public.scrim_sessions s ON s.id = g.session_id AND (s.team1_id = @teamId OR s.team2_id = @teamId)
             LEFT JOIN public.teams ot ON ot.id = CASE WHEN s.team1_id = @teamId THEN s.team2_id ELSE s.team1_id END
